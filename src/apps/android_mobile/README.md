@@ -963,6 +963,47 @@ survive process death and system Back. `nalar://network` opens the list,
 `nalar://network/record/{id}` opens one captured record, and
 `nalar://chat/{sessionId}` opens a chat directly.
 
+`chats/{workspaceId}` and `project/{workspaceId}/{itemId}` declare
+`navDeepLink` patterns too, but **`AndroidManifest.xml` claims only the `chat`
+and `network` hosts**, so those two links currently resolve to no activity:
+
+```bash
+adb shell am start -a android.intent.action.VIEW -d nalar://chats/ws_1
+# Error: Activity not started, unable to resolve Intent
+```
+
+A `navDeepLink` is only half a deep link — without a matching
+`<intent-filter>` the intent matches no activity and nothing in the app reports
+it. See **Navigation, audited** below for the check that catches this.
+
+## Navigation, audited
+
+The `NavHost` is small enough to read and large enough to stop being read
+accurately: routes get renamed, a `popUpTo` gets dropped, a destination loses
+its back arrow. So `tools/navgraph` reads `NalarNavGraph.kt` and
+`AndroidManifest.xml` as text, checks the graph, and renders
+[`navgraph.html`](navgraph.html) — every destination and every `navigate()`
+call site, plus the ten findings below.
+
+```bash
+cd src/apps/android_mobile
+python3 tools/navgraph/build.py            # regenerate navgraph.html + navgraph.json
+python3 tools/navgraph/build.py --check    # exit 1 if either is stale
+pytest ../../tests/functional_android/navgraph_contract_test.py
+```
+
+`navgraph.html` is one self-contained file with no external requests, so it
+opens from a filesystem over `ssh` or straight out of a PR. Nothing in it is
+hand-written — a destination added to the `NavHost` appears on the next run,
+and the committed page is compared against a fresh render so it cannot quietly
+fall behind the source. `tools/navgraph/README.md` documents each check.
+
+Two **errors** stand today, and both are the deep-link gap above:
+`nalar://chats/{workspaceId}` and `nalar://project/{workspaceId}/{itemId}` are
+unreachable from outside the app. The fix is two `<intent-filter>` blocks in the
+manifest; it is a behaviour change, so it is left for a decision rather than
+bundled into a read-only tool.
+
 ## The app reopens where you left it
 
 Close the app on workspace B with session C open, open it again, and it is back

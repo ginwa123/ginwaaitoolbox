@@ -535,6 +535,29 @@ jobs:
         shell: bash
         run: ./gradlew :app:assembleDebug --console=plain
 
+      - name: Set up Python
+        # The navgraph steps below read Kotlin source and compare the committed
+        # audit page. `3.12` is what the functional Linux job already uses, so
+        # the two agree on a version.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check the navigation audit page is current
+        # The committed `navgraph.html` is derived from `NalarNavGraph.kt`, so an
+        # edit to the NavHost without a `tools/navgraph/build.py` run leaves a
+        # page that is confidently wrong. `--check` compares the committed
+        # artifacts against a fresh render, masking the git sha so an unrelated
+        # commit does not fail this job while a changed route does.
+        run: python src/apps/android_mobile/tools/navgraph/build.py --check
+
+      - name: Navgraph contract tests
+        # No emulator and no backend: what is under test is Python reading
+        # Kotlin, and the page is a static artifact. Here rather than in the
+        # functional suite so a stale audit page fails this job instead of
+        # waiting for an emulator.
+        run: python -m pytest tests/functional_android/navgraph_contract_test.py -q
+
       - name: Stage the debug APK
         # Its own staging dir, matching the backend's `bin-stage-<triple>`
         # convention: four jobs publish to one release, and a shared

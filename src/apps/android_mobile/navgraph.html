@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="navgraph-sha" content="2ee86e13">
+<title>Nalar Android — navigation graph</title>
+<style>
+/*
+  Palette is pinned rather than inherited. The page has to stay legible inside
+  a dark transcript, so every surface is declared; nothing relies on the
+  embedding document's background.
+*/
+:root {
+  --bg: #1d1c19;
+  --panel: #232320;
+  --panel-2: #1a1917;
+  --line: #282727;
+  --line-2: #333230;
+  --text: #c5c9c5;
+  --muted: #a6a69c;
+  --accent: #8ba4b0;
+  --error: #c9706a;
+  --warn: #c9a35f;
+  --info: #7f9fb8;
+  --ok: #86a37e;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: 12px; }
+button, input, select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+header h1 { margin: 0 0 4px; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+header .sub { color: var(--muted); font-size: 11.5px; }
+header .sub code { color: var(--accent); }
+.counts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.count {
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.count b { color: var(--text); font-weight: 600; }
+.count.error b { color: var(--error); }
+.count.warn b { color: var(--warn); }
+.count.info b { color: var(--info); }
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.toolbar fieldset { border: 0; margin: 0; padding: 0; display: flex; gap: 10px; align-items: center; }
+.toolbar legend { display: none; }
+.toolbar label { display: inline-flex; gap: 4px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.toolbar input[type="search"] { min-width: 210px; }
+.swatch { width: 16px; height: 2px; border-radius: 2px; display: inline-block; }
+
+main { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(360px, 1fr); align-items: start; }
+@media (max-width: 1100px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+section.panel { border-right: 1px solid var(--line); min-width: 0; }
+section.panel:last-child { border-right: 0; }
+.panel h2 {
+  margin: 0;
+  padding: 9px 14px;
+  font-size: 11px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  position: sticky;
+  top: 41px;
+  z-index: 4;
+}
+
+#graph-wrap { overflow: auto; padding: 10px 14px 22px; }
+svg { display: block; min-width: 100%; }
+.node-hit { cursor: pointer; }
+.node rect.body {
+  fill: var(--panel);
+  stroke: var(--line-2);
+  stroke-width: 1;
+}
+.node.dim { opacity: .18; }
+.node.selected rect.body { stroke: var(--accent); stroke-width: 2; }
+.node.related rect.body { stroke: var(--accent); stroke-width: 1.5; }
+.node text { pointer-events: none; }
+.node .route { fill: var(--text); font-family: var(--mono); font-size: 12px; }
+.node .const { fill: var(--accent); font-family: var(--mono); font-size: 9.5px; }
+.node .screen { fill: var(--muted); font-size: 10.5px; }
+.node .badge-text { fill: var(--bg); font-size: 9px; font-weight: 700; }
+.node .sev-error { fill: var(--error); }
+.node .sev-warn { fill: var(--warn); }
+.node .sev-info { fill: var(--info); }
+.node .sev-none { fill: #2f3a33; stroke: var(--line-2); }
+
+.edge { fill: none; stroke-linecap: round; }
+.edge.push { stroke: #4d5a5f; stroke-width: 1.6; }
+.edge.replace { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 1 0; }
+.edge.deep-link { stroke: var(--info); stroke-width: 1.4; stroke-dasharray: 5 4; }
+.edge.back { stroke: #6b6250; stroke-width: 1.2; stroke-dasharray: 2 4; }
+.edge.dim { opacity: .1; }
+.edge.related { stroke: var(--accent); stroke-width: 2.2; }
+.edge.hit { stroke: transparent; stroke-width: 14; cursor: pointer; fill: none; }
+.edge-label { fill: var(--muted); font-size: 9.5px; font-family: var(--mono); }
+
+.rail-label { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
+.rail rect { fill: var(--panel-2); stroke: var(--line-2); stroke-dasharray: 4 3; }
+.rail.dim { opacity: .18; }
+
+#tooltip {
+  position: fixed;
+  z-index: 40;
+  max-width: 420px;
+  padding: 7px 9px;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--text);
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(0,0,0,.45);
+}
+#tooltip[hidden] { display: none; }
+
+.finding {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 8px 10px;
+  margin: 8px 10px;
+}
+.finding:hover { border-color: var(--accent); }
+.finding.error { border-left-color: var(--error); }
+.finding.warn { border-left-color: var(--warn); }
+.finding.info { border-left-color: var(--info); }
+.finding .head { display: flex; gap: 7px; align-items: baseline; flex-wrap: wrap; }
+.finding .sev { font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; font-weight: 700; }
+.finding.error .sev { color: var(--error); }
+.finding.warn .sev { color: var(--warn); }
+.finding.info .sev { color: var(--info); }
+.finding .code { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.finding .title { color: var(--text); }
+.finding .detail { color: var(--muted); margin-top: 4px; }
+.finding .loc { margin-top: 4px; font-size: 10.5px; }
+
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 11px; position: sticky; top: 0; background: var(--panel); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--accent); }
+th .arrow { color: var(--accent); font-size: 9px; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--panel); }
+tbody tr.selected { background: #26292b; }
+td.mono, th.mono { font-family: var(--mono); font-size: 11px; }
+
+.chip {
+  display: inline-block;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-right: 4px;
+  font-family: var(--mono);
+}
+.chip.bad { border-color: var(--error); color: var(--error); }
+.chip.good { border-color: var(--ok); color: var(--ok); }
+
+#detail { padding: 12px 14px 30px; }
+#detail .empty { color: var(--muted); }
+#detail h3 { margin: 0 0 2px; font-size: 13px; font-family: var(--mono); color: var(--accent); }
+#detail .kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 3px 10px; margin: 10px 0; }
+#detail .kv dt { color: var(--muted); font-size: 11px; }
+#detail .kv dd { margin: 0; font-size: 11.5px; word-break: break-word; }
+#detail h4 { margin: 16px 0 4px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+#detail ul { margin: 0; padding-left: 16px; }
+#detail li { margin-bottom: 3px; font-size: 11.5px; }
+#detail .edge-row { border-left: 2px solid var(--line-2); padding-left: 8px; margin-bottom: 8px; }
+#detail .edge-row.push { border-left-color: #4d5a5f; }
+#detail .edge-row.replace { border-left-color: var(--accent); }
+#detail .edge-row.deep-link { border-left-color: var(--info); }
+#detail .edge-row.back { border-left-color: #6b6250; }
+
+footer {
+  border-top: 1px solid var(--line);
+  padding: 12px 18px;
+  color: var(--muted);
+  font-size: 11.5px;
+  background: var(--panel);
+}
+footer code { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Nalar Android — navigation graph</h1>
+  <div class="sub">
+    derived from <code id="meta-nav"></code> and <code id="meta-manifest"></code>
+    at commit <code id="meta-sha"></code> &middot;
+    launch destination <code id="meta-start"></code>
+  </div>
+  <div class="counts" id="counts"></div>
+</header>
+
+<div class="toolbar">
+  <fieldset>
+    <legend>Severity</legend>
+    <label><input type="checkbox" class="sev-toggle" value="error" checked> error</label>
+    <label><input type="checkbox" class="sev-toggle" value="warn" checked> warn</label>
+    <label><input type="checkbox" class="sev-toggle" value="info" checked> info</label>
+  </fieldset>
+  <fieldset>
+    <legend>Edges</legend>
+    <label><input type="checkbox" class="edge-toggle" value="push" checked>
+      <span class="swatch" style="background:#4d5a5f"></span> push</label>
+    <label><input type="checkbox" class="edge-toggle" value="replace" checked>
+      <span class="swatch" style="background:var(--accent)"></span> replace</label>
+    <label><input type="checkbox" class="edge-toggle" value="deep-link" checked>
+      <span class="swatch" style="background:var(--info)"></span> deep link</label>
+    <label><input type="checkbox" class="edge-toggle" value="back" checked>
+      <span class="swatch" style="background:#6b6250"></span> back</label>
+  </fieldset>
+  <input type="search" id="search" placeholder="filter by route, screen, code, finding…">
+  <button id="reset" type="button">clear selection</button>
+</div>
+
+<main>
+  <section class="panel">
+    <h2>Navigation graph</h2>
+    <div id="graph-wrap"><svg id="graph" role="img" aria-label="Navigation graph"></svg></div>
+  </section>
+
+  <section class="panel">
+    <h2>Audit findings</h2>
+    <div id="findings"></div>
+
+    <h2>Destinations</h2>
+    <table id="dest-table">
+      <thead>
+        <tr>
+          <th class="sortable mono" data-sort="template">route</th>
+          <th class="sortable" data-sort="screens">screens</th>
+          <th class="sortable" data-sort="deep">deep links</th>
+          <th class="sortable" data-sort="back">back</th>
+          <th class="sortable" data-sort="severity">severity</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <h2>Detail</h2>
+    <div id="detail"><p class="empty">Click a node, an edge or a finding.</p></div>
+  </section>
+</main>
+
+<footer>
+  Generated from <code id="foot-nav"></code> at <code id="foot-sha"></code>.
+  Regenerate with <code>python3 tools/navgraph/build.py</code> from the repository root;
+  <code>--check</code> fails when the committed page no longer matches the source.
+  Nothing on this page is hand-maintained.
+</footer>
+
+<div id="tooltip" hidden></div>
+
+<script id="navgraph-data" type="application/json">{"destinationCount":6,"destinations":[{"arguments":[],"backAffordances":[],"composables":["AuthRestoringScreen","LoginScreen","MobileHomeScreen"],"deepLinks":[],"isStart":true,"line":703,"placeholders":[],"route":"SHELL","screens":["AuthRestoringScreen","LoginScreen","MobileHomeScreen"],"template":"app"},{"arguments":["ARG_SESSION_ID"],"backAffordances":["BackHandler { goBack() }"],"composables":["ChatScreen","RecentsDrawerContent"],"deepLinks":["nalar://chat/{sessionId}"],"isStart":false,"line":780,"placeholders":["sessionId"],"route":"CHAT","screens":["ChatScreen","RecentsDrawerContent"],"template":"chat/{sessionId}"},{"arguments":["ARG_WORKSPACE_ID"],"backAffordances":["onBack = goBack"],"composables":["RecentsChatsScreen"],"deepLinks":["nalar://chats/{workspaceId}"],"isStart":false,"line":920,"placeholders":["workspaceId"],"route":"CHATS","screens":["RecentsChatsScreen"],"template":"chats/{workspaceId}"},{"arguments":["ARG_WORKSPACE_ID","ARG_ITEM_ID"],"backAffordances":["onBack = goBack"],"composables":["ProjectChatsScreen","ProjectSummary"],"deepLinks":["nalar://project/{workspaceId}/{itemId}"],"isStart":false,"line":974,"placeholders":["workspaceId","itemId"],"route":"PROJECT","screens":["ProjectChatsScreen","ProjectSummary"],"template":"project/{workspaceId}/{itemId}"},{"arguments":[],"backAffordances":["onBack = goBack"],"composables":["NetworkInspectorScreen"],"deepLinks":["nalar://network"],"isStart":false,"line":1053,"placeholders":[],"route":"NETWORK","screens":["NetworkInspectorScreen"],"template":"network"},{"arguments":["ARG_RECORD_ID"],"backAffordances":["onBack = goBack"],"composables":["NetworkRecordDetailScreen"],"deepLinks":["nalar://network/record/{recordId}"],"isStart":false,"line":1063,"placeholders":["recordId"],"route":"RECORD_DETAIL","screens":["NetworkRecordDetailScreen"],"template":"network/record/{recordId}"}],"edgeCount":23,"edges":[{"hoistedFrom":"goBackToPreviousOrShell","kind":"replace","label":"graph → app","launchSingleTop":true,"popInclusive":false,"popUpTo":"app","resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":195,"note":"NalarRoutes.SHELL"}],"source":"graph","target":"app","trigger":"back","via":"NalarRoutes.SHELL"},{"hoistedFrom":"openInspector","kind":"push","label":"app → network","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":419,"note":"NalarRoutes.NETWORK"}],"source":"app","target":"network","trigger":"the network inspector button","via":"NalarRoutes.NETWORK"},{"hoistedFrom":"openChats","kind":"push","label":"app → chats/{workspaceId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":460,"note":"NalarRoutes.chats(workspaceId)"}],"source":"app","target":"chats/{workspaceId}","trigger":"the drawer's “See all chats” row","via":"NalarRoutes.chats(workspaceId)"},{"hoistedFrom":"openChats","kind":"push","label":"chat/{sessionId} → chats/{workspaceId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":460,"note":"NalarRoutes.chats(workspaceId)"}],"source":"chat/{sessionId}","target":"chats/{workspaceId}","trigger":"the drawer's “See all chats” row","via":"NalarRoutes.chats(workspaceId)"},{"hoistedFrom":"projectActions","kind":"push","label":"app → project/{workspaceId}/{itemId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":476,"note":"NalarRoutes.project(workspaceId, itemId)"}],"source":"app","target":"project/{workspaceId}/{itemId}","trigger":"a project's “See all chats” row","via":"NalarRoutes.project(workspaceId, itemId)"},{"hoistedFrom":"projectActions","kind":"push","label":"chat/{sessionId} → project/{workspaceId}/{itemId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":476,"note":"NalarRoutes.project(workspaceId, itemId)"}],"source":"chat/{sessionId}","target":"project/{workspaceId}/{itemId}","trigger":"a project's “See all chats” row","via":"NalarRoutes.project(workspaceId, itemId)"},{"hoistedFrom":"LaunchedEffect(createdChats)","kind":"replace","label":"graph → chat/{sessionId}","launchSingleTop":true,"popInclusive":false,"popUpTo":"app","resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":511,"note":"NalarRoutes.chat(sessionId)"}],"source":"graph","target":"chat/{sessionId}","trigger":"a chat this app just created","via":"NalarRoutes.chat(sessionId)"},{"hoistedFrom":"switchChat","kind":"replace","label":"chat/{sessionId} → chat/{sessionId}","launchSingleTop":true,"popInclusive":false,"popUpTo":"app","resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":533,"note":"NalarRoutes.chat(chatId)"}],"source":"chat/{sessionId}","target":"chat/{sessionId}","trigger":"switching chat from the sidebar","via":"NalarRoutes.chat(chatId)"},{"hoistedFrom":null,"kind":"push","label":"app → chat/{sessionId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":744,"note":"NalarRoutes.chat(sessionId)"}],"source":"app","target":"chat/{sessionId}","trigger":"opening a chat from a list","via":"NalarRoutes.chat(sessionId)"},{"hoistedFrom":null,"kind":"push","label":"chats/{workspaceId} → chat/{sessionId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":967,"note":"NalarRoutes.chat(sessionId)"}],"source":"chats/{workspaceId}","target":"chat/{sessionId}","trigger":"opening a chat from a list","via":"NalarRoutes.chat(sessionId)"},{"hoistedFrom":null,"kind":"push","label":"project/{workspaceId}/{itemId} → chat/{sessionId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":1020,"note":"NalarRoutes.chat(sessionId)"}],"source":"project/{workspaceId}/{itemId}","target":"chat/{sessionId}","trigger":"opening a chat from a list","via":"NalarRoutes.chat(sessionId)"},{"hoistedFrom":null,"kind":"push","label":"network → network/record/{recordId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":1059,"note":"NalarRoutes.recordDetail(recordId)"}],"source":"network","target":"network/record/{recordId}","trigger":"opening a captured network record","via":"NalarRoutes.recordDetail(recordId)"},{"hoistedFrom":"ResumeLastPosition","kind":"push","label":"graph → chat/{sessionId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":1199,"note":"NalarRoutes.chat(sessionId)"}],"source":"graph","target":"chat/{sessionId}","trigger":"navigating","via":"NalarRoutes.chat(sessionId)"},{"hoistedFrom":null,"kind":"deep-link","label":"__deeplink__ → chat/{sessionId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":780,"note":"nalar://chat/{sessionId}"}],"source":"__deeplink__","target":"chat/{sessionId}","trigger":"`adb shell am start -a android.intent.action.VIEW -d nalar://chat/{sessionId}`","via":"nalar://chat/{sessionId}"},{"hoistedFrom":null,"kind":"deep-link","label":"__deeplink__ → chats/{workspaceId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":920,"note":"nalar://chats/{workspaceId}"}],"source":"__deeplink__","target":"chats/{workspaceId}","trigger":"`adb shell am start -a android.intent.action.VIEW -d nalar://chats/{workspaceId}`","via":"nalar://chats/{workspaceId}"},{"hoistedFrom":null,"kind":"deep-link","label":"__deeplink__ → project/{workspaceId}/{itemId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":974,"note":"nalar://project/{workspaceId}/{itemId}"}],"source":"__deeplink__","target":"project/{workspaceId}/{itemId}","trigger":"`adb shell am start -a android.intent.action.VIEW -d nalar://project/{workspaceId}/{itemId}`","via":"nalar://project/{workspaceId}/{itemId}"},{"hoistedFrom":null,"kind":"deep-link","label":"__deeplink__ → network","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":1053,"note":"nalar://network"}],"source":"__deeplink__","target":"network","trigger":"`adb shell am start -a android.intent.action.VIEW -d nalar://network`","via":"nalar://network"},{"hoistedFrom":null,"kind":"deep-link","label":"__deeplink__ → network/record/{recordId}","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":1063,"note":"nalar://network/record/{recordId}"}],"source":"__deeplink__","target":"network/record/{recordId}","trigger":"`adb shell am start -a android.intent.action.VIEW -d nalar://network/record/{recordId}`","via":"nalar://network/record/{recordId}"},{"hoistedFrom":"goBackToPreviousOrShell","kind":"back","label":"chat/{sessionId} → __back__","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":780,"note":"BackHandler { goBack() }"}],"source":"chat/{sessionId}","target":"__back__","trigger":"BackHandler { goBack() }","via":"goBackToPreviousOrShell"},{"hoistedFrom":"goBackToPreviousOrShell","kind":"back","label":"chats/{workspaceId} → __back__","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":920,"note":"onBack = goBack"}],"source":"chats/{workspaceId}","target":"__back__","trigger":"onBack = goBack","via":"goBackToPreviousOrShell"},{"hoistedFrom":"goBackToPreviousOrShell","kind":"back","label":"project/{workspaceId}/{itemId} → __back__","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":974,"note":"onBack = goBack"}],"source":"project/{workspaceId}/{itemId}","target":"__back__","trigger":"onBack = goBack","via":"goBackToPreviousOrShell"},{"hoistedFrom":"goBackToPreviousOrShell","kind":"back","label":"network → __back__","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":1053,"note":"onBack = goBack"}],"source":"network","target":"__back__","trigger":"onBack = goBack","via":"goBackToPreviousOrShell"},{"hoistedFrom":"goBackToPreviousOrShell","kind":"back","label":"network/record/{recordId} → __back__","launchSingleTop":false,"popInclusive":null,"popUpTo":null,"resolved":true,"sites":[{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":1063,"note":"onBack = goBack"}],"source":"network/record/{recordId}","target":"__back__","trigger":"onBack = goBack","via":"goBackToPreviousOrShell"}],"errorCount":2,"findings":[{"code":"deep_link_not_in_manifest","detail":"`navDeepLink` declares nalar://chats/{workspaceId}, but AndroidManifest.xml has no \u003cdata android:scheme=\"nalar\" android:host=\"chats\">. `adb shell am start -a android.intent.action.VIEW -d nalar://chats/{workspaceId}` resolves to no activity, and it does so silently.","severity":"error","site":{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":920,"note":"CHATS"},"subject":"chats/{workspaceId}","title":"`nalar://chats/{workspaceId}` is not claimed by the manifest"},{"code":"deep_link_not_in_manifest","detail":"`navDeepLink` declares nalar://project/{workspaceId}/{itemId}, but AndroidManifest.xml has no \u003cdata android:scheme=\"nalar\" android:host=\"project\">. `adb shell am start -a android.intent.action.VIEW -d nalar://project/{workspaceId}/{itemId}` resolves to no activity, and it does so silently.","severity":"error","site":{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":974,"note":"PROJECT"},"subject":"project/{workspaceId}/{itemId}","title":"`nalar://project/{workspaceId}/{itemId}` is not claimed by the manifest"},{"code":"cyclic_navigation","detail":"5 of the 13 navigations lead back to somewhere they came from, so the back stack can grow past the number of destinations the reader has visited. 1 of those 5 already replace rather than push (`popUpTo` + `launchSingleTop`); the rest are drill-downs and deliberate switches, so this is a number to watch rather than a defect.","severity":"info","site":null,"subject":"graph","title":"5 navigation edges close a loop"},{"code":"terminal_destination","detail":"Every screen it renders is a leaf of the navigation graph: there is no `navigate` call inside it. Expected for a detail screen, wrong for anything meant to be a hub.","severity":"info","site":{"file":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","line":1063,"note":"RECORD_DETAIL"},"subject":"network/record/{recordId}","title":"`network/record/{recordId}` navigates nowhere"}],"infoCount":2,"layout":{"app":{"h":64,"w":214,"x":541.0,"y":32},"chat/{sessionId}":{"h":64,"w":214,"x":40.0,"y":200},"chats/{workspaceId}":{"h":64,"w":214,"x":374.0,"y":200},"network":{"h":64,"w":214,"x":1042.0,"y":200},"network/record/{recordId}":{"h":64,"w":214,"x":541.0,"y":368},"project/{workspaceId}/{itemId}":{"h":64,"w":214,"x":708.0,"y":200}},"meta":{"generatedBy":"tools/navgraph/build.py","gitSha":"2ee86e13","manifestFile":"src/apps/android_mobile/app/src/main/AndroidManifest.xml","manifestHosts":{"chat":53,"network":43},"navFile":"src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt","startDestination":"app"},"rawBackCalls":[],"routeConstants":[{"kind":"route","line":86,"name":"SHELL","synthetic":false,"template":"app","value":"app"},{"kind":"route","line":87,"name":"CHAT","synthetic":false,"template":"chat/{sessionId}","value":"chat/{sessionId}"},{"kind":"argument","line":88,"name":"ARG_SESSION_ID","synthetic":false,"template":"sessionId","value":"sessionId"},{"kind":"route","line":89,"name":"NETWORK","synthetic":false,"template":"network","value":"network"},{"kind":"route","line":90,"name":"RECORD_DETAIL","synthetic":false,"template":"network/record/{recordId}","value":"network/record/{recordId}"},{"kind":"argument","line":91,"name":"ARG_RECORD_ID","synthetic":false,"template":"recordId","value":"recordId"},{"kind":"route","line":110,"name":"PROJECT","synthetic":false,"template":"project/{workspaceId}/{itemId}","value":"project/{workspaceId}/{itemId}"},{"kind":"argument","line":111,"name":"ARG_WORKSPACE_ID","synthetic":false,"template":"workspaceId","value":"workspaceId"},{"kind":"argument","line":112,"name":"ARG_ITEM_ID","synthetic":false,"template":"itemId","value":"itemId"},{"kind":"route","line":128,"name":"CHATS","synthetic":false,"template":"chats/{workspaceId}","value":"chats/{workspaceId}"},{"kind":"route","line":130,"name":"chat","synthetic":true,"template":"chat/{sessionId}","value":"chat/${UriEncoding.encode(sessionId)}"},{"kind":"route","line":132,"name":"recordDetail","synthetic":true,"template":"network/record/{recordId}","value":"network/record/$recordId"},{"kind":"route","line":134,"name":"project","synthetic":true,"template":"project/{workspaceId}/{itemId}","value":"project/${UriEncoding.encode(workspaceId)}/${UriEncoding.encode(itemId)}"},{"kind":"route","line":137,"name":"chats","synthetic":true,"template":"chats/{workspaceId}","value":"chats/${UriEncoding.encode(workspaceId)}"}],"warnCount":0}</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("navgraph-data").textContent);
+const META = DATA.meta;
+const NODE_H = 64, NODE_W = 214, RAIL_X = 168, RAIL_W = 128, PAD = 26;
+const SEV_RANK = { error: 3, warn: 2, info: 1 };
+const SEV_VAR = { error: "var(--error)", warn: "var(--warn)", info: "var(--info)", none: "#2f3a33" };
+
+const esc = (v) => String(v == null ? "" : v)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+/* GitHub-style line links; elsewhere the text is still readable and copyable. */
+function link(site) {
+  if (!site) return "";
+  const path = esc(site.file), line = esc(site.line);
+  return '<a href="https://github.com/ginwa/ginwaaitoolbox/blob/main/' + path + "#L" + line +
+    '" target="_blank" rel="noreferrer">' + path + "#L" + line + "</a>" +
+    (site.note ? ' <span class="chip">' + esc(site.note) + "</span>" : "");
+}
+
+const byTemplate = new Map(DATA.destinations.map((d) => [d.template, d]));
+const argValue = new Map(DATA.routeConstants.map((c) => [c.name, c.value]));
+const deepLinkEdges = DATA.edges.filter((e) => e.kind === "deep-link");
+const backEdges = DATA.edges.filter((e) => e.kind === "back");
+const navEdges = DATA.edges.filter((e) => e.kind === "push" || e.kind === "replace");
+
+/* A `nalar://host/...` pattern is only reachable from outside if the manifest
+   claims the host. The check lives here rather than in the extractor because the
+   extractor already decided it — this just re-derives it for the badge. */
+const manifestHas = (pattern) => {
+  const m = /^nalar:\/\/([^/]+)/.exec(pattern || "");
+  return !!(m && Object.prototype.hasOwnProperty.call(META.manifestHosts, m[1]));
+};
+
+function worstSeverity(template) {
+  let worst = "none";
+  for (const f of DATA.findings) {
+    if (f.subject !== template) continue;
+    if (SEV_RANK[f.severity] > SEV_RANK[worst] || worst === "none") worst = f.severity;
+  }
+  return worst;
+}
+
+/* ---------------------------------------------------------------- header -- */
+
+document.getElementById("meta-nav").textContent = META.navFile;
+document.getElementById("meta-manifest").textContent = META.manifestFile;
+document.getElementById("meta-sha").textContent = META.gitSha;
+document.getElementById("meta-start").textContent = META.startDestination;
+document.getElementById("foot-nav").textContent = META.navFile;
+document.getElementById("foot-sha").textContent = META.gitSha;
+
+const COUNTS = [
+  ["destinations", DATA.destinationCount, ""],
+  ["edges", DATA.edgeCount, ""],
+  ["errors", DATA.errorCount, "error"],
+  ["warnings", DATA.warnCount, "warn"],
+  ["notes", DATA.infoCount, "info"],
+];
+document.getElementById("counts").innerHTML = COUNTS.map(([label, n, cls]) =>
+  '<span class="count ' + cls + '">' + esc(label) + " <b>" + n + "</b></span>").join("");
+
+/* ------------------------------------------------------------------ state -- */
+
+const state = {
+  selected: null,        // {kind: "node"|"edge", key}
+  hover: null,
+  severities: new Set(["error", "warn", "info"]),
+  kinds: new Set(["push", "replace", "deep-link", "back"]),
+  query: "",
+  sort: { column: "template", dir: 1 },
+};
+
+/* ------------------------------------------------------------------- svg -- */
+
+const svg = document.getElementById("graph");
+const NS = "http://www.w3.org/2000/svg";
+const el = (name, attrs) => {
+  const node = document.createElementNS(NS, name);
+  for (const k in attrs) node.setAttribute(k, attrs[k]);
+  return node;
+};
+
+const nodeEls = new Map();   // template -> <g>
+const edgeEls = [];          // {edge, path, hit, label, group}
+
+/* Rail nodes sit left of the layout because their edges have no source node to
+   anchor to. They are drawn dashed: nothing in the app "navigates from" outside
+   the app, and a solid arrow would claim there is a screen there. */
+const rails = [
+  { key: "__deeplink__", label: "outside the app", kinds: ["deep-link"] },
+  { key: "graph", label: "graph scope", kinds: ["push", "replace"] },
+];
+
+function buildSvg() {
+  const positions = DATA.layout;
+  const rows = [...new Set(Object.values(positions).map((p) => p.y))].sort((a, b) => a - b);
+  const railY = new Map(rails.map((r, i) => [r.key, 32 + i * (NODE_H + 92)]));
+  const top = Math.min(...rows, ...railY.values()) - PAD;
+  const bottom = Math.max(
+    ...rows.map((y) => y + NODE_H),
+    ...[...railY.values()].map((y) => y + NODE_H)
+  ) + PAD;
+  const right = Math.max(...Object.values(positions).map((p) => p.x + p.w)) + PAD;
+  const left = -RAIL_X - RAIL_W - PAD;
+  svg.setAttribute("viewBox", [left, top, right - left, bottom - top].join(" "));
+  svg.setAttribute("width", right - left);
+  svg.setAttribute("height", bottom - top);
+
+  const defs = el("defs", {});
+  for (const [kind, colour] of [["arrow-push", "#4d5a5f"], ["arrow-replace", "#8ba4b0"],
+                                ["arrow-deep-link", "#7f9fb8"], ["arrow-back", "#6b6250"]]) {
+    const marker = el("marker", {
+      id: kind, viewBox: "0 0 10 10", refX: "9", refY: "5",
+      markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse",
+    });
+    marker.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", fill: colour }));
+    defs.appendChild(marker);
+  }
+  svg.appendChild(defs);
+
+  const edgeLayer = el("g", { id: "edges" });
+  svg.appendChild(edgeLayer);
+
+  for (const [key, y] of railY) {
+    const g = el("g", { class: "rail", "data-rail": key });
+    g.appendChild(el("rect", { x: -RAIL_X, y: y, width: RAIL_W, height: NODE_H, rx: 8 }));
+    const text = el("text", { class: "rail-label", x: -RAIL_X + 10, y: y + NODE_H / 2 + 4 });
+    text.textContent = key === "graph" ? "graph scope" : "outside app";
+    g.appendChild(text);
+    edgeLayer.appendChild(g);
+    nodeEls.set(key, g);
+  }
+
+  /* Parallel edges between the same pair get an index so each can be drawn at
+     its own curvature — the shell reaches a chat by pushing it *and* by
+     replacing it, and collapsing those into one line hides the difference that
+     the whole back-stack question turns on. */
+  const groups = new Map();
+  for (const e of DATA.edges) {
+    if (e.target === "__back__" || !positions[e.source] || !positions[e.target]) continue;
+    const k = e.source + SEP + e.target;
+    groups.set(k, (groups.get(k) || 0) + 1);
+  }
+  const seenGroup = new Map();
+
+  for (const e of DATA.edges) {
+    if (e.target === "__back__") continue;
+    const from = positions[e.source];
+    const to = positions[e.target];
+    if (!from || !to) continue;
+
+    const groupKey = e.source + SEP + e.target;
+    const index = seenGroup.get(groupKey) || 0;
+    seenGroup.set(groupKey, index + 1);
+
+    const backwards = to.y <= from.y;
+    const dx = to.x - from.x;
+    const x1 = dx >= 0 ? from.x + from.w : from.x;
+    const x2 = dx >= 0 ? to.x : to.x + to.w;
+    const y1 = from.y + NODE_H / 2;
+    const y2 = to.y + NODE_H / 2;
+    /* A loop between two same-row nodes bulges below them; a forward edge is a
+       plain S-curve. Negative curvature is what keeps a back edge readable as
+       "this goes the other way" rather than as an edge pointing at itself. */
+    const spread = (index - (groups.get(groupKey) - 1) / 2) * 46;
+    const path = backwards
+      ? "M" + x1 + "," + y1 + " C" + (x1 + dx * 0.5) + "," + (y1 + 92 + spread) +
+        " " + (x2 - dx * 0.5) + "," + (y2 + 92 + spread) + " " + x2 + "," + y2
+      : "M" + x1 + "," + y1 + " C" + (x1 + dx * 0.4) + "," + y1 + " " +
+        (x2 - dx * 0.4) + "," + y2 + " " + x2 + "," + y2;
+
+    const group = el("g", { "data-edge": edgeKey(e) });
+    const line = el("path", {
+      class: "edge " + e.kind, d: path,
+      "marker-end": "url(#arrow-" + e.kind.replace("deep-link", "deep-link") + ")",
+    });
+    const hit = el("path", { class: "edge hit", d: path });
+    group.appendChild(line);
+    group.appendChild(hit);
+    edgeLayer.appendChild(group);
+
+    const label = el("text", {
+      class: "edge-label",
+      x: (x1 + x2) / 2 + (backwards ? 14 : -14),
+      y: backwards ? Math.max(y1, y2) + 62 + spread : (y1 + y2) / 2 - 6,
+      "text-anchor": "middle",
+    });
+    label.textContent = e.kind;
+    edgeLayer.appendChild(label);
+
+    edgeEls.push({ edge: e, group, line, hit, label });
+    hit.addEventListener("mouseenter", (ev) => { state.hover = { kind: "edge", key: edgeKey(e) }; paint(); tip(ev); });
+    hit.addEventListener("mousemove", (ev) => tip(ev));
+    hit.addEventListener("mouseleave", () => { state.hover = null; hideTip(); paint(); });
+    hit.addEventListener("click", () => select({ kind: "edge", key: edgeKey(e) }));
+  }
+
+  const nodeLayer = el("g", { id: "nodes" });
+  svg.appendChild(nodeLayer);
+  for (const d of DATA.destinations) {
+    const p = positions[d.template];
+    if (!p) continue;
+    const g = el("g", { class: "node", "data-node": d.template, transform: "translate(" + p.x + "," + p.y + ")" });
+    const sev = worstSeverity(d.template);
+    g.appendChild(el("rect", { class: "body", width: p.w, height: p.h, rx: 8 }));
+    /* A left bar rather than a border tint: a node with a red outline reads as
+       "this box is broken", while a bar reads as "there is something to read
+       here" — and the route text stays the loudest thing on the card. */
+    g.appendChild(el("rect", {
+      class: sev === "none" ? "sev-none" : "sev-" + sev,
+      x: 0, y: 0, width: 4, height: p.h, rx: 2,
+    }));
+    const route = el("text", { class: "route", x: 14, y: 21 });
+    route.textContent = d.template.length > 26 ? d.template.slice(0, 25) + "…" : d.template;
+    g.appendChild(route);
+    const konst = el("text", { class: "const", x: 14, y: 35 });
+    konst.textContent = "NalarRoutes." + d.route;
+    g.appendChild(konst);
+    const screen = el("text", { class: "screen", x: 14, y: 52 });
+    const joined = d.screens.join(" · ") || "(no screen)";
+    screen.textContent = joined.length > 28 ? joined.slice(0, 27) + "…" : joined;
+    g.appendChild(screen);
+
+    let badgeX = p.w - 12;
+    const badges = [];
+    if (d.deepLinks.length) badges.push(["deeplink", String(d.deepLinks.length)]);
+    if (d.backAffordances.length) badges.push(["back", String(d.backAffordances.length)]);
+    if (d.isStart) badges.push(["start", "S"]);
+    for (const [kind, label] of badges.reverse()) {
+      const w = kind === "deeplink" ? 20 : 26;
+      badgeX -= w + 4;
+      const chip = el("rect", {
+        x: badgeX, y: 10, width: w, height: 13, rx: 3,
+        fill: kind === "deeplink" ? "var(--info)"
+          : kind === "back" ? "#6b6250" : "var(--ok)",
+      });
+      g.appendChild(chip);
+      const t = el("text", { class: "badge-text", x: badgeX + w / 2, y: 20, "text-anchor": "middle" });
+      t.textContent = label;
+      g.appendChild(t);
+    }
+
+    nodeLayer.appendChild(g);
+    nodeEls.set(d.template, g);
+    g.addEventListener("mouseenter", (ev) => { state.hover = { kind: "node", key: d.template }; paint(); tip(ev); });
+    g.addEventListener("mousemove", (ev) => tip(ev));
+    g.addEventListener("mouseleave", () => { state.hover = null; hideTip(); paint(); });
+    g.addEventListener("click", () => select({ kind: "node", key: d.template }));
+  }
+}
+
+/* Route templates cannot contain "|", so it is a safe join separator for a
+   node pair or an edge identity. */
+const SEP = "|";
+
+const edgeKey = (e) => [e.label, e.kind, e.hoistedFrom || "", e.sites[0] ? e.sites[0].line : 0].join(SEP);
+
+/* --------------------------------------------------------------- painting -- */
+
+function matchesQuery(template, destination) {
+  if (!state.query) return true;
+  const q = state.query.toLowerCase();
+  return (template + " " + destination.route + " " + destination.screens.join(" ") + " " +
+    destination.deepLinks.join(" ") + " " + destination.backAffordances.join(" "))
+    .toLowerCase().includes(q);
+}
+
+function neighbourhood() {
+  if (state.selected && state.selected.kind === "node") {
+    const t = state.selected.key;
+    const nodes = new Set([t]);
+    for (const e of DATA.edges) {
+      if (e.source === t && nodes.has(e.target)) continue;
+      if (e.source === t) nodes.add(e.target);
+      if (e.target === t) nodes.add(e.source);
+    }
+    return nodes;
+  }
+  if (state.hover && state.hover.kind === "node") {
+    const nodes = new Set([state.hover.key, state.hover.key]);
+    for (const e of DATA.edges) {
+      if (e.source === state.hover.key) nodes.add(e.target);
+      if (e.target === state.hover.key) nodes.add(e.source);
+    }
+    return nodes;
+  }
+  return null;
+}
+
+function paint() {
+  const active = neighbourhood();
+  for (const [template, g] of nodeEls) {
+    const destination = byTemplate.get(template);
+    if (!destination) continue;
+    const searchable = matchesQuery(template, destination);
+    g.classList.toggle("dim", !!active && !active.has(template) || !searchable);
+    g.classList.toggle("selected", !!state.selected && state.selected.kind === "node" && state.selected.key === template);
+    g.classList.toggle("related", !!active && active.has(template) &&
+      !(state.selected && state.selected.kind === "node" && state.selected.key === template));
+  }
+  for (const item of edgeEls) {
+    const e = item.edge;
+    const kindOn = state.kinds.has(e.kind);
+    const related = !!active && (active.has(e.source) || active.has(e.target)) &&
+      (active.has(e.source) && (e.source === active.values().next().value || active.has(e.target)));
+    const touched = !!active && active.has(e.source) && active.has(e.target);
+    item.group.style.display = kindOn ? "" : "none";
+    item.label.style.display = kindOn ? "" : "none";
+    item.group.classList.toggle("dim", (!!active && !touched) || !related && !!active);
+    item.group.classList.toggle("related", touched);
+  }
+  renderFindings();
+  renderTable();
+}
+
+/* ---------------------------------------------------------------- tooltip -- */
+
+const tipEl = document.getElementById("tooltip");
+function tipText(target) {
+  if (target.kind === "node") {
+    const d = byTemplate.get(target.key);
+    if (!d) return "";
+    return '<b class="mono">' + esc(d.template) + "</b><br>" +
+      "screens: " + esc(d.screens.join(", ") || "—") + "<br>" +
+      "deep links: " + esc(d.deepLinks.join(", ") || "—") + "<br>" +
+      "back: " + esc(d.backAffordances.join(", ") || "none");
+  }
+  const e = target.edge;
+  let html = '<b>' + esc(e.kind) + "</b> · " + esc(e.trigger) + "<br>" +
+    "<span class='mono'>" + esc(e.via) + "</span>";
+  if (e.popUpTo) html += "<br>popUpTo " + esc(e.popUpTo) + " inclusive=" + esc(String(e.popInclusive));
+  if (e.launchSingleTop) html += "<br>launchSingleTop";
+  if (e.hoistedFrom) html += "<br>scope: " + esc(e.hoistedFrom);
+  if (e.sites[0]) html += "<br>" + esc(e.sites[0].file) + ":" + esc(e.sites[0].line);
+  return html;
+}
+function tip(ev) {
+  const target = ev.currentTarget.__target;
+  if (!target) return;
+  tipEl.innerHTML = tipText(target);
+  tipEl.hidden = false;
+  const pad = 14;
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  const box = tipEl.getBoundingClientRect();
+  if (x + box.width > window.innerWidth - 8) x = ev.clientX - box.width - pad;
+  if (y + box.height > window.innerHeight - 8) y = ev.clientY - box.height - pad;
+  tipEl.style.left = x + "px";
+  tipEl.style.top = y + "px";
+}
+const hideTip = () => { tipEl.hidden = true; };
+
+/* ------------------------------------------------------------------ panel -- */
+
+function select(target) {
+  state.selected = target;
+  renderDetail();
+  paint();
+}
+function clearSelection() {
+  state.selected = null;
+  renderDetail();
+  paint();
+}
+
+function renderDetail() {
+  const host = document.getElementById("detail");
+  const target = state.selected;
+  if (!target) {
+    host.innerHTML = '<p class="empty">Click a node, an edge or a finding.</p>';
+    return;
+  }
+  if (target.kind === "node") {
+    const d = byTemplate.get(target.key);
+    if (!d) { host.innerHTML = ""; return; }
+    const inbound = DATA.edges.filter((e) => e.target === d.template);
+    const outbound = DATA.edges.filter((e) => e.source === d.template && e.target !== "__back__");
+    const args = d.arguments.map((a) => argValue.get(a) || a);
+    host.innerHTML =
+      "<h3>" + esc(d.template) + "</h3>" +
+      '<div class="sub mono">NalarRoutes.' + esc(d.route) + "</div>" +
+      '<dl class="kv">' +
+        "<dt>defined at</dt><dd>" + link({ file: META.navFile, line: d.line }) + "</dd>" +
+        "<dt>launch</dt><dd>" + (d.isStart ? "yes — the start destination" : "no") + "</dd>" +
+        "<dt>arguments</dt><dd>" + (args.length ? esc(args.join(", ")) : "none") + "</dd>" +
+        "<dt>placeholders</dt><dd>" + (d.placeholders.length ? esc(d.placeholders.join(", ")) : "none") + "</dd>" +
+        "<dt>back</dt><dd>" + (d.backAffordances.length ? d.backAffordances.map(esc).join("<br>") : "<b style='color:var(--error)'>none</b>") + "</dd>" +
+      "</dl>" +
+      "<h4>Deep links</h4>" + (d.deepLinks.length ? "<ul>" + d.deepLinks.map((p) =>
+        "<li class='mono'>" + esc(p) + " " + (manifestHas(p)
+          ? "<span class='chip good'>claimed by the manifest</span>"
+          : "<span class='chip bad'>no manifest intent filter</span>") + "</li>").join("") + "</ul>"
+        : "<p class='empty'>none</p>") +
+      "<h4>Screens</h4><ul>" + d.screens.map((s) => "<li class='mono'>" + esc(s) + "</li>").join("") + "</ul>" +
+      (d.composables.length > d.screens.length
+        ? "<h4>Also referenced</h4><ul>" + d.composables.filter((s) => !d.screens.includes(s))
+            .map((s) => "<li class='mono'>" + esc(s) + "</li>").join("") + "</ul>" : "") +
+      "<h4>Reaches (" + outbound.length + ")</h4>" + edgeTable(outbound, "source") +
+      "<h4>Reached from (" + inbound.length + ")</h4>" + edgeTable(inbound, "target");
+    return;
+  }
+  const e = edgeEls.find((x) => edgeKey(x.edge) === target.key);
+  if (!e) { host.innerHTML = ""; return; }
+  const edge = e.edge;
+  host.innerHTML =
+    "<h3>" + esc(edge.kind) + "</h3>" +
+    '<dl class="kv">' +
+      "<dt>from</dt><dd class='mono'>" + esc(edge.source) + "</dd>" +
+      "<dt>to</dt><dd class='mono'>" + esc(edge.target || "(unresolved)") + "</dd>" +
+      "<dt>trigger</dt><dd>" + esc(edge.trigger) + "</dd>" +
+      "<dt>expression</dt><dd class='mono'>" + esc(edge.via) + "</dd>" +
+      "<dt>popUpTo</dt><dd>" + (edge.popUpTo ? esc(edge.popUpTo) + " (inclusive=" + esc(String(edge.popInclusive)) + ")" : "none") + "</dd>" +
+      "<dt>singleTop</dt><dd>" + (edge.launchSingleTop ? "yes" : "no") + "</dd>" +
+      "<dt>scope</dt><dd>" + esc(edge.hoistedFrom || "inside the destination's own body") + "</dd>" +
+      "<dt>site</dt><dd>" + (edge.sites[0] ? link(edge.sites[0]) : "—") + "</dd>" +
+    "</dl>" +
+    '<p class="sub">' + esc(explainEdge(edge)) + "</p>";
+}
+
+function explainEdge(edge) {
+  if (edge.kind === "deep-link") return "The app is entered from outside. " +
+    (manifestHas(edge.via) ? "The manifest claims this host, so the link resolves." :
+      "No intent filter claims this host, so `adb shell am start` finds no activity and nothing reports it.");
+  if (edge.kind === "back") return "How a back leaves " + edge.source + ". Every back affordance in this app goes through " +
+    edge.via + ", because a bare `popBackStack()` is inclusive and empties a one-deep stack.";
+  if (edge.kind === "replace") return "Switches rather than stacks: `popUpTo` removes what is above " +
+    edge.popUpTo + " and `launchSingleTop` keeps the target single. Back does not walk through the history.";
+  if (edge.source === "graph") return "Triggered outside any destination's own body — a hoisted lambda, an effect or a flow. " +
+    "The destination it actually lands on is the target; nothing in the graph re-enters this edge.";
+  return "A plain push. Back returns to " + edge.source + ", and repeating " + esc(edge.trigger) +
+    " adds another copy of the target to the back stack.";
+}
+
+function edgeTable(edges, other) {
+  if (!edges.length) return '<p class="empty">none</p>';
+  return edges.map((e) =>
+    '<div class="edge-row ' + esc(e.kind) + '">' +
+    "<div><b class='mono'>" + esc(e[other] || "?") + "</b> — " + esc(e.kind) + "</div>" +
+    "<div class='sub'>" + esc(e.trigger) + "</div>" +
+    "<div class='sub mono'>" + esc(e.via) + "</div>" +
+    (e.popUpTo ? "<div class='sub'>popUpTo " + esc(e.popUpTo) + " inclusive=" + esc(String(e.popInclusive)) + "</div>" : "") +
+    (e.hoistedFrom ? "<div class='sub'>scope " + esc(e.hoistedFrom) + "</div>" : "") +
+    (e.sites[0] ? "<div class='loc'>" + link(e.sites[0]) + "</div>" : "") +
+    "</div>").join("");
+}
+
+/* --------------------------------------------------------------- findings -- */
+
+function renderFindings() {
+  const host = document.getElementById("findings");
+  const q = state.query.toLowerCase();
+  const rows = DATA.findings.filter((f) => {
+    if (!state.severities.has(f.severity)) return false;
+    if (!q) return true;
+    return (f.code + " " + f.title + " " + f.detail + " " + f.subject).toLowerCase().includes(q);
+  });
+  if (!rows.length) {
+    host.innerHTML = '<p class="empty">Nothing matches the current filter.</p>';
+    return;
+  }
+  host.innerHTML = rows.map((f, i) =>
+    '<button type="button" class="finding ' + esc(f.severity) + '" data-finding="' + i + '">' +
+      '<div class="head"><span class="sev">' + esc(f.severity) + "</span>" +
+      "<span class='code'>" + esc(f.code) + "</span>" +
+      "<span class='title'>" + esc(f.title) + "</span></div>" +
+      "<div class='detail'>" + esc(f.detail) + "</div>" +
+      "<div class='loc mono'>" + esc(f.subject) + (f.site ? " · " + link(f.site) : "") + "</div>" +
+    "</button>").join("");
+  host.querySelectorAll("[data-finding]").forEach((node) => {
+    node.addEventListener("click", () => {
+      const f = rows[Number(node.dataset.finding)];
+      if (byTemplate.has(f.subject)) select({ kind: "node", key: f.subject });
+      else if (f.subject.includes("→")) {
+        const match = edgeEls.find((x) => x.edge.label === f.subject);
+        if (match) select({ kind: "edge", key: edgeKey(match.edge) });
+      }
+      const target = nodeEls.get(f.subject);
+      if (target && target.scrollIntoView) target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  });
+}
+
+/* ----------------------------------------------------------------- table -- */
+
+function renderTable() {
+  const body = document.querySelector("#dest-table tbody");
+  const q = state.query.toLowerCase();
+  const rows = DATA.destinations.map((d) => ({
+    d,
+    template: d.template,
+    screens: d.screens.join(", "),
+    deep: d.deepLinks.length,
+    back: d.backAffordances.length,
+    severity: SEV_RANK[worstSeverity(d.template)],
+  })).filter((r) => !q || (r.d.template + " " + r.d.route + " " + r.d.screens.join(" ") +
+    r.d.deepLinks.join(" ") + r.d.backAffordances.join(" ")).toLowerCase().includes(q));
+
+  const { column, dir } = state.sort;
+  rows.sort((a, b) => {
+    const x = a[column], y = b[column];
+    return (x < y ? -1 : x > y ? 1 : 0) * dir;
+  });
+
+  body.innerHTML = rows.map((r) => {
+    const sev = worstSeverity(r.d.template);
+    return "<tr data-node='" + esc(r.d.template) + "'" +
+      (state.selected && state.selected.kind === "node" && state.selected.key === r.d.template ? " class='selected'" : "") + ">" +
+      "<td class='mono'>" + esc(r.d.template) + "</td>" +
+      "<td>" + (r.d.screens.map((s) => "<span class='chip'>" + esc(s) + "</span>").join("") || "—") + "</td>" +
+      "<td>" + (r.d.deepLinks.map((p) => "<span class='chip " + (manifestHas(p) ? "good" : "bad") + "'>" +
+        esc(p) + "</span>").join("") || "—") + "</td>" +
+      "<td>" + (r.d.backAffordances.length ? "<span class='chip good'>" + esc(r.d.backAffordances[0]) + "</span>" : "<span class='chip bad'>none</span>") + "</td>" +
+      "<td><span class='chip " + (sev === "none" ? "" : "bad") + "'>" + esc(sev) + "</span></td>" +
+      "</tr>";
+  }).join("") || "<tr><td colspan='5' class='empty'>Nothing matches.</td></tr>";
+
+  body.querySelectorAll("[data-node]").forEach((row) =>
+    row.addEventListener("click", () => select({ kind: "node", key: row.dataset.node })));
+
+  document.querySelectorAll("#dest-table th.sortable").forEach((th) => {
+    const active = th.dataset.sort === column;
+    const arrow = th.querySelector(".arrow");
+    if (arrow) arrow.remove();
+    if (active) {
+      const span = document.createElement("span");
+      span.className = "arrow";
+      span.textContent = dir > 0 ? " ▲" : " ▼";
+      th.appendChild(span);
+    }
+  });
+}
+
+/* ------------------------------------------------------------------- boot -- */
+
+buildSvg();
+paint();
+renderDetail();
+
+document.querySelectorAll(".sev-toggle").forEach((box) =>
+  box.addEventListener("change", () => {
+    box.checked ? state.severities.add(box.value) : state.severities.delete(box.value);
+    paint();
+  }));
+
+document.querySelectorAll(".edge-toggle").forEach((box) =>
+  box.addEventListener("change", () => {
+    box.checked ? state.kinds.add(box.value) : state.kinds.delete(box.value);
+    paint();
+  }));
+
+document.getElementById("search").addEventListener("input", (ev) => {
+  state.query = ev.target.value.trim();
+  paint();
+});
+
+document.getElementById("reset").addEventListener("click", clearSelection);
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") clearSelection(); });
+
+document.querySelectorAll("#dest-table th.sortable").forEach((th) =>
+  th.addEventListener("click", () => {
+    const column = th.dataset.sort;
+    state.sort = state.sort.column === column
+      ? { column, dir: -state.sort.dir }
+      : { column, dir: 1 };
+    renderTable();
+  }));
+
+/* The tooltip reads `__target` off the element it was entered from, so one
+   handler serves every node and edge instead of six closures per node. */
+document.querySelectorAll("#graph .node, #graph .edge.hit").forEach((node) => {
+  const template = node.dataset.node;
+  const key = node.dataset.edge;
+  node.__target = key
+    ? { kind: "edge", key: key, edge: edgeEls.find((x) => edgeKey(x.edge) === key).edge }
+    : { kind: "node", key: template };
+});
+</script>
+</body>
+</html>
