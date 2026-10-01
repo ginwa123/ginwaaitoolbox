@@ -1,11 +1,16 @@
 #!/usr/bin/env sh
-# Pre-commit hook — mirror CI's `Lint (oxlint + eslint, fail-on-issue mode)`
-# step exactly so commits can't slip past locally with lint errors that
-# CI would catch.
+# Pre-commit hook — mirror CI's `lint (oxlint + eslint)` job exactly so
+# commits can't slip past locally with lint errors that CI would catch.
 #
-# Mirrors `.github/workflows/ci.yml` lines 1485-1491:
+# Mirrors the "Lint (oxlint + eslint, fail-on-issue mode)" step in the
+# `lint` job of `.github/workflows/ci.yml`:
 #   working-directory: src/apps/desktop
 #   run: pnpm run lint:check
+#
+# That step used to live at ci.yml lines 1485-1491 and the CI job was
+# deleted in PR #398 ("drop frontend job"), which left this hook
+# mirroring nothing. It is back as a gate as of the pipeline
+# restructure, so the mirror is real again.
 #
 # The `cd src/apps/desktop` here matches that working-directory because
 # pnpm lint scripts resolve relative to CWD. Husky runs this script from
