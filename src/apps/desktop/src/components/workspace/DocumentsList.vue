@@ -9,7 +9,7 @@
 //    and `border-b border-[--color-border]/40`; a "close enough" header
 //    fails that spec and looks wrong next to Projects.
 //
-// 2. The active row is derived from the URL (`?doc=<id>` via
+// 2. The active row is derived from the URL (`/app/{ws}/doc/<id>` via
 //    `useCurrentMainView`), never from a local flag. A local flag goes
 //    stale after a refresh, a Back/Forward, or a shared link — the exact
 //    bug `ChatsList.isCurrentChat` documents.
@@ -17,11 +17,12 @@
 // 3. `router.replace`, not `push`, for a row click. Clicking through five
 //    documents should not bury the previous four under Back.
 import { computed, onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useDocumentsStore } from '../../stores/documents'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
+import { buildAppUrl } from '../../helpers/appUrl'
 
 const props = defineProps<{
   workspaceId: string | null
@@ -36,7 +37,6 @@ const sidebarStore = useSidebarStore()
 const documentsStore = useDocumentsStore()
 const workspacesStore = useWorkspacesStore()
 const router = useRouter()
-const route = useRoute()
 const currentMainView = useCurrentMainView()
 
 /** Reactive active check, called from the template on every render. */
@@ -56,8 +56,18 @@ const toggleDocumentsSection = () => {
 }
 
 const selectDocument = (id: string) => {
-  const query = { ...route.query, doc: id }
-  router.replace({ path: route.path, query }).catch(() => {
+  const wsId = props.workspaceId ?? workspacesStore.activeWorkspace?.id ?? null
+  if (!wsId) {
+    // No workspace means no document page to build a URL for. The rows
+    // only render with a workspace selected, so this is a guard against
+    // a stale list surviving a workspace switch, not a normal path.
+    return
+  }
+  // `replace`, not `push`: clicking through five documents should not
+  // bury the previous four under Back. The document is a PAGE, so this
+  // replaces whatever main view was open — the chat is unmounted and the
+  // URL says plainly which document this is.
+  router.replace(buildAppUrl({ workspaceId: wsId, documentId: id })).catch(() => {
     // A duplicate navigation (clicking the already-open row) rejects.
     // Nothing to recover: the URL already says what the user asked for.
   })

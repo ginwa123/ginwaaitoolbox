@@ -9,8 +9,8 @@
 //     a second, weaker copy of a rule that already lives in SQL — and the
 //     kind of duplicate that drifts.
 //  2. No local `isActive` flag. Which document is open is derived from the
-//     URL (`?doc=<id>`), so a refresh, a Back/Forward, or a shared link
-//     all restore the same view. Same reasoning as
+//     URL (`/app/{ws}/doc/<id>`), so a refresh, a Back/Forward, or a shared
+//     link all restore the same view. Same reasoning as
 //     `ChatsList.isCurrentChat`.
 //
 // `try`/`catch` appears in the write actions and nowhere else: this is the

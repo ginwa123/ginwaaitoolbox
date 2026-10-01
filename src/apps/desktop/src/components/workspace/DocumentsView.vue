@@ -1,8 +1,13 @@
 <script setup lang="ts">
-// The document surface in the main content area (Migration 095).
+// The document page (Migration 095).
 //
-// Reached from the sidebar's Documents section, which writes `?doc=<id>`
-// into the URL. Two modes, one textarea:
+// Reached from the sidebar's Documents section, which writes
+// `/app/{ws}/doc/{id}` into the URL — a PAGE shape, so this view is the
+// main content area and the chat it was opened from is unmounted (not
+// stacked underneath). That is what removed the original bug, where the
+// chat's floating chrome out-painted this overlay's z-index.
+//
+// Two modes, one textarea:
 //
 //   - Read: the rendered markdown.
 //   - Edit: a plain textarea over the raw source, with a live preview
@@ -14,10 +19,11 @@
 // body is authored by an agent that may have quoted a file it read, so
 // this is not strictly self-XSS-only.
 import { computed, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useDocumentsStore } from '../../stores/documents'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { renderMarkdownHtml } from '../../helpers/markdown'
+import { buildAppUrl } from '../../helpers/appUrl'
 
 const props = defineProps<{
   documentId: string
@@ -26,7 +32,6 @@ const props = defineProps<{
 const documentsStore = useDocumentsStore()
 const workspacesStore = useWorkspacesStore()
 const router = useRouter()
-const route = useRoute()
 
 const editing = ref(false)
 const draftTitle = ref('')
@@ -109,21 +114,25 @@ const remove = async () => {
   const ok = await documentsStore.deleteDocument(workspaceId.value, props.documentId)
   if (!ok) return
   // Leaving a deleted document selected would render a permanently empty
-  // view; drop the query param so the app returns to whatever was behind.
-  const query = { ...route.query }
-  delete query.doc
-  router.replace({ path: route.path, query }).catch(() => {})
+  // view. The document owns its path, so there is no query param to drop
+  // — leave the page by going back to the workspace root, which is where
+  // the user was before they opened any document.
+  router.replace(buildAppUrl({ workspaceId: workspaceId.value })).catch(() => {
+    // Nothing to recover: a rejected duplicate navigation already means
+    // the URL is what the user asked for.
+  })
 }
 </script>
 
 <template>
-  <!-- Absolute overlay rather than a flex child: AppLayout renders this
-       inside <main> so the project/chat behind it stays mounted (a
-       Back/Forward or a doc switch is then instant) while the document
-       covers it, exactly like the GitFileViewer / Skill Viewer overlays. -->
+  <!-- Fills <main> as a normal page. It used to be an absolute overlay
+       that kept whatever was underneath mounted, which is what let the
+       chat's floating chrome paint over the document; a document now owns
+       the main view outright, so plain flex sizing is both correct and
+       enough. -->
   <div
-    class="absolute inset-0 flex flex-col"
-    style="background-color: var(--semantic-content-bg); z-index: 10"
+    class="flex-1 flex flex-col min-h-0"
+    style="background-color: var(--semantic-content-bg)"
     data-testid="documents-view"
   >
     <!-- Load failure is its own block, not a blank pane. A silently empty

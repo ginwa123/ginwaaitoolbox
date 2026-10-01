@@ -341,79 +341,76 @@ describe('useCurrentMainView', () => {
     expect(v.value).toEqual({ kind: 'chat', sessionId: 'session_abc' })
   })
 
-  // ── Documents overlay (Migration 095) ───────────────────────────────
-  // `?doc=<id>` is a query overlay on whatever path the user is on. The
-  // ordering assertions below are the whole point of these tests: the
-  // overlay must beat every path shape, and an empty `?doc=` must NOT
-  // (a leftover empty param would otherwise blank the main area).
+  // ── Document page (Migration 095) ───────────────────────────────────
+  // `/app/{ws}/doc/{id}` is a PATH shape: the document REPLACES the main
+  // view instead of layering `?doc=` over whatever was open. `?doc=` is
+  // kept below as a legacy fallback so a pre-migration bookmark still
+  // opens the document until AppLayout's boot rewrite moves it.
 
-  it('returns the document view when ?doc= is present on a workspace path', () => {
+  it('returns the document view for a /doc/ path', () => {
+    mockRoute({}, '/app/ws_1/doc/doc_1')
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_1', workspaceId: 'ws_1' })
+  })
+
+  it('a /doc/ path tolerates a trailing slash', () => {
+    mockRoute({}, '/app/ws_1/doc/doc_1/')
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_1', workspaceId: 'ws_1' })
+  })
+
+  it('the doc path wins over a chat/project path', () => {
+    // A leftover query from the old overlay must not out-rank the path,
+    // and a doc path must not be mistaken for a workspace called "doc".
+    mockRoute({ doc: 'doc_stale' }, '/app/ws_1/doc/doc_1')
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_1', workspaceId: 'ws_1' })
+  })
+
+  it('reacts to path navigation between two documents (Back/Forward)', async () => {
+    const route = mockRoute({}, '/app/ws_1', {})
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'workspace', workspaceId: 'ws_1' })
+
+    route.path = '/app/ws_1/doc/doc_1'
+    await nextTick()
+    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_1', workspaceId: 'ws_1' })
+
+    route.path = '/app/ws_1/doc/doc_2'
+    await nextTick()
+    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_2', workspaceId: 'ws_1' })
+  })
+
+  it('a stale ?doc= query no longer names a document', () => {
+    // Migration 095 shipped documents as a `?doc=` overlay and was
+    // replaced by the `/doc/` path before that shape was in wide use, so
+    // there is no fallback. If a `?doc=` ever reaches the app it must be
+    // ignored, not silently render the document under a URL that does not
+    // describe it — otherwise the document is again reachable at an
+    // ambiguous URL that says nothing about which page owns it.
     mockRoute({ doc: 'doc_1' }, '/app/ws_1')
     let v!: ReturnType<typeof useCurrentMainView>
     function setup() {
       v = useCurrentMainView()
     }
     setup()
-    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_1', workspaceId: 'ws_1' })
-  })
-
-  it('?doc= wins over a project path and a chat path', () => {
-    // A document opened from inside a project must render the document.
-    // If the path shape were checked first, the project board would show
-    // and the document row would highlight with nothing on screen.
-    mockRoute({ doc: 'doc_1' }, '/app/ws_1/projects/item_kanban')
-    let v!: ReturnType<typeof useCurrentMainView>
-    function setup() {
-      v = useCurrentMainView()
-    }
-    setup()
-    expect(v.value.kind).toBe('document')
-
-    mockRoute({ doc: 'doc_2' }, '/app/ws_1/chat/sess_9')
-    setup()
-    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_2', workspaceId: 'ws_1' })
-  })
-
-  it('falls back to ?workspaceId= when the path carries no workspace', () => {
-    // A deep link to /app?workspaceId=ws_1&doc=doc_9 — the id has to come
-    // from somewhere or the row highlight and the fetch scope disagree.
-    mockRoute({ doc: 'doc_9', workspaceId: 'ws_1' }, '/app')
-    let v!: ReturnType<typeof useCurrentMainView>
-    function setup() {
-      v = useCurrentMainView()
-    }
-    setup()
-    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_9', workspaceId: 'ws_1' })
-  })
-
-  it('an empty ?doc= does NOT hijack the view', () => {
-    // `router.replace` on a delete drops the param entirely; a leftover
-    // `?doc=` with an empty value would otherwise blank the main area.
-    mockRoute({ doc: '' }, '/app/ws_1')
-    let v!: ReturnType<typeof useCurrentMainView>
-    function setup() {
-      v = useCurrentMainView()
-    }
-    setup()
     expect(v.value).toEqual({ kind: 'workspace', workspaceId: 'ws_1' })
-  })
-
-  it('reacts to ?doc= mutation without remounting (Back/Forward between documents)', async () => {
-    const route = mockRoute({}, '/app/ws_1')
-    let v!: ReturnType<typeof useCurrentMainView>
-    function setup() {
-      v = useCurrentMainView()
-    }
-    setup()
-    expect(v.value).toEqual({ kind: 'workspace', workspaceId: 'ws_1' })
-
-    route.query.doc = 'doc_1'
-    await nextTick()
-    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_1', workspaceId: 'ws_1' })
-
-    route.query.doc = 'doc_2'
-    await nextTick()
-    expect(v.value).toEqual({ kind: 'document', documentId: 'doc_2', workspaceId: 'ws_1' })
   })
 
   it('reacts to path navigation (computed re-runs when route.path mutates)', async () => {

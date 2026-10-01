@@ -72,6 +72,16 @@ const router = createRouter({
       name: 'workspace-chat',
       component: AppLayout,
     },
+    // Document page (Migration 095). A PAGE shape, not a `?doc=` overlay:
+    // the document replaces the main view, so it must own its own path
+    // instead of borrowing whichever one happened to be open underneath.
+    // Must stay BEFORE `/app/:workspaceId` — Vue matches in order, and
+    // that route's catch would otherwise never see the `/doc` segment.
+    {
+      path: '/app/:workspaceId/doc/:documentId',
+      name: 'workspace-doc',
+      component: AppLayout,
+    },
     {
       path: '/app/:workspaceId',
       name: 'workspace',

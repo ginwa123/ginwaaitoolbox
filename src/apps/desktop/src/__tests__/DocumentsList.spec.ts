@@ -6,8 +6,8 @@
  *
  *  1. The section renders below Projects, with the same header geometry
  *     the spacing spec greps for.
- *  2. Clicking a row writes `?doc=<id>` to the URL, and mounting with
- *     `?doc=<id>` already in the URL highlights that row. Both halves
+ *  2. Clicking a row writes `/app/{ws}/doc/<id>` to the URL, and mounting
+ *     with that path already in the URL highlights that row. Both halves
  *     matter: a click that never reaches the URL loses the view on
  *     refresh, and a mount that ignores the URL loses it on a shared
  *     link.
@@ -63,12 +63,12 @@ const DOCS = [
   },
 ]
 
-async function makeRouter(query: Record<string, string> = {}) {
+async function makeRouter(path = '/app/ws_1', query: Record<string, string> = {}) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
   })
-  await router.push({ path: '/app/ws_1', query })
+  await router.push({ path, query })
   await router.isReady()
   return router
 }
@@ -183,7 +183,10 @@ describe('DocumentsList — section chrome', () => {
     await nextTick()
 
     expect(createDocument).toHaveBeenCalledWith('ws_1', 'Untitled document', '')
-    expect(router.currentRoute.value.query.doc).toBe('doc_new')
+    // A document is a PAGE now, so the id lives in the path. Asserting the
+    // query here would pass even if the view still rendered as an overlay.
+    expect(router.currentRoute.value.path).toBe('/app/ws_1/doc/doc_new')
+    expect(router.currentRoute.value.query.doc).toBeUndefined()
     wrapper.unmount()
   })
 })
@@ -201,7 +204,7 @@ describe('DocumentsList — URL contract', () => {
     listDocuments.mockResolvedValue({ documents: DOCS, count: DOCS.length })
   })
 
-  it('a row click writes ?doc= to the URL and mount restores the highlight', async () => {
+  it('a row click writes the document PAGE to the URL and mount restores the highlight', async () => {
     const router = await makeRouter()
     const wrapper = mountList(router)
     await settle()
@@ -212,12 +215,15 @@ describe('DocumentsList — URL contract', () => {
     // flushPromises pattern SidebarDiffPanel.tabs.spec.ts uses.
     await flushPromises()
     // The click half. Without this, refresh loses the open document.
-    expect(router.currentRoute.value.query.doc).toBe('doc_2')
+    // The id is in the PATH, and the document REPLACES the current main
+    // view rather than layering `?doc=` on top of whatever was open.
+    expect(router.currentRoute.value.path).toBe('/app/ws_1/doc/doc_2')
+    expect(router.currentRoute.value.query.doc).toBeUndefined()
     wrapper.unmount()
 
     // The mount half. Without this, a shared link opens the right
     // document with no row highlighted.
-    const restored = mountList(await makeRouter({ doc: 'doc_2' }))
+    const restored = mountList(await makeRouter('/app/ws_1/doc/doc_2'))
     await settle()
     const style = restored.get('[data-testid="document-row-doc_2"]').attributes('style') ?? ''
     expect(style).toContain('--semantic-active-bg')
