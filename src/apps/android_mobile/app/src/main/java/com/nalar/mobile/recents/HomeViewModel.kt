@@ -9,6 +9,10 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.HttpsAuthTransport
 import com.nalar.mobile.auth.SessionCookieStore
+import com.nalar.mobile.chat.ChatStreamEvent
+import com.nalar.mobile.chat.ChatStreamState
+import com.nalar.mobile.chat.SseBus
+import com.nalar.mobile.chat.SseBusHolder
 import com.nalar.mobile.network.RecordingAuthTransport
 import com.nalar.mobile.projects.CreateTaskRequest
 import com.nalar.mobile.projects.KanbanClient
@@ -24,9 +28,11 @@ import com.nalar.mobile.projects.TaskTypes
 import com.nalar.mobile.projects.isValidMemoryName
 import com.nalar.mobile.storage.LastPosition
 import com.nalar.mobile.storage.LastPositionStore
+import com.nalar.mobile.worker.RunningSessionsStore
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -261,12 +267,52 @@ class HomeViewModel(
     // Injected so tests can drive the fetch on the same scheduler as the paint;
     // `advanceUntilIdle` cannot wait on the real IO pool.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /**
+     * The app's ONE event connection, shared with the chat and the worker set.
+     *
+     * Subscribed once, in `init`, for the reason the web sidebar does the same
+     * thing in `ChatsList.vue`: the recents list has to keep up with sessions
+     * this device did not create. A chat started from the webview is a
+     * `session_created` frame on this bus, and without a subscriber the drawer's
+     * list stays whatever the last fetch returned — so a run that *is* live sits
+     * in `RunningSessionsStore` with no row to light a spinner on, and the
+     * reader sees one busy chat when three are.
+     *
+     * `null` rather than a required argument so a JVM test that drives the list
+     * directly needs no fake bus; [factory] always passes the real one, and a
+     * production ViewModel built without it loses live updates rather than
+     * misreporting any.
+     */
+    private val bus: SseBus? = null,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     private val _sessionExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val sessionExpired: SharedFlow<Unit> = _sessionExpired.asSharedFlow()
+
+    /**
+     * Detaches from [bus]. The ONLY way off it: `SseBus.close()` closes the
+     * socket but leaves its subscriber list alone, so a ViewModel that outlived
+     * its subscription would keep painting a list nobody is looking at.
+     */
+    private var unsubscribeFromBus: (() -> Unit)? = null
+
+    /**
+     * The pending debounced reload, cancelled and re-armed by every event.
+     *
+     * A single job rather than a timestamp, so an event that arrives while the
+     * previous reload is still waiting simply pushes it out instead of queueing
+     * a second fetch behind it.
+     */
+    private var sseReloadJob: Job? = null
+
+    init {
+        unsubscribeFromBus = bus?.subscribe(
+            onEvent = { event -> handleBusEvent(event) },
+            onState = { state -> handleBusState(state) },
+        )
+    }
 
     /**
      * Session ids of chats this app just created, for the nav graph to open.
@@ -434,6 +480,90 @@ class HomeViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * Folds one server event into "re-read the recents list".
+     *
+     * Three of them move a session's position, its name, or its existence, and
+     * all three are things the web's `ChatsList.vue` reloads on through
+     * `workspacesStore.onSessionEvent` — the half of its realtime behaviour
+     * this class was missing.
+     *
+     * `worker_created` / `worker_deleted` are here for the same reason and not
+     * because the worker set needs them (it does not — `WorkerActivityViewModel`
+     * already folds those into `RunningSessionsStore`). A run *starting* is what
+     * touches the session and floats it to the head of a list sorted by
+     * `updated_at`, and a run *ending* is what stops it appearing there, so
+     * without these the row a spinner belongs on is not in the list yet.
+     *
+     * `worker_updated` is deliberately excluded: the backend emits it on every
+     * activity-description change, which is several times a minute per running
+     * worker, and reloading a five-row sidebar on each is a request storm a
+     * metered phone pays for and the reader never sees the effect of.
+     */
+    private fun handleBusEvent(event: ChatStreamEvent) {
+        // No account, no rows to correct. `MainActivity` closes the socket at
+        // sign-out, but ordering is not a contract — the guard is.
+        if (userId == null) return
+        when (event) {
+            is ChatStreamEvent.SessionChanged -> {
+                // Evicted now rather than after the debounce: a deleted chat is
+                // a row the reader must not be able to tap for the next 400ms,
+                // and the reload behind it only revalidates the totals.
+                if (event.action == ACTION_SESSION_DELETED) {
+                    _uiState.update { state ->
+                        state.copy(chats = state.chats.filterNot { it.id == event.sessionId })
+                    }
+                }
+                scheduleSseReload()
+            }
+
+            is ChatStreamEvent.WorkerChanged ->
+                if (event.action != RunningSessionsStore.ACTION_UPDATED) scheduleSseReload()
+
+            else -> Unit
+        }
+    }
+
+    /**
+     * Re-reads on every return to [ChatStreamState.Live].
+     *
+     * The socket keeps no replay buffer, so a run that started while it was
+     * down left no frame to apply and no reconnect is coming to correct it. The
+     * same reasoning the web's `fetchInitialWorkers` gives for its own resync.
+     */
+    private fun handleBusState(state: ChatStreamState) {
+        if (userId == null) return
+        if (state is ChatStreamState.Live) scheduleSseReload()
+    }
+
+    /**
+     * Reloads page 1 of the recents, coalescing a burst of events into one GET.
+     *
+     * The 400 ms window is the web's, not a number picked here: `ChatsList.vue`'s
+     * `scheduleSseReload` exists because a single user action emits several
+     * frames in a row (create emits `session_created`, the run emits
+     * `worker_created`, the first message emits `session_updated`), and one
+     * reload per frame is three requests for one row appearing.
+     */
+    private fun scheduleSseReload() {
+        if (_uiState.value.selectedWorkspaceId == null) return
+        sseReloadJob?.cancel()
+        sseReloadJob = viewModelScope.launch {
+            delay(SSE_RELOAD_DEBOUNCE_MILLIS)
+            // Re-read at fire time, not at schedule time: a workspace switch
+            // inside the window has to load the workspace now selected.
+            _uiState.value.selectedWorkspaceId?.let { loadChats(it) }
+        }
+    }
+
+    override fun onCleared() {
+        sseReloadJob?.cancel()
+        sseReloadJob = null
+        unsubscribeFromBus?.invoke()
+        unsubscribeFromBus = null
+        super.onCleared()
     }
 
     /**
@@ -1397,6 +1527,29 @@ class HomeViewModel(
             "Could not start a new chat. Try again in a moment."
 
         /**
+         * How long a burst of server events is allowed to coalesce into one
+         * reload of the recents list.
+         *
+         * The web's, not a number chosen here: `ChatsList.vue`'s
+         * `scheduleSseReload` uses 400 ms for exactly the burst this has to
+         * survive — creating a chat and starting it on it emits
+         * `session_created`, `worker_created` and then `session_updated`
+         * within a few hundred milliseconds, and reloading three times for one
+         * row appearing is three requests on a metered phone.
+         */
+        const val SSE_RELOAD_DEBOUNCE_MILLIS = 400L
+
+        /**
+         * The `session_*` action that removes the row.
+         *
+         * Spelled out rather than imported from the stream parser because
+         * `ChatStreamEvent.SessionChanged` has no companion of its own — it
+         * carries a bare action string, and a named constant here is what stops
+         * the comparison drifting onto a literal.
+         */
+        const val ACTION_SESSION_DELETED = "deleted"
+
+        /**
          * [positionStore] is passed in rather than built here so the caller
          * controls its lifetime: `MainActivity` holds one instance for the whole
          * process, and the nav graph reads the same one to decide what to resume.
@@ -1439,6 +1592,12 @@ class HomeViewModel(
                         ),
                     ),
                     positionStore = positionStore,
+                    // The app's one bus, so a chat started on the webview
+                    // reaches this drawer. The same instance
+                    // `WorkerActivityViewModel` and `ChatViewModel` hold — a
+                    // second socket would be a second handshake against a
+                    // server that keeps no replay buffer.
+                    bus = SseBusHolder.get(SessionCookieStore(application)),
                 )
             }
         }

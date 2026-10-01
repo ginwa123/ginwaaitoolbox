@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.ViewKanban
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -75,6 +76,31 @@ class ProjectsState(
     fun isProjectExpanded(itemId: String): Boolean = itemId in expandedItemIds
 
     fun chatsFor(itemId: String): ProjectChatsPage? = chats[itemId]
+
+    /**
+     * The projects holding at least one of [runningSessionIds]'s sessions.
+     *
+     * The web draws the same indicator from the workspace tree
+     * (`WorkspaceItem.vue`'s `firstProcessingTaskId`, and
+     * `ProjectsList.vue`'s `firstProcessingTaskIdInWorkspace` for the section
+     * header) — one `processingState[task.id]` lookup per task, and a task id
+     * *is* a session id, which is the join this method performs.
+     *
+     * It only knows about a project whose chats have been loaded, because that
+     * is the only place their ids exist: this section loads a project's page
+     * when the reader unfolds it and never otherwise, deliberately (see
+     * [ProjectsApi] on why the phone does not pull the whole tree). So a
+     * collapsed project with a run in flight stays dark until it is opened,
+     * and a run the reader can already see spinning in Recent is the one they
+     * have an answer for. Reporting a spinner on a project we cannot attribute
+     * the run to would be worse than reporting none.
+     */
+    fun runningProjectIds(runningSessionIds: Set<String>): Set<String> {
+        if (runningSessionIds.isEmpty()) return emptySet()
+        return chats.filterValues { page ->
+            page.chats.any { chat -> chat.id in runningSessionIds }
+        }.keys
+    }
 
     /**
      * The rows the drawer unrolls under a project — the first
@@ -197,6 +223,14 @@ internal fun ProjectRow(
     expanded: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Whether a chat inside this project has a live worker.
+     *
+     * A parameter rather than something read from the store so the row is
+     * drawable without one — same contract [ProjectChatRow]'s `isRunning`
+     * already has, and the reason a preview and a test can both render a row.
+     */
+    isRunning: Boolean = false,
 ) {
     Surface(
         onClick = onClick,
@@ -205,7 +239,10 @@ internal fun ProjectRow(
             .testTag("project_row_${project.id}")
             .semantics {
                 role = Role.Button
-                contentDescription = "${project.displayName}. ${project.itemType} project"
+                contentDescription = buildString {
+                    append("${project.displayName}. ${project.itemType} project")
+                    if (isRunning) append(", agent is working")
+                }
                 stateDescription = if (expanded) "Expanded" else "Collapsed"
             },
         // The same selected treatment a chat row uses, so "the thing you are
@@ -233,6 +270,22 @@ internal fun ProjectRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            // Ahead of the chevron, and only while something runs: the row's
+            // right-hand edge must not change width as a run starts and stops,
+            // or every reader watches the whole list shift sideways.
+            if (isRunning) {
+                CircularProgressIndicator(
+                    // Decorative — "agent is working" is already in the content
+                    // description, and announcing it twice is worse than not
+                    // announcing it.
+                    modifier = Modifier
+                        .clearAndSetSemantics { }
+                        .size(14.dp)
+                        .testTag("project_running_${project.id}"),
+                    strokeWidth = 2.dp,
+                    color = NalarAccent,
+                )
+            }
             Icon(
                 imageVector = Icons.Filled.ExpandMore,
                 contentDescription = null,

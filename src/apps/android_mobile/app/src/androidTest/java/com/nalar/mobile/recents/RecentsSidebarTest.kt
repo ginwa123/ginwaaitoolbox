@@ -21,6 +21,8 @@ import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeUp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.nalar.mobile.projects.ProjectChat
+import com.nalar.mobile.projects.ProjectChatsPage
 import com.nalar.mobile.projects.ProjectSummary
 import com.nalar.mobile.projects.ProjectTypes
 import com.nalar.mobile.projects.ProjectsActions
@@ -520,6 +522,106 @@ class RecentsSidebarTest {
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithTag(SEE_ALL_ROW_TAG).assertDoesNotExist()
+    }
+
+    /**
+     * Two projects, each with a loaded page, so the section has enough loaded to
+     * attribute a running session to a project at all — see
+     * `ProjectsState.runningProjectIds` for why "loaded" is the whole qualifier.
+     */
+    private fun twoProjectsWithChats() = ProjectsState(
+        expanded = true,
+        items = listOf(
+            ProjectSummary("item-a", "workspace-a", ProjectTypes.KANBAN, "sprint board"),
+            ProjectSummary("item-b", "workspace-a", ProjectTypes.AGENT, "release bot"),
+        ),
+        // Folded, which is the state the report was taken in: the web lights a
+        // spinner on a *collapsed* row and this has to as well.
+        expandedItemIds = emptySet(),
+        chats = mapOf(
+            "item-a" to ProjectChatsPage(
+                chats = listOf(
+                    ProjectChat("task-a1", "item-a", "first task", now),
+                ),
+                hasMore = false,
+                nextCursor = null,
+            ),
+            "item-b" to ProjectChatsPage(
+                chats = listOf(
+                    ProjectChat("task-b1", "item-b", "second task", now),
+                ),
+                hasMore = false,
+                nextCursor = null,
+            ),
+        ),
+        isLoading = false,
+        errorMessage = null,
+    )
+
+    @Test
+    fun aProjectWithARunningChatSpinsAndTheHeaderFollows() {
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    runningSessionIds = setOf("task-b1"),
+                    projects = twoProjectsWithChats(),
+                )
+            }
+        }
+
+        // The reported gap, restated at the level the Projects section can see:
+        // one of two projects has a live worker, and before this the section
+        // showed nothing at all for either.
+        composeTestRule.onNodeWithTag("project_running_item-b").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("project_running_item-a").assertDoesNotExist()
+        // And the header, which is the only row left on screen once every
+        // project is folded away.
+        composeTestRule.onNodeWithTag("projects_section_header_running").assertIsDisplayed()
+    }
+
+    @Test
+    fun anIdleProjectsSectionLightsNothing() {
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    runningSessionIds = emptySet(),
+                    projects = twoProjectsWithChats(),
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("project_running_item-a").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("project_running_item-b").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("projects_section_header_running").assertDoesNotExist()
+    }
+
+    @Test
+    fun aRunningProjectRowSaysSoInItsOwnDescription() {
+        // The spinner is decorative, so the row's description is the only place
+        // the fact reaches a screen reader — same contract the chat rows keep.
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    runningSessionIds = setOf("task-b1"),
+                    projects = twoProjectsWithChats(),
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("project_row_item-b")
+            .assertContentDescriptionContains("agent is working")
+        // Exactly one row in the whole section carries the phrase, so the idle
+        // one did not inherit it.
+        composeTestRule.onAllNodes(describesARunningAgent).assertCountEquals(1)
     }
 
     private fun oneProject() = ProjectsState(
