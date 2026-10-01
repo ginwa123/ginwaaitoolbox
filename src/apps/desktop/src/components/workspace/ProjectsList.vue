@@ -83,9 +83,6 @@ const activeAddMenu = ref<string | null>(null)
 // Sidebar shows every project — the header search filter was removed
 // (v2 sidebar UX: no search, always-visible actions, tighter indent).
 
-// Scroll container ref
-const workspacesScrollRef = ref<HTMLElement | null>(null)
-
 // Loading state
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const workspacesLoading = ref(false)
@@ -119,16 +116,6 @@ const handleClickOutside = (event: MouseEvent) => {
   const target = event.target as HTMLElement
   if (!target.closest('[data-workspace-menu]')) {
     activeAddMenu.value = null
-  }
-}
-
-// Handle scroll for infinite scroll pagination
-const handleWorkspacesScroll = (e: Event) => {
-  const target = e.target as HTMLElement
-  const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight
-  // Load more when user scrolls to within 100px of bottom
-  if (scrollBottom < 100) {
-    console.log('[ProjectsList] Scroll triggered')
   }
 }
 
@@ -363,7 +350,9 @@ const handleItemDragEnd = () => {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <!-- No `h-full`: the sidebar <nav> is the scroll container, so this
+       section is content-sized and grows only as far as its rows. -->
+  <div class="flex flex-col">
     <!-- Section Header — chevron + title left; busy slider + add-item
          menu right. Workspace-level create/rename/delete + reorder
          moved to the header WorkspaceSwitcher (revamp plan:
@@ -490,12 +479,10 @@ const handleItemDragEnd = () => {
       </ul>
     </div>
 
-    <!-- Scrollable Projects Container -->
-    <div
-      ref="workspacesScrollRef"
-      @scroll="handleWorkspacesScroll"
-      class="flex-1 min-h-0 overflow-y-auto"
-    >
+    <!-- Project rows. NOT a scroll container: the sidebar <nav> scrolls
+         the whole panel. A second scroller here is what left Documents
+         stranded at the bottom of a full-height Projects box. -->
+    <div>
       <Transition name="collapse">
         <div v-show="sidebarStore.projectsExpanded" class="pb-2">
           <!-- Selected workspace items (single workspace — revamp plan).

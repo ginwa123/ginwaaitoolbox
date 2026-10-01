@@ -1515,13 +1515,28 @@ defineExpose({
       >
     </button>
 
-    <!-- Content -->
-    <nav class="flex-1 flex flex-col overflow-hidden" :class="isCollapsed ? 'px-2 py-3' : 'py-2'">
+    <!-- Content. This <nav> is the ONE vertical scroller for the panel:
+         Recent + Projects + Documents stack in one flow and scroll
+         together.
+
+         It used to be `overflow-hidden` with a `flex-1 min-h-0` wrapper
+         around <ProjectsList>, so Projects absorbed ALL leftover height
+         and <DocumentsList> (`shrink-0`, last child) was pushed to the
+         very bottom of the sidebar — separated from Projects by a
+         screen-tall empty box whenever the project list was short. The
+         section is documented as living BELOW Projects, so nothing may
+         grow to fill the gap. -->
+    <nav
+      class="flex-1 flex flex-col min-h-0 overflow-y-auto overflow-x-hidden"
+      :class="isCollapsed ? 'px-2 py-3' : 'py-2'"
+    >
       <!-- Chats List Component -->
       <ChatsList ref="chatsListRef" :collapsed="isCollapsed" @navigate="handleChatsNavigate" />
 
-      <!-- Workspaces -->
-      <div class="flex-1 min-h-0 overflow-hidden">
+      <!-- Workspaces. `shrink-0`, NOT `flex-1`: the section must be as
+           tall as its rows and no taller, so the next section starts
+           directly under the last project row. -->
+      <div class="shrink-0">
         <ProjectsList
           v-if="!isCollapsed"
           :workspace="workspacesStore.activeWorkspace ?? null"
