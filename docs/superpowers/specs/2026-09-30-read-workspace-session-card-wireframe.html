@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>read_workspace_session — card redesign</title>
+<style>
+  /* Verbatim from src/apps/desktop/src/style.css. Nothing invented. */
+  :root {
+    --color-bg:#181616; --color-bg-dim:#12120f; --color-bg-m1:#1D1C19;
+    --color-bg-p1:#282727; --color-bg-p2:#393836;
+    --semantic-text:#c5c9c5; --semantic-text-muted:#a6a69c; --semantic-text-dim:#7a8382;
+    --semantic-card-bg:#1D1C19;
+    --color-violet:#8992a7; --color-yellow:#c4b28a; --color-link:#8ba4b0;
+    --color-border:#282727; --color-border-light:#393836;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    /* Tailwind v4 @theme type scale, verbatim */
+    --text-micro:10px; --text-meta:11px; --text-dense:12px; --text-body:14px;
+  }
+  * { box-sizing:border-box; }
+  body {
+    background:var(--color-bg); color:var(--semantic-text);
+    font-family:var(--font-mono); font-size:var(--text-dense);
+    margin:0; padding:28px 20px 64px; line-height:1.45;
+  }
+  .wrap { max-width:940px; margin:0 auto; }
+
+  h1 { font-size:var(--text-body); font-weight:600; margin:0 0 2px; }
+  .lede { font-size:var(--text-dense); color:var(--semantic-text-muted); margin:0 0 26px; }
+
+  .divider { margin:30px 0 18px; padding-top:14px; border-top:1px solid var(--color-border); }
+  .divider span { font-size:var(--text-micro); color:var(--semantic-text-dim); text-transform:uppercase; letter-spacing:.8px; }
+  .note { font-size:var(--text-meta); color:var(--semantic-text-muted); margin:0 0 12px; }
+  .note code, code { color:var(--color-yellow); }
+
+  /* ── the card. This is ChatView.vue's :deep(.chat-tool-card), verbatim ── */
+  .tc {
+    font-family:var(--font-mono); font-size:var(--text-dense);
+    background-color:transparent; border:none; border-left:2px solid var(--color-border);
+    border-radius:0; overflow:visible; width:100%; min-width:0;
+    transition:background-color .15s ease, border-left-color .15s ease;
+  }
+  .tc:hover { background-color:rgba(139,92,246,.05); border-left-color:var(--color-violet); }
+  .tc.err { border-left-color:#c4746e; }
+
+  /* header — the real one: gap-1, py-1, hover violet wash */
+  .hd { display:flex; align-items:center; gap:1px; padding:4px 8px; cursor:pointer; user-select:none; }
+  .tool { color:var(--color-violet); font-weight:600; font-size:var(--text-dense); }
+  .sum { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+         text-align:left; color:var(--semantic-text-muted); font-size:var(--text-dense); }
+  .badge { font-size:var(--text-micro); font-weight:500; padding:1px 6px; border-radius:4px;
+           background:rgba(139,92,246,.10); color:var(--color-violet); white-space:nowrap; }
+  .flag { font-size:var(--text-micro); font-weight:500; }
+  .flag.err { color:#c4746e; } .flag.deny { color:#c4b28a; }
+  .chev { width:16px; text-align:center; color:var(--semantic-text-dim); font-size:var(--text-body); }
+
+  /* entries pane — real class: border-t border-[--color-border] bg-black/[0.02] */
+  .pane { border-top:1px solid var(--color-border); background:rgba(0,0,0,.02); }
+  .pane.split > * + * { border-top:1px solid var(--color-border); }
+
+  /* rows. gap-1 px-2 py-1, dashed rule, violet-500/5 hover — ListDirectory's idiom */
+  .grp { padding:6px 8px; }
+  .grp-h { display:flex; align-items:center; gap:1px; }
+  .grp-n { color:var(--semantic-text); font-size:var(--text-dense); flex:1;
+          overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .grp-m { font-size:var(--text-micro); color:var(--semantic-text-dim); white-space:nowrap; }
+  .act { font-size:var(--text-micro); color:var(--semantic-text-muted); cursor:pointer; white-space:nowrap; }
+  .act:hover { color:var(--color-violet); }
+  .act.hid { opacity:0; }
+  .row:hover .act.hid { opacity:1; }
+
+  .row { display:flex; align-items:flex-start; gap:1px; padding:4px 8px; cursor:default; }
+  .row:hover { background:rgba(139,92,246,.05); }
+
+  /* role badge — ReadWorkspaceSession.vue scoped CSS, verbatim */
+  .role { font-size:var(--text-micro); font-weight:700; text-transform:uppercase;
+          letter-spacing:.5px; padding:2px 6px; border-radius:4px; min-width:64px;
+          text-align:center; flex-shrink:0; }
+  .role-user { background:rgba(34,197,94,.15); color:rgb(34,197,94); }
+  .role-assistant { background:rgba(99,102,241,.15); color:rgb(99,102,241); }
+  .role-tool { background:rgba(234,179,8,.15); color:rgb(234,179,8); }
+
+  .when { font-size:var(--text-meta); color:var(--semantic-text-dim); white-space:nowrap;
+          flex-shrink:0; min-width:52px; padding-top:2px; }
+  .snip { flex:1; min-width:0; font-size:var(--text-meta); color:var(--semantic-text-muted);
+          margin:0; white-space:pre-wrap; overflow-wrap:break-word; }
+  .eid { font-size:var(--text-micro); color:var(--semantic-text-dim); max-width:100px;
+         overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pill { font-size:var(--text-micro); background:var(--semantic-card-bg); padding:1px 5px;
+          border-radius:3px; color:var(--semantic-text-dim); white-space:nowrap; }
+
+  /* FTS highlight — the one thing the card must render and today cannot */
+  mark { background:rgba(234,179,8,.15); color:var(--semantic-text); border-radius:3px; padding:0 2px; }
+
+  /* annotation — a hairline marker, not a box */
+  .mk { color:var(--color-violet); font-size:var(--text-micro); vertical-align:super; cursor:help; }
+  .findings { margin:0; padding:0; list-style:none; font-size:var(--text-meta); }
+  .findings li { padding:5px 0; border-bottom:1px solid var(--color-border); color:var(--semantic-text-muted); }
+  .findings b { color:var(--semantic-text); font-weight:600; }
+  .findings code { color:var(--color-yellow); }
+
+  .facets { display:flex; align-items:center; gap:10px; padding:5px 8px;
+            border-top:1px solid var(--color-border); font-size:var(--text-micro);
+            color:var(--semantic-text-dim); }
+  .facet { cursor:pointer; color:var(--semantic-text-muted); }
+  .facet:hover { color:var(--color-violet); }
+  .facet.on { color:var(--color-violet); font-weight:600; }
+  .facet b { font-weight:600; }
+  .count { margin-left:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>read_workspace_session — card redesign</h1>
+  <p class="lede">Chroma is the app's own. Same markup classes as the shipped component; only the anatomy changes.</p>
+
+  <!-- ══ TODAY ══════════════════════════════════════════════ -->
+  <div class="divider"><span>today — expanded</span></div>
+
+  <div class="tc">
+    <div class="hd">
+      <span class="tool">read_workspace_session</span>
+      <span class="sum">workspace search · "portal dialog freeze Wayland repaint"</span>
+      <span class="badge">20 of 11996</span>
+      <span class="chev">−</span>
+    </div>
+    <div class="pane split">
+      <div class="row">
+        <span class="role role-tool">tool</span>
+        <span class="eid">1790706338823…</span>
+        <span class="grp-m">in add example and ci…</span>
+        <span class="grp-m">1790706338823948836<span class="mk">①</span></span>
+        <p class="snip">...error: 'linux.file [dialog].test.a [portal] that refuses the...<span class="mk">②</span></p>
+      </div>
+      <div class="row">
+        <span class="role role-tool">tool</span>
+        <span class="eid">1790706298357…</span>
+        <span class="grp-m">in add example and ci…</span>
+        <span class="grp-m">1790706298357086446<span class="mk">①</span></span>
+        <p class="snip">...The [dialog] opens either way; on a [portal] that refuses...<span class="mk">②</span></p>
+      </div>
+      <div class="row">
+        <span class="role role-tool">tool</span>
+        <span class="eid">1790709458648…</span>
+        <span class="grp-m">in add example and ci…</span>
+        <span class="grp-m">1790709458648888652<span class="mk">①</span></span>
+        <p class="snip">...bare [Wayland] session\n    // with no desktop [portal] installed sees...<span class="mk">②</span></p>
+      </div>
+      <div class="row">
+        <span class="role role-tool">tool</span>
+        <span class="eid">1790709456447…</span>
+        <span class="grp-m">in add example and ci…</span>
+        <span class="grp-m">1790709447389563713<span class="mk">①</span></span>
+        <p class="snip">...[dialog]-xdg-1790706198731 && grep -n 'liveLock()'^[^test \\|service_name = \\|[portal]...</p>
+      </div>
+    </div>
+  </div>
+
+  <ul class="findings" style="margin-top:14px">
+    <li><span class="mk">①</span> <b>Not a timestamp.</b> <code>llm_history.zig:2458</code> selects <code>COALESCE(h.created_at_nano,'') AS created_at</code>. The readable <code>created_iso</code> is in that table, populated, never selected. Same alias at :775, :794, :827, :846.</li>
+    <li><span class="mk">②</span> <b>Highlight can never fire.</b> Backend emits bare brackets (<code>llm_history.zig:2454</code>) → <code>[portal]</code>. <code>parseSnippet</code> (<code>ReadWorkspaceSession.vue:371</code>) only knows <code>[match]</code>/<code>[/match]</code>. Ran the shipped parser against this snippet: zero match segments. Specs pass because their fixtures use the format the backend never emits.</li>
+    <li><span class="mk">③</span> <b>88% is noise.</b> Measured on this query: tool 19,775 / assistant 2,568 / user 236. FTS indexes <code>response_content</code> — for a tool row that's the whole JSON envelope. No role filter offered, though <code>role</code> is already a tool param.</li>
+    <li><b>No action.</b> Rows are inert; <code>session_name</code> is a truncated <code>&lt;span&gt;</code>. <code>full_contents</code> — returned verbatim when you pass <code>message_ids</code> — appears 0× in the component.</li>
+  </ul>
+
+  <!-- ══ PROPOSED ════════════════════════════════════════════ -->
+  <div class="divider"><span>proposed — expanded</span></div>
+  <p class="note">Same header, same role badges, same row height. Three changes: <b>facet counts</b> on the footer,
+  <b>hits grouped under their session</b>, and a real <mark>highlight</mark>. Rows become links.</p>
+
+  <div class="tc">
+    <div class="hd">
+      <span class="tool">read_workspace_session</span>
+      <span class="sum">search "portal dialog freeze Wayland repaint" · 12 sessions</span>
+      <span class="badge">user+assistant</span>
+      <span class="chev">−</span>
+    </div>
+    <div class="pane split">
+      <div class="grp">
+        <div class="grp-h">
+          <span class="grp-n">add example and ci, how to use file dialog xdg</span>
+          <span class="grp-m">281 hits · 3d</span>
+          <span class="act">open</span>
+          <span class="act">read all</span>
+        </div>
+        <div class="row">
+          <span class="role role-tool">tool</span>
+          <span class="when">3d ago</span>
+          <p class="snip">...error: 'linux.file <mark>[dialog]</mark>.test.a <mark>[portal]</mark> that refuses the...</p>
+          <span class="eid act hid">⎘</span>
+        </div>
+        <div class="row">
+          <span class="role role-assistant">assistant</span>
+          <span class="when">3d ago</span>
+          <p class="snip">A bare <mark>[Wayland]</mark> session with no desktop <mark>[portal]</mark> installed sees a dialog that never opens — the <mark>[dialog]</mark> must fall back to XDG.</p>
+          <span class="eid act hid">⎘</span>
+        </div>
+        <div class="row">
+          <span class="role role-assistant">assistant</span>
+          <span class="when">3d ago</span>
+          <p class="snip">...<mark>[xdg-desktop-portal]</mark>; <span class="pill">[[Interface]]</span> <mark>[File dialog]</mark> / Linux (XDG <mark>[portal]</mark>)...</p>
+          <span class="eid act hid">⎘</span>
+        </div>
+      </div>
+      <div class="grp">
+        <div class="grp-h">
+          <span class="grp-n">desktop shell: XDG portal keeps the window alive</span>
+          <span class="grp-m">96 hits · 6d</span>
+          <span class="act">open</span>
+          <span class="act">read all</span>
+        </div>
+        <div class="row">
+          <span class="role role-user">user</span>
+          <span class="when">6d ago</span>
+          <p class="snip">how do I <mark>[freeze]</mark> the compositor without killing the <mark>[dialog]</mark> session?</p>
+          <span class="eid act hid">⎘</span>
+        </div>
+        <div class="row">
+          <span class="role role-assistant">assistant</span>
+          <span class="when">6d ago</span>
+          <p class="snip">…<mark>[repaint]</mark> storm once the <mark>[portal]</mark> handshake stalls — check Wayland vs X11 before touching the loop.</p>
+          <span class="eid act hid">⎘</span>
+        </div>
+      </div>
+    </div>
+    <div class="facets">
+      <span class="facet"><b>all</b> 22,579</span>
+      <span class="facet on"><b>user</b> 236</span>
+      <span class="facet on"><b>assistant</b> 2,568</span>
+      <span class="facet"><b>tool</b> 19,775</span>
+      <span class="count">340 sessions · 3,148 hidden</span>
+    </div>
+  </div>
+
+  <!-- ══ COLLAPSED ═══════════════════════════════════════════ -->
+  <div class="divider"><span>proposed — collapsed (the default)</span></div>
+
+  <div class="tc">
+    <div class="hd">
+      <span class="tool">read_workspace_session</span>
+      <span class="sum">search "portal dialog" · 12 sessions · user+assistant</span>
+      <span class="chev">+</span>
+    </div>
+  </div>
+  <p class="note" style="margin-top:8px">Collapsed answers <i>what did this find</i> without expanding. Today it only says <code>20 of 11996</code>.</p>
+
+  <!-- ══ OTHER STATES ════════════════════════════════════════ -->
+  <div class="divider"><span>other states — same chrome</span></div>
+
+  <div class="tc">
+    <div class="hd">
+      <span class="tool">read_workspace_session</span>
+      <span class="sum">session task_1790706202839_2 · newest first</span>
+      <span class="chev">−</span>
+    </div>
+    <div class="pane split">
+      <div class="row">
+        <span class="role role-assistant">assistant</span>
+        <span class="when">3d ago</span>
+        <p class="snip">A bare Wayland session with no desktop portal installed…</p>
+      </div>
+      <div class="row">
+        <span class="role role-tool">tool</span>
+        <span class="when">3d ago</span>
+        <span class="pill">bash</span>
+        <p class="snip">exit 1 — timeout ms expired with the dialog still open</p>
+      </div>
+    </div>
+  </div>
+  <p class="note" style="margin-top:6px">read — role rail + relative time; tool rows show <code>tool_name</code>, not raw JSON.</p>
+
+  <div style="height:12px"></div>
+
+  <div class="tc">
+    <div class="hd">
+      <span class="tool">read_workspace_session</span>
+      <span class="sum">session task_1790706202839_2</span>
+      <span class="flag deny">Denied</span>
+      <span class="chev">−</span>
+    </div>
+    <div class="pane">
+      <div class="row">
+        <span class="snip" style="color:var(--color-yellow)">Session <code>task_1790706202839_2</code> is not in your workspace.</span>
+      </div>
+    </div>
+  </div>
+  <p class="note" style="margin-top:6px">denied — amber, not red. Valid request, wrong scope.</p>
+
+  <div style="height:12px"></div>
+
+  <div class="tc err">
+    <div class="hd">
+      <span class="tool">read_workspace_session</span>
+      <span class="sum">workspace search</span>
+      <span class="flag err">Error</span>
+      <span class="chev">−</span>
+    </div>
+    <div class="pane">
+      <div class="row">
+        <span class="snip" style="color:#c4746e">live_only and compacted_only are mutually exclusive — pick one or neither.</span>
+      </div>
+    </div>
+  </div>
+  <p class="note" style="margin-top:6px">error — red left rule; the backend already writes these to be readable.</p>
+
+  <div style="height:12px"></div>
+
+  <div class="tc">
+    <div class="hd">
+      <span class="tool">read_workspace_session</span>
+      <span class="sum">search "zzzqqq"</span>
+      <span class="chev">−</span>
+    </div>
+    <div class="pane">
+      <div class="row">
+        <span class="snip">No matches for "zzzqqq". Terms are joined with OR — try one distinctive word.</span>
+      </div>
+    </div>
+  </div>
+  <p class="note" style="margin-top:6px">empty — explains OR-join, the difference between "no match" and "too broad".</p>
+
+  <!-- ══ FIX LIST ════════════════════════════════════════════ -->
+  <div class="divider"><span>fix list</span></div>
+
+  <ul class="findings">
+    <li><b>① readable timestamp</b> — <code>created_iso</code> instead of nano. <b>backend</b></li>
+    <li><b>② snippet delimiters</b> — parse bare <code>[…]</code> in the card. <b>frontend</b></li>
+    <li><b>group by session</b> — <code>session_id</code>/<code>session_name</code> already on every hit. <b>frontend</b></li>
+    <li><b>role facets</b> — <code>role</code> is already a tool param; counts reveal the ratio. <b>frontend</b></li>
+    <li><b>rows openable</b> — precedent: <code>SpawnSubAgent</code> 👁 + <code>onPeekOpenFull</code>. <b>frontend</b></li>
+    <li><b>render full_contents</b> — returned, rendered 0×. <b>frontend</b></li>
+  </ul>
+
+  <p class="note" style="margin-top:16px">Out of scope: dropping tool rows from <code>messages_fts</code> — fixes the noise at the
+  source but changes recall for every consumer. A backend call, not a card change.</p>
+
+  <p class="note" style="margin-top:20px;color:var(--semantic-text-dim)">Wireframe only. Nothing implemented — gated on your approval.</p>
+
+</div>
+</body>
+</html>

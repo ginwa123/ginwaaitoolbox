@@ -109,6 +109,8 @@ import { useInjectCodeViewer, useInjectOpenInCodeEditor } from '@/composables/us
 import type { CodeViewerView } from '@/composables/useCodeEditor'
 import CodeViewerStage from './CodeViewerStage.vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useWorkspacesStore } from '../../stores/workspaces'
+import { buildAppUrl } from '../../helpers/appUrl'
 import CompactionCard from '../preview/CompactionCard.vue'
 // 2026-08-25 agent-error-card (task_1787663566535_2): dedicated renderer
 // for agentic-loop error/retry diagnostics (is_error=true SSE events).
@@ -809,6 +811,24 @@ async function onChatSidebarRefresh() {
  */
 function onPeekOpenFull(sessionId: string) {
   nav.closePeek()
+  router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
+}
+
+/**
+ * A `read_workspace_session` search hit pointed at a different conversation.
+ * The card is presentation-only, so the navigation decision lives here.
+ * Mirrors `ChatsList.setActive`: canonical path URL when a workspace is in
+ * scope, legacy query form only as a fallback.
+ */
+const workspacesStore = useWorkspacesStore()
+
+function onOpenWorkspaceSession(sessionId: string): void {
+  if (!sessionId) return
+  const wsId = workspacesStore.activeWorkspace?.id
+  if (wsId) {
+    router.replace(buildAppUrl({ workspaceId: wsId, chatSessionId: sessionId }))
+    return
+  }
   router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
 }
 
@@ -4875,6 +4895,7 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :parameters="getParametersForMessage(msg)"
+                            @open-session="onOpenWorkspaceSession"
                           />
                           <Glob
                             v-else-if="msg.tool_name === 'glob'"
