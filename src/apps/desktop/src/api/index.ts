@@ -845,12 +845,10 @@ export async function getTasksMedia(
   taskIds: string[],
 ): Promise<Map<string, TaskMedia | null>> {
   const settled = await Promise.allSettled(
-    taskIds.map(
-      async (taskId): Promise<[string, TaskMedia | null]> => [
-        taskId,
-        await getTaskMedia(workspaceId, itemId, taskId),
-      ],
-    ),
+    taskIds.map(async (taskId): Promise<[string, TaskMedia | null]> => [
+      taskId,
+      await getTaskMedia(workspaceId, itemId, taskId),
+    ]),
   )
   const out = new Map<string, TaskMedia | null>()
   settled.forEach((entry, i) => {
@@ -3678,11 +3676,13 @@ export interface SkillEvalsSummaryResponse {
   total: number
 }
 
-export async function getSkillEvalsRuns(params: {
-  run_id?: string
-  session_id?: string
-  limit?: number
-} = {}): Promise<SkillEvalsRunsResponse> {
+export async function getSkillEvalsRuns(
+  params: {
+    run_id?: string
+    session_id?: string
+    limit?: number
+  } = {},
+): Promise<SkillEvalsRunsResponse> {
   const q = new URLSearchParams()
   if (params.run_id) q.set('run_id', params.run_id)
   if (params.session_id) q.set('session_id', params.session_id)
@@ -3691,9 +3691,7 @@ export async function getSkillEvalsRuns(params: {
   return await apiFetch<SkillEvalsRunsResponse>(`/skill-evals/runs${suffix}`)
 }
 
-export async function getSkillEvalsSummary(
-  sessionId = '',
-): Promise<SkillEvalsSummaryResponse> {
+export async function getSkillEvalsSummary(sessionId = ''): Promise<SkillEvalsSummaryResponse> {
   const suffix = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
   return await apiFetch<SkillEvalsSummaryResponse>(`/skill-evals/summary${suffix}`)
 }
@@ -3710,7 +3708,13 @@ export async function getSkillEvalsSummary(
 export async function applySkillEvalResult(
   resultId: string,
   action = 'apply',
-): Promise<{ result_id: string; skill_name: string; action: string; applied: boolean; message: string }> {
+): Promise<{
+  result_id: string
+  skill_name: string
+  action: string
+  applied: boolean
+  message: string
+}> {
   const q = new URLSearchParams({ result_id: resultId, action })
   return await apiFetch(`/skill-evals/results/apply?${q.toString()}`, { method: 'POST' })
 }
@@ -4460,6 +4464,24 @@ export interface McpServer {
   enabled?: boolean
 }
 
+/**
+ * The Skill Evals block of `config.json`, as the wire carries it
+ * (snake_case, matching `SkillEvalsJson` in `Config.zig`).
+ *
+ * `enabled` is the master switch the Settings toggle writes. The other
+ * fields are the budgets around it and are sent back unchanged so a save
+ * from the toggle can never reset a value the user hand-edited.
+ */
+export interface NalarSkillEvalsConfig {
+  enabled?: boolean
+  max_skills_per_run?: number
+  max_evals_per_day?: number
+  fact_lease_seconds?: number
+  include_listed_without_loading?: boolean
+  /** `'off' | 'propose' | 'auto_low_risk'`. Null = not set on disk. */
+  apply_mode?: string | null
+}
+
 export interface NalarConfig {
   // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
   // defaults (api_endpoint/api_key/model/url_style/temperature/max_tokens/
@@ -4521,6 +4543,19 @@ export interface NalarConfig {
    * affect the other.
    */
   notify_on_error?: boolean
+  /**
+   * Skill Evals block — the master switch for the `run_skill_eval` tool
+   * and the budget knobs around it. `enabled: true` injects the tool into
+   * the main agent's tool list and lets the agent evaluate the skills the
+   * session actually loaded; `false` (the default, and what a config with
+   * no `skill_evals` key reads as) removes the tool entirely.
+   *
+   * The backend always sends this object (never `null`), so the toggle
+   * can always render a real on/off rather than guessing. Sending it back
+   * in the PUT persists the switch; omitting it leaves the on-disk value
+   * untouched.
+   */
+  skill_evals?: NalarSkillEvalsConfig
   /**
    * Compaction threshold in KB. Sessions whose DB-stored token
    * estimate exceeds this value trigger context compaction. Defaults

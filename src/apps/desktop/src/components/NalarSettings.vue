@@ -23,6 +23,7 @@ import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 // mounted here (no global list). The file is kept for now — see note below.
 import McpServersSection from './nalar/McpServersSection.vue'
 import ToolsSection from './nalar/ToolsSection.vue'
+import SkillEvalsSection, { type SkillEvalsSettings } from './nalar/SkillEvalsSection.vue'
 import { parseMcpServers, serializeMcpServers } from './nalar/mcpServers'
 // plan 2026-07-07-compaction-inline: CompactionSection.vue is removed
 // (compaction settings live in the Defaults tab + Edit-profile modal now).
@@ -51,8 +52,8 @@ defineExpose({
 // retry delay) are the broadest, most-frequently-touched UI surface.
 // Plan 2026-09-04-subagents-per-profile: 'sub-agents' tab removed —
 // sub-agents live inside each profile row (Profiles tab expand chevron).
-type Tab = 'general' | 'profiles' | 'mcp' | 'tools'
-const TAB_IDS: readonly string[] = ['general', 'profiles', 'mcp', 'tools']
+type Tab = 'general' | 'profiles' | 'mcp' | 'tools' | 'evals'
+const TAB_IDS: readonly string[] = ['general', 'profiles', 'mcp', 'tools', 'evals']
 // Same key NalarTabStrip persists to — read here so the URL-backed
 // computed below can fall back to it when the URL has no `?section=`.
 const TAB_STORAGE_KEY = 'nalar-settings-active-tab'
@@ -100,7 +101,11 @@ const activeTab = computed<Tab>({
   },
   set(next) {
     activeTabLocal.value = next
-    try { localStorage.setItem(TAB_STORAGE_KEY, next) } catch { /* private mode */ }
+    try {
+      localStorage.setItem(TAB_STORAGE_KEY, next)
+    } catch {
+      /* private mode */
+    }
     if (!router || !route) return
     const rest = { ...route.query }
     // Default tab is stripped from the URL to keep it clean (mirrors
@@ -167,6 +172,16 @@ const generalSettings = ref<NalarGeneralSettings>({
   web_launch_enabled: false,
 })
 
+// Skill Evals tab. Only `enabled` is editable in the UI; the budget
+// knobs ride along untouched (see skillEvalsRaw below) so flipping the
+// switch can never reset a hand-edited value in config.json.
+const skillEvalsSettings = ref<SkillEvalsSettings>({ enabled: false })
+/** The block exactly as the GET returned it. Replayed verbatim on save. */
+const skillEvalsRaw = ref<NalarConfig['skill_evals']>(undefined)
+/** What `enabled` was at hydrate time, so we can tell "untouched" from
+ * "the user flipped it" — see the guard in syncToConfig. */
+const skillEvalsHydrated = ref(false)
+
 function syncFromConfig() {
   if (!config.value) return
   const c = config.value
@@ -217,6 +232,14 @@ function syncFromConfig() {
   // Remember the persisted flag so handleSave can detect the OFF→ON
   // transition for the one-time browser auto-open.
   prevWebLaunch.value = generalSettings.value.web_launch_enabled
+
+  // Skill Evals: keep the raw block for the save, and project just the
+  // switch for the checkbox. A config with no `skill_evals` key hydrates
+  // as OFF — the same default the runtime uses, so the toggle never
+  // shows a phantom ON.
+  skillEvalsRaw.value = c.skill_evals
+  skillEvalsHydrated.value = c.skill_evals?.enabled ?? false
+  skillEvalsSettings.value = { enabled: skillEvalsHydrated.value }
 }
 
 function syncToConfig() {
@@ -245,6 +268,22 @@ function syncToConfig() {
     // Plan 2026-09-10-web-launch-toggle: 4th operational setting,
     // always written through like its siblings.
     web_launch_enabled: generalSettings.value.web_launch_enabled,
+    // Skill Evals: write the switch on top of the raw block, so the budget
+    // knobs the UI doesn't expose survive the save untouched. Guarded on
+    // "the user actually moved it" — materializing the key for a config
+    // that never had one would make `dirty` true the moment settings
+    // loads, since the diff would compare a fresh `skill_evals` against a
+    // snapshot with no such key.
+    ...(skillEvalsSettings.value.enabled !== skillEvalsHydrated.value
+      ? {
+          skill_evals: {
+            ...(skillEvalsRaw.value ?? {}),
+            enabled: skillEvalsSettings.value.enabled,
+          },
+        }
+      : skillEvalsRaw.value !== undefined
+        ? { skill_evals: skillEvalsRaw.value }
+        : {}),
     // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
     // Unconditional spread so `null` is preserved (cascade wildcard).
     max_capacity_token_model: c.max_capacity_token_model,
@@ -275,15 +314,19 @@ function profilesToRecord(list: ProfileRow[]): Record<string, NalarProfile> {
 // Populate section refs when the central config first loads.
 watch(
   loaded,
-  (isLoaded) => { if (isLoaded) syncFromConfig() },
+  (isLoaded) => {
+    if (isLoaded) syncFromConfig()
+  },
   { immediate: true },
 )
 
 // Whenever any section ref mutates, push back to the central config
 // (which keeps the composable's dirty counter in sync).
 watch(
-  [profilesList, activeProfile, mcpServersList, generalSettings, toolsList],
-  () => { if (loaded.value) syncToConfig() },
+  [profilesList, activeProfile, mcpServersList, generalSettings, toolsList, skillEvalsSettings],
+  () => {
+    if (loaded.value) syncToConfig()
+  },
   { deep: true },
 )
 
@@ -307,15 +350,33 @@ const profileModal = ref<ProfileModalState>(null)
 const subAgentModal = ref<SubAgentModalState>(null)
 const mcpServerModal = ref<McpServerModalState>(null)
 
-const profileErrors = ref<{ name?: string; model?: string; base_url?: string; api_key?: string }>({})
-const subAgentErrors = ref<{ name?: string; model?: string; base_url?: string; api_key?: string }>({})
+const profileErrors = ref<{ name?: string; model?: string; base_url?: string; api_key?: string }>(
+  {},
+)
+const subAgentErrors = ref<{ name?: string; model?: string; base_url?: string; api_key?: string }>(
+  {},
+)
 const mcpServerErrors = ref<{ name?: string; url?: string; command?: string }>({})
 
 // ─── Section event handlers ──────────────────────────────────────────────
 function startAddProfile() {
   profileModal.value = {
     mode: 'add',
-    value: { name: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null, thinking_budget_tokens: null, reasoning_effort: null } },
+    value: {
+      name: '',
+      config: {
+        model: '',
+        base_url: '',
+        thinking: 'auto',
+        temperature: 'auto',
+        url_style: 'openai',
+        api_key: '',
+        max_capacity_tokens: null,
+        compaction_threshold_percent: null,
+        thinking_budget_tokens: null,
+        reasoning_effort: null,
+      },
+    },
   }
 }
 function startEditProfile(p: ProfileRow) {
@@ -324,8 +385,11 @@ function startEditProfile(p: ProfileRow) {
     value: {
       name: p.name,
       config: {
-        model: p.model ?? '', base_url: p.base_url ?? '', thinking: p.thinking ?? 'auto',
-        temperature: p.temperature ?? 'auto', url_style: p.url_style ?? 'openai',
+        model: p.model ?? '',
+        base_url: p.base_url ?? '',
+        thinking: p.thinking ?? 'auto',
+        temperature: p.temperature ?? 'auto',
+        url_style: p.url_style ?? 'openai',
         api_key: p.api_key ?? '',
         // Compaction overrides — plan 2026-07-07-compaction-inline.
         max_capacity_tokens: p.max_capacity_tokens ?? null,
@@ -339,17 +403,28 @@ function startEditProfile(p: ProfileRow) {
     },
   }
 }
-function closeProfileModal() { profileModal.value = null; profileErrors.value = {} }
+function closeProfileModal() {
+  profileModal.value = null
+  profileErrors.value = {}
+}
 function saveProfile() {
   if (!profileModal.value) return
   const v = profileModal.value.value
   const name = v.name.trim()
-  if (!name) { profileErrors.value = { name: 'Name is required' }; return }
-  if (!v.config.model.trim()) { profileErrors.value = { model: 'Model is required' }; return }
+  if (!name) {
+    profileErrors.value = { name: 'Name is required' }
+    return
+  }
+  if (!v.config.model.trim()) {
+    profileErrors.value = { model: 'Model is required' }
+    return
+  }
   if (profileModal.value.mode === 'add') {
     profilesList.value = [...profilesList.value, { name, ...v.config, sub_agents: [] }]
   } else {
-    profilesList.value = profilesList.value.map(p => p.name === name ? { ...p, ...v.config, sub_agents: p.sub_agents } : p)
+    profilesList.value = profilesList.value.map((p) =>
+      p.name === name ? { ...p, ...v.config, sub_agents: p.sub_agents } : p,
+    )
   }
   closeProfileModal()
 }
@@ -357,12 +432,16 @@ function deleteProfile(name: string) {
   // Optimistic local removal; the API call is best-effort.
   const previous = profilesList.value
   const previousActive = activeProfile.value
-  profilesList.value = profilesList.value.filter(p => p.name !== name)
+  profilesList.value = profilesList.value.filter((p) => p.name !== name)
   if (activeProfile.value === name) activeProfile.value = null
-  apiDeleteProfile(name).catch(err => {
+  apiDeleteProfile(name).catch((err) => {
     profilesList.value = previous
     activeProfile.value = previousActive
-    emit('notification', `Failed to delete profile "${name}": ${err instanceof Error ? err.message : String(err)}`, 'error')
+    emit(
+      'notification',
+      `Failed to delete profile "${name}": ${err instanceof Error ? err.message : String(err)}`,
+      'error',
+    )
   })
 }
 
@@ -370,7 +449,22 @@ function startAddSubAgentInProfile(profileName: string) {
   subAgentModal.value = {
     mode: 'add',
     scope: { kind: 'profile', profileName },
-    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null, thinking_budget_tokens: null, reasoning_effort: null } },
+    value: {
+      name: '',
+      system_prompt: '',
+      config: {
+        model: '',
+        base_url: '',
+        thinking: 'auto',
+        temperature: 'auto',
+        url_style: 'openai',
+        api_key: '',
+        max_capacity_tokens: null,
+        compaction_threshold_percent: null,
+        thinking_budget_tokens: null,
+        reasoning_effort: null,
+      },
+    },
   }
 }
 function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
@@ -381,8 +475,11 @@ function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
       name: sa.name,
       system_prompt: sa.system_prompt ?? '',
       config: {
-        model: sa.model ?? '', base_url: sa.base_url ?? '', thinking: sa.thinking ?? 'auto',
-        temperature: sa.temperature ?? 'auto', url_style: sa.url_style ?? 'openai',
+        model: sa.model ?? '',
+        base_url: sa.base_url ?? '',
+        thinking: sa.thinking ?? 'auto',
+        temperature: sa.temperature ?? 'auto',
+        url_style: sa.url_style ?? 'openai',
         api_key: sa.api_key ?? '',
         // Compaction overrides (plan 2026-07-07-compaction-inline) —
         // required by LlmConfig type. Sub-agent-level overrides
@@ -398,32 +495,41 @@ function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
     },
   }
 }
-function closeSubAgentModal() { subAgentModal.value = null; subAgentErrors.value = {} }
+function closeSubAgentModal() {
+  subAgentModal.value = null
+  subAgentErrors.value = {}
+}
 function saveSubAgent() {
   if (!subAgentModal.value) return
   const v = subAgentModal.value.value
   const name = v.name.trim()
-  if (!name) { subAgentErrors.value = { name: 'Name is required' }; return }
+  if (!name) {
+    subAgentErrors.value = { name: 'Name is required' }
+    return
+  }
   const next: SubAgent = { name, ...v.config, system_prompt: v.system_prompt }
   // Plan 2026-09-04-subagents-per-profile: profile scope only — the
   // top-level branch is gone with the Sub-agents tab.
   const profileName = subAgentModal.value.scope.profileName
   const mode = subAgentModal.value.mode
-  profilesList.value = profilesList.value.map(p => {
+  profilesList.value = profilesList.value.map((p) => {
     if (p.name !== profileName) return p
     const subs = p.sub_agents ?? []
-    const exists = subs.some(s => s.name === name)
-    const nextSubs = mode === 'add'
-      ? (exists ? subs : [...subs, next])
-      : subs.map(s => s.name === name ? next : s)
+    const exists = subs.some((s) => s.name === name)
+    const nextSubs =
+      mode === 'add'
+        ? exists
+          ? subs
+          : [...subs, next]
+        : subs.map((s) => (s.name === name ? next : s))
     return { ...p, sub_agents: nextSubs }
   })
   closeSubAgentModal()
 }
 function deleteSubAgentInProfile(profileName: string, subAgentName: string) {
-  profilesList.value = profilesList.value.map(p => {
+  profilesList.value = profilesList.value.map((p) => {
     if (p.name !== profileName) return p
-    return { ...p, sub_agents: (p.sub_agents ?? []).filter(s => s.name !== subAgentName) }
+    return { ...p, sub_agents: (p.sub_agents ?? []).filter((s) => s.name !== subAgentName) }
   })
 }
 
@@ -453,7 +559,7 @@ function startEditMcpServer(server: McpServer) {
       name: server.name,
       transport: server.transport ?? 'http',
       url: server.url ?? '',
-      headers: (server.headers ?? []).map(h => ({ ...h })),
+      headers: (server.headers ?? []).map((h) => ({ ...h })),
       command: server.command ?? '',
       args: (server.args ?? []).slice(),
       env: (server.env ?? []).slice(),
@@ -462,12 +568,18 @@ function startEditMcpServer(server: McpServer) {
     },
   }
 }
-function closeMcpServerModal() { mcpServerModal.value = null; mcpServerErrors.value = {} }
+function closeMcpServerModal() {
+  mcpServerModal.value = null
+  mcpServerErrors.value = {}
+}
 function saveMcpServer() {
   if (!mcpServerModal.value) return
   const v = mcpServerModal.value.value
   const name = v.name.trim()
-  if (!name) { mcpServerErrors.value = { name: 'Name is required' }; return }
+  if (!name) {
+    mcpServerErrors.value = { name: 'Name is required' }
+    return
+  }
   const isStdio = v.transport === 'stdio'
   if (isStdio) {
     if (!v.command.trim()) {
@@ -487,31 +599,34 @@ function saveMcpServer() {
     if (mcpServerModal.value.mode === 'add') {
       mcpServersList.value = [...mcpServersList.value, next]
     } else {
-      mcpServersList.value = mcpServersList.value.map(s => s.name === name ? next : s)
+      mcpServersList.value = mcpServersList.value.map((s) => (s.name === name ? next : s))
     }
   } else {
     const url = v.url.trim()
-    if (!url) { mcpServerErrors.value = { url: 'URL is required' }; return }
+    if (!url) {
+      mcpServerErrors.value = { url: 'URL is required' }
+      return
+    }
     const next: McpServer = {
       name,
       transport: 'http',
       url,
-      headers: v.headers.filter(h => h.key.length > 0),
+      headers: v.headers.filter((h) => h.key.length > 0),
       enabled: v.enabled,
     }
     if (mcpServerModal.value.mode === 'add') {
       mcpServersList.value = [...mcpServersList.value, next]
     } else {
-      mcpServersList.value = mcpServersList.value.map(s => s.name === name ? next : s)
+      mcpServersList.value = mcpServersList.value.map((s) => (s.name === name ? next : s))
     }
   }
   closeMcpServerModal()
 }
 function deleteMcpServer(name: string) {
-  mcpServersList.value = mcpServersList.value.filter(s => s.name !== name)
+  mcpServersList.value = mcpServersList.value.filter((s) => s.name !== name)
 }
 function toggleMcpServer(name: string) {
-  mcpServersList.value = mcpServersList.value.map(s =>
+  mcpServersList.value = mcpServersList.value.map((s) =>
     s.name === name ? { ...s, enabled: (s.enabled ?? true) ? false : true } : s,
   )
 }
@@ -534,7 +649,11 @@ async function setActiveProfile(name: string) {
     await saveNalarConfig({ ...config.value, active_profile: name } as NalarConfig)
     emit('notification', `Active profile set to "${name}"`, 'success')
   } catch (err) {
-    emit('notification', `Failed to set active: ${err instanceof Error ? err.message : String(err)}`, 'error')
+    emit(
+      'notification',
+      `Failed to set active: ${err instanceof Error ? err.message : String(err)}`,
+      'error',
+    )
   } finally {
     isSettingActive.value = false
   }
@@ -566,7 +685,11 @@ async function clearActiveProfile() {
     emit('notification', `Active profile cleared — using top-level config`, 'success')
   } catch (err) {
     activeProfile.value = previous // optimistic-rollback on failure
-    emit('notification', `Failed to clear active: ${err instanceof Error ? err.message : String(err)}`, 'error')
+    emit(
+      'notification',
+      `Failed to clear active: ${err instanceof Error ? err.message : String(err)}`,
+      'error',
+    )
   } finally {
     isSettingActive.value = false
   }
@@ -588,7 +711,11 @@ async function handleSave() {
     // the reliable path if it is ever blocked.
     if (autoOpen && webUrl.value) openWeb()
   } catch (err) {
-    emit('notification', `Save failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
+    emit(
+      'notification',
+      `Save failed: ${err instanceof Error ? err.message : String(err)}`,
+      'error',
+    )
   }
 }
 
@@ -624,7 +751,11 @@ async function copyWeb() {
     await navigator.clipboard.writeText(webUrl.value)
     emit('notification', 'Web URL copied', 'success')
   } catch (err) {
-    emit('notification', `Copy failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
+    emit(
+      'notification',
+      `Copy failed: ${err instanceof Error ? err.message : String(err)}`,
+      'error',
+    )
   }
 }
 
@@ -636,8 +767,12 @@ onMounted(async () => {
 
 // ─── Confirm dialog for profile delete ───────────────────────────────────
 const confirmingDeleteProfile = ref<string | null>(null)
-function requestDeleteProfile(name: string) { confirmingDeleteProfile.value = name }
-function cancelDeleteProfile() { confirmingDeleteProfile.value = null }
+function requestDeleteProfile(name: string) {
+  confirmingDeleteProfile.value = name
+}
+function cancelDeleteProfile() {
+  confirmingDeleteProfile.value = null
+}
 function confirmDeleteProfile() {
   const name = confirmingDeleteProfile.value
   if (!name) return
@@ -652,7 +787,11 @@ const isLoading = computed(() => !loaded.value)
 <template>
   <div class="flex flex-col h-full" data-testid="nalar-settings">
     <!-- Loading state -->
-    <div v-if="isLoading" class="flex-1 flex items-center justify-center text-body" style="color: var(--semantic-text-muted);">
+    <div
+      v-if="isLoading"
+      class="flex-1 flex items-center justify-center text-body"
+      style="color: var(--semantic-text-muted)"
+    >
       Loading settings…
     </div>
 
@@ -676,11 +815,14 @@ const isLoading = computed(() => !loaded.value)
         <div
           v-if="activeTab === 'general'"
           class="rounded-lg p-5 space-y-3"
-          style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
+          style="
+            background-color: var(--semantic-content-bg);
+            border: 1px solid var(--color-border);
+          "
         >
           <div class="flex items-center gap-2">
             <span class="text-lead" aria-hidden="true">🗂️</span>
-            <h3 class="text-body font-semibold" style="color: var(--semantic-text);">Interface</h3>
+            <h3 class="text-body font-semibold" style="color: var(--semantic-text)">Interface</h3>
           </div>
 
           <label class="flex items-start gap-3 cursor-pointer" data-testid="row-browser-tabs">
@@ -690,21 +832,26 @@ const isLoading = computed(() => !loaded.value)
               :checked="tabsStore.enabled"
               @change="onToggleBrowserTabs(($event.target as HTMLInputElement).checked)"
               class="mt-1 w-4 h-4 cursor-pointer"
-              style="accent-color: var(--color-violet);"
+              style="accent-color: var(--color-violet)"
             />
             <div class="flex-1 min-w-0">
-              <div class="text-body font-medium" style="color: var(--semantic-text);">
+              <div class="text-body font-medium" style="color: var(--semantic-text)">
                 Browser-style tabs
               </div>
-              <div class="text-dense mt-0.5" style="color: var(--semantic-text-dim);">
-                Keep several chats, boards and pages open at once in a tab strip
-                above the content area. Shortcuts: Shift+Alt+T (new),
-                Shift+Alt+W (close), Shift+Alt+Z (reopen),
+              <div class="text-dense mt-0.5" style="color: var(--semantic-text-dim)">
+                Keep several chats, boards and pages open at once in a tab strip above the content
+                area. Shortcuts: Shift+Alt+T (new), Shift+Alt+W (close), Shift+Alt+Z (reopen),
                 Shift+Alt+←/→ (switch). Off restores the single-view layout.
               </div>
             </div>
           </label>
         </div>
+
+        <SkillEvalsSection
+          v-if="activeTab === 'evals'"
+          v-model="skillEvalsSettings"
+          :loaded="loaded"
+        />
 
         <ProfilesSection
           v-if="activeTab === 'profiles'"

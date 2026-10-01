@@ -69,6 +69,14 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                 .compaction_threshold_percent = cfg.compaction_threshold_percent,
                 .retry_delay_ms = cfg.retry_delay_ms,
                 .tools = cfg.tools,
+                .skill_evals = .{
+                    .enabled = cfg.skill_evals.enabled,
+                    .max_skills_per_run = cfg.skill_evals.max_skills_per_run,
+                    .max_evals_per_day = cfg.skill_evals.max_evals_per_day,
+                    .fact_lease_seconds = cfg.skill_evals.fact_lease_seconds,
+                    .include_listed_without_loading = cfg.skill_evals.include_listed_without_loading,
+                    .apply_mode = cfg.skill_evals.apply_mode,
+                },
             }),
         });
     }
@@ -155,6 +163,14 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .compaction_threshold_percent = cfg.compaction_threshold_percent,
             .retry_delay_ms = cfg.retry_delay_ms,
             .tools = cfg.tools,
+            .skill_evals = .{
+                .enabled = cfg.skill_evals.enabled,
+                .max_skills_per_run = cfg.skill_evals.max_skills_per_run,
+                .max_evals_per_day = cfg.skill_evals.max_evals_per_day,
+                .fact_lease_seconds = cfg.skill_evals.fact_lease_seconds,
+                .include_listed_without_loading = cfg.skill_evals.include_listed_without_loading,
+                .apply_mode = cfg.skill_evals.apply_mode,
+            },
         }),
     });
 }
@@ -195,6 +211,11 @@ const ConfigJson = struct {
     /// 2026-09-22-tools-menu-config-default-tools). Emitted as JSON
     /// `null` when the on-disk key is absent (mirrors `mcp_servers`).
     tools: ?[]const []const u8 = null,
+    /// Skill Evals block, read so the Settings toggle can render the
+    /// current switch. Default `.{ .enabled = false }` means a config
+    /// with no `skill_evals` key reads as OFF — the same value the
+    /// runtime uses, so the toggle never shows a phantom ON.
+    skill_evals: config.SkillEvalsJson = .{},
 };
 
 // ===== Tests merged from nalar_config_get_test.zig (2026-09-11 flatten) =====

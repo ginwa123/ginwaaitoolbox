@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 
 const STORAGE_KEY = 'nalar-settings-active-tab'
 
-type TabId = 'general' | 'profiles' | 'mcp' | 'tools'
+type TabId = 'general' | 'profiles' | 'mcp' | 'tools' | 'evals'
 
 const props = defineProps<{
   modelValue: TabId
@@ -28,6 +28,7 @@ const tabs: ReadonlyArray<{ id: TabId; label: string }> = [
   { id: 'profiles', label: 'Profiles' },
   { id: 'mcp', label: 'MCP Servers' },
   { id: 'tools', label: 'Tools' },
+  { id: 'evals', label: 'Skill Evals' },
 ] as const
 
 // Undefined when mounted without a router (unit tests). The restore
