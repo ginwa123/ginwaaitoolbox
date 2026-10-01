@@ -6128,6 +6128,21 @@ const compactSession = async () => {
    to a plain 1rem of bottom padding, matching the old flow layout. */
 .chat-column {
   --chat-composer-inset: 0px;
+
+  /* Contain this surface's whole z-ladder.
+     `position: relative` with `z-index: auto` does NOT open a stacking
+     context, so the tiers below (scroll slider / pill rail 20, composer
+     dock 30, scroll-to-bottom 31) were competing in the ROOT stacking
+     context against AppLayout's full-surface overlays — and every one of
+     them outranked the document viewer's `z-index: 10`. Opening a chat
+     session and then clicking a document therefore painted the composer
+     dock, the scroll arrow and the scroll slider ON TOP of the document.
+
+     Isolating here fixes the class of bug rather than one instance: no
+     z-index added to the chat in future can escape past an app-level
+     overlay, so DocumentsView does not have to be raised above a number
+     that would have to be raised again. */
+  isolation: isolate;
 }
 
 .composer-dock {
