@@ -176,6 +176,50 @@ data class ChatMessage(
 }
 
 /**
+ * A row in the reserved streaming namespace, whether or not it is still frozen.
+ *
+ * **Both halves are load-bearing and neither is sufficient.** The id prefix is
+ * the half that survives `finishStreaming`, which unfreezes the placeholder but
+ * deliberately leaves it on screen until the canonical row lands; the flag is
+ * the half that catches a row some other writer froze. Every path that retires
+ * a placeholder has to match on both, or it leaves half a stub behind — which
+ * is how a settled turn kept its `streaming…` hint while the header had
+ * already stopped claiming a run.
+ *
+ * Lives here rather than in the view model because both the SSE path
+ * ([ChatViewModel.upsertFullMessage]) and the REST path
+ * ([ChatViewModel.settleStreaming]) have to agree on it, and two copies of one
+ * predicate is two rules that drift.
+ */
+val ChatMessage.isStreamingPlaceholder: Boolean
+    get() = isStreaming || id.startsWith(ChatMessage.STREAMING_ID_PREFIX)
+
+/**
+ * True when this is the server's finished row for the turn [partial] is still
+ * typing, so the placeholder has done its job and can go.
+ *
+ * **A prefix test, not a similarity guess.** Deltas only ever append, so the
+ * placeholder's text is a *prefix* of the completed row's — the relationship is
+ * structural, which is what makes this safe enough to delete a row on. A
+ * containment or similarity test would be wrong in the expensive direction: a
+ * near-match on a partial answer would drop real text mid-stream.
+ *
+ * Two refusals, both of which a naive `startsWith` gets wrong:
+ *
+ * - An empty [partial.content] matches everything, and a turn whose deltas were
+ *   all reasoning has exactly that. It would match an unrelated row and lose
+ *   the reasoning block it was still drawing.
+ * - A non-assistant row is never the answer. The placeholder is an assistant
+ *   turn by construction, and the tool rows that follow one share no text with
+ *   it.
+ */
+fun ChatMessage.supersedesStreaming(partial: ChatMessage): Boolean {
+    if (partial.content.isEmpty()) return false
+    if (role != ChatMessage.ROLE_ASSISTANT) return false
+    return content.length >= partial.content.length && content.startsWith(partial.content)
+}
+
+/**
  * Consecutive same-role turns rendered as one list item.
  *
  * Mirrors the web's `MessageGroup`: a long tool run can produce dozens of

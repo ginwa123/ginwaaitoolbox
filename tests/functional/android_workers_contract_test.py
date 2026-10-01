@@ -245,6 +245,47 @@ def test_workers_limit_is_honoured(harness):
     assert _running_ids(one).issubset(_running_ids(many)) or not one["workers"]
 
 
+# ─── GET /api/workers?session_id=… ───────────────────────────────────────────
+#
+# The chat screen asks about ONE session, not the whole list: `limit=50`
+# truncates server-side and drops the tail, so a run past the cap answers "not
+# running" while it is very much running — and `ChatViewModel.settleStreaming`
+# acts on that answer by retiring a streaming placeholder.
+
+
+def test_workers_by_session_id_returns_an_empty_array_not_a_missing_key(harness):
+    """An idle session answers `workers: []`, never an absent field.
+
+    `ChatClient.isSessionRunning` asks about ONE session rather than reading
+    the global list, because `limit=50` truncates server-side and drops the
+    tail — a run past the cap would answer "not running" while it is very much
+    running, and the chat screen acts on that answer by settling a streaming
+    turn. That the filter is honoured is pinned where it can be pinned with
+    teeth, by the in-memory-SQLite test `a session_id filter composes with the
+    cancelled filter` in `src/http_handlers/worker_list.zig`.
+
+    What is pinned HERE, and only here, is the *envelope* the Kotlin parses:
+    `WorkerApi.parseRunningSessionIds` returns null when the array is missing,
+    and `ChatClient` turns that into `ChatResult.Unavailable` — which every
+    caller reads as "answer nothing, change nothing". That is the right
+    behaviour for an envelope it does not recognise, but it would silently
+    disable the reconciliation in `ChatViewModel.settleStreaming` if the server
+    ever stopped sending the field. A unit test cannot see the server's shape,
+    and a fixture hand-written here would only prove the parser agrees with the
+    fixture.
+    """
+    payload = harness.http(
+        "GET",
+        "/api/workers",
+        params={"session_id": "task_that_never_existed", "limit": 1},
+    ).json()
+
+    assert "workers" in payload, payload
+    assert isinstance(payload["workers"], list), payload
+    assert payload["workers"] == [], payload
+    assert payload["count"] == 0, payload
+
+
 # ─── GET /api/events?channels=workers ────────────────────────────────────────
 
 

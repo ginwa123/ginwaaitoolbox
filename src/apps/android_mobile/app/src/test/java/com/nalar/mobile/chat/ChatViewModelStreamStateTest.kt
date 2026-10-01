@@ -110,6 +110,22 @@ class ChatViewModelStreamStateTest {
         return model
     }
 
+    /**
+     * No row may still claim to be mid-sentence.
+     *
+     * Separate from `uiState.isStreaming` because the two are read by different
+     * screens: the header and the Stop button read the state's flag, while the
+     * "streaming…" line under a turn reads the row's. Clearing one and not the
+     * other produces a screen that contradicts itself, which reads to a person
+     * as a second, unrelated bug.
+     */
+    private fun assertNoRowClaimsToStream(model: ChatViewModel) {
+        assertTrue(
+            "no transcript row may still render the streaming hint",
+            model.uiState.value.messages.none { it.isStreaming },
+        )
+    }
+
     @Test
     fun `a terminal stream failure stops claiming the turn is streaming`() =
         streamStateTest { schedulers ->
@@ -124,6 +140,11 @@ class ChatViewModelStreamStateTest {
             assertFalse(model.uiState.value.isStreaming)
             assertFalse(isChatWorking(isRunning = false, isStreaming = model.uiState.value.isStreaming))
             assertEquals("The event stream is unavailable (401).", model.uiState.value.errorMessage)
+            // The row flag too, not just the state's: `StreamingHint` reads the
+            // row, so clearing only `ChatUiState.isStreaming` leaves a
+            // "streaming…" line under a turn that can never finish — the header
+            // says the run is over and the transcript says it is mid-sentence.
+            assertNoRowClaimsToStream(model)
         }
 
     @Test
@@ -143,6 +164,7 @@ class ChatViewModelStreamStateTest {
 
             assertFalse(model.uiState.value.isStreaming)
             assertEquals("The agent hit TooManyRetries and gave up.", model.uiState.value.errorMessage)
+            assertNoRowClaimsToStream(model)
         }
 
     @Test

@@ -3,6 +3,7 @@ package com.nalar.mobile.worker
 import com.nalar.mobile.chat.SseChannels
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -106,19 +107,23 @@ class WorkerApiTest {
     fun `a row with neither id nor session_id is dropped rather than guessed`() {
         val body = """{"workers": [{"working_directory": "/tmp"}], "count": 1}"""
 
-        assertTrue(WorkerApi.parseRunningSessionIds(body).isEmpty())
+        assertTrue(WorkerApi.parseRunningSessionIds(body)!!.isEmpty())
     }
 
     @Test
     fun `an empty list means nothing is running`() {
-        assertTrue(WorkerApi.parseRunningSessionIds("""{"workers": [], "count": 0}""").isEmpty())
+        assertEquals(emptySet<String>(), WorkerApi.parseRunningSessionIds("""{"workers": [], "count": 0}"""))
     }
 
     @Test
-    fun `a missing workers array means nothing is running rather than a crash`() {
-        // `count` is not the list; a payload that only carried `count` used to
-        // be a NullPointerException on the app's first frame.
-        assertTrue(WorkerApi.parseRunningSessionIds("""{"count": 0}""").isEmpty())
+    fun `a missing workers array is unknown, not an empty list`() {
+        // `count` is not the list. This used to be `emptySet()` — no crash, but
+        // indistinguishable from a server with nothing running, and every caller
+        // acted on it: the sidebar's spinner would go out because an envelope
+        // was not the shape it expected, and `ChatViewModel.revalidate` would
+        // settle a live streaming turn. Null says "could not read the list", and
+        // `ChatClient` turns that into `Unavailable`, which changes nothing.
+        assertNull(WorkerApi.parseRunningSessionIds("""{"count": 0}"""))
     }
 
     @Test

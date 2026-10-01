@@ -440,6 +440,59 @@ never composed together. A failed resync leaves the set as it was: a spinner
 that clears because the network blipped is the same lie as one that never
 lights up.
 
+### A refetch settles the turn the stream stopped reporting on
+
+The two frames that normally retire a streaming placeholder — `chunk_final`
+and `llm_full` — are ordinary SSE frames, and **the server keeps no replay
+buffer**: `EventBus` has no history, the frames carry no `id:` line, and
+`Last-Event-ID` appears nowhere in the backend. A phone that was backgrounded,
+rotated, or briefly offline across the *end* of a run therefore loses both and
+has nothing left to learn from.
+
+Left alone, that produced a chat stuck claiming a run that had finished
+minutes earlier: the header read `Working…`, the composer offered a Stop button
+for a worker that no longer existed, and a `streaming…` hint hung under an
+answer that was already complete. `RunningSessionsStore`'s resync does not save
+it, because it repairs `isRunning` and `isChatWorking` is
+`isRunning || isStreaming` — either stale signal alone reproduces the whole
+screen.
+
+So `ChatViewModel.revalidate` asks **two** questions at the same instant, and
+`settleStreaming` settles each half from its own answer:
+
+- **The transcript** (`GET …/messages`, already being refetched) says which
+  turns have been *written*. A placeholder whose text is a **prefix** of the
+  newest assistant row in it is a turn that landed, and the stub is dropped —
+  the real row is already in the merge. The prefix test is structural rather
+  than a guess, because deltas only ever append, and it is scoped to the
+  *newest* assistant row so a previous answer that happens to start the same
+  way cannot retire it.
+- **The worker list** (`GET /api/workers?session_id=…`) says whether anything
+  is still *running*. No worker means no further `llm_chunk` can arrive, so a
+  placeholder with no matching row is a turn that will never be written — a
+  cancel before the first token, a crash — and its partial text is the whole
+  answer. It is unfrozen, not deleted, which is what a reader who pressed Stop
+  is given.
+
+Three consequences worth stating, because each is a decision rather than an
+accident:
+
+- **The worker read is per-session, not the global list.** `GET /api/workers`
+  truncates at 50 and drops the tail, so asking "am *I* running?" from the
+  global list answers `false` the day the server is busier than the cap — the
+  one wrong answer this class exists to prevent. The sidebar keeps the capped
+  list, where a wrong answer costs a glance.
+- **A failed read settles nothing.** "No answer" is not "no worker"; a live
+  turn must not be un-frozen because the network blipped, and a placeholder is
+  never dropped on a guess.
+- **A live run is untouched.** A refetch during a run is routine, so nothing is
+  settled when the worker is still registered.
+
+The `Failed` transitions clear the *row* flag as well as the state's, because
+`StreamingHint` reads the row's and `isChatWorking` reads the state's — clearing
+only one leaves a screen that contradicts itself. Both now go through
+`ChatViewModel.stopStreaming`.
+
 ### The transcript list is virtualized
 
 `ChatView` renders the transcript in a `LazyColumn` — Compose's `RecyclerView` —
