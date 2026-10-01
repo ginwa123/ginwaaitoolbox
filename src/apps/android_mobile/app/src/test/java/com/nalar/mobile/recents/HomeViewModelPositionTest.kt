@@ -1,6 +1,7 @@
 package com.nalar.mobile.recents
 
 import com.nalar.mobile.testing.InMemoryProjectsCache
+import com.nalar.mobile.projects.KanbanClient
 import com.nalar.mobile.projects.ProjectsClient
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
@@ -118,6 +119,7 @@ class HomeViewModelPositionTest {
         // as a second request these tests would then have to account for.
         projectsClient = ProjectsClient(MemorySessionStore()),
         projectsCache = InMemoryProjectsCache(),
+        kanbanClient = KanbanClient(MemorySessionStore()),
         positionStore = positionStore,
         ioDispatcher = ioDispatcher,
     )

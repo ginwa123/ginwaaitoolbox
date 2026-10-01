@@ -3,6 +3,7 @@ package com.nalar.mobile.projects
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -28,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -127,13 +129,44 @@ internal fun CreateTaskRow(
  * drawer that is still behind it, and a sheet that leaves its context visible is
  * the one a thumb can back out of without thinking.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateTaskPickerSheet(
     projectName: String,
     onPickStandardChat: () -> Unit,
     onPickMemory: () -> Unit,
     onDismiss: () -> Unit,
+) = PickerSheetScaffold(projectName = projectName, onDismiss = onDismiss) {
+    PickerCard(
+        title = "Standard Chat",
+        detail = "Starts a conversation you can write in right away.",
+        glyph = Icons.Filled.ChatBubbleOutline,
+        testTag = "create_task_pick_standard",
+        onClick = onPickStandardChat,
+    )
+    PickerCard(
+        title = "Memory",
+        detail = "Saves a markdown file the agent reads on its next run here.",
+        glyph = Icons.Filled.Description,
+        testTag = "create_task_pick_memory",
+        onClick = onPickMemory,
+    )
+}
+
+/**
+ * The sheet chrome both pickers share: the "Add to …" heading, the card list,
+ * and the drag handle a `ModalBottomSheet` puts above them.
+ *
+ * @param sheetTestTag lets a UI test name the sheet it is driving. Only one
+ *   sheet is left, but the tag is still named rather than inlined so the test
+ *   that drives it reads the same way as every other test tag in this file.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PickerSheetScaffold(
+    projectName: String,
+    onDismiss: () -> Unit,
+    sheetTestTag: String = "create_task_picker",
+    cards: @Composable ColumnScope.() -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -141,7 +174,7 @@ fun CreateTaskPickerSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = NalarBackgroundRaised,
-        modifier = Modifier.testTag("create_task_picker"),
+        modifier = Modifier.testTag(sheetTestTag),
     ) {
         Column(
             modifier = Modifier
@@ -156,21 +189,7 @@ fun CreateTaskPickerSheet(
                 color = NalarText,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
-
-            PickerCard(
-                title = "Standard Chat",
-                detail = "Starts a conversation you can write in right away.",
-                glyph = Icons.Filled.ChatBubbleOutline,
-                testTag = "create_task_pick_standard",
-                onClick = onPickStandardChat,
-            )
-            PickerCard(
-                title = "Memory",
-                detail = "Saves a markdown file the agent reads on its next run here.",
-                glyph = Icons.Filled.Description,
-                testTag = "create_task_pick_memory",
-                onClick = onPickMemory,
-            )
+            cards()
         }
     }
 }
@@ -351,12 +370,24 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
  * `+` — so there is a single create flow in the app rather than two that agree
  * today. It composes nothing when the flow is [CreateTaskStep.Idle], so calling
  * it unconditionally costs one state read.
+ *
+ * Every step gets a case here, so a step added to [CreateTaskStep] without a
+ * branch is a compile error rather than a form that silently does not open.
+ *
+ * @param kanbanData what the board's form needs that the form cannot fetch for
+ *   itself. Empty is fine: a create needs none of it.
+ * @param onRequestKanbanData fired once per open of the board's form, so the
+ *   columns, the profiles and the server home arrive while the reader is typing
+ *   a title rather than after they press commit. Keyed on the step, so a form
+ *   that is already open is not re-fetched on every recomposition.
  */
 @Composable
 fun CreateTaskHost(
     controller: CreateTaskController,
     isSubmitting: Boolean,
     errorMessage: String?,
+    kanbanData: NewTaskDialogData = NewTaskDialogData(),
+    onRequestKanbanData: (workspaceId: String, itemId: String) -> Unit = { _, _ -> },
 ) {
     when (val step = controller.step) {
         CreateTaskStep.Idle -> Unit
@@ -367,6 +398,21 @@ fun CreateTaskHost(
             onPickMemory = controller::pickMemory,
             onDismiss = controller::dismiss,
         )
+
+        is CreateTaskStep.NamingTask -> {
+            LaunchedEffect(step.workspaceId, step.itemId) {
+                onRequestKanbanData(step.workspaceId, step.itemId)
+            }
+            NewTaskDialog(
+                projectName = step.projectName,
+                defaultCwd = step.projectPath,
+                data = kanbanData,
+                isSubmitting = isSubmitting,
+                errorMessage = errorMessage,
+                onSubmit = controller::submitTaskForm,
+                onClose = controller::dismiss,
+            )
+        }
 
         is CreateTaskStep.NamingMemory -> NewMemoryDialog(
             projectName = step.projectName,

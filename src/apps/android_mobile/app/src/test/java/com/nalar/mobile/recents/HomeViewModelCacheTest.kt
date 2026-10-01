@@ -1,6 +1,7 @@
 package com.nalar.mobile.recents
 
 import com.nalar.mobile.testing.InMemoryProjectsCache
+import com.nalar.mobile.projects.KanbanClient
 import com.nalar.mobile.projects.ProjectsClient
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
@@ -103,6 +104,9 @@ class HomeViewModelCacheTest {
         // as a second request these tests would then have to account for.
         projectsClient = ProjectsClient(MemorySessionStore()),
         projectsCache = InMemoryProjectsCache(),
+        // Same reasoning: these tests are about the recents cache, and the
+        // board's form is never opened by any of them.
+        kanbanClient = KanbanClient(MemorySessionStore()),
         positionStore = positionStore,
         ioDispatcher = ioDispatcher,
     )
