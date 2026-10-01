@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Android drawer · Recent section gets a See-all destination</title>
+<style>
+  /* Page chrome inherits the host theme. Only the *device screens* are painted,
+     because the subject of this mockup is the app, which is dark by design
+     (src/apps/android_mobile/app/src/main/java/com/nalar/mobile/ui/Color.kt).
+     Tokens and classes are lifted from
+     docs/plans/2026-09-27-android-sidebar-projects-wireframe.html so the two
+     wireframes can be read side by side. */
+  :root{
+    --bg:#181616; --raised:#211F1C; --card:#1D1C19; --field:#24221F;
+    --border:#393836; --text:#C5C9C5; --muted:#A6A69C; --dim:#7A8382;
+    --accent:#8992A7; --accent-soft:#B7C0D8; --aqua:#8EA4A2; --error:#E08C86;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 24px 64px;font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:16px;margin:40px 0 12px;padding-bottom:6px;border-bottom:1px solid #282727}
+  h3{font-size:13px;margin:0 0 8px;letter-spacing:.06em;text-transform:uppercase}
+  p.lede{margin:0 0 4px;max-width:78ch}
+  p.note{margin:6px 0 0;max-width:78ch;color:#a6a69c;font-size:12.5px}
+  code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:#24221F;padding:1px 5px;border-radius:4px}
+  .grid{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}
+  figure{margin:0;width:296px}
+  figcaption{margin-top:10px;font-size:12.5px;line-height:1.45}
+  figcaption b{display:block;margin-bottom:2px}
+
+  /* ---- device ---- */
+  .phone{width:296px;border:1px solid #282727;border-radius:26px;overflow:hidden;background:#000}
+  .statusbar{height:22px;background:var(--bg);display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:10px;color:var(--dim)}
+  .appbar{height:52px;background:var(--raised);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 12px}
+  .burger{width:22px;height:16px;display:flex;flex-direction:column;justify-content:space-between}
+  .burger i{display:block;height:1.5px;background:var(--muted);border-radius:1px}
+  .appbar .t{font-size:13px;color:var(--text)}
+  .appbar .ico{margin-left:auto;color:var(--dim);font-size:14px}
+  .appbar .back{color:var(--accent);font-size:16px}
+
+  .drawer{background:var(--bg);border-right:1px solid var(--border);padding:0 12px 10px;display:flex;flex-direction:column;min-height:498px}
+
+  /* ---- workspace dropdown (unchanged) ---- */
+  .ws{margin-top:12px;border:1px solid var(--border);background:var(--field);border-radius:14px;padding:10px 13px;display:flex;align-items:center;gap:8px}
+  .ws .eyebrow{font-size:10px;letter-spacing:.08em;color:var(--dim);text-transform:uppercase}
+  .ws .name{font-size:14px;color:var(--text);font-weight:500}
+  .ws .caret{margin-left:auto;color:var(--muted);font-size:11px}
+
+  /* ---- top-level New Chat (unchanged) ---- */
+  .newchat{display:flex;align-items:center;gap:9px;padding:10px;min-height:34px}
+  .newchat .pen{width:16px;text-align:center;font-size:13px;color:var(--muted);flex:none}
+  .newchat .lbl{font-size:13px;color:var(--text)}
+
+  /* ---- sections ---- */
+  .sec-h{margin:14px 0 6px;padding:0 8px;display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--dim)}
+  .sec-h .chev{color:var(--dim);font-size:10px;transition:transform .2s}
+  .sec-h .chev.open{transform:rotate(90deg)}
+  .sec-h .count{margin-left:auto;font-size:11px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--muted);opacity:.8}
+
+  /* ---- rows ---- */
+  .row{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:12px;min-height:34px}
+  .row.chat{background:transparent}
+  .row.chat.sel{background:rgba(137,146,167,.16);box-shadow:inset 0 0 0 1px rgba(137,146,167,.36)}
+  .row.proj{background:transparent}
+  .row.proj.exp{background:var(--field)}
+  .row .lbl{flex:1;min-width:0;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .time{display:block;font-size:11px;color:var(--muted);margin-top:1px}
+  .row .meta{font-size:11px;color:var(--muted);flex:none}
+  .row .glyph{width:16px;text-align:center;font-size:13px;color:var(--muted);flex:none}
+  .row .sub{width:16px;text-align:center;font-size:9px;color:var(--dim);flex:none}
+  .row .sub.open{transform:rotate(90deg)}
+  .row .spin{width:12px;height:12px;border:1.5px solid var(--accent);border-top-color:transparent;border-radius:50%;flex:none}
+  .row .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+
+  /* the destination row — identical to the project's, by design */
+  .seeall{margin:4px 0 6px 8px;padding:8px 10px;border-radius:10px;background:rgba(137,146,167,.10);color:var(--accent-soft);font-size:12px;display:flex;align-items:center;gap:6px;border:1px solid transparent}
+  .seeall.hot{border-color:rgba(137,146,167,.35)}
+  .seeall .chev{margin-left:auto;font-size:11px}
+  .seeall.ghost{background:transparent;color:#4d4a47;border:1px dashed #2a2825}
+
+  .listnav{padding:8px}
+  .foot{padding:16px 8px;text-align:center;font-size:11.5px;color:var(--dim)}
+
+  /* ---- footer / placeholders ---- */
+  .acct{margin-top:auto;padding-top:12px;border-top:1px solid var(--border)}
+  .acct .l{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .acct .e{font-size:13px;color:var(--text);margin-top:2px}
+  .acct .btn{margin-top:6px;font-size:12.5px;color:var(--accent)}
+  .empty{padding:14px 10px;text-align:center}
+  .empty .t{font-size:14px;color:var(--muted)}
+  .empty .d{font-size:12.5px;color:var(--dim);margin-top:3px}
+  .banner{margin:10px 0 0;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--raised);font-size:11.5px;color:var(--dim);display:flex;align-items:center;gap:8px}
+  .banner .retry{margin-left:auto;color:var(--accent);flex:none}
+
+  .content{padding:16px 14px;color:var(--dim);font-size:12.5px}
+  .bubble{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-bottom:10px;color:var(--muted)}
+  .scrim{background:rgba(0,0,0,.5)}
+
+  /* ---- callouts ---- */
+  .rel{position:relative}
+  .pin{position:absolute;font-size:10px;font-weight:700;background:#8ba4b0;color:#12110f;padding:1px 5px;border-radius:5px;letter-spacing:.04em;transform:translate(-4px,-11px)}
+  .no{position:absolute;font-size:10px;font-weight:700;background:var(--error);color:#12110f;padding:1px 5px;border-radius:5px;letter-spacing:.04em;transform:translate(-4px,-11px)}
+  table{border-collapse:collapse;width:100%;max-width:980px;font-size:12.5px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #282727;vertical-align:top}
+  th{font-weight:600;color:#a6a69c;white-space:nowrap}
+  ul{margin:6px 0 0;padding-left:20px}
+  li{margin:4px 0}
+  .tag{display:inline-block;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;padding:1px 6px;border-radius:5px;background:#24221F;border:1px solid #393836;color:#a6a69c}
+  .tag.chg{border-color:#5a6a4a;color:#c3d6a4}
+</style>
+</head>
+<body>
+
+<h1>Wireframe — Android drawer · <b style="font-weight:600">Recent</b> gets a See-all destination</h1>
+<p class="lede">
+  The drawer keeps <b>five</b> chats and everything else moves behind a
+  <code>See all chats ›</code> button at the bottom of the section. Tapping it closes the drawer and
+  opens a <b>new full-screen page</b> that lists every chat in the workspace and pages on scroll.
+  This is the shape the <b>workspace-item kanban</b> already uses, copied end to end: five rows inline,
+  a button, a page behind it.
+</p>
+<p class="note">
+  <span class="tag chg">Changed</span>
+  The recents request goes back to <code>limit=5</code> (<code>RecentsApi.DRAWER_PREVIEW_ROWS</code>,
+  the same constant name <code>ProjectsApi</code> uses) so the drawer paints exactly what it shows.
+  The full list is fetched by the new page at <code>RecentsApi.CHATS_PAGE_LIMIT = 20</code>, the way a
+  project's chats are fetched — so paging cost is unchanged for the project shape and newly spent only
+  where the reader actually asked for it.
+  <br><br>
+  The header's count keeps saying the server's <code>total</code> (30), not the five on screen, so a
+  capped section still reports what is in it. <code>See all chats ›</code> carries <b>no</b> count —
+  same rule as the project's, for the same reason: the page behind it is what has the honest number.
+</p>
+
+<h2>1 · The drawer — five rows, then the button</h2>
+<div class="grid">
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="appbar"><span class="t">agentic coding</span><span class="ico">◷</span></div>
+      <div class="drawer">
+        <div class="ws">
+          <div>
+            <div class="eyebrow">Workspace</div>
+            <div class="name">agentic coding</div>
+          </div>
+          <span class="caret">▾</span>
+        </div>
+
+        <div class="newchat"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+
+        <div class="sec-h"><span class="chev">▾</span> Recent <span class="count">30</span></div>
+
+        <div class="row chat rel"><span class="pin">1–5</span>
+          <span class="lbl">click document ui have bugs, now</span><span class="spin"></span>
+        </div>
+        <div class="row chat"><span class="lbl">New Chat</span></div>
+        <div class="row chat"><span class="lbl">is we have frontend to set enabled</span></div>
+        <div class="row chat"><span class="lbl">fix zig build functional test</span></div>
+        <div class="row chat sel"><span class="dot"></span><span class="lbl">use add document tools</span></div>
+
+        <div class="seeall rel hot"><span class="pin">2</span>See all chats<span class="chev">›</span></div>
+
+        <div class="sec-h"><span class="chev open">▾</span> Projects <span class="count">11</span></div>
+        <div class="row proj exp"><span class="glyph">▦</span><span class="lbl">AGENTIC_KANBAN</span></div>
+
+        <div class="acct">
+          <div class="l">Signed in as</div>
+          <div class="e">gilangtrisetyo@gmail.com</div>
+          <div class="btn">Log out</div>
+        </div>
+      </div>
+    </div>
+    <figcaption>
+      <b>1 · The preview, unchanged in kind</b>
+      Five rows, the fifth carrying the selected accent and the busy dot. The section header keeps the
+      server's true total, so a reader sees that thirty exist without the list being thirty tall.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="appbar"><span class="t">agentic coding</span><span class="ico">◷</span></div>
+      <div class="drawer">
+        <div class="ws">
+          <div>
+            <div class="eyebrow">Workspace</div>
+            <div class="name">agentic coding</div>
+          </div>
+          <span class="caret">▾</span>
+        </div>
+
+        <div class="newchat"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+
+        <div class="sec-h"><span class="chev">▾</span> Recent <span class="count">30</span></div>
+
+        <div class="row chat"><span class="lbl">click document ui have bugs, now</span></div>
+        <div class="row chat"><span class="lbl">New Chat</span></div>
+        <div class="row chat"><span class="lbl">is we have frontend to set enabled</span></div>
+        <div class="row chat"><span class="lbl">fix zig build functional test</span></div>
+        <div class="row chat sel"><span class="dot"></span><span class="lbl">use add document tools</span></div>
+
+        <div class="seeall rel hot"><span class="pin">3</span>See all chats<span class="chev">›</span></div>
+
+        <div class="sec-h"><span class="chev open">▾</span> Projects <span class="count">11</span></div>
+        <div class="row proj exp"><span class="glyph">▦</span><span class="lbl">AGENTIC_KANBAN</span></div>
+
+        <div class="acct">
+          <div class="l">Signed in as</div>
+          <div class="e">gilangtrisetyo@gmail.com</div>
+          <div class="btn">Log out</div>
+        </div>
+      </div>
+    </div>
+    <figcaption>
+      <b>2 · A destination, not a toggle</b>
+      The same <code>SeeAllChatsRow</code> the project section draws — one implementation, two call
+      sites, only the test tag and the words differ. It closes the drawer and pushes a route; it does
+      not expand in place and it has no "show fewer" half.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="appbar"><span class="back">‹</span><span class="t">All chats</span></div>
+      <div class="listnav">
+        <div class="row chat rel"><span class="pin">4</span>
+          <span class="lbl">click document ui have bugs, now<span class="time">1m</span></span><span class="spin"></span>
+        </div>
+        <div class="row chat"><span class="lbl">New Chat<span class="time">1m</span></span></div>
+        <div class="row chat"><span class="lbl">is we have frontend to set enabled<span class="time">4m</span></span></div>
+        <div class="row chat"><span class="lbl">fix zig build functional test<span class="time">5m</span></span></div>
+        <div class="row chat sel"><span class="dot"></span><span class="lbl">use add document tools<span class="time">5m</span></span></div>
+        <div class="row chat"><span class="lbl">chnage the ci pipeline<span class="time">8h</span></span></div>
+        <div class="row chat"><span class="lbl">add menu below projects name<span class="time">1d</span></span></div>
+        <div class="foot">Scroll for older chats</div>
+      </div>
+    </div>
+    <figcaption>
+      <b>4 · The page behind the button</b>
+      <code>chats/{workspaceId}</code> — a sibling route, registered next to <code>chat/{sessionId}</code>
+      and <code>project/{workspaceId}/{itemId}</code>, not nested under either. Full-screen list, a back
+      arrow, and the three-state footer the project screen already uses. Tapping a row opens the chat the
+      same way the drawer's row does.
+    </figcaption>
+  </figure>
+
+</div>
+
+<h2>2 · States the button has to get right</h2>
+<div class="grid">
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="appbar"><span class="t">agentic coding</span><span class="ico">◷</span></div>
+      <div class="drawer">
+        <div class="ws"><div><div class="eyebrow">Workspace</div><div class="name">agentic coding</div></div><span class="caret">▾</span></div>
+        <div class="newchat"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+        <div class="sec-h"><span class="chev">▾</span> Recent <span class="count">3</span></div>
+        <div class="row chat"><span class="lbl">fix zig build test</span></div>
+        <div class="row chat"><span class="lbl">New Chat</span></div>
+        <div class="row chat"><span class="lbl">add document tools</span></div>
+        <div class="seeall ghost rel"><span class="no">A</span>See all chats<span class="chev">›</span></div>
+        <div class="acct"><div class="l">Signed in as</div><div class="e">gilangtrisetyo@gmail.com</div><div class="btn">Log out</div></div>
+      </div>
+    </div>
+    <figcaption>
+      <b>A · Three chats → no button at all</b>
+      Ghosted here only to show where it would sit. The rule is
+      <code>chats.size &gt; DRAWER_PREVIEW_ROWS || hasMore</code>: a workspace with nothing behind the
+      five gets no row, because a button that opens the same five rows is a detour, not a destination.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="appbar"><span class="t">agentic coding</span><span class="ico">◷</span></div>
+      <div class="drawer">
+        <div class="ws"><div><div class="eyebrow">Workspace</div><div class="name">agentic coding</div></div><span class="caret">▾</span></div>
+        <div class="newchat"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+        <div class="banner rel"><span class="no">B</span>Showing saved data · Could not reach nalar<span class="retry">Retry</span></div>
+        <div class="sec-h"><span class="chev">▾</span> Recent</div>
+        <div class="row chat"><span class="lbl">fix zig build test</span></div>
+        <div class="seeall"><span class="lbl" style="visibility:hidden">See all chats</span><span class="chev">›</span></div>
+        <div class="acct"><div class="l">Signed in as</div><div class="e">gilangtrisetyo@gmail.com</div><div class="btn">Log out</div></div>
+      </div>
+    </div>
+    <figcaption>
+      <b>B · A stale refresh hides the button</b>
+      The five rows on screen came from the cache and the server said nothing about whether twenty-five
+      more exist. The section folds to one row with <em>no</em> button rather than showing a destination
+      the app cannot honour. Retry is what restores it.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="appbar"><span class="t">agentic coding</span><span class="ico">◷</span></div>
+      <div class="drawer">
+        <div class="ws"><div><div class="eyebrow">Workspace</div><div class="name">agentic coding</div></div><span class="caret">▾</span></div>
+        <div class="newchat"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+        <div class="sec-h"><span class="chev">▾</span> Recent</div>
+        <div class="empty"><div class="t">No recent chats</div><div class="d">Chats in this workspace will appear here.</div></div>
+        <div class="sec-h"><span class="chev open">▾</span> Projects <span class="count">11</span></div>
+        <div class="row proj exp"><span class="glyph">▦</span><span class="lbl">AGENTIC_KANBAN</span></div>
+        <div class="acct"><div class="l">Signed in as</div><div class="e">gilangtrisetyo@gmail.com</div><div class="btn">Log out</div></div>
+      </div>
+    </div>
+    <figcaption>
+      <b>C · Empty workspace</b>
+      No rows, no count, no button, and Projects sits directly underneath — which is the reason the
+      preview exists at all. Nothing is hidden behind a tap that has nothing to show.
+    </figcaption>
+  </figure>
+
+</div>
+
+<h2>3 · Why the page is a destination and not a taller drawer</h2>
+<ul>
+  <li><b>The drawer has one scroller and two sections.</b> Thirty rows of chat titles put Projects —
+      the part of this drawer people navigate <em>by</em> — below the fold, and the last thing a
+      reader wants from opening a drawer is to land in the middle of a list they did not scroll to.</li>
+  <li><b>A list that grows under your finger is not a list you can aim at.</b> Tapping a chat is a
+      positional act; a row that moves between two glances is a mis-tap.</li>
+  <li><b>The same reason the project row is not a destination either.</b> A project row <em>filters</em>
+      in place; the chat list is a place to go.</li>
+  <li><b>It is the shape the project already ships.</b> Five inline, a <code>See all chats ›</code>
+      button, <code>project/{workspaceId}/{itemId}</code> behind it — page, filter, and the drawer
+      all in agreement. Copying it end to end is why the two sections cannot drift apart.</li>
+</ul>
+
+<h2>4 · The wire</h2>
+<table>
+  <tr><th>What changes</th><th>Detail</th></tr>
+  <tr>
+    <td><code>RecentsApi.DRAWER_PREVIEW_ROWS</code></td>
+    <td><b>New, = 5.</b> The name mirrors <code>ProjectsApi.DRAWER_PREVIEW_ROWS</code> so the two
+        sections say the same thing with the same words. The drawer requests exactly this many rows,
+        so the composable renders <code>chats</code> as-is — there is no second, hidden cap in the UI to
+        drift from the request.</td>
+  </tr>
+  <tr>
+    <td><code>RecentsApi.CHATS_PAGE_LIMIT</code></td>
+    <td>30 → <b>20</b>, matching <code>ProjectsApi.TASKS_PAGE_LIMIT</code>. It is the page size for the
+        new full-screen list. A workspace of thirty chats is two round trips on a screen the reader
+        chose to scroll, rather than one thirty-row payload the drawer never shows.</td>
+  </tr>
+  <tr>
+    <td>Route</td>
+    <td><code>chats/{workspaceId}</code>, a <b>sibling</b> of <code>chat/{sessionId}</code> — not
+        nested under it, or Back from a chat would pop the list. Deep link
+        <code>nalar://chats/{workspaceId}</code>. One id, not two: <code>/api/session?workspace_id=…</code>
+        needs only the workspace, unlike the project's nested item endpoints.</td>
+  </tr>
+  <tr>
+    <td>Endpoint</td>
+    <td><b>None.</b> Same <code>GET /api/session?sort_by=updated_at&amp;direction=desc&amp;limit=…&amp;workspace_id=…</code>,
+        the same <code>next_cursor</code> round-trip. Only <code>limit</code> changes per caller.</td>
+  </tr>
+  <tr>
+    <td><code>HomeUiState</code></td>
+    <td><code>isLoadingMoreChats</code> and <code>hasMoreChats</code> come back — but they now feed the
+        <b>button's</b> honesty and the new screen's footer, never a drawer scroll. The cursor and the
+        load-more job live on in the ViewModel, used by the screen only.</td>
+  </tr>
+  <tr>
+    <td>Deleted</td>
+    <td><code>toggleRecentsShowAll</code>, <code>isRecentsShowAll</code>, the <code>snapshotFlow</code>
+        paging watcher in the drawer, and the "Show fewer" half of the old toggle row. The new page
+        gets a new drawer-free latch, exactly as <code>ProjectChatsScreen</code> does.</td>
+  </tr>
+  <tr>
+    <td>Not mirrored</td>
+    <td>The project screen's <code>+</code> in the app bar. This page has no project to create in: the
+        drawer's <b>New Chat</b> creates in the workspace's default project, and putting that on a
+        full-screen list needs a decision of its own. Left out on purpose, not forgotten.</td>
+  </tr>
+</table>
+
+<h2>5 · Decisions a reviewer still has to answer</h2>
+<table>
+  <tr><th>#</th><th>Question</th><th>Recommendation</th></tr>
+  <tr><td>Q1</td><td>Should the button carry the count — "See all 25 more chats"?</td>
+    <td><b>No.</b> The project's does not, for a recorded reason: the page behind the button is what
+        has the honest number, and a count in the drawer is a second place for it to go stale.</td></tr>
+  <tr><td>Q2</td><td>Should the button's page be reachable from the chat route's drawer too?</td>
+    <td><b>Yes, from both.</b> It is the same drawer, so it must offer the same destination — the same
+        reason the section fold is shared between them.</td></tr>
+  <tr><td>Q3</td><td>What does the page's app bar do about creating a chat?</td>
+    <td><b>Nothing for now.</b> The project screen's <code>+</code> opens a flow scoped to one project;
+        there is no equivalent here without inventing a "which project" question the drawer already
+        answers for itself.</td></tr>
+</table>
+
+</body>
+</html>

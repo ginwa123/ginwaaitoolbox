@@ -45,14 +45,31 @@ data class HomeUiState(
     val selectedChatId: String? = null,
     val errorMessage: String? = null,
     /**
-     * A *later* page is in flight. Kept apart from [isLoading] on purpose: the
-     * first page blanks the list with a spinner, a later page must not — the
-     * rows already on screen are real and stay put while the next page loads.
+     * A *later* page is in flight on the full-screen list. Kept apart from
+     * [isLoading] on purpose: the first page blanks the list with a spinner, a
+     * later page must not — the rows already on screen are real and stay put
+     * while the next page loads.
+     *
+     * The drawer never sets this. Its five rows are one request and there is
+     * nothing behind them but the destination row; only
+     * [com.nalar.mobile.recents.RecentsChatsScreen] pages.
      */
     val isLoadingMoreChats: Boolean = false,
-    /** Whether the server says another page exists. False ends the scroll. */
+    /**
+     * Whether the server says another page exists.
+     *
+     * Read by the drawer for one thing only — deciding whether the
+     * `See all chats ›` row is honest to offer — and by the screen's footer.
+     */
     val hasMoreChats: Boolean = false,
-    /** Full filtered row count for the selected workspace; 0 when unreported. */
+    /**
+     * The server's full filtered count for this workspace; 0 when unreported.
+     *
+     * Held because the drawer shows [RecentsApi.DRAWER_PREVIEW_ROWS] rows and
+     * the header has to say how many exist, not how many are on screen. A
+     * capped section that quietly claims five is a section lying about its own
+     * contents.
+     */
     val chatsTotal: Int = 0,
     // ── Projects (the sidebar's Projects section) ──────────────────────────
     /**
@@ -66,16 +83,6 @@ data class HomeUiState(
      * looks at a chat is a setting that is not a setting.
      */
     val isRecentsExpanded: Boolean = true,
-    /**
-     * Whether the Recents section shows every loaded chat instead of the first
-     * few.
-     *
-     * False by default, and that default is the point: a phone drawer that
-     * opens on thirty chat titles is a drawer whose other sections are below
-     * the fold. Kept beside [isRecentsExpanded] — same drawer, same lifetime,
-     * same reason a fold has to outlive the sheet.
-     */
-    val isRecentsShowAll: Boolean = false,
     /**
      * Whether the Projects section is unfolded. Expanded by default, matching
      * the desktop's `sidebarStore.projectsExpanded` — a section that has to be
@@ -190,10 +197,9 @@ data class HomeUiState(
         get() = errorMessage != null && workspaces.isNotEmpty()
 
     /**
-     * The scroll should keep asking. True whenever there is something left to
-     * fetch, so the sidebar and the ViewModel agree on when to stop — the
-
-     * alternative is two independent notions of "done" that drift.
+     * The screen's scroll should keep asking. True whenever there is something
+     * left to fetch, so the screen and the ViewModel agree on when to stop —
+     * the alternative is two independent notions of "done" that drift.
      *
      * [chatsTotal] is a belt-and-braces check on top of the server's own
      * `has_more`: once the list physically holds as many rows as the server
@@ -297,9 +303,10 @@ class HomeViewModel(
     private var resumeWorkspaceSeed: String? = null
 
     /**
-     * A later page's fetch. Deliberately a *separate* job from [chatsJob]: a
-     * refresh must be able to cancel page 1 without a stale load-more landing
-     * on top of it, and the two have to be cancellable independently.
+     * A later page's fetch, on behalf of the full-screen list. Deliberately a
+     * *separate* job from [chatsJob]: a refresh must be able to cancel the
+     * drawer's page 1 without a stale later page landing on top of it, and the
+     * two have to be cancellable independently.
      */
     private var moreChatsJob: Job? = null
 
@@ -543,10 +550,21 @@ class HomeViewModel(
      * that. The web relies on every call site remembering to follow up; making
      * it structural here means no caller can get it wrong.
      *
-     * This is page 1. Everything it learns about pagination (the cursor and
-     * whether another page exists) is recorded here so [loadMoreChats] has a
-     * correct starting point, and a full reload deliberately discards any pages
-     * the user had already scrolled in.
+     * This is the drawer's **preview**, and it asks for exactly
+     * [RecentsApi.DRAWER_PREVIEW_ROWS] rows. Not a page of a longer list: a
+     * phone drawer is a switchboard, and thirty rows of chat titles push the
+     * Projects section — the part of this drawer people navigate *by* — off
+     * the bottom of the screen. The rows behind this are a tap away on
+     * [RecentsChatsScreen], which is the same trade the project section makes
+     * and the reason both name the constant the same way.
+     *
+     * Sizing the request to the preview is deliberate: the drawer then renders
+     * what it fetched, with no second cap in the composable to drift from it.
+     *
+     * Everything this learns about pagination — the cursor and whether another
+     * page exists — is recorded here so [loadMoreChats] has a correct starting
+     * point, and a full reload deliberately discards any pages the reader had
+     * already scrolled in on the full-screen list.
      */
     private fun loadChats(workspaceId: String) {
         primeChatsFromCache(workspaceId)
@@ -563,7 +581,13 @@ class HomeViewModel(
         val generation = chatsGeneration
         chatsJob?.cancel()
         chatsJob = viewModelScope.launch {
-            when (val result = withContext(ioDispatcher) { client.loadChats(workspaceId) }) {
+            val result = withContext(ioDispatcher) {
+                client.loadChats(
+                    workspaceId = workspaceId,
+                    limit = RecentsApi.DRAWER_PREVIEW_ROWS,
+                )
+            }
+            when (result) {
                 is RecentsResult.SignedOut -> expireSession()
 
                 is RecentsResult.Unavailable -> _uiState.update { state ->
@@ -596,13 +620,16 @@ class HomeViewModel(
                                 selectedChatId = state.selectedChatId
                                     ?.takeIf { chatId -> chats.any { it.id == chatId } }
                                     ?: chats.firstOrNull()?.id,
+                                // `has_more` is what tells the drawer whether a
+                                // `See all chats ›` row is honest to offer; five
+                                // rows on screen cannot answer that on their own.
                                 hasMoreChats = page.hasMore,
                                 chatsTotal = page.total,
                             )
                         }
                     }
-                    // Set only after the state applied, so the scroll can never
-                    // fire against a cursor the list does not match.
+                    // Set only after the state applied, so the screen's scroll
+                    // can never fire against a cursor the list does not match.
                     chatsCursor = page.nextCursor
                 }
             }
@@ -610,8 +637,10 @@ class HomeViewModel(
     }
 
     /**
-     * Append the next page of recents. Called by the sidebar when the user
-     * reaches the bottom of the list.
+     * Append the next page of recents. Called by
+     * [RecentsChatsScreen] when the reader reaches the bottom — never by the
+     * drawer, whose five rows are one request with a destination row instead
+     * of a scroll.
      *
      * A no-op in every state where asking again would be wrong — already
      * loading, nothing left, a first page still in flight — because the scroll
@@ -634,7 +663,11 @@ class HomeViewModel(
             _uiState.update { it.copy(isLoadingMoreChats = true) }
 
             val result = withContext(ioDispatcher) {
-                client.loadChats(workspaceId = workspaceId, cursor = cursor)
+                client.loadChats(
+                    workspaceId = workspaceId,
+                    cursor = cursor,
+                    limit = RecentsApi.CHATS_PAGE_LIMIT,
+                )
             }
             if (generation != chatsGeneration) return@launch
             // The workspace changed (or the list was reloaded) while the request
@@ -651,9 +684,9 @@ class HomeViewModel(
 
                 is RecentsResult.Unavailable -> _uiState.update { current ->
                     // Keep the rows we already have and keep `hasMore` true, so
-                    // scrolling again retries the same page. Blanking the
-                    // sidebar, or silently ending the list, would both be
-                    // worse than a page that did not arrive.
+                    // scrolling again retries the same page. Blanking the list,
+                    // or silently ending it, would both be worse than a page
+                    // that did not arrive.
                     current.copy(isLoadingMoreChats = false)
                 }
 
@@ -697,6 +730,8 @@ class HomeViewModel(
             }
         }
     }
+
+
 
     // ── Projects ───────────────────────────────────────────────────────────
 
@@ -811,18 +846,6 @@ class HomeViewModel(
      */
     fun toggleRecentsSection() {
         _uiState.update { it.copy(isRecentsExpanded = !it.isRecentsExpanded) }
-    }
-
-    /**
-     * Reveal the rest of the loaded chats, or fold them back to the preview.
-     *
-     * No fetch either way: the rows behind the cap are already paged into
-     * memory, and the tap is a visibility change rather than a question about
-     * the network. Paging itself starts only once the whole list is on screen
-     * and scrolled — see `recentsShowsChatFooter`.
-     */
-    fun toggleRecentsShowAll() {
-        _uiState.update { it.copy(isRecentsShowAll = !it.isRecentsShowAll) }
     }
 
     /**

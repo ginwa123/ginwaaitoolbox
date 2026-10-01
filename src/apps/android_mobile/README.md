@@ -217,22 +217,45 @@ Robolectric, which matters more than it sounds: the equivalent instrumented
 tests need an emulator, and an emulator is the one thing CI does not have, so
 this behaviour would otherwise ship ungated.
 
-### Paging is scoped to the chat region
+### Recent is a preview plus a destination
 
-The drawer's one scroller holds both sections, so the "ask for the next page"
-watcher is anchored on where the *chat* rows end
-(`chatRegionEndIndex`), not on the bottom of the whole list — otherwise it would
-only fire once the reader had scrolled past every project row, i.e. never for
-anyone who stops at the chats. The Recents header is counted in that index
-because it is a real row: leave it out and the trigger arms a page early.
+The drawer's **Recent** section shows **five** chats and a `See all chats ›`
+button. Tapping it closes the drawer and pushes `chats/{workspaceId}` — a
+full-screen list of every chat in the workspace, paging on scroll. That is the
+workspace-item kanban's shape copied end to end: filter in place, button, page
+behind it.
 
-The band is one-sided (`last >= end - 2`). It used to also require
-`last <= end`, on the theory that being *past* the footer meant the reader was
-reading projects — but a scroll that *lands* past the footer (a fling, a
-`scrollToItem`, a fast drag on a short page) jumps the band instead of crossing
-it and the page never came. The latch above the watcher is the anti-storm guard,
-and holding `last` at or past the end keeps that latch engaged, so nothing
-re-fires while the reader is down among the projects.
+It is a *destination*, not a toggle. There is no "show fewer" half and no
+in-place expansion — the whole list is a screen, and the chevron is the
+affordance for "this row goes somewhere".
+
+The button is offered only when there is something behind the five:
+
+```kotlin
+chats.size > RecentsApi.DRAWER_PREVIEW_ROWS || hasMoreChats
+```
+
+`hasMoreChats` is the half that matters. The drawer only ever fetched a
+preview, so `size` alone cannot tell "five is all there is" from "five of
+thirty" — and a destination that opens a page holding the same five rows is a
+control that does nothing. Same rule, same wording, as
+`ProjectsState.shouldOfferSeeAllChats`.
+
+The section header shows the server's `chatsTotal`, not the rows on screen: a
+header reading "5" over thirty chats is a section claiming it holds five when it
+holds thirty. When the server sends no count the loaded rows are used instead,
+because three rows *are* all there is to claim.
+
+`SeeAllChatsRow` is one implementation with two call sites — only the test tag
+and the words ("in this project" / "in this workspace") differ. The two
+sections can be read side by side precisely because they cannot drift.
+
+**The drawer never pages.** `HomeViewModel.loadMoreChats` is reached only by
+`RecentsChatsScreen`; the drawer's rows are one request and a destination row.
+The scroll trigger that used to live in `RecentsSidebar` — index arithmetic over
+the chat region, a one-sided band, and a latch against request storms — moved to
+the screen with the list it was paging, and is now the same shape as
+`ProjectChatsScreen`'s.
 
 ## Chat
 
@@ -803,11 +826,28 @@ stopped at the answer would leave the fold above it unmarked.
 
 ## Recents
 
-The drawer's **Recent** list is paged. It reads 30 rows from
-`GET /api/session?workspace_id=…&sort_by=updated_at&direction=desc&limit=30` and
-then asks for the next page when the reader reaches the bottom, resuming with the
-server's own `next_cursor`. `HomeViewModel.loadMoreChats` owns that; the sidebar
-only reports that it is near the end.
+The recents list is read with **two** page sizes, and the split is the design:
+
+| Caller | `limit` | Constant |
+|---|---|---|
+| the drawer's preview | `5` | `RecentsApi.DRAWER_PREVIEW_ROWS` |
+| `chats/{workspaceId}` | `20` | `RecentsApi.CHATS_PAGE_LIMIT` |
+
+Both go to
+`GET /api/session?workspace_id=…&sort_by=updated_at&direction=desc&limit=…`,
+resuming with the server's own `next_cursor`. `DRAWER_PREVIEW_ROWS` mirrors
+`ProjectsApi.DRAWER_PREVIEW_ROWS` and `CHATS_PAGE_LIMIT` mirrors
+`ProjectsApi.TASKS_PAGE_LIMIT`, so the two sections say the same thing with the
+same words.
+
+Sizing the drawer's *request* to its preview is deliberate: the drawer then
+renders exactly what it fetched, with no second cap in the composable to drift
+from it. It used to ask for thirty and cap at five in the UI, so a page that came
+back short silently rendered fewer rows than the reader expected with nothing to
+explain it.
+
+`HomeViewModel.loadMoreChats` owns the paging, and only `RecentsChatsScreen`
+calls it.
 
 Three details of the endpoint are load-bearing, and each is pinned by a test,
 because getting any of them wrong produces a list that merely *looks* fine:
@@ -828,10 +868,13 @@ because getting any of them wrong produces a list that merely *looks* fine:
 
 A page that adds nothing new also ends the scroll. That is the anti-loop guard:
 if a server ever stops advancing the cursor, continuing would re-request the
-same window forever.
+same window forever. `HomeUiState.canLoadMoreChats` adds a second stop on the
+server's own count, because a page that happens to come back exactly full
+reports `has_more: true` anyway.
 
 A failed page is *not* an error banner. The rows already on screen are real, so
-they stay, the footer spinner stops, and the next scroll retries the same page.
+they stay, the footer spinner stops, `hasMoreChats` stays true, and the next
+scroll retries the same window.
 
 The cursor pages on the *sort field's* column, which the backend had wrong: the
 resume key was hard-coded to `created_at` while the ordering and the cursor both

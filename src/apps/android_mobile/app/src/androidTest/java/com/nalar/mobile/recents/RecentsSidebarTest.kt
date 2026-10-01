@@ -171,62 +171,6 @@ class RecentsSidebarTest {
     }
 
     @Test
-    fun theFooterReportsTheEndOfTheListOnlyOnceTheServerHasSaidSo() {
-        composeTestRule.setContent {
-            NalarTheme {
-                MobileHomeScreen(
-                    workspaces = workspaces,
-                    chats = chats,
-                    drawerLayout = MobileDrawerLayout.Permanent,
-                    hasMoreChats = true,
-                )
-            }
-        }
-
-        // While more may exist, claiming "you're all caught up" and then having
-        // to walk it back would be a lie the user reads first.
-        composeTestRule.onNodeWithTag("chats_list_footer").assertIsDisplayed()
-        composeTestRule.onNodeWithText("No older chats").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("chats_load_more_hint").assertIsDisplayed()
-    }
-
-    @Test
-    fun anExhaustedListSaysSoAtTheEnd() {
-        composeTestRule.setContent {
-            NalarTheme {
-                MobileHomeScreen(
-                    workspaces = workspaces,
-                    chats = chats,
-                    drawerLayout = MobileDrawerLayout.Permanent,
-                    hasMoreChats = false,
-                )
-            }
-        }
-
-        composeTestRule.onNodeWithText("No older chats").assertIsDisplayed()
-    }
-
-    @Test
-    fun aPageInFlightShowsASpinnerInsteadOfTheEndMarker() {
-        composeTestRule.setContent {
-            NalarTheme {
-                MobileHomeScreen(
-                    workspaces = workspaces,
-                    chats = chats,
-                    drawerLayout = MobileDrawerLayout.Permanent,
-                    isLoadingMoreChats = true,
-                    hasMoreChats = true,
-                )
-            }
-        }
-
-        // The rows already on screen are real; the footer has to say "working"
-        // rather than "done" or "nothing here".
-        composeTestRule.onNodeWithTag("chats_load_more_spinner").assertIsDisplayed()
-        composeTestRule.onNodeWithText("No older chats").assertDoesNotExist()
-    }
-
-    @Test
     fun onlyTheRunningChatSpins() {
         composeTestRule.setContent {
             NalarTheme {
@@ -311,94 +255,6 @@ class RecentsSidebarTest {
         node.config
             .getOrNull(SemanticsProperties.ContentDescription)
             ?.any { it.contains("agent is working") } == true
-    }
-
-    @Test
-    fun reachingTheBottomAsksForTheNextPage() {
-        var loadMoreCalls = 0
-        val manyChats = (1..60).map { index ->
-            ChatSummary(
-                id = "chat-$index",
-                workspaceId = "workspace-a",
-                title = "Chat $index",
-                updatedAtEpochMillis = now - index * 60_000L,
-            )
-        }
-        val showAll = mutableStateOf(false)
-        composeTestRule.setContent {
-            NalarTheme {
-                MobileHomeScreen(
-                    workspaces = workspaces,
-                    chats = manyChats,
-                    drawerLayout = MobileDrawerLayout.Permanent,
-                    recentsShowAll = showAll.value,
-                    onToggleRecentsShowAll = { showAll.value = !showAll.value },
-                    hasMoreChats = true,
-                    onLoadMoreChats = { loadMoreCalls++ },
-                )
-            }
-        }
-
-        // 60 rows cannot fit a phone viewport, so the list starts well clear of
-        // the trigger and only reaching the end can arm it.
-        assertEquals(0, loadMoreCalls)
-
-        // The drawer shows five of them until the reader asks, and there is
-        // nothing to scroll until they do — so paging is something the *whole*
-        // list does, and this test has to open it first.
-        composeTestRule.onNodeWithTag("recents_see_all").performClick()
-        composeTestRule.waitForIdle()
-        assertEquals("opening the list must not page on its own", 0, loadMoreCalls)
-
-        composeTestRule.onNodeWithTag("sidebar_chat_list")
-            .performScrollToIndex(55)
-        composeTestRule.waitForIdle()
-
-        assertTrue("scrolling to the end must page", loadMoreCalls >= 1)
-    }
-
-    @Test
-    fun aLongListOpensAsFiveRowsWithTheRestOneTapAway() {
-        // The feedback this feature answers: thirty rows of chat titles with
-        // the Projects section below the fold. The drawer is a switchboard, so
-        // the default is short and the rest is a row, not a scroll.
-        val manyChats = (1..30).map { index ->
-            ChatSummary(
-                id = "chat-$index",
-                workspaceId = "workspace-a",
-                title = "Chat $index",
-                updatedAtEpochMillis = now - index * 60_000L,
-            )
-        }
-        var showAllCalls = 0
-        val showAll = mutableStateOf(false)
-        composeTestRule.setContent {
-            NalarTheme {
-                MobileHomeScreen(
-                    workspaces = workspaces,
-                    chats = manyChats,
-                    drawerLayout = MobileDrawerLayout.Permanent,
-                    recentsShowAll = showAll.value,
-                    onToggleRecentsShowAll = {
-                        showAllCalls++
-                        showAll.value = !showAll.value
-                    },
-                )
-            }
-        }
-
-        composeTestRule.onNodeWithTag("chat_row_chat-5").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("chat_row_chat-6").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("recents_see_all").assertIsDisplayed()
-        composeTestRule.onNodeWithText("See 25 more chats").assertIsDisplayed()
-
-        composeTestRule.onNodeWithTag("recents_see_all").performClick()
-        composeTestRule.waitForIdle()
-
-        assertEquals(1, showAllCalls)
-        composeTestRule.onNodeWithTag("sidebar_chat_list").performScrollToIndex(29)
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("chat_row_chat-30").assertExists()
     }
 
     @Test
@@ -598,27 +454,72 @@ class RecentsSidebarTest {
                 updatedAtEpochMillis = now - index * 60_000L,
             )
         }
-        val showAll = mutableStateOf(false)
         composeTestRule.setContent {
             NalarTheme {
                 MobileHomeScreen(
                     workspaces = workspaces,
                     chats = manyChats,
                     drawerLayout = MobileDrawerLayout.Permanent,
-                    recentsShowAll = showAll.value,
-                    onToggleRecentsShowAll = { showAll.value = !showAll.value },
                 )
             }
         }
 
-        composeTestRule.onNodeWithTag("recents_see_all").performClick()
-        composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("sidebar_chat_list").performTouchInput { swipeUp() }
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithTag("recents_section_header").assertIsDisplayed()
         // Scrolled well past the first rows, so this can only be the pin.
         composeTestRule.onNodeWithTag("chat_row_chat-1").assertIsNotDisplayed()
+    }
+
+    @Test
+    fun theDrawerShowsThePreviewAndOffersTheDestination() {
+        showModalScreen(
+            hasMoreChats = true,
+            chatsTotal = 30,
+        )
+
+        composeTestRule.onNodeWithTag("sidebar_open_menu").performClick()
+        composeTestRule.waitForIdle()
+
+        // Both rows at once on a real device: five chats and the way past them.
+        // A drawer that offers one without the other is offering a button that
+        // leads to the list it is already showing.
+        composeTestRule.onNodeWithTag("chat_row_chat-a1").assertIsDisplayed()
+        composeTestRule.onNodeWithTag(SEE_ALL_ROW_TAG).assertIsDisplayed()
+        composeTestRule.onNodeWithText("See all chats").assertIsDisplayed()
+    }
+
+    @Test
+    fun theDestinationLeavesTheModalDrawerAndReachesNavigation() {
+        // The modal drawer is the one that covers content, so a destination that
+        // did not dismiss would land the reader on the new page *underneath*
+        // the sheet they just tapped.
+        var opens = 0
+        showModalScreen(
+            hasMoreChats = true,
+            chatsTotal = 30,
+            onOpenAllChats = { opens++ },
+        )
+
+        composeTestRule.onNodeWithTag("sidebar_open_menu").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag(SEE_ALL_ROW_TAG).performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, opens)
+        // Dismissed: the sheet is gone, which is what lets the page show.
+        composeTestRule.onNodeWithTag("sidebar_sheet").assertDoesNotExist()
+    }
+
+    @Test
+    fun aWorkspaceWithNothingBehindThePreviewOffersNoDestination() {
+        showModalScreen(hasMoreChats = false)
+
+        composeTestRule.onNodeWithTag("sidebar_open_menu").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag(SEE_ALL_ROW_TAG).assertDoesNotExist()
     }
 
     private fun oneProject() = ProjectsState(
@@ -644,6 +545,9 @@ class RecentsSidebarTest {
         recentsExpanded: () -> Unit = {},
         onWorkspaceSelected: (String) -> Unit = {},
         onChatSelected: (String) -> Unit = {},
+        hasMoreChats: Boolean = false,
+        chatsTotal: Int = 0,
+        onOpenAllChats: () -> Unit = {},
     ) {
         composeTestRule.setContent {
             NalarTheme {
@@ -653,6 +557,9 @@ class RecentsSidebarTest {
                     onWorkspaceSelected = onWorkspaceSelected,
                     onChatSelected = onChatSelected,
                     drawerLayout = MobileDrawerLayout.Modal,
+                    hasMoreChats = hasMoreChats,
+                    chatsTotal = chatsTotal,
+                    onOpenAllChats = onOpenAllChats,
                     projects = projects,
                     projectActions = ProjectsActions(
                         onToggleSection = {},
