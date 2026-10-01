@@ -132,6 +132,7 @@ class HomeViewModelNewChatTest {
         cache = InMemoryRecentsCache(),
         projectsClient = ProjectsClient(StubSessionStore(), httpTransport = transport),
         projectsCache = InMemoryProjectsCache(),
+        kanbanClient = KanbanClient(StubSessionStore()),
         positionStore = InMemoryLastPositionStore() as LastPositionStore,
         ioDispatcher = ioDispatcher,
     )

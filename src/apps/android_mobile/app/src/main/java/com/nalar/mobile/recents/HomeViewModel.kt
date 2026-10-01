@@ -11,6 +11,9 @@ import com.nalar.mobile.auth.HttpsAuthTransport
 import com.nalar.mobile.auth.SessionCookieStore
 import com.nalar.mobile.network.RecordingAuthTransport
 import com.nalar.mobile.projects.CreateTaskRequest
+import com.nalar.mobile.projects.KanbanClient
+import com.nalar.mobile.projects.KanbanColumn
+import com.nalar.mobile.projects.canSubmitTask
 import com.nalar.mobile.projects.ProjectsApi
 import com.nalar.mobile.projects.ProjectsCache
 import com.nalar.mobile.projects.ProjectChatsPage
@@ -115,6 +118,29 @@ data class HomeUiState(
      * name should not have to retry the project fetch to clear the complaint.
      */
     val taskCreateError: String? = null,
+    // ── What the board's "New task" form needs before it can be filled in ────
+    /**
+     * The board's columns, or an empty list before they arrive (or when there
+     * are none).
+     *
+     * One list and not a map keyed by project: the form is the only consumer and
+     * it is open for one board at a time, so a map would carry every board this
+     * app has ever opened a form on.
+     */
+    val kanbanColumns: List<KanbanColumn> = emptyList(),
+    /** Profile names for the form's picker. Empty = "Default" is the only row. */
+    val kanbanProfiles: List<String> = emptyList(),
+    /**
+     * The server's `$HOME`, for the worktree prefill. "" until it is known.
+     *
+     * Kept beside the other two rather than fetched on demand because the form's
+     * worktree prefill has to be written into a *text field*, and a field that
+     * fills in after the reader has started typing is a field that silently
+     * discards what they typed.
+     */
+    val kanbanServerHome: String = "",
+    /** The board whose form data is in flight, or null. */
+    val isLoadingKanbanFormData: Boolean = false,
 ) {
     fun isProjectExpanded(itemId: String): Boolean = itemId in expandedProjectIds
 
@@ -209,6 +235,17 @@ class HomeViewModel(
      * warning stays true.
      */
     private val projectsCache: ProjectsCache,
+    /**
+     * The board-only endpoints the "New task" form needs: a board's columns, the
+     * profile list, the server's home, and the move that lands a card in the
+     * column the reader picked.
+     *
+     * A third client because [projectsClient] is the drawer's two lists and this
+     * is a form's three reads — and because the last one is the only PATCH this
+     * app has ever issued, which would otherwise make a PATCH look like part of
+     * "loading projects".
+     */
+    private val kanbanClient: KanbanClient,
     /**
      * Where the position outlives the process. Injected rather than reached for
      * so the seed on the first launch, and the two writes a user action causes,
@@ -1061,6 +1098,52 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * Fill in the board's "New task" form: its columns, the profile list, and the
+     * server's home for the worktree prefill.
+     *
+     * Fired by [CreateTaskHost] once per open of that form, so the three reads
+     * land while the reader is typing a title rather than after they press
+     * commit.
+     *
+     * **None of the three is allowed to become an error banner.** A create needs
+     * none of them: the server auto-assigns a column, "" means the top-level
+     * config, and a blank worktree path means the agent picks its own. A board
+     * on a flaky connection must still be able to take a card, so a failure here
+     * leaves the form exactly as it was and says nothing.
+     *
+     * The three run concurrently because they are independent, and the form
+     * shows none of them until it is drawn — a reader watching a spinner on the
+     * column chip while the profiles are already there would be watching a
+     * progress state for work that finished.
+     */
+    fun loadKanbanFormData(workspaceId: String, itemId: String) {
+        // A second open of the same form while the first read is still out must
+        // not start a second one. Nothing about the answer changes between the
+        // two, so the second would only be two identical error paths to reason
+        // about.
+        if (_uiState.value.isLoadingKanbanFormData) return
+
+        _uiState.update { it.copy(isLoadingKanbanFormData = true) }
+        viewModelScope.launch {
+            val columns = withContext(ioDispatcher) { kanbanClient.loadColumns(workspaceId, itemId) }
+            val profiles = withContext(ioDispatcher) { kanbanClient.loadProfileNames() }
+            val home = withContext(ioDispatcher) { kanbanClient.loadServerHome() }
+            _uiState.update { current ->
+                current.copy(
+                    // A `SignedOut` from any of the three is the session expiring
+                    // and the nav graph already handles that event from the
+                    // create path; here it just leaves the form's fields empty.
+                    kanbanColumns = (columns as? RecentsResult.Loaded)?.value.orEmpty(),
+                    kanbanProfiles = (profiles as? RecentsResult.Loaded)?.value.orEmpty(),
+                    kanbanServerHome = (home as? RecentsResult.Loaded)?.value.orEmpty(),
+                    isLoadingKanbanFormData = false,
+                )
+            }
+            if (columns is RecentsResult.SignedOut) expireSession()
+        }
+    }
+
     fun createTask(itemId: String, request: CreateTaskRequest) {
         val state = _uiState.value
         val workspaceId = state.selectedWorkspaceId ?: return
@@ -1075,6 +1158,14 @@ class HomeViewModel(
         }
         if (request is CreateTaskRequest.Memory && request.content.isBlank()) {
             _uiState.update { it.copy(taskCreateError = EMPTY_MEMORY_CONTENT_MESSAGE) }
+            return
+        }
+        // The board card has no server-side name rule worth duplicating — the
+        // only one that matters is "there is one", and the server would answer
+        // 400 anyway. Checked here so the reader is told in the form rather than
+        // after a round trip, and so an untitled card never reaches the network.
+        if (request is CreateTaskRequest.KanbanTask && !canSubmitTask(request.name)) {
+            _uiState.update { it.copy(taskCreateError = EMPTY_TASK_TITLE_MESSAGE) }
             return
         }
 
@@ -1150,7 +1241,67 @@ class HomeViewModel(
                     if (request.opensChat) {
                         _createdChat.tryEmit(created.id)
                     }
+
+                    // A board card lands in the column the reader picked — after
+                    // the create, because `POST .../kanban/tasks` has no
+                    // `column_id` and auto-assigns the card to the board's first
+                    // column. The web does the same two-step
+                    // (`KanbanView.vue:1176-1181`). Deliberately last, and
+                    // deliberately outside the create's own success path: the
+                    // card exists either way, so a failed move must not report
+                    // the create as failed — it reports that the column was not
+                    // applied, which is a different promise.
+                    if (request is CreateTaskRequest.KanbanTask &&
+                        request.columnId.isNotBlank()
+                    ) {
+                        moveCreatedCardToColumn(
+                            workspaceId = workspaceId,
+                            itemId = itemId,
+                            taskId = created.id,
+                            request = request,
+                        )
+                    }
                 }
+            }
+        }
+    }
+
+    /**
+     * Put a just-created card in the column the reader chose.
+     *
+     * A private tail to [createTask] rather than a public method because the
+     * pair is one action: a card cannot be created "without" being moved, and
+     * exposing the second half would let a caller move a task that was never
+     * created.
+     *
+     * [request] is passed only for its `columnId` — the rest of it has already
+     * been sent.
+     */
+    private fun moveCreatedCardToColumn(
+        workspaceId: String,
+        itemId: String,
+        taskId: String,
+        request: CreateTaskRequest.KanbanTask,
+    ) {
+        viewModelScope.launch {
+            val result = withContext(ioDispatcher) {
+                kanbanClient.moveTaskToColumn(
+                    workspaceId = workspaceId,
+                    itemId = itemId,
+                    taskId = taskId,
+                    columnId = request.columnId,
+                )
+            }
+            when (result) {
+                is RecentsResult.SignedOut -> expireSession()
+                // The create already succeeded and its row is already painted, so
+                // this is a warning rather than a failure — but it is not
+                // swallowed either: the reader chose a column and did not get it,
+                // and a card sitting in the wrong column on a board is invisible
+                // until they go looking for it.
+                is RecentsResult.Unavailable ->
+                    _uiState.update { it.copy(taskCreateError = result.message) }
+                is RecentsResult.Loaded -> Unit
             }
         }
     }
@@ -1254,6 +1405,16 @@ class HomeViewModel(
                         ),
                     ),
                     projectsCache = RoomProjectsCache(application),
+                    // Recorded like the project calls, so the inspector shows
+                    // the exact bytes the "New task" form sent for the board's
+                    // columns — the one request whose response a reader cannot
+                    // otherwise tell apart from an empty board.
+                    kanbanClient = KanbanClient(
+                        sessionStore = SessionCookieStore(application),
+                        httpTransport = RecordingAuthTransport(
+                            HttpsAuthTransport { AuthConfig.BASE_URL },
+                        ),
+                    ),
                     positionStore = positionStore,
                 )
             }
@@ -1318,3 +1479,14 @@ internal fun selectWorkspaceId(
 private const val INVALID_MEMORY_NAME_MESSAGE =
     "The file name must end in .md, and cannot contain /, \\ or .."
 private const val EMPTY_MEMORY_CONTENT_MESSAGE = "A memory needs some content."
+
+/**
+ * Says "task", not "card".
+ *
+ * The form this error appears under is titled "New task", because that is the
+ * word the desktop uses for the same object (`KanbanView.vue:1249`) and the
+ * word the endpoint's own payload names. A reader who has just read "card" in
+ * a different surface should not have to learn that this app has two names for
+ * one thing.
+ */
+private const val EMPTY_TASK_TITLE_MESSAGE = "A task needs a title."

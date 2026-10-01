@@ -61,6 +61,25 @@ interface AuthTransport {
     ): AuthHttpResponse = throw UnsupportedOperationException(
         "This transport does not implement PUT",
     )
+
+    /**
+     * `PATCH /api/workspaces/{ws}/items/{item}/tasks/{id}/move` is how a card
+     * lands in a chosen column, and the backend has no `POST` alias for it.
+     *
+     * The same default-that-throws shape as [put], and for the same reason: the
+     * interface is implemented by a dozen transport fakes in the tests, each
+     * written against the two-method shape, and one feature needing a third
+     * verb is not a reason to edit every fake. A fake a `patch` does reach
+     * still fails loudly, which is the behaviour that matters here — a transport
+     * that quietly answered 200 would report a move that never happened.
+     */
+    fun patch(
+        path: String,
+        body: String,
+        headers: Map<String, String>,
+    ): AuthHttpResponse = throw UnsupportedOperationException(
+        "This transport does not implement PATCH",
+    )
 }
 
 /**
@@ -110,6 +129,12 @@ class HttpsAuthTransport(
         body: String,
         headers: Map<String, String>,
     ): AuthHttpResponse = request("PUT", path, body, headers)
+
+    override fun patch(
+        path: String,
+        body: String,
+        headers: Map<String, String>,
+    ): AuthHttpResponse = request("PATCH", path, body, headers)
 
     private fun request(
         method: String,

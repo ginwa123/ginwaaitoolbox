@@ -176,10 +176,113 @@ sealed interface CreateTaskRequest {
      */
     data class Memory(val name: String, val content: String) : CreateTaskRequest
 
-    /** Whether a successful create is a destination the reader should be sent to. */
+    /**
+     * A card on a kanban board, created through the kanban-scoped endpoint.
+     *
+     * [name] is the card title the reader must type and [description] is the
+     * prompt body — the two the desktop's create dialog asks for first. The
+     * rest are what its Settings block asks for, and every one of them defaults
+     * to "the reader left this alone", so `KanbanTask("Card", "")` posts exactly
+     * what the web posts for a card whose reader touched nothing but the title.
+     *
+     * What is deliberately NOT here: no `task_type` and no memory fields. The
+     * kanban-scoped handler forces `task_type='standard'` for every mode
+     * (`kanban_tasks_create.zig:169`) — the board has no memory or routine
+     * cards — so this variant exists to pick the *endpoint*, not the type.
+     */
+    data class KanbanTask(
+        val name: String,
+        val description: String,
+        /** Empty = server auto-assign; otherwise the move that follows. */
+        val columnId: String = "",
+        val tags: List<String> = emptyList(),
+        val cwd: String = "",
+        val unattended: Boolean = false,
+        val profile: String = "",
+        /**
+         * `mode=create_and_run` rather than `mode=create`.
+         *
+         * The web's split button's two halves. False posts a card and leaves it
+         * alone; true also queues [KanbanTaskBuild.queueMessage] as the agent's
+         * first turn.
+         */
+        val runAgent: Boolean = false,
+        val useGitWorktree: Boolean = false,
+        val worktreePath: String = "",
+        val worktreeBaseBranch: String = "",
+        val imageUrls: List<String> = emptyList(),
+    ) : CreateTaskRequest {
+        /**
+         * The `queue_message` this create will send, or "" when it will not run.
+         *
+         * Built here rather than at the call site so a request that says
+         * `runAgent = true` and carries an empty queue message is impossible to
+         * construct: `mode=create_and_run` without a message is a card the
+         * backend accepts and no agent ever starts, which reads to the reader
+         * as a button that did nothing.
+         */
+        val queueMessage: String
+            get() = if (runAgent) buildKanbanTaskCreateMessage(toForm()) else ""
+    }
+
+    /** Whether a successful create is a destination the reader should be sent to.
+     *
+     * A [KanbanTask] is **not** one, even though the server did create a bare
+     * `sessions` row behind it (`task_create.zig:567`) and the card is therefore
+     * openable by tapping it later. The desktop deliberately stays put after a
+     * kanban create — "DO NOT navigate to chatview on success path — keep the
+     * user on the kanban" (`2026-08-06-no-need-go-chatview`) — and yanking the
+     * reader into a chat they did not ask for is the one thing the two clients
+     * must not disagree about.
+     */
     val opensChat: Boolean
         get() = this is StandardChat
 }
+
+/**
+ * This request as the form the "New task" dialog collects.
+ *
+ * The round trip exists so [buildKanbanTaskCreateMessage] — the one place the
+ * `Task : / Description: / #Notes UseGitWorktree` format is written — can be a
+ * function of a value rather than of a half-built JSON string.
+ */
+fun CreateTaskRequest.KanbanTask.toForm(): KanbanTaskForm = KanbanTaskForm(
+    name = name,
+    description = description,
+    columnId = columnId,
+    tags = tags,
+    cwd = cwd,
+    unattended = unattended,
+    profile = profile,
+    runAgent = runAgent,
+    useGitWorktree = useGitWorktree,
+    worktreePath = worktreePath,
+    worktreeBaseBranch = worktreeBaseBranch,
+    imageUrls = imageUrls,
+)
+
+/** A [KanbanTaskForm] as the request that will be posted. */
+fun KanbanTaskForm.toRequest(): CreateTaskRequest.KanbanTask = CreateTaskRequest.KanbanTask(
+    // The title is trimmed here, not at the wire, so the row the drawer paints
+    // and the row the board shows carry the same string. The description is not:
+    // it is the card's face, printed verbatim, and trimming it would edit what
+    // the reader wrote.
+    name = name.trim(),
+    description = description,
+    columnId = columnId,
+    // Normalized at the boundary, not while typing: the chip row is the reader's
+    // view of the tags and re-filtering it on every keystroke would make a chip
+    // vanish mid-edit for a rule they cannot see.
+    tags = KanbanTags.normalize(tags),
+    cwd = cwd.trim(),
+    unattended = unattended,
+    profile = profile,
+    runAgent = runAgent,
+    useGitWorktree = useGitWorktree,
+    worktreePath = worktreePath.trim(),
+    worktreeBaseBranch = worktreeBaseBranch.trim(),
+    imageUrls = imageUrls,
+)
 
 /**
  * The memory filename rules, mirrored from the backend's `isValidMemoryName`

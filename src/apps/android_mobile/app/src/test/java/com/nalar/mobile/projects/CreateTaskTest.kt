@@ -4,6 +4,7 @@ import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
 import com.nalar.mobile.recents.HomeViewModel
+import com.nalar.mobile.recents.RecentsApi
 import com.nalar.mobile.recents.RecentsClient
 import com.nalar.mobile.recents.RecentsResult
 import com.nalar.mobile.testing.InMemoryLastPositionStore
@@ -173,6 +174,170 @@ class CreateTaskWireTest {
     }
 }
 
+// ─── The board card's wire shape ───────────────────────────────────────────────
+
+/**
+ * The kanban route, its body, and the envelope it answers in.
+ *
+ * A separate class because these three facts are the ones a server change would
+ * break silently: the path is a *different route* from the one a chat uses, the
+ * body carries a `mode` the plain route has no concept of, and the response is
+ * wrapped where the plain route's is not. Each is stated here as a literal so a
+ * rename on either side fails a test instead of a create on a device.
+ */
+class CreateKanbanTaskWireTest {
+
+    @Test
+    fun aCardPostsToTheKanbanRouteNotTheTasksRoute() {
+        // Not a `task_type` on the ordinary route. The kanban handler is what
+        // checks the parent really is a board (404 otherwise), auto-assigns the
+        // card to the first column, and emits the `kanban_task` SSE the board
+        // listens for. Posting to `/tasks` creates the row and skips all three:
+        // a card that exists on the server and never appears on the board.
+        assertEquals(
+            "/api/workspaces/ws_1/items/item_1/kanban/tasks",
+            ProjectsApi.createKanbanTaskPath("ws_1", "item_1"),
+        )
+        // And it is a genuinely different string from the chat path, so the two
+        // cannot be one function with a flag somebody flips twice.
+        assertTrue(
+            ProjectsApi.createKanbanTaskPath("ws_1", "item_1") !=
+                ProjectsApi.createTaskPath("ws_1", "item_1"),
+        )
+    }
+
+    @Test
+    fun theKanbanPathEncodesBothIds() {
+        assertEquals(
+            "/api/workspaces/w%20s/items/a%2Fb/kanban/tasks",
+            ProjectsApi.createKanbanTaskPath("w s", "a/b"),
+        )
+    }
+
+    @Test
+    fun theCardBodyCarriesTheModeAndTheCreateMode() {
+        // `mode` is not optional and has no default server-side: without it the
+        // handler answers 400 ("mode is required", kanban_tasks_create.zig:110).
+        val body = JSONObject(
+            ProjectsApi.createTaskBody(CreateTaskRequest.KanbanTask("Card", "body")),
+        )
+        assertEquals("create", body.getString("mode"))
+        assertEquals("Card", body.getString("name"))
+        assertEquals("body", body.getString("description"))
+    }
+
+    @Test
+    fun theCardBodySendsNoTaskType() {
+        // The handler forces `task_type='standard'` for every kanban mode
+        // (kanban_tasks_create.zig:169). Sending one would be asserting a choice
+        // the reader was never offered, and if the handler ever stopped forcing
+        // it the extra field would be what quietly decides instead.
+        assertFalse(
+            JSONObject(
+                ProjectsApi.createTaskBody(CreateTaskRequest.KanbanTask("Card", "")),
+            ).has("task_type"),
+        )
+    }
+
+    @Test
+    fun theCardTitleIsTrimmedLikeEveryOtherName() {
+        assertEquals(
+            "Ship it",
+            JSONObject(
+                ProjectsApi.createTaskBody(CreateTaskRequest.KanbanTask("  Ship it  ", "")),
+            ).getString("name"),
+        )
+    }
+
+    @Test
+    fun anEmptyDescriptionIsSentRatherThanOmitted() {
+        // The desktop sends the same three fields for the same card
+        // (workspaces.ts:3357-3365). The handler's field is `?[]const u8`, so
+        // `""` and absent take the same branch — sending it keeps the two
+        // clients' bodies byte-identical for the same click.
+        assertEquals(
+            "",
+            JSONObject(
+                ProjectsApi.createTaskBody(CreateTaskRequest.KanbanTask("Card", "")),
+            ).getString("description"),
+        )
+    }
+
+    @Test
+    fun theCreatedCardIsReadOutOfTheEnvelope() {
+        // The plain route answers with a bare row; this one wraps it in
+        // `{task, session}`. Reading the envelope as a row finds no `id`, so a
+        // parser that skipped the unwrap would report a perfectly good create
+        // as a server error.
+        val created = ProjectsApi.parseCreatedKanbanTask(
+            body = """{"task":{"id":"task_9","name":"Card","description":"body",""" +
+                """"completed":false,"is_have_image":false,"is_have_video":false},""" +
+                """"session":null}""",
+            projectId = "item_1",
+        )
+
+        assertEquals("task_9", created?.id)
+        assertEquals("Card", created?.name)
+        assertEquals("item_1", created?.projectId)
+        // No `task_type` on this route, and null means openable — which is right,
+        // because `task_create.useCase` does insert the bare `sessions` row
+        // behind a mode='create' card (task_create.zig:567).
+        assertNull(created?.taskType)
+        assertTrue(created!!.isOpenable)
+    }
+
+    @Test
+    fun aCardWithNoTimestampSaysSoRatherThanGuessing() {
+        // `TaskCreateResponse` carries neither `updated_at` nor `created_at`
+        // (kanban_tasks_create.zig:404-411). Inventing "now" would make the card
+        // sort above older cards for no reason; the honest value is unknown.
+        val created = ProjectsApi.parseCreatedKanbanTask(
+            body = """{"task":{"id":"task_9","name":"Card"},"session":null}""",
+            projectId = "item_1",
+        )
+        assertEquals(RecentsApi.UNKNOWN_TIMESTAMP, created?.updatedAtEpochMillis)
+        assertFalse(created!!.hasTimestamp)
+    }
+
+    @Test
+    fun anEnvelopeWithNoTaskIsRefusedRatherThanInvented() {
+        // `{ok:true}` and a body whose `task` has no id are both "the server
+        // said 201 and there is no card". Returning a blank row would put a
+        // row in the drawer that cannot be opened or selected.
+        assertNull(
+            ProjectsApi.parseCreatedKanbanTask("""{"ok":true}""", projectId = "item_1"),
+        )
+        assertNull(
+            ProjectsApi.parseCreatedKanbanTask(
+                """{"task":{"name":"Card"},"session":null}""",
+                projectId = "item_1",
+            ),
+        )
+    }
+
+    @Test
+    fun anUnreadableCardBodyIsRefusedRatherThanThrown() {
+        assertNull(
+            ProjectsApi.parseCreatedKanbanTask("<html>502</html>", projectId = "item_1"),
+        )
+    }
+
+    @Test
+    fun aSessionInTheEnvelopeIsIgnoredRatherThanTreatedAsTheCard() {
+        // `mode='create'` never populates `session`, so this shape does not arise
+        // today. Asserted anyway because the two ids are the *same* string on
+        // every other mode — a parser that reached for `session.id` first would
+        // pass every mode except this one, and quietly pick the wrong object.
+        val created = ProjectsApi.parseCreatedKanbanTask(
+            body = """{"task":{"id":"task_9","name":"Card"},""" +
+                """"session":{"id":"task_9","name":"Card","status":"idle"}}""",
+            projectId = "item_1",
+        )
+        assertEquals("task_9", created?.id)
+        assertEquals("Card", created?.name)
+    }
+}
+
 // ─── The memory name rules ─────────────────────────────────────────────────────
 
 /**
@@ -270,11 +435,46 @@ class CreateTaskStartDecisionTest {
     }
 
     @Test
-    fun aKanbanProjectGetsThePicker() {
+    fun aKanbanProjectOpensTheCardFormWithNothingInBetween() {
+        // The reader asked for a card by pressing `+` on a board, so `+` opens
+        // the card form. A sheet in between would be a chooser whose only option
+        // is the thing they already chose — and the web has no such step either:
+        // `KanbanView.vue` binds `+ Add` straight to `handleViewCreateTask`,
+        // which opens the dialog.
         assertEquals(
-            CreateTaskStartDecision.Pick,
+            CreateTaskStartDecision.NameTask,
             createTaskStartDecision(ProjectTypes.KANBAN),
         )
+    }
+
+    @Test
+    fun aKanbanProjectNeverOpensTheTypePicker() {
+        // The other half of the assertion above, and the one that would catch a
+        // regression: a kanban that fell through to `Pick` would still be "a
+        // picker" and would still compile.
+        assertFalse(
+            createTaskStartDecision(ProjectTypes.KANBAN) is CreateTaskStartDecision.Pick,
+        )
+    }
+
+    @Test
+    fun onlyAKanbanBoardGetsTheCardForm() {
+        // `NameTask` is its own case rather than a flag on `Pick` precisely so
+        // this is assertable: no other project type may open a board's form, and
+        // no board may reach the two-card picker.
+        for (type in listOf(
+            ProjectTypes.AGENT,
+            ProjectTypes.ROUTINE,
+            ProjectTypes.DESIGN,
+            ProjectTypes.FOLDER,
+            "something_new",
+        )) {
+            assertEquals(
+                "item_type=$type must not open the card form",
+                false,
+                createTaskStartDecision(type) is CreateTaskStartDecision.NameTask,
+            )
+        }
     }
 
     @Test
@@ -291,6 +491,14 @@ class CreateTaskStartDecisionTest {
         // A memory is a file on disk. Navigating to its id would land on a chat
         // route with no session behind it.
         assertFalse(CreateTaskRequest.Memory("x.md", "y").opensChat)
+        // A board card is the third non-destination, and for a different
+        // reason: a session *does* exist behind it, so tapping the row opens
+        // it fine. The create itself must not navigate, because the desktop
+        // deliberately keeps the reader on the board
+        // ("DO NOT navigate to chatview on success path — keep the user on the
+        // kanban", `2026-08-06-no-need-go-chatview`). Asserting it here is what
+        // stops `opensChat` from being widened to "any standard task" later.
+        assertFalse(CreateTaskRequest.KanbanTask("Card", "body").opensChat)
     }
 }
 
@@ -311,19 +519,43 @@ class CreateTaskControllerTest {
 
     private fun controller() = CreateTaskController { w, i, r -> created += Triple(w, i, r) }
 
-    private fun item(type: String) = ProjectSummary(
+    /**
+     * A non-kanban parent, i.e. one that opens the two-card chat/memory picker.
+     *
+     * A folder rather than "whatever falls through to `else`", because these
+     * tests are about the picker and a folder is the one type that is *always*
+     * the picker: no agent skip, no routine refusal, and — the thing this
+     * change is about — no board route. Naming it makes the intent legible at
+     * each call site instead of leaving the reader to check what `else` catches.
+     */
+    private fun item(type: String = ProjectTypes.FOLDER) = ProjectSummary(
         id = "item_1",
         workspaceId = "ws_1",
         itemType = type,
+        name = "Shared project",
+    )
+
+    /**
+     * The same fixture as a kanban board, so the board steps are readable.
+     *
+     * [path] is the board's on-disk root, and empty by default because most of
+     * these assertions are about which step a press reaches, not about what the
+     * form is prefilled with.
+     */
+    private fun board(path: String = "") = ProjectSummary(
+        id = "item_1",
+        workspaceId = "ws_1",
+        itemType = ProjectTypes.KANBAN,
         name = "Sprint board",
+        path = path,
     )
 
     @Test
     fun pickingStandardCreatesAChatAndCloses() {
         val c = controller()
-        c.start(item(ProjectTypes.KANBAN))
+        c.start(item())
         assertEquals(
-            CreateTaskStep.Picking("ws_1", "item_1", "Sprint board"),
+            CreateTaskStep.Picking("ws_1", "item_1", "Shared project"),
             c.step,
         )
 
@@ -340,13 +572,13 @@ class CreateTaskControllerTest {
     @Test
     fun pickingMemoryAsksForANameRatherThanCreating() {
         val c = controller()
-        c.start(item(ProjectTypes.KANBAN))
+        c.start(item())
         c.pickMemory()
 
         // Nothing sent yet — the form has to be filled in first.
         assertEquals(0, created.size)
         assertEquals(
-            CreateTaskStep.NamingMemory("ws_1", "item_1", "Sprint board"),
+            CreateTaskStep.NamingMemory("ws_1", "item_1", "Shared project"),
             c.step,
         )
     }
@@ -354,7 +586,7 @@ class CreateTaskControllerTest {
     @Test
     fun submittingTheFormSendsTheTrimmedNameAndTheContent() {
         val c = controller()
-        c.start(item(ProjectTypes.KANBAN))
+        c.start(item())
         c.pickMemory()
         c.submitMemory("  notes.md  ", "# hello")
 
@@ -368,23 +600,23 @@ class CreateTaskControllerTest {
         // affordance. A form that POSTs a name the server will reject spends a
         // round trip to be told what the label already said.
         val c = controller()
-        c.start(item(ProjectTypes.KANBAN))
+        c.start(item())
         c.pickMemory()
         c.submitMemory("notes.txt", "# hello")
 
         assertEquals(0, created.size)
         // Still open, so the reader can fix the name rather than start over.
-        assertEquals(CreateTaskStep.NamingMemory("ws_1", "item_1", "Sprint board"), c.step)
+        assertEquals(CreateTaskStep.NamingMemory("ws_1", "item_1", "Shared project"), c.step)
     }
 
     @Test
     fun backFromTheFormReturnsToThePickerForTheSameProject() {
         val c = controller()
-        c.start(item(ProjectTypes.KANBAN))
+        c.start(item())
         c.pickMemory()
         c.backToPicker()
 
-        assertEquals(CreateTaskStep.Picking("ws_1", "item_1", "Sprint board"), c.step)
+        assertEquals(CreateTaskStep.Picking("ws_1", "item_1", "Shared project"), c.step)
     }
 
     @Test
@@ -408,7 +640,7 @@ class CreateTaskControllerTest {
     @Test
     fun dismissingClosesWhateverIsOpen() {
         val c = controller()
-        c.start(item(ProjectTypes.KANBAN))
+        c.start(item())
         c.pickMemory()
         c.dismiss()
 
@@ -421,11 +653,319 @@ class CreateTaskControllerTest {
         // a bug in a caller, and acting on it would create a memory the reader
         // never named.
         val c = controller()
-        c.start(item(ProjectTypes.KANBAN))
+        c.start(item())
         c.submitMemory("notes.md", "x")
 
         assertEquals(0, created.size)
-        assertEquals(CreateTaskStep.Picking("ws_1", "item_1", "Sprint board"), c.step)
+        assertEquals(CreateTaskStep.Picking("ws_1", "item_1", "Shared project"), c.step)
+    }
+
+    // ── The board pair ──────────────────────────────────────────────────────
+    //
+    // The same transitions as above, on the other parent. They are asserted
+    // separately rather than parameterised because the two flows must not be
+    // able to reach each other, and a shared helper would be exactly the shape
+    // that lets them.
+
+    @Test
+    fun aBoardOpensTheCardFormAndNotTheChatOne() {
+        val c = controller()
+        c.start(board())
+
+        assertEquals(
+            CreateTaskStep.NamingTask("ws_1", "item_1", "Sprint board", ""),
+            c.step,
+        )
+        // Nothing is sent on the way in: the press opens a form, and a form that
+        // created on open would make `Cancel` a lie.
+        assertEquals(0, created.size)
+    }
+
+    @Test
+    fun theBoardFormIsOpenedWithTheBoardsOwnPathAsTheProjectRoot() {
+        // The web prefills "Project root" from the parent kanban's path, so the
+        // field arrives already right instead of empty-and-wrong.
+        val c = controller()
+        c.start(board(path = "/home/ginwa/ginwaaitoolbox"))
+
+        assertEquals(
+            CreateTaskStep.NamingTask(
+                "ws_1",
+                "item_1",
+                "Sprint board",
+                "/home/ginwa/ginwaaitoolbox",
+            ),
+            c.step,
+        )
+    }
+
+    @Test
+    fun submittingTheBoardFormSendsATrimmedTitleAndTheDescriptionUntouched() {
+        val c = controller()
+        c.start(board())
+        c.submitTask("  Ship the picker  ", "  keep\nthe spacing  ")
+
+        assertEquals(CreateTaskStep.Idle, c.step)
+        assertEquals(1, created.size)
+        // Title trimmed, body not: the description is the card's face, printed
+        // verbatim on the board, so trimming it would edit what was written.
+        assertEquals(
+            CreateTaskRequest.KanbanTask("Ship the picker", "  keep\nthe spacing  "),
+            created.single().third,
+        )
+        assertEquals("ws_1", created.single().first)
+        assertEquals("item_1", created.single().second)
+    }
+
+    @Test
+    fun anUntitledBoardCardIsNotSent() {
+        // The button is disabled for a blank title, so this is the invariant
+        // behind the affordance — and the only guard there is, because the
+        // server's name rule for a card is nothing more than "there is one".
+        for (blank in listOf("", "   ", "\n\t ")) {
+            val c = controller()
+            c.start(board())
+            c.submitTask(blank, "a body that does not save the card")
+
+            assertEquals(0, created.size)
+            // Still open, so the reader can type a title rather than start over.
+            assertEquals(
+                CreateTaskStep.NamingTask("ws_1", "item_1", "Sprint board", ""),
+                c.step,
+            )
+        }
+    }
+
+    @Test
+    fun aCardNeedsNoDescriptionToBeWorthCreating() {
+        // The reverse of the memory rule, and deliberately so: a card with no
+        // body is an idea the board is *for*. `canSubmitMemory` would reject
+        // this, which is exactly why the two are separate functions.
+        assertTrue(canSubmitTask("Just a title"))
+        assertFalse(canSubmitTask("   "))
+        assertFalse(canSubmitMemory("notes.md", "   "))
+    }
+
+    @Test
+    fun theTwoFlowsCannotReachEachOthersSteps() {
+        // A single shared step carrying a flag would make this a one-word change
+        // with no test failing, which is why the steps are separate. The board's
+        // form refuses the memory submit and the chat picker refuses the card's.
+        val onBoard = controller()
+        onBoard.start(board())
+        onBoard.submitMemory("notes.md", "x")
+        assertEquals(0, created.size)
+
+        val onAProject = controller()
+        onAProject.start(item())
+        onAProject.submitTask("Card", "body")
+        assertEquals(0, created.size)
+        assertEquals(CreateTaskStep.Picking("ws_1", "item_1", "Shared project"), onAProject.step)
+    }
+
+    @Test
+    fun aBoardCanBeDismissedFromItsForm() {
+        val c = controller()
+        c.start(board())
+        c.dismiss()
+
+        assertEquals(CreateTaskStep.Idle, c.step)
+        assertEquals(0, created.size)
+    }
+}
+
+// ─── The form the board's dialog collects ────────────────────────────────────
+
+/**
+ * The nine things the web's create dialog asks for, on the way to the wire.
+ *
+ * These are the assertions the screenshot is really about: that the Android
+ * form's answers arrive at the backend in the shape the web's do. Everything
+ * here is a pure function of a [KanbanTaskForm], which is why this class needs
+ * no device and no fake transport.
+ */
+class KanbanTaskFormTest {
+    @Test
+    fun aBareFormPostsExactlyWhatTheWebPostsForACardNobodyTouched() {
+        val body = JSONObject(ProjectsApi.createTaskBody(KanbanTaskForm(name = "Card").toRequest()))
+
+        assertEquals(ProjectsApi.KANBAN_MODE_CREATE, body.getString("mode"))
+        assertEquals("Card", body.getString("name"))
+        assertEquals("", body.getString("description"))
+        // Sent, not omitted: "" is the server's "no override" and NULL is not.
+        assertEquals("", body.getString("cwd"))
+        // Never a boolean and never absent — the column is TEXT.
+        assertEquals("0", body.getString("is_auto_retry_until_stop"))
+        // Nothing the reader did not ask for.
+        assertFalse(body.has("tags"))
+        assertFalse(body.has("image_urls"))
+        assertFalse(body.has("queue_message"))
+        assertFalse(body.has("selected_profile_model"))
+    }
+
+    @Test
+    fun runAgentSelectsTheOtherModeAndCarriesTheQueueMessage() {
+        val body = JSONObject(
+            ProjectsApi.createTaskBody(
+                KanbanTaskForm(
+                    name = "Card",
+                    description = "Do the thing",
+                    runAgent = true,
+                    profile = "fast",
+                ).toRequest(),
+            ),
+        )
+
+        assertEquals(ProjectsApi.KANBAN_MODE_CREATE_AND_RUN, body.getString("mode"))
+        // The web's own format, verbatim — this string is what the agent reads.
+        assertEquals("Task : Card\nDescription: Do the thing", body.getString("queue_message"))
+        assertEquals("fast", body.getString("selected_profile_model"))
+    }
+
+    @Test
+    fun plainCreateDoesNotPersistAProfile() {
+        // "Path A": a plain create has no sessions row to stamp, so sending a
+        // profile would be a choice the reader made and the server dropped.
+        val body = JSONObject(
+            ProjectsApi.createTaskBody(
+                KanbanTaskForm(name = "Card", profile = "fast").toRequest(),
+            ),
+        )
+
+        assertEquals(ProjectsApi.KANBAN_MODE_CREATE, body.getString("mode"))
+        assertFalse(body.has("selected_profile_model"))
+    }
+
+    @Test
+    fun tagsGoOnTheWireAsAJsonEncodedArrayString() {
+        // `tags_validation.zig` parses `body.tags` as a JSON *value* and refuses
+        // anything that is not an array — a nested array would not be what the
+        // server's body reader produces.
+        val body = JSONObject(
+            ProjectsApi.createTaskBody(
+                KanbanTaskForm(name = "Card", tags = listOf("bug", "ui")).toRequest(),
+            ),
+        )
+
+        assertEquals("""["bug","ui"]""", body.getString("tags"))
+    }
+
+    @Test
+    fun aTagTheServerWouldRefuseNeverReachesTheWire() {
+        val body = JSONObject(
+            ProjectsApi.createTaskBody(
+                KanbanTaskForm(name = "Card", tags = listOf("ok", "has space", "")).toRequest(),
+            ),
+        )
+
+        assertEquals("""["ok"]""", body.getString("tags"))
+    }
+
+    @Test
+    fun unattendedIsTheStringsTheColumnStores() {
+        val body = JSONObject(
+            ProjectsApi.createTaskBody(
+                KanbanTaskForm(name = "Card", unattended = true).toRequest(),
+            ),
+        )
+
+        assertEquals("1", body.getString("is_auto_retry_until_stop"))
+    }
+
+    @Test
+    fun imagesAreJoinedWithTheWebsDelimiter() {
+        val body = JSONObject(
+            ProjectsApi.createTaskBody(
+                KanbanTaskForm(
+                    name = "Card",
+                    imageUrls = listOf("data:image/png;base64,AAA", "data:image/png;base64,BBB"),
+                ).toRequest(),
+            ),
+        )
+
+        assertEquals(
+            "data:image/png;base64,AAA||data:image/png;base64,BBB",
+            body.getString("image_urls"),
+        )
+    }
+
+    @Test
+    fun theWorktreeBlockAppearsOnlyWhenTheToggleIsOn() {
+        val form = KanbanTaskForm(
+            name = "Card",
+            useGitWorktree = true,
+            worktreePath = "/home/ginwa/.config/nalar/.worktrees/card-1",
+            worktreeBaseBranch = "origin/main",
+        )
+
+        assertEquals(
+            "Task : Card\n\n#Notes UseGitWorktree\n" +
+                "Path: /home/ginwa/.config/nalar/.worktrees/card-1\nBase: origin/main",
+            buildKanbanTaskCreateMessage(form),
+        )
+        // Same form, toggle off: the notes must not travel. An agent told to
+        // make a worktree it was not asked for makes one.
+        assertEquals(
+            "Task : Card",
+            buildKanbanTaskCreateMessage(form.copy(useGitWorktree = false)),
+        )
+    }
+
+    @Test
+    fun anEmptyDescriptionIsOmittedFromTheQueueMessage() {
+        // A blank line where the description would be reads as a formatting bug
+        // to whoever is reading the transcript.
+        assertEquals(
+            "Task : Card",
+            buildKanbanTaskCreateMessage(KanbanTaskForm(name = "Card", description = "   ")),
+        )
+    }
+
+    @Test
+    fun aCardNeedsOnlyATitle() {
+        assertTrue(canSubmitKanbanTask(KanbanTaskForm(name = "Just a title")))
+        assertFalse(canSubmitKanbanTask(KanbanTaskForm(name = "   ")))
+    }
+
+    @Test
+    fun aTagMustBeAsciiBecauseTheServerSaysSo() {
+        // `Char::isLetterOrDigit` would accept `é`; `tags_validation.zig`'s
+        // `[a-zA-Z0-9_-]` does not, and a phone that accepts what the server
+        // refuses produces a create that fails naming no field.
+        assertNull(KanbanTags.sanitize("café"))
+        assertNull(KanbanTags.sanitize("a".repeat(51)))
+        assertEquals("a_b-1", KanbanTags.sanitize("  a_b-1  "))
+        assertNull(KanbanTags.sanitize("   "))
+    }
+
+    @Test
+    fun tagsDedupeCaseInsensitivelyAndKeepTheFirstSpelling() {
+        assertEquals(listOf("Bug"), KanbanTags.add(listOf("Bug"), "bug"))
+        // First spelling wins, so the chip the reader saw is the chip that goes.
+        assertEquals(listOf("bug"), KanbanTags.normalize(listOf("bug", "Bug", "  bug  ")))
+    }
+
+    @Test
+    fun aCommaSeparatedDraftBecomesSeveralTags() {
+        assertEquals(
+            listOf("a", "b", "c"),
+            KanbanTags.commitDraft(emptyList(), "a, b,c"),
+        )
+    }
+
+    @Test
+    fun theWorktreePrefillSlugsTheTaskNameOntoTheServersHome() {
+        assertEquals(
+            "/home/ginwa/.config/nalar/.worktrees/ship-the-drawer-1757792000000",
+            KanbanWorktree.defaultPath("/home/ginwa", "Ship the drawer!", 1757792000000),
+        )
+        // A name that is all punctuation still has to name a directory.
+        assertEquals("task", KanbanWorktree.slugify("!!! ???"))
+        // Trailing slash on the home must not double the separator.
+        assertEquals(
+            "/home/ginwa/.config/nalar/.worktrees/card-1",
+            KanbanWorktree.defaultPath("/home/ginwa/", "Card", 1),
+        )
     }
 }
 
@@ -480,6 +1020,81 @@ class ProjectsClientCreateTaskTest {
         // and takes no Authorization header and no CSRF token.
         assertEquals("nalar_session=tok-123", transport.lastHeaders["Cookie"])
         assertEquals("application/json", transport.lastHeaders["Content-Type"])
+    }
+
+    @Test
+    fun aCardIsPostedToTheKanbanRouteAndReadFromItsEnvelope() {
+        // The one client method, two routes, two response shapes. Getting the
+        // pair wrong fails two different ways, and this is the only assertion
+        // that catches the second: post a card to `/tasks` and the server builds
+        // a row but never emits the `kanban_task` SSE the board listens for, so
+        // the card exists and never appears; read `{task:…}` with the bare-row
+        // parser and a good card is reported to the reader as a server error.
+        val transport = FakeTransport(
+            AuthHttpResponse(
+                200,
+                """{"task":{"id":"task_9","name":"Card"},"session":null}""",
+            ),
+        )
+
+        val result = client(transport).createTask(
+            "ws_1",
+            "item_1",
+            CreateTaskRequest.KanbanTask("Card", "body"),
+        )
+
+        assertEquals("/api/workspaces/ws_1/items/item_1/kanban/tasks", transport.lastPath)
+        assertEquals("nalar_session=tok-123", transport.lastHeaders["Cookie"])
+        assertTrue(result is RecentsResult.Loaded)
+        assertEquals("task_9", (result as RecentsResult.Loaded).value.id)
+    }
+
+    @Test
+    fun aChatStillPostsToTheTasksRouteAfterTheCardRouteWasAdded() {
+        // The new branch in `createTask` sits between the two existing ones.
+        // Without this, widening the kanban case to "everything" would still
+        // pass every card test.
+        val transport = FakeTransport(AuthHttpResponse(200, createdBody))
+
+        client(transport).createTask("ws_1", "item_1", CreateTaskRequest.StandardChat("New Chat"))
+
+        assertEquals("/api/workspaces/ws_1/items/item_1/tasks", transport.lastPath)
+    }
+
+    @Test
+    fun aMemoryStillPostsToTheTasksRouteAfterTheCardRouteWasAdded() {
+        val transport = FakeTransport(AuthHttpResponse(200, createdBody))
+
+        client(transport).createTask(
+            "ws_1",
+            "item_1",
+            CreateTaskRequest.Memory("notes.md", "body"),
+        )
+
+        assertEquals("/api/workspaces/ws_1/items/item_1/tasks", transport.lastPath)
+    }
+
+    @Test
+    fun aCardOnANonKanbanParentReportsTheServersFourOhFour() {
+        // The handler checks `item_type = 'kanban'` itself and 404s otherwise
+        // (kanban_tasks_create.zig:138-152). This client's job is to say
+        // something true about it, not to pre-empt it: the parent may have been
+        // converted to a board since the drawer's list was fetched.
+        val result = client(FakeTransport(AuthHttpResponse(404, "")))
+            .createTask("ws_1", "item_1", CreateTaskRequest.KanbanTask("Card", ""))
+
+        assertTrue(result is RecentsResult.Unavailable)
+    }
+
+    @Test
+    fun aCardThatServerAnswersForWithNoRowIsAFailureNotAnEmptyCard() {
+        // 201 with `{"ok":true}`: the same rule as the chat route, and it
+        // matters more here — a blank row on a board is a card the reader cannot
+        // open and cannot explain.
+        val result = client(FakeTransport(AuthHttpResponse(201, """{"ok":true}""")))
+            .createTask("ws_1", "item_1", CreateTaskRequest.KanbanTask("Card", ""))
+
+        assertTrue(result is RecentsResult.Unavailable)
     }
 
     @Test
@@ -582,11 +1197,13 @@ private fun createTest(body: suspend TestScope.(CreateSchedulers) -> Unit) = run
 /**
  * Answers the reads the ViewModel makes on launch, and scripts the POST.
  *
- * The POST response is derived from the request's `task_type`, because the
- * server does exactly that (`task_create.zig` branches on it and returns a
- * `MemoryResponse` or a `StandardResponse`). A fake that always answered
- * `standard` would make a memory create look like a chat, and the test that
- * asserts memories are not openable would be asserting against a lie.
+ * The POST response is derived from the request, because the server does
+ * exactly that: `task_create.zig` branches on `task_type` and returns a
+ * `MemoryResponse` or a `StandardResponse`, and the kanban route answers in an
+ * `{task, session}` envelope instead of a bare row. A fake that always answered
+ * one shape would make a memory create look like a chat and a card create look
+ * like a failure — and the tests that assert those are not openable / do
+ * navigate would be asserting against a lie.
  */
 private class CreateTransport(
     private val createStatus: Int = 200,
@@ -601,6 +1218,15 @@ private class CreateTransport(
         val isMemory = runCatching { JSONObject(body).optString("task_type") }.getOrNull() ==
             TaskTypes.MEMORY
         val name = runCatching { JSONObject(body).optString("name") }.getOrNull().orEmpty()
+        // The kanban handler wraps its row and stamps no timestamp
+        // (kanban_tasks_create.zig:388-411); the plain one does neither of
+        // those. Reproduced because the client has to survive both.
+        if (path.endsWith("/kanban/tasks")) {
+            return AuthHttpResponse(
+                createStatus,
+                """{"task":{"id":"task_9","name":"$name"},"session":null}""",
+            )
+        }
         return AuthHttpResponse(
             createStatus,
             """{"id":"task_9","name":"$name","task_type":"${if (isMemory) "memory" else "standard"}",""" +
@@ -645,6 +1271,9 @@ private fun createViewModel(
     cache = InMemoryRecentsCache(),
     projectsClient = ProjectsClient(EmptySessionStore(), httpTransport = transport),
     projectsCache = cache,
+    // The same transport as every other client in this test, so a test that
+    // drives the board's form data or the card move sees the same fake.
+    kanbanClient = KanbanClient(EmptySessionStore(), httpTransport = transport),
     positionStore = InMemoryLastPositionStore(),
     ioDispatcher = ioDispatcher,
 )
@@ -833,6 +1462,94 @@ class HomeViewModelCreateTaskTest {
         // their projects to un-stick the screen.
         assertNull(model.uiState.value.taskCreateError)
         assertEquals(2, model.uiState.value.projectChats["item_1"]?.chats?.size)
+    }
+
+    // ── The board card ──────────────────────────────────────────────────────
+
+    @Test
+    fun aCreatedCardLandsInTheProjectAndDoesNotNavigate() = createTest { s ->
+        val transport = CreateTransport()
+        val (model, _) = launchedWith(s, transport)
+        val opened = mutableListOf<String>()
+        val collector = CoroutineScope(s.mainDispatcher).launch {
+            model.createdChat.collect { opened += it }
+        }
+
+        model.createTask("item_1", CreateTaskRequest.KanbanTask("Card", "body"))
+        s.drain()
+        collector.cancel()
+
+        assertEquals("/api/workspaces/ws_1/items/item_1/kanban/tasks", transport.posts.single())
+        // The row is in the board's list, at the front…
+        val row = model.uiState.value.projectChats["item_1"]?.chats?.first()
+        assertEquals("task_9", row?.id)
+        assertEquals("Card", row?.name)
+        // …and the reader has NOT been moved into it. The desktop keeps them on
+        // the board after a create (2026-08-06-no-need-go-chatview), so an app
+        // that navigated here would yank them out of a board they are still
+        // looking at.
+        assertTrue(opened.isEmpty())
+        assertNull(model.uiState.value.creatingTaskInProjectId)
+        assertNull(model.uiState.value.taskCreateError)
+    }
+
+    @Test
+    fun aCreatedCardIsOpenableBecauseASessionExistsBehindIt() = createTest { s ->
+        // The other half of "does not navigate": not navigating is only right
+        // because tapping the row later works. `task_create.useCase` inserts the
+        // bare `sessions` row on this path (task_create.zig:567), and the
+        // create response carries no `task_type`, which `isOpenable` reads as
+        // openable.
+        val (model, _) = launchedWith(s, CreateTransport())
+
+        model.createTask("item_1", CreateTaskRequest.KanbanTask("Card", "body"))
+        s.drain()
+
+        assertTrue(model.uiState.value.projectChats["item_1"]?.chats?.first()!!.isOpenable)
+    }
+
+    @Test
+    fun aCardWithNoTitleIsRefusedBeforeTheRequest() = createTest { s ->
+        val transport = CreateTransport()
+        val (model, _) = launchedWith(s, transport)
+
+        model.createTask("item_1", CreateTaskRequest.KanbanTask("   ", "a body that changes nothing"))
+        s.drain()
+
+        // The server's only name rule for a card is "there is one", and the
+        // form's button is already disabled — this is the invariant behind it.
+        assertTrue(transport.posts.isEmpty())
+        assertEquals(2, model.uiState.value.projectChats["item_1"]?.chats?.size)
+        assertTrue(model.uiState.value.taskCreateError!!.contains("title"))
+        assertNull(model.uiState.value.creatingTaskInProjectId)
+    }
+
+    @Test
+    fun aCardWithNoBodyIsNotRefused() = createTest { s ->
+        // The mirror of the memory rules, and deliberately not the same rule: a
+        // titled card with nothing in it is a normal thing to put on a board.
+        val transport = CreateTransport()
+        val (model, _) = launchedWith(s, transport)
+
+        model.createTask("item_1", CreateTaskRequest.KanbanTask("Just a title", ""))
+        s.drain()
+
+        assertEquals(1, transport.posts.size)
+        assertNull(model.uiState.value.taskCreateError)
+        assertEquals("Just a title", model.uiState.value.projectChats["item_1"]?.chats?.first()?.name)
+    }
+
+    @Test
+    fun aFailedCardCreateKeepsEveryRowAndSaysSo() = createTest { s ->
+        val (model, _) = launchedWith(s, CreateTransport(createStatus = 500))
+
+        model.createTask("item_1", CreateTaskRequest.KanbanTask("Card", "body"))
+        s.drain()
+
+        val state = model.uiState.value
+        assertEquals(2, state.projectChats["item_1"]?.chats?.size)
+        assertNotNull(state.taskCreateError)
+        assertNull(state.creatingTaskInProjectId)
     }
 
     @Test

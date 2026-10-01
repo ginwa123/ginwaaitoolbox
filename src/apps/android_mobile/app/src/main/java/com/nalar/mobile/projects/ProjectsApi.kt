@@ -39,6 +39,27 @@ object ProjectsApi {
     const val TASKS_PAGE_LIMIT = 20
 
     /**
+     * The `mode` a kanban card create sends — the plain card, with no agent run.
+     *
+     * The route accepts three (`create`, `create_session`, `create_and_run`,
+     * `kanban_tasks_create.zig:3-25`) and this app sends one. `create_and_run`
+     * additionally needs a `queue_message` the reader never typed, and
+     * `create_session` exists only to pair with it, so both would mean this app
+     * inventing a prompt on the reader's behalf. See [createTaskBody].
+     */
+    const val KANBAN_MODE_CREATE = "create"
+
+    /**
+     * The other half of the web's split button.
+     *
+     * Not `create_session`: that mode exists so a card can be created *and* have
+     * a sessions row stamped for a later run without a turn being queued, which
+     * is not an action the form offers. The two the form offers are "create it"
+     * and "create it and start the agent now".
+     */
+    const val KANBAN_MODE_CREATE_AND_RUN = "create_and_run"
+
+    /**
      * How many of a project's chats the drawer shows before offering the rest.
      * A tuning value, not a wire one: on a 844dp phone five rows plus the
      * "See all chats" button fit without pushing the button off the bottom.
@@ -248,6 +269,25 @@ object ProjectsApi {
     }
 
     /**
+     * `POST /api/workspaces/{ws}/items/{item}/kanban/tasks` — a card on a board.
+     *
+     * A *different* route, not a `task_type` on the ordinary one. The
+     * kanban-scoped handler is what verifies the parent really is a kanban (404
+     * otherwise), auto-assigns the card to the board's first column, and emits
+     * the `kanban_task` SSE the board listens for
+     * (`kanban_tasks_create.zig`). Posting a card to the plain `/tasks` route
+     * would create the row and skip all three — a card that exists on the
+     * server and never appears on the board until the next full reload.
+     */
+    fun createKanbanTaskPath(workspaceId: String, itemId: String): String = buildString {
+        append("/api/workspaces/")
+        append(UriEncoding.encode(workspaceId))
+        append("/items/")
+        append(UriEncoding.encode(itemId))
+        append("/kanban/tasks")
+    }
+
+    /**
      * The JSON body for one [CreateTaskRequest].
      *
      * Field-for-field what the desktop's `api.createTask` sends
@@ -264,6 +304,10 @@ object ProjectsApi {
      *    a standard chat. No `description`, no `is_auto_retry_until_stop`, no
      *    `tags`: those all have defined server-side defaults and sending them
      *    would mean this client is asserting choices the reader was never asked.
+     *  - a kanban card carries `mode`, and carries **no** `task_type`: the
+     *    kanban-scoped handler forces `standard` itself
+     *    (`kanban_tasks_create.zig:169`), so sending one would be asserting a
+     *    choice the reader never had.
      *
      * The name is trimmed here. The desktop does not trim, and the difference
      * is only visible on a name the reader typed with stray spaces — where the
@@ -285,9 +329,70 @@ object ProjectsApi {
                 json.put("memory_name", fileName)
                 json.put("memory_content", request.content)
             }
+
+            is CreateTaskRequest.KanbanTask -> {
+                // `mode` is not optional and has no default: the handler
+                // answers 400 without it (`kanban_tasks_create.zig:110`).
+                // "create" is the plain card and does NOT start an agent;
+                // "create_and_run" also inserts the sessions row and queues
+                // `queue_message` as the first turn. Both are the web's two
+                // halves of one split button.
+                json.put(
+                    "mode",
+                    if (request.runAgent) KANBAN_MODE_CREATE_AND_RUN else KANBAN_MODE_CREATE,
+                )
+                json.put("name", request.name.trim())
+                // Sent even when blank. The field is `?[]const u8` on the wire,
+                // so omitting it and sending `""` are the same branch here — but
+                // sending it makes the client's intent legible and keeps the body
+                // identical to the desktop's for the same card.
+                json.put("description", request.description)
+
+                // The server's own rules, applied before the wire rather than
+                // after: an invalid tag is a 400 that names no field, so the
+                // form drops it and the reader never learns it existed.
+                val tags = KanbanTags.normalize(request.tags)
+                if (tags.isNotEmpty()) {
+                    // A JSON *string* holding an array, not a nested array.
+                    // `tags_validation.zig` parses `body.tags` as
+                    // `std.json.Value` and refuses anything that is not an
+                    // array; `JSONObject.put(key, JSONArray)` would be an array
+                    // and `put(key, String)` is exactly what it expects.
+                    json.put("tags", org.json.JSONArray(tags).toString())
+                }
+
+                // Migration 070 — the per-task project root. Sent even when
+                // blank, because "" is the server's canonical "no override"
+                // and omitting the key would mean NULL instead.
+                json.put("cwd", request.cwd)
+
+                // Migration 063. Always '0' or '1', never omitted and never a
+                // boolean: the column is TEXT and the handler forwards it
+                // verbatim (`kanban_tasks_create.zig:179`).
+                json.put("is_auto_retry_until_stop", if (request.unattended) "1" else "0")
+
+                if (request.runAgent) {
+                    json.put("queue_message", request.queueMessage)
+                    // The web sends this on create-and-run only ("Path A": the
+                    // plain create has no sessions row of its own to stamp, so
+                    // a profile sent there would be a choice the reader made
+                    // and the server silently dropped).
+                    json.put("selected_profile_model", request.profile)
+                }
+
+                // Base64 data URLs. `||` because that is the web's delimiter
+                // (`api/index.ts` — `body.image_urls = images.join('||')`), and
+                // the server splits on `|` filtering empty segments
+                // (`image_urls_validation.zig:64`), so both spellings parse.
+                val images = request.imageUrls.filter { it.isNotBlank() }
+                if (images.isNotEmpty()) {
+                    json.put("image_urls", images.joinToString("||"))
+                }
+            }
         }
         return json.toString()
     }
+
 
     /**
      * The one task object `POST .../tasks` returns, as a [ProjectChat].
@@ -326,6 +431,48 @@ object ProjectsApi {
                 task.stringField("created_at"),
             ) ?: RecentsApi.UNKNOWN_TIMESTAMP,
             taskType = task.optNullableString("task_type"),
+        )
+    }
+
+    /**
+     * `POST .../kanban/tasks` answers `201 {"task": {…}, "session": null}` — an
+     * **envelope**, not a bare row.
+     *
+     * Unwrapping `task` is the whole job, and it has to happen here rather than
+     * in the client: the two create routes share a response *type* on the
+     * server (`http_response.TaskCreateResponse`) and differ only in whether
+     * they wrap it. A parser that skipped the envelope would read a body whose
+     * only keys are `task`/`session` as a row with no `id`, and report a
+     * successful create as unreadable.
+     *
+     * Two fields [parseCreatedTask] can read are absent on this route, and both
+     * are absorbed rather than invented:
+     *
+     *  - **no `updated_at` / `created_at`** — `TaskCreateResponse` carries
+     *    neither (`kanban_tasks_create.zig:404-411`). The card therefore lands
+     *    with `RecentsApi.UNKNOWN_TIMESTAMP`, which sorts it last. That is the
+     *    honest answer: the server did not tell us when it was touched.
+     *  - **no `task_type`** — the handler forced `standard` and does not echo
+     *    it. Left null, which [ProjectChat.isOpenable] reads as openable, which
+     *    is correct: `task_create.useCase` inserts the bare `sessions` row on
+     *    this path (`task_create.zig:567`).
+     */
+    fun parseCreatedKanbanTask(body: String, projectId: String): ProjectChat? {
+        val envelope = try {
+            JSONObject(body)
+        } catch (_: Exception) {
+            return null
+        }
+
+        val task = envelope.optJSONObject("task") ?: return null
+        val id = task.stringField("id")
+        if (id.isEmpty()) return null
+
+        return ProjectChat(
+            id = id,
+            projectId = projectId,
+            name = task.stringField("name"),
+            updatedAtEpochMillis = RecentsApi.UNKNOWN_TIMESTAMP,
         )
     }
 

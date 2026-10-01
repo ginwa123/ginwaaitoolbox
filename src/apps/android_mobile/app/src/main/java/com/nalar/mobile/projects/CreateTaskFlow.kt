@@ -16,11 +16,24 @@ import androidx.compose.runtime.setValue
  * is which project types get a dialog and which do not, and that is exactly
  * what a test can assert without a device.
  *
- * It mirrors the desktop exactly (`Sidebar.vue:895-906`):
+ * It mirrors the desktop's own rule as written at `Sidebar.vue:925-926`:
+ *
+ * > Kanban items handle "+ Add" locally inside KanbanView.vue (no picker —
+ * > **kanban cards are always standard chats**; the picker is for non-kanban
+ * > parents where the user might want a routine / memory / chat task).
+ *
+ * So:
  *
  *  - **agent** — an agent item *is* a chat container, so `+` makes a Standard
  *    Chat and opens it. No picker: Memory and Routine are not things you start
  *    an agent conversation from, and offering them would be noise.
+ *  - **kanban** — [NameTask], the card form itself, with no step in between.
+ *    Not [Pick]: a board has no memory files and no chat-versus-memory choice
+ *    to make, so a sheet offering either is a sheet whose only option is the
+ *    thing you already pressed `+` to reach. The web opens this form directly
+ *    too — `KanbanView.vue` binds `+ Add` to `handleViewCreateTask`, which sets
+ *    the column and opens the dialog with nothing between the press and the
+ *    form (`KanbanView.vue:1213-1217`).
  *  - **routine** — has no task list at all; the `+` is hidden in the desktop's
  *    `WorkspaceItem.vue` and guarded here as well so a programmatic call
  *    cannot open a sheet over a scheduler-owned parent.
@@ -33,6 +46,15 @@ sealed interface CreateTaskStartDecision {
     /** Open the picker and wait for the reader to choose a type. */
     data object Pick : CreateTaskStartDecision
 
+    /**
+     * Open a form and wait for the reader to fill it in.
+     *
+     * Distinct from [Pick] rather than a flag on it, because a kanban form and
+     * a two-card picker share no field and no exit. Naming the case forces the
+     * render to say which set it meant.
+     */
+    data object NameTask : CreateTaskStartDecision
+
     /** This project does not take tasks. Do nothing at all. */
     data object NotAllowed : CreateTaskStartDecision
 }
@@ -42,17 +64,24 @@ internal fun createTaskStartDecision(itemType: String): CreateTaskStartDecision 
         ProjectTypes.AGENT -> CreateTaskStartDecision.Create(
             CreateTaskRequest.StandardChat(TaskTypes.DEFAULT_NEW_CHAT_NAME),
         )
+        ProjectTypes.KANBAN -> CreateTaskStartDecision.NameTask
         ProjectTypes.ROUTINE -> CreateTaskStartDecision.NotAllowed
         else -> CreateTaskStartDecision.Pick
     }
 
 /**
- * Which of the two steps the create flow is on.
+ * Which step the create flow is on.
  *
- * A sealed type because the two steps carry different data and have different
+ * A sealed type because the steps carry different data and have different
  * exits: [Picking] goes back to the drawer, [NamingMemory] goes back to the
- * picker. Two nullable fields would allow "picking for project A, naming a
- * memory for project B", which is the state a reader cannot get out of.
+ * picker, and [NamingTask] has nothing behind it at all. Two nullable fields
+ * would allow "picking for project A, naming a memory for project B", which is
+ * the state a reader cannot get out of.
+ *
+ * [NamingTask] is a separate case rather than a flag on [NamingMemory] for the
+ * same reason the decisions are: a board's card form and a project's memory form
+ * have no field in common, and a `when` that rendered one for the other would
+ * be a create posted to the wrong endpoint.
  */
 sealed interface CreateTaskStep {
     /** Nothing open. */
@@ -76,6 +105,23 @@ sealed interface CreateTaskStep {
         val workspaceId: String,
         val itemId: String,
         val projectName: String,
+    ) : CreateTaskStep
+
+    /**
+     * The board card form, for one specific kanban project.
+     *
+     * [projectPath] is the board's own on-disk path, carried so the form can
+     * prefill "Project root" with it — which is what the web does
+     * (`KanbanTaskDetail.vue`: "Pre-populated from the parent kanban's path in
+     * create mode"). Fetching it again inside the form would mean the dialog
+     * renders once with no root and again with one, and a reader who typed a
+     * title in between would be looking at a field that changed under them.
+     */
+    data class NamingTask(
+        val workspaceId: String,
+        val itemId: String,
+        val projectName: String,
+        val projectPath: String = "",
     ) : CreateTaskStep
 }
 
@@ -122,6 +168,13 @@ class CreateTaskController(
                 itemId = item.id,
                 projectName = item.displayName,
             )
+
+            CreateTaskStartDecision.NameTask -> step = CreateTaskStep.NamingTask(
+                workspaceId = item.workspaceId,
+                itemId = item.id,
+                projectName = item.displayName,
+                projectPath = item.path,
+            )
         }
     }
 
@@ -147,6 +200,50 @@ class CreateTaskController(
             projectName = current.projectName,
         )
     }
+
+    /**
+     * Submit the board card form.
+     *
+     * The whole [KanbanTaskForm] crosses here rather than a name and a
+     * description, because the web's dialog collects nine more things and the
+     * controller is the only place that knows which project the card belongs
+     * to. A narrower signature would have every new field threaded through this
+     * class as another parameter.
+     *
+     * The description is passed through untouched — the server stores it as the
+     * card's prompt body and shows it verbatim on the card, so trimming it would
+     * quietly edit what the reader wrote. The title is trimmed, matching every
+     * other name in this flow and for the same reason
+     * ([ProjectsApi.createTaskBody]).
+     *
+     * [canSubmitKanbanTask] gates this, so the button is already disabled for an
+     * untitled card and this is not re-asked. It is still a `takeIf` rather than
+     * a trust: a disabled button is a UI affordance, not an invariant.
+     */
+    fun submitTaskForm(form: KanbanTaskForm) {
+        val current = step as? CreateTaskStep.NamingTask ?: return
+        if (!canSubmitKanbanTask(form)) return
+        // Closed here, not on a callback, for the reason [submitMemory] is:
+        // this method is the only place the form can be submitted, so a form
+        // left open after a successful create is a form stuck open forever.
+        step = CreateTaskStep.Idle
+        onCreate(
+            current.workspaceId,
+            current.itemId,
+            form.toRequest(),
+        )
+    }
+
+    /**
+     * The two-field shorthand, for callers that have nothing else to say.
+     *
+     * Not the general path and not what the dialog uses — it exists so a
+     * programmatic create of a bare card is one call rather than a constructed
+     * form, and so the memory/chat forms and the card form read alike at the
+     * call site.
+     */
+    fun submitTask(name: String, description: String) =
+        submitTaskForm(KanbanTaskForm(name = name, description = description))
 
     /**
      * Submit the memory form.
@@ -195,6 +292,15 @@ class CreateTaskController(
  */
 fun canSubmitMemory(name: String, content: String): Boolean =
     isValidMemoryName(name) && content.isNotBlank()
+
+/**
+ * Whether a title alone is enough to create a card.
+ *
+ * The two-argument spelling of [canSubmitKanbanTask], kept because it is the
+ * rule the *button* is bound to and a button should not have to build a whole
+ * form to ask whether it is allowed to be bright.
+ */
+fun canSubmitTask(name: String): Boolean = canSubmitKanbanTask(KanbanTaskForm(name = name))
 
 /**
  * The controller, remembered across recompositions.

@@ -46,7 +46,16 @@ class ProjectsClient(
     )
 
     /**
-     * Create a task under a project — an ordinary chat, or a memory file.
+     * Create a task under a project — an ordinary chat, a memory file, or a card
+     * on a kanban board.
+     *
+     * One method rather than three, because everything around the POST is
+     * identical: the same cookie header, the same status mapping, the same
+     * "a create that succeeded with no id is [RecentsResult.Unavailable]"
+     * rule. The only thing [request] changes is **which route** is posted to —
+     * `/tasks` for a chat and a memory, `/kanban/tasks` for a card — and the
+     * two routes answer in different shapes, so the parser is chosen the same
+     * way the path is.
      *
      * Returns the row the server just inserted, so the caller can paint it
      * without re-fetching the page it landed in. A create that "succeeds" with
@@ -60,6 +69,8 @@ class ProjectsClient(
         itemId: String,
         request: CreateTaskRequest,
     ): RecentsResult<ProjectChat> {
+        val isKanbanCard = request is CreateTaskRequest.KanbanTask
+
         val sessionCookie = try {
             sessionStore.read()
         } catch (_: Exception) {
@@ -68,7 +79,11 @@ class ProjectsClient(
 
         val response = try {
             transport.post(
-                path = ProjectsApi.createTaskPath(workspaceId, itemId),
+                path = if (isKanbanCard) {
+                    ProjectsApi.createKanbanTaskPath(workspaceId, itemId)
+                } else {
+                    ProjectsApi.createTaskPath(workspaceId, itemId)
+                },
                 body = ProjectsApi.createTaskBody(request),
                 headers = sessionCookie
                     ?.let { cookie ->
@@ -90,8 +105,16 @@ class ProjectsClient(
             return RecentsResult.Unavailable(createMessageForStatus(response.statusCode))
         }
 
+        // The two parsers are picked together with the two paths because
+        // getting this wrong is silent, not loud: parse a `{"task":…}` envelope
+        // with the bare-row parser and it returns null (no top-level `id`), and
+        // a perfectly good card is reported to the reader as a server error.
         val created = try {
-            ProjectsApi.parseCreatedTask(response.body, itemId)
+            if (isKanbanCard) {
+                ProjectsApi.parseCreatedKanbanTask(response.body, itemId)
+            } else {
+                ProjectsApi.parseCreatedTask(response.body, itemId)
+            }
         } catch (_: Exception) {
             null
         } ?: return RecentsResult.Unavailable(UNREADABLE_RESPONSE_MESSAGE)

@@ -229,6 +229,11 @@ class MainActivity : ComponentActivity() {
                             homeViewModel.createTask(itemId, request)
                         }
                     },
+                    // A board's "New task" form opens the moment `+` is pressed
+                    // on a kanban project, so its columns, the profile list and
+                    // the server's home start loading here rather than after the
+                    // reader fills the form in.
+                    onLoadKanbanFormData = homeViewModel::loadKanbanFormData,
                     // The drawer's top-level "New Chat". No project id and no
                     // request: HomeViewModel resolves the workspace's default
                     // project itself (Migration 094) and builds the Standard

@@ -1,6 +1,7 @@
 package com.nalar.mobile.network
 
 import com.nalar.mobile.projects.CreateTaskHost
+import com.nalar.mobile.projects.NewTaskDialogData
 import com.nalar.mobile.projects.CreateTaskRequest
 import com.nalar.mobile.projects.NewChatProjectSheet
 import com.nalar.mobile.projects.ProjectChatsScreen
@@ -276,6 +277,16 @@ fun NalarNavGraph(
      * ViewModel.
      */
     onCreateTask: (String, String, CreateTaskRequest) -> Unit = { _, _, _ -> },
+    /**
+     * Fill in the board's "New task" form: its columns, the profile list, and
+     * the server's home for the worktree prefill.
+     *
+     * A callback for the same reason as [onCreateTask] — the graph composes, the
+     * ViewModel fetches — and it is the graph's job because [CreateTaskHost] is
+     * mounted here, above the `NavHost`, so this is the one place that sees the
+     * form open and the state that answers it.
+     */
+    onLoadKanbanFormData: (String, String) -> Unit = { _, _ -> },
     /**
      * The drawer's top-level "New Chat": create a chat in the workspace's
      * default project and open it. Kept separate from [onCreateTask] because
@@ -604,6 +615,17 @@ fun NalarNavGraph(
         controller = createTask,
         isSubmitting = homeState.creatingTaskInProjectId != null,
         errorMessage = homeState.taskCreateError,
+        // The board's form opens straight onto the card form (there is no type
+        // picker for a board — see `createTaskStartDecision`), so these three
+        // reads start the moment the reader presses `+` and land while they are
+        // typing the title rather than after they press commit.
+        kanbanData = NewTaskDialogData(
+            columns = homeState.kanbanColumns,
+            profiles = homeState.kanbanProfiles,
+            serverHome = homeState.kanbanServerHome,
+            isLoading = homeState.isLoadingKanbanFormData,
+        ),
+        onRequestKanbanData = onLoadKanbanFormData,
     )
 
     // The chat bar's `+` chooser, over the graph and over `CreateTaskHost` so

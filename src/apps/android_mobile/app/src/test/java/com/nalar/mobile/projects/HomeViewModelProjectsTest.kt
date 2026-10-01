@@ -127,6 +127,7 @@ private fun buildModel(
     cache = InMemoryRecentsCache(),
     projectsClient = ProjectsClient(MemorySessionStore(), httpTransport = transport),
     projectsCache = projectsCache,
+    kanbanClient = KanbanClient(MemorySessionStore()),
     positionStore = InMemoryLastPositionStore(),
     ioDispatcher = ioDispatcher,
 )
