@@ -43,6 +43,7 @@ const AgentTool = @import("../modules/agent/tools/schemas.zig").AgentTool;
 
 const tools = @import("tools.zig");
 const skill_evals_db = @import("skill_evals_db.zig");
+const skill_evals_config = @import("skill_evals_config.zig");
 const drift = @import("skill_evals_drift.zig");
 const skill_eval_events = @import("skill_eval_events.zig");
 const skill_eval_judge = @import("skill_eval_judge.zig");
@@ -656,7 +657,12 @@ pub fn runEval(
 }
 
 pub fn execRunSkillEval(ctx: tools.ToolExecContext, tc: agent.ToolCall) !tools.ToolExecResult {
-    const enabled = ctx.config.skill_evals.enabled;
+    // Under `--auth` the user's settings live in `users.config_json` and never
+    // reach `ctx.config`, so resolve the block per session before deciding.
+    // Null in file mode, where the singleton is already authoritative.
+    const evals_cfg = skill_evals_config.resolve(ctx.allocator, ctx.db, ctx.session_id) orelse
+        ctx.config.skill_evals;
+    const enabled = evals_cfg.enabled;
     // The SSE bus, when the singleton is up. Null in tests and in any
     // dispatch with no live context — the emit is then a no-op.
     const bus: ?*nalarcore.event_bus.EventBus = if (nalarcore.getSingleton()) |di| di.event_bus else |_| null;
@@ -667,9 +673,9 @@ pub fn execRunSkillEval(ctx: tools.ToolExecContext, tc: agent.ToolCall) !tools.T
         .profile = ctx.selected_profile_model,
         .environment = ctx.environment,
         .enabled = enabled,
-        .max_skills = ctx.config.skill_evals.max_skills_per_run,
-        .include_listed_only = ctx.config.skill_evals.include_listed_without_loading,
-        .fact_lease_seconds = ctx.config.skill_evals.fact_lease_seconds,
+        .max_skills = evals_cfg.max_skills_per_run,
+        .include_listed_only = evals_cfg.include_listed_without_loading,
+        .fact_lease_seconds = evals_cfg.fact_lease_seconds,
         .event_bus = bus,
     }) catch |err| {
         const msg = try std.fmt.allocPrint(ctx.allocator, "run_skill_eval failed: {s}", .{@errorName(err)});
@@ -680,7 +686,7 @@ pub fn execRunSkillEval(ctx: tools.ToolExecContext, tc: agent.ToolCall) !tools.T
     defer outcome.deinit(ctx.allocator);
 
     const inner = if (outcome.disabled)
-        try ctx.allocator.dupe(u8, "{\"status\":\"disabled\",\"message\":\"Skill Evals are off. Ask the user to set skill_evals.enabled in config.json.\"}")
+        try ctx.allocator.dupe(u8, "{\"status\":\"disabled\",\"message\":\"Skill Evals are off for this user. Turn on Settings > Skill Evals for this account, then try again.\"}")
     else if (outcome.failed)
         try ctx.allocator.dupe(u8, "{\"status\":\"failed\",\"message\":\"The eval could not be started because of a database error. Nothing was evaluated.\"}")
     else if (outcome.reused)

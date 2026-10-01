@@ -9,6 +9,7 @@ const models = @import("models.zig");
 pub const on_event_sent = @import("on_event_sent.zig");
 const tool_registry = @import("tools_equipped.zig");
 const handle_tool = @import("handle_tool.zig").handle_tool;
+const skill_evals_config = @import("skill_evals_config.zig");
 const ask_user_pending = @import("ask_user_pending.zig");
 // `MAIN_AGENT_ONLY_NAMES` (spawn_sub_agent, ask_user) — the tools a sub-agent
 // must not re-equip via `use_tool`.
@@ -1333,7 +1334,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // pointer (see the per-iteration re-read above), so flipping the
             // switch in config.json takes effect on the next iteration without
             // restarting the run — the same contract as the model switch.
-            config.skill_evals.enabled,
+            // Under `--auth` that pointer never sees the user's saved
+            // settings, so resolve per session and keep the pointer as the
+            // file-mode answer.
+            (skill_evals_config.resolve(allocator, db, copy_session_id) orelse
+                config.skill_evals).enabled,
         );
         logger.infoFmt(
             "[CHECKPOINT] tools resolved mcp_count={d} mcp_equipped={d} builtin_equipped={d} catalog={d} item_type='{s}' merged_count={d} allowed_tools_len={d} is_sub_agent={} mcp_null={}",
