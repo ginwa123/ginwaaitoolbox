@@ -407,6 +407,48 @@ describe('AppLayout — a document is a PAGE, not a ?doc= overlay', () => {
     wrapper.unmount()
   })
 
+  it('a document path CLEARS the active chat, so no ChatView mounts under it', async () => {
+    // The bug this pins is subtle and survived two earlier specs. <main>
+    // does NOT have one v-if chain: the standalone `v-if` on
+    // <DesignChatDialog> splits it in two, so <DocumentsView> (early,
+    // first chain) and the standalone `<ChatView v-else-if="activeChatId…">`
+    // (late, second chain) are in DIFFERENT chains. Independent chains are
+    // not mutually exclusive, so with `activeChatId` still set the chat
+    // rendered UNDERNEATH the document page.
+    //
+    // It hid from the specs for two reasons: the kanban-path spec above has
+    // no active chat (so the ChatView branch is false for an unrelated
+    // reason), and a hard page load has no chat state either. It only shows
+    // when a CHAT is active and the user clicks a row — which is why the
+    // Playwright test drives an actual click.
+    const { useNavigationStore } = await import('../stores/navigation')
+    navigate(DOC_PATH)
+    useDocumentsStore().documents = [DOC]
+    useDocumentsStore().loaded = true
+
+    const wrapper = mount(AppLayout, { global: { stubs: STUB_CONFIG } })
+    await flush()
+
+    const nav = useNavigationStore()
+    // Pretend a standalone chat session is open — the state the repro has.
+    nav.setActiveChat('sess_live', 'live chat')
+    await flush()
+    expect(nav.activeChatId).toBe('chat-sess_live')
+
+    // Re-enter the doc path (what a click / Back-Forward does).
+    navigate(DOC_PATH)
+    await flush()
+
+    // The chat selection must be dropped by the URL->store watcher.
+    expect(nav.activeChatId).toBe('')
+    // ...and with it gone the second chain cannot mount a ChatView, so the
+    // document is the ONLY thing under <main>.
+    expect(wrapper.find('main [data-testid="documents-view"]').exists()).toBe(true)
+    expect(wrapper.find('main .chat-column').exists()).toBe(false)
+    expect(wrapper.find('main .composer-dock').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('a stale ?doc= URL is NOT rewritten to the document path', async () => {
     // No fallback by design: Migration 095 shipped the overlay shape and
     // was replaced by the `/doc/` path before it was in wide use, so

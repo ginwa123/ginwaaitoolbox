@@ -20,6 +20,7 @@ import { computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useDocumentsStore } from '../../stores/documents'
+import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { buildAppUrl } from '../../helpers/appUrl'
@@ -35,6 +36,7 @@ const emit = defineEmits<{
 
 const sidebarStore = useSidebarStore()
 const documentsStore = useDocumentsStore()
+const navigationStore = useNavigationStore()
 const workspacesStore = useWorkspacesStore()
 const router = useRouter()
 const currentMainView = useCurrentMainView()
@@ -74,8 +76,16 @@ const selectDocument = (id: string) => {
   // The document is the chat-equivalent of an open view, so the chat and
   // project selections must clear — two "active" rows is the visual bug
   // the single-active-state spec exists to prevent.
+  //
+  // `activeChatId` matters as much as the other two, and NOT just for the
+  // sidebar highlight. <main> does not have one v-if chain (the standalone
+  // `v-if` on <DesignChatDialog> splits it in two), so <DocumentsView> and
+  // the standalone `<ChatView v-else-if="activeChatId…">` are in different
+  // chains and are therefore NOT mutually exclusive. Leaving `activeChatId`
+  // set mounts the chat underneath the document page.
   workspacesStore.setActiveWorkspaceItem(null)
   workspacesStore.setActiveTask(null)
+  navigationStore.clearActiveChat()
 }
 
 const createDocument = () => {
