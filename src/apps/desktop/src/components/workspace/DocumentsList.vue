@@ -9,7 +9,7 @@
 //    and `border-b border-[--color-border]/40`; a "close enough" header
 //    fails that spec and looks wrong next to Projects.
 //
-// 2. The active row is derived from the URL (`?doc=<id>` via
+// 2. The active row is derived from the URL (`/app/{ws}/doc/<id>` via
 //    `useCurrentMainView`), never from a local flag. A local flag goes
 //    stale after a refresh, a Back/Forward, or a shared link — the exact
 //    bug `ChatsList.isCurrentChat` documents.

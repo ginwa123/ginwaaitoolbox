@@ -114,9 +114,9 @@ const remove = async () => {
   const ok = await documentsStore.deleteDocument(workspaceId.value, props.documentId)
   if (!ok) return
   // Leaving a deleted document selected would render a permanently empty
-  // view. The document owns its path (`/app/{ws}/doc/{id}`), so there is
-  // no `?doc=` to drop — leave the page by going back to the workspace
-  // root, which is where the user was before they opened any document.
+  // view. The document owns its path, so there is no query param to drop
+  // — leave the page by going back to the workspace root, which is where
+  // the user was before they opened any document.
   router.replace(buildAppUrl({ workspaceId: workspaceId.value })).catch(() => {
     // Nothing to recover: a rejected duplicate navigation already means
     // the URL is what the user asked for.

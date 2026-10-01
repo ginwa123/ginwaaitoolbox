@@ -19,7 +19,7 @@
  *   below therefore mounts the real `Sidebar`, which is the only way to
  *   exercise that binding.
  *
- * BUG 2 — clicking a document row does nothing.
+ * BUG 2 — clicking a document row did nothing.
  *   A two-hop loop in AppLayout, not the one-hop race the store comment
  *   describes. Verified hop by hop:
  *     hop 2 — the URL→store watcher watches `[route.path, route.query]`,
@@ -36,8 +36,14 @@
  *   Net effect: the click's own navigation was undone a microtask later,
  *   which is exactly "nothing happens".
  *
+ *   Both hops existed only because a document was a `?doc=` OVERLAY. It
+ *   is now a `/app/{ws}/doc/{id}` page, so the watcher guard and the
+ *   mirror's `doc` carry are both gone — the class of bug has no
+ *   mechanism left. These specs now pin the page contract that replaced
+ *   it, plus that a stray `?doc=` no longer opens anything.
+ *
  * ── Note on how these specs are shaped ──
- * Both watcher tests need `useRoute` to hand back a REACTIVE object that
+ * The watcher tests need `useRoute` to hand back a REACTIVE object that
  * the test mutates AFTER mount. A plain object per test (the shape
  * `sidebarSingleActive.spec.ts` uses, and `AppLayout.chatClickUrlOverwrite`
  * relies on) never re-triggers `[route.path, route.query]`, so the whole
@@ -401,20 +407,28 @@ describe('AppLayout — a document is a PAGE, not a ?doc= overlay', () => {
     wrapper.unmount()
   })
 
-  it('a legacy ?doc= URL is rewritten to the document path on boot', async () => {
-    // Bookmarks and links shared before this change still point at
-    // `?doc=<id>`. They must land on the document, not on the chat that
-    // used to be underneath it.
+  it('a stale ?doc= URL is NOT rewritten to the document path', async () => {
+    // No fallback by design: Migration 095 shipped the overlay shape and
+    // was replaced by the `/doc/` path before it was in wide use, so
+    // there are no links in the wild to keep working. Rendering the
+    // document here would restore the ambiguous URL that says nothing
+    // about which page owns the document.
+    //
+    // Assert the REPLACE, not the rendered view: `router` is a mock here,
+    // so a boot rewrite would not actually move the route and
+    // `documents-view` would stay absent either way. Asserting the view
+    // would be a green test that passes whether or not the rewrite
+    // exists. The absence of a `router.replace` to the doc path is the
+    // observable difference.
     navigate(PROJECT_PATH, { doc: DOC_ID })
     useDocumentsStore().documents = [DOC]
     useDocumentsStore().loaded = true
     const wrapper = mount(AppLayout, { global: { stubs: STUB_CONFIG } })
     await flush()
 
-    const rewritten = replaceMock.mock.calls.filter((call) => (call[0] ?? {}).path === DOC_PATH)
-    expect(rewritten.length).toBeGreaterThan(0)
-    // The `doc` query is dropped in the rewrite — the path carries it now.
-    expect((rewritten[0]![0] as { query?: Record<string, string> }).query?.doc).toBeUndefined()
+    const rewroteToDoc = replaceMock.mock.calls.filter((call) => (call[0] ?? {}).path === DOC_PATH)
+    expect(rewroteToDoc).toHaveLength(0)
+    expect(wrapper.find('[data-testid="documents-view"]').exists()).toBe(false)
     wrapper.unmount()
   })
 })

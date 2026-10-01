@@ -24,16 +24,14 @@ import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
  *   /app/{ws}/projects/{pid}[?pageId=…]         → workspace {workspaceId, itemId, pageId}
  *   /app/{ws}/projects/{pid}/chat/{tid}         → workspace {… + chatTaskId}
  *
- * The documents viewer (Migration 095) is a query overlay, not a path
- * shape:
+ * The documents viewer (Migration 095) is a path shape like every other
+ * main view:
  *
- *   /app/{ws}[?doc=<id>]                         → document {documentId, workspaceId}
+ *   /app/{ws}/doc/{id}                           → document {documentId, workspaceId}
  *
- * Checked BEFORE the path shapes, so opening a document wins over the
- * workspace/project view it was opened from. Every other navigation
- * (chat row, project row, task row) replaces the path without carrying
- * query forward, so a stale `?doc=` cannot outlive the selection that
- * set it.
+ * It REPLACES the main view rather than overlaying it, so it takes no
+ * precedence over the other shapes — there is nothing underneath it to
+ * win over, and the chat it was opened from is unmounted.
  *
  * Legacy `?view=chat|task|workspace` query URLs on `/app` still parse
  * to the old shapes until the AppLayout boot rewrite converts them.
@@ -109,33 +107,13 @@ export function useCurrentMainView(): ComputedRef<CurrentMainView> {
     // Document page (Migration 095). A PATH shape, so it is just another
     // main view — no precedence fight with the other shapes, and no
     // overlay to stack on top of whatever was open before.
+    //
+    // No `?doc=` fallback: Migration 095 shipped that overlay shape and
+    // was replaced by this path shape before it was in wide use, so there
+    // are no links in the wild to keep working and no second way for the
+    // URL to name a document.
     if (parsed.kind === 'doc') {
       return { kind: 'document', documentId: parsed.documentId, workspaceId: parsed.workspaceId }
-    }
-
-    // Legacy `?doc=<id>` overlay (how Migration 095 first shipped). Kept
-    // working until AppLayout's boot rewrite swaps the URL for the path,
-    // so a bookmarked or shared link still opens the document instead of
-    // silently falling through to whatever page it was layered on.
-    // AppLayout owns the rewrite — this composable must not navigate.
-    if (typeof q.doc === 'string' && q.doc.length > 0) {
-      // `parseAppPath` returns `other` for paths with no workspace of
-      // their own (settings, kanban-settings) and `landing` for a bare
-      // `/app`. Only the workspace-bearing kinds carry a `workspaceId`,
-      // so the other two read it off the query instead — a deep link
-      // that landed before a workspace was selected still resolves, and
-      // an unresolvable one stays `undefined` so the view can say so
-      // instead of guessing.
-      const docWorkspaceId =
-        parsed.kind === 'workspace' ||
-        parsed.kind === 'chat' ||
-        parsed.kind === 'project' ||
-        parsed.kind === 'projectChat'
-          ? parsed.workspaceId
-          : typeof q.workspaceId === 'string' && q.workspaceId.length > 0
-            ? q.workspaceId
-            : undefined
-      return { kind: 'document', documentId: q.doc, workspaceId: docWorkspaceId }
     }
 
     // Landing with a legacy `?view=` query is not the landing — fall

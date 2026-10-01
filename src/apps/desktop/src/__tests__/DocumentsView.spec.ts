@@ -45,12 +45,12 @@ const DOC = {
   updated_at: '2026-09-01 10:00:00',
 }
 
-async function makeRouter(query: Record<string, string> = {}) {
+async function makeRouter() {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
   })
-  await router.push({ path: '/app/ws_1', query })
+  await router.push({ path: '/app/ws_1/doc/doc_1' })
   await router.isReady()
   return router
 }
@@ -221,9 +221,9 @@ describe('DocumentsView — editing', () => {
 })
 
 describe('DocumentsView — delete and navigation', () => {
-  it('delete drops ?doc= from the URL so the view is not left blank', async () => {
+  it('delete leaves the document page so the view is not left blank', async () => {
     deleteDocument.mockResolvedValue({ id: 'doc_1', success: true })
-    const router = await makeRouter({ doc: 'doc_1' })
+    const router = await makeRouter()
     const wrapper = await mountView('doc_1', router)
     await flushPromises()
 
@@ -231,14 +231,16 @@ describe('DocumentsView — delete and navigation', () => {
     await flushPromises()
 
     // A deleted document left selected renders a permanently empty view.
+    // The document owns its path, so deleting leaves the page by going
+    // back to the workspace root.
     expect(deleteDocument).toHaveBeenCalledWith('ws_1', 'doc_1')
-    expect(router.currentRoute.value.query.doc).toBeUndefined()
+    expect(router.currentRoute.value.path).toBe('/app/ws_1')
     wrapper.unmount()
   })
 
   it('a failed delete keeps the document open and the URL intact', async () => {
     deleteDocument.mockRejectedValue(new Error('document not found'))
-    const router = await makeRouter({ doc: 'doc_1' })
+    const router = await makeRouter()
     const wrapper = await mountView('doc_1', router)
     await flushPromises()
 
@@ -247,7 +249,7 @@ describe('DocumentsView — delete and navigation', () => {
 
     // Navigating away on a failed delete loses the user's place for a
     // request that did not happen.
-    expect(router.currentRoute.value.query.doc).toBe('doc_1')
+    expect(router.currentRoute.value.path).toBe('/app/ws_1/doc/doc_1')
     expect(wrapper.find('[data-testid="documents-rendered"]').exists()).toBe(true)
     wrapper.unmount()
   })

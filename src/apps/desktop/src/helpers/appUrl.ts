@@ -20,10 +20,7 @@
  *
  * Unchanged: `/app/settings`, `/app/kanban/:itemId/settings`.
  * Legacy (rewritten once at boot to the shapes above, never emitted):
- * `/app/chat/:sid`, `/app/task/:tid`, every `?view=…` query URL, and
- * `?doc=<id>` on any app path — the document used to be a query OVERLAY on
- * whichever page you were on, so it inherited that page's path and two
- * documents on two different paths had two different URLs.
+ * `/app/chat/:sid`, `/app/task/:tid`, and every `?view=…` query URL.
  *
  * ## Why this exists
  *

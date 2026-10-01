@@ -153,41 +153,6 @@ async function handleBootUrl(): Promise<void> {
     // leave the URL alone, boot normally below.
   }
 
-  // 3b. Legacy `?doc=<id>` overlay (Migration 095 shipped documents this
-  // way — a query param on whatever page you happened to be on). Rewrite
-  // to the `/app/{ws}/doc/{id}` path so a bookmarked or shared link lands
-  // on the document instead of a chat/project that used to be underneath
-  // it. Runs on any app path, not just `/app`, because that is exactly
-  // where those links point. Without a workspace on the path there is
-  // nothing to build from, so the URL is left alone and the view still
-  // renders (legacy `useCurrentMainView` fallback) rather than 404ing.
-  if (typeof query.doc === 'string' && query.doc.length > 0) {
-    // The workspace comes from the path the overlay was layered on
-    // (`/app/{ws}`, `/app/{ws}/chat/…`, `/app/{ws}/projects/…`), or from
-    // `?workspaceId=` for a bare-`/app` deep link.
-    const legacy = parseAppPath(path)
-    const docWs =
-      legacy.kind === 'workspace' ||
-      legacy.kind === 'chat' ||
-      legacy.kind === 'doc' ||
-      legacy.kind === 'project' ||
-      legacy.kind === 'projectChat'
-        ? legacy.workspaceId
-        : query.workspaceId
-    if (docWs) {
-      const { doc: _droppedDoc, ...rest } = query
-      void _droppedDoc
-      const target = buildAppUrl({
-        workspaceId: docWs,
-        documentId: query.doc,
-        query: keepTabParam(rest),
-      })
-      path = target.path
-      query = target.query
-      router.replace({ path, query })
-    }
-  }
-
   // 4. Canonical boot from the (possibly rewritten) path.
   const parsed = parseAppPath(path)
   if (parsed.kind === 'chat') {
@@ -710,11 +675,8 @@ watch(
         sub.detail = urlDetail
       }
     }
-    // Documents (Migration 095) used to need carrying here: `?doc=<id>`
-    // was a query overlay, so any store write re-`router.replace`d a URL
-    // with it stripped and the editor closed itself. Now that a document
-    // is its own PATH shape, the store-to-URL mirror never targets it —
-    // there is no `doc` query to drop.
+    // A document is its own path, so this mirror never targets one — there
+    // is no `doc` query for a store write to strip.
 
     let target: AppUrlLocation | null = null
     if (wsId && safeItemId) {
@@ -1159,16 +1121,13 @@ const fetchChatSessionCwd = async (sessionId: string) => {
 
 // The open document's id, read from the PATH rather than
 // `route.params.documentId`. AppLayout derives everything else through
-// `parseAppPath`, and the legacy `?doc=` fallback keeps a pre-migration
-// link working until the boot rewrite above swaps it for the path. Going
-// through `route.params` instead would make the view depend on the
-// router having populated params, which is exactly what a hand-rolled
-// route object (tests, some deep-link entry points) does not do.
+// `parseAppPath`, and going through `route.params` would make the view
+// depend on the router having populated params, which is exactly what a
+// hand-rolled route object (tests, some deep-link entry points) does not
+// do.
 const activeDocumentId = computed(() => {
   const parsed = parseAppPath(route.path)
-  if (parsed.kind === 'doc') return parsed.documentId
-  const legacy = route.query.doc
-  return typeof legacy === 'string' && legacy.length > 0 ? legacy : ''
+  return parsed.kind === 'doc' ? parsed.documentId : ''
 })
 
 const currentView = computed(() => {
@@ -2552,12 +2511,11 @@ watch(
     // a chat from a board, or across chats). Mirrors the legacy
     // `?view=chat` branch below.
     const isOverlayView = view === 'gitfile' || view === 'skill' || view === 'code-editor'
-    // Documents (Migration 095) are now a PATH shape (`/app/{ws}/doc/{id}`),
-    // so this watcher does not need a special guard for them the way the
-    // `?doc=` overlay needed one: a path change is read by the branch
-    // below like any other. The guard that WAS here existed only because
-    // a query-only change re-ran the path branch underneath; that class
-    // of bug is gone with the query param.
+    // Documents (Migration 095) are a PATH shape, so this watcher reads
+    // them like any other branch below. It used to need an explicit
+    // `?doc=` overlay guard here; that guard existed only because a
+    // query-only change re-ran the path branch underneath it, and the
+    // class of bug is gone with the query param.
     if (parsed.kind === 'chat') {
       if (activeChatId.value !== `chat-${parsed.sessionId}`) {
         workspacesStore.setActiveWorkspaceItem(null)

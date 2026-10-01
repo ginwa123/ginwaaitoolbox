@@ -6,8 +6,8 @@
  *
  *  1. The section renders below Projects, with the same header geometry
  *     the spacing spec greps for.
- *  2. Clicking a row writes `?doc=<id>` to the URL, and mounting with
- *     `?doc=<id>` already in the URL highlights that row. Both halves
+ *  2. Clicking a row writes `/app/{ws}/doc/<id>` to the URL, and mounting
+ *     with that path already in the URL highlights that row. Both halves
  *     matter: a click that never reaches the URL loses the view on
  *     refresh, and a mount that ignores the URL loses it on a shared
  *     link.
