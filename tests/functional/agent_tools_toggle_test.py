@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from default_tools import DEFAULT_AGENT_TOOLS
 from harness import FunctionalHarness
 
 
@@ -150,37 +151,10 @@ def _registry_tools(harness: FunctionalHarness) -> list[str]:
     return names
 
 
-# Fresh agents are born with DEFAULT_AGENT_TOOLS — see
-# src/agentic_loop/tools_equipped.zig::DEFAULT_AGENT_TOOLS.
+# Fresh agents are born with DEFAULT_AGENT_TOOLS — the shared list in
+# default_tools.py (which points at src/agentic_loop/tools_equipped.zig).
 # Tests that need a clean enable use `preview_design_page` (in-registry, never a default).
-EXPECTED_DEFAULTS = [
-    "add_skill",
-    "ask_user",
-    "command",
-    "edit_skill",
-    "get_plan",
-    "glob",
-    "list_directory",
-    "list_skills",
-    "list_sub_agent",
-    "load_memory",
-    "present_files",
-    "read_file",
-    "read_workspace_session",
-    "remove_file",
-    "remove_skill",
-    "save_memory",
-    "search",
-    "search_tool",
-    "spawn_sub_agent",
-    "text_replace",
-    "update_plan",
-    "use_skill",
-    "use_tool",
-    "used_tools",
-    "view_tool",
-    "write_file",
-]
+EXPECTED_DEFAULTS = DEFAULT_AGENT_TOOLS
 NON_DEFAULT_TOOL = "preview_design_page"
 
 

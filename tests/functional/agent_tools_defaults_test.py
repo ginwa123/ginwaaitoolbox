@@ -5,10 +5,11 @@ Plan: docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md
 Covers:
   * AGENT — POST /api/workspaces/:ws/items/agent → GET /api/agents/:id/tools
     (as of 2026-09-16 this includes `ask_user`, seeded for every agent mode)
-    returns the 26-tool DEFAULT_AGENT_TOOLS (sorted ASC).
+    returns DEFAULT_AGENT_TOOLS (28 tools, sorted ASC) — the shared
+    list in default_tools.py.
   * KANBAN — POST /api/workspaces/:ws/items/kanban →
-    GET /api/agent-kanbans/:id/tools returns the 26 agent defaults +
-    2 kanban tools (kanban_list, kanban_move_task) — 28 total — and the
+    GET /api/agent-kanbans/:id/tools returns the 28 agent defaults +
+    2 kanban tools (kanban_list, kanban_move_task) — 30 total — and the
     bundle GET /api/workspaces/:ws/items/:id/agent_kanban is 200 (configured,
     not 404 NotConfigured).
   * NO-BACKFILL — deleting all tools on a fresh agent leaves [] (empty is
@@ -17,68 +18,11 @@ Covers:
 
 from __future__ import annotations
 
+from default_tools import DEFAULT_AGENT_TOOLS, DEFAULT_KANBAN_SEEDED_TOOLS
 from harness import FunctionalHarness
 
-EXPECTED_DEFAULTS = [
-    "add_skill",
-    "ask_user",
-    "command",
-    "edit_skill",
-    "get_plan",
-    "glob",
-    "list_directory",
-    "list_skills",
-    "list_sub_agent",
-    "load_memory",
-    "present_files",
-    "read_file",
-    "read_workspace_session",
-    "remove_file",
-    "remove_skill",
-    "save_memory",
-    "search",
-    "search_tool",
-    "spawn_sub_agent",
-    "text_replace",
-    "update_plan",
-    "use_skill",
-    "use_tool",
-    "used_tools",
-    "view_tool",
-    "write_file",
-]
-
-# Kanban boards seed DEFAULT_AGENT_TOOLS + DEFAULT_KANBAN_TOOLS.
-EXPECTED_KANBAN_DEFAULTS = [
-    "add_skill",
-    "ask_user",
-    "command",
-    "edit_skill",
-    "get_plan",
-    "glob",
-    "kanban_list",
-    "kanban_move_task",
-    "list_directory",
-    "list_skills",
-    "list_sub_agent",
-    "load_memory",
-    "present_files",
-    "read_file",
-    "read_workspace_session",
-    "remove_file",
-    "remove_skill",
-    "save_memory",
-    "search",
-    "search_tool",
-    "spawn_sub_agent",
-    "text_replace",
-    "update_plan",
-    "use_skill",
-    "use_tool",
-    "used_tools",
-    "view_tool",
-    "write_file",
-]
+EXPECTED_DEFAULTS = DEFAULT_AGENT_TOOLS
+EXPECTED_KANBAN_DEFAULTS = DEFAULT_KANBAN_SEEDED_TOOLS
 
 
 def _create_workspace(harness: FunctionalHarness, name: str = "defaults-ws") -> str:

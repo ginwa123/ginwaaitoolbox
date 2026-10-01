@@ -25,27 +25,25 @@ from harness import FunctionalHarness, is_safe_tmp
 
 
 @pytest.fixture(scope="module")
-def shared_harness():
+def shared_harness(default_nalar_bin: Path):
     """Boot nalar once for the whole module.
 
     Module-scoped because boot is ~3-5s (migration cascade + ready
     wait). Each test does its own API work on the same instance; no
     state is shared between tests because they make fresh API calls
     to a fresh workspace/item/etc.
+
+    The binary comes from the session-scoped `default_nalar_bin`
+    fixture, which already honours `$NALAR_BIN`, falls back to the
+    zig-out/bin candidates, and skips when there is nothing to boot.
+    This module used to re-implement all of that and pull
+    `_resolve_nalar_bin` in via a bare `from conftest import ...` —
+    which pytest resolves against the top-level `tests/conftest.py`
+    (pytest.ini puts `tests` ahead of `tests/functional` on
+    pythonpath), so the name was never there and every test in this
+    module errored at setup with an ImportError.
     """
-    nalar_bin = os.environ.get("NALAR_BIN")
-    if nalar_bin:
-        nalar_bin_path = Path(nalar_bin)
-        if not nalar_bin_path.exists():
-            pytest.skip(f"NALAR_BIN does not exist: {nalar_bin_path}")
-    else:
-        # Fall back to the default resolution logic (checks
-        # zig-out/bin/nalar etc.). Replicates conftest.default_nalar_bin
-        # without requiring the harness fixture (so module-scoped
-        # boot works).
-        from conftest import _resolve_nalar_bin
-        nalar_bin_path = _resolve_nalar_bin()
-    h = FunctionalHarness.boot(nalar_bin_path)
+    h = FunctionalHarness.boot(default_nalar_bin)
     try:
         yield h
     finally:
@@ -156,7 +154,7 @@ def test_teardown_restores_home_and_keeps_orig_dir(
 # leaves 15× headroom for slow CI runners.
 
 
-def test_teardown_completes_within_3s() -> None:
+def test_teardown_completes_within_3s(default_nalar_bin: Path) -> None:
     """Functions fresh nalar → teardown must complete in <3s.
 
     Pre-fix, this test took ~10s (the harness waited the full SIGTERM
@@ -166,16 +164,7 @@ def test_teardown_completes_within_3s() -> None:
     """
     import time
 
-    nalar_bin = os.environ.get("NALAR_BIN")
-    if nalar_bin:
-        nalar_bin_path = Path(nalar_bin)
-        if not nalar_bin_path.exists():
-            pytest.skip(f"NALAR_BIN does not exist: {nalar_bin_path}")
-    else:
-        from conftest import _resolve_nalar_bin
-        nalar_bin_path = _resolve_nalar_bin()
-
-    h = FunctionalHarness.boot(nalar_bin_path)
+    h = FunctionalHarness.boot(default_nalar_bin)
     try:
         # Drive a minimal API call so the binary is in a known state.
         assert h.health() is True
