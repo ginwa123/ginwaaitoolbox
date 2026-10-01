@@ -68,7 +68,7 @@ import TextReplace from '../tool_outputs/TextReplace.vue'
 import Bash from '../preview/Bash.vue'
 import ShellTool from '../preview/ShellTool.vue'
 import UseSkill from '../preview/UseSkill.vue'
-import ListSkills from '../tool_outputs/ListSkills.vue'
+import SearchSkills from '../tool_outputs/SearchSkills.vue'
 import AddSkill from '../tool_outputs/AddSkill.vue'
 import EditSkill from '../tool_outputs/EditSkill.vue'
 import RemoveSkill from '../tool_outputs/RemoveSkill.vue'
@@ -4937,8 +4937,8 @@ const compactSession = async () => {
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :parameters="getParametersForMessage(msg)"
                           />
-                          <ListSkills
-                            v-else-if="msg.tool_name === 'list_skills'"
+                          <SearchSkills
+                            v-else-if="msg.tool_name === 'search_skills'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :parameters="getParametersForMessage(msg)"

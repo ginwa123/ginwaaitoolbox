@@ -1609,7 +1609,7 @@ export function getChatHistory(
 // Default tools for a new chat session (created from a workspace item).
 // Minimal progressive-disclosure set: the agent discovers everything else
 // via search_tool / view_tool / use_tool. `command` for shell,
-// `load_memory` / `save_memory` for recall, `list_skills` + `use_skill` for skills.
+// `load_memory` / `save_memory` for recall, `search_skills` + `use_skill` for skills.
 export const DEFAULT_CHAT_TOOLS = [
   'search_tool',
   'view_tool',
@@ -1618,7 +1618,7 @@ export const DEFAULT_CHAT_TOOLS = [
   'search',
   'load_memory',
   'save_memory',
-  'list_skills',
+  'search_skills',
   'use_skill',
   // Introspection: list the tools equipped for this session ("what
   // tools do I have"). Read-only, sub-agent-safe. Seeded here so

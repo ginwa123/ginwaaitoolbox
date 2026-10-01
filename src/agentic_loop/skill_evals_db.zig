@@ -13,7 +13,7 @@
 //!      seconds, despite the name.)
 //!   2. **Was this skill merely listed and then ignored?** A skill the agent
 //!      was offered and did not use is a real finding, and until now it left
-//!      no trace at all: `list_skills` returns name/description/path only and
+//!      no trace at all: `search_skills` returns name/description/path only and
 //!      writes nothing.
 //!   3. **Has the body changed since it was read?** `content_hash` here is the
 //!      hash of the body *as actually read*, so drift detection is a hash
@@ -40,7 +40,7 @@ const migration = @import("../migrations/migration.zig");
 /// The kinds of ledger row. Stored as text so a `SELECT` is readable without a
 /// decoder, and so adding a kind later cannot invalidate existing rows.
 pub const SkillEventKind = enum {
-    /// The skill appeared in a `list_skills` result. Recorded once per
+    /// The skill appeared in a `search_skills` result. Recorded once per
     /// `(session, skill)` — see `insertEvent`'s `dedupe` flag.
     listed,
     /// `use_skill` read the body. Carries `content_hash` of what was read.
@@ -100,6 +100,17 @@ pub const SkillToolEventArgs = struct {
     llm_history_id: []const u8,
 };
 
+/// The `data` keys an "offered skills" result may carry the matches under.
+///
+/// `search_skills` (current) returns ONE `skills` array with `scope` on each
+/// row. `global_skills` / `local_skills` are the retired `list_skills` shape:
+/// kept in this list because `llm_history` rows are replayed when a session
+/// resumes, and a session that ran before the rename still carries the old
+/// envelope. Dropping these two would silently stop counting what those
+/// sessions were offered — the exact "offered but never loaded" signal the
+/// ledger exists to answer.
+const offered_buckets = [_][]const u8{ "skills", "global_skills", "local_skills" };
+
 /// Append one ledger row.
 ///
 /// `dedupe` uses a deterministic composite id and `INSERT OR IGNORE`, which
@@ -107,12 +118,12 @@ pub const SkillToolEventArgs = struct {
 /// read-then-write — the only correct shape here, because `SqliteBackend` has
 /// no usable multi-statement transaction (`exec` releases its mutex per call;
 /// see the atomicity note in `http_handlers/workspaces_reorder.zig`). A second
-/// `list_skills` in the same session therefore cannot duplicate rows, and the
+/// `search_skills` in the same session therefore cannot duplicate rows, and the
 /// recorded `created_at` stays the moment the skill was *first* offered, which
 /// is the fact the eval actually wants.
 ///
 /// Non-deduped kinds get a fresh nanosecond id (`ordinal` disambiguates the
-/// several rows a single `list_skills` call would otherwise emit in the same
+/// several rows a single `search_skills` call would otherwise emit in the same
 /// nanosecond).
 ///
 /// Free-text columns are wrapped in `COALESCE(NULLIF(?, ''), '')`: `exec` binds
@@ -230,7 +241,7 @@ pub fn recordSkillToolEvents(
 
     const is_skill_tool =
         std.mem.eql(u8, args.tool_name, "use_skill") or
-        std.mem.eql(u8, args.tool_name, "list_skills") or
+        std.mem.eql(u8, args.tool_name, "search_skills") or
         std.mem.eql(u8, args.tool_name, "add_skill") or
         std.mem.eql(u8, args.tool_name, "edit_skill") or
         std.mem.eql(u8, args.tool_name, "remove_skill");
@@ -250,13 +261,20 @@ pub fn recordSkillToolEvents(
     if (!parsed.value.success) return;
     const data = parsed.value.data orelse return;
 
-    if (std.mem.eql(u8, args.tool_name, "list_skills")) {
-        // One row per listed skill, deduped by the PK, so a session that lists
-        // skills ten times still records each skill once — at the moment it was
-        // FIRST offered. That is what makes "offered but never loaded"
-        // answerable: `event = 'listed'` with no later `event = 'loaded'`.
+    if (std.mem.eql(u8, args.tool_name, "search_skills")) {
+        // One row per matched skill, deduped by the PK, so a session that
+        // searches skills ten times still records each skill once — at the
+        // moment it was FIRST offered. That is what makes "offered but never
+        // loaded" answerable: `event = 'listed'` with no later
+        // `event = 'loaded'`.
+        //
+        // `search_skills` returns ONE `skills` array (scope is a per-row
+        // field), where the retired `list_skills` returned two tier arrays.
+        // `offered_buckets` lists both so a ledger row recorded before the
+        // rename — and a replayed historical `llm_history` row that still
+        // carries the old envelope — keep counting as evidence.
         var ordinal: u32 = 0;
-        for ([_][]const u8{ "global_skills", "local_skills" }) |bucket| {
+        for (offered_buckets) |bucket| {
             const arr = dataArray(data, bucket) orelse continue;
             for (arr.items) |entry| {
                 const name = dataString(entry, "name") orelse continue;
@@ -440,16 +458,16 @@ test "recordSkillToolEvents ignores a failed tool call" {
     try testing.expectEqual(@as(i64, 0), try countEvents(&ctx.db, alloc, "sess_1"));
 }
 
-test "recordSkillToolEvents records one 'listed' row per offered skill, in both scopes" {
+test "recordSkillToolEvents records one 'listed' row per offered skill, across scopes" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
     const result =
-        \\{"tool":"list_skills","success":true,"data":{"global_skills":[{"name":"g-one","description":"d","path":"/p"},{"name":"g-two","description":"d","path":"/p"}],"local_skills":[{"name":"l-one","description":"d","path":"/p"}],"cwd":"/cwd"},"error":null,"v":1}
+        \\{"tool":"search_skills","success":true,"data":{"query":"","skills":[{"name":"g-one","description":"d","scope":"global","path":"/p"},{"name":"g-two","description":"d","scope":"global","path":"/p"},{"name":"l-one","description":"d","scope":"local","path":"/p"}],"count":3,"total":3},"error":null,"v":1}
     ;
-    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "list_skills", result));
+    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "search_skills", result));
 
     try testing.expectEqual(@as(i64, 3), try countEvents(&ctx.db, alloc, "sess_1"));
     try testing.expectEqual(@as(i64, 3), try eventCount(&ctx.db, alloc, "sess_1", "listed"));
@@ -464,16 +482,16 @@ test "recordSkillToolEvents records one 'listed' row per offered skill, in both 
     try testing.expectEqualStrings("3", row.values[0]);
 }
 
-test "a second list_skills does not duplicate 'listed' rows" {
+test "a second search_skills does not duplicate 'listed' rows" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
     const result =
-        \\{"tool":"list_skills","success":true,"data":{"global_skills":[{"name":"g-one","description":"d","path":"/p"}],"local_skills":[],"cwd":"/cwd"},"error":null,"v":1}
+        \\{"tool":"search_skills","success":true,"data":{"query":"g","skills":[{"name":"g-one","description":"d","scope":"global","path":"/p"}],"count":1,"total":1},"error":null,"v":1}
     ;
-    const args = testArgs(ctx.threaded.io(), "sess_1", "list_skills", result);
+    const args = testArgs(ctx.threaded.io(), "sess_1", "search_skills", result);
     recordSkillToolEvents(alloc, &ctx.db, null, args);
     recordSkillToolEvents(alloc, &ctx.db, null, args);
     recordSkillToolEvents(alloc, &ctx.db, null, args);
@@ -490,12 +508,12 @@ test "a listed skill and a loaded skill coexist for the same name" {
     defer ctx.db.deinit();
 
     const listed =
-        \\{"tool":"list_skills","success":true,"data":{"global_skills":[{"name":"my-skill","description":"d","path":"/p"}],"local_skills":[],"cwd":"/cwd"},"error":null,"v":1}
+        \\{"tool":"search_skills","success":true,"data":{"query":"my","skills":[{"name":"my-skill","description":"d","scope":"global","path":"/p"}],"count":1,"total":1},"error":null,"v":1}
     ;
     const loaded =
         \\{"tool":"use_skill","success":true,"data":{"skill_name":"my-skill","content":"body","loaded":true},"error":null,"v":1}
     ;
-    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "list_skills", listed));
+    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "search_skills", listed));
     recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "use_skill", loaded));
 
     // Two rows, two kinds — this pair is exactly what distinguishes "offered
@@ -539,8 +557,8 @@ test "recordSkillToolEvents tolerates a payload it cannot parse" {
     // A tool result that is not JSON at all, and one whose `data` was wrapped as
     // `{"_raw":…}` by `normalizeDataFragment`. Neither may throw or write.
     recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "use_skill", "not json"));
-    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "list_skills",
-        \\{"tool":"list_skills","success":true,"data":{"_raw":"oops"},"error":null,"v":1}
+    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "search_skills",
+        \\{"tool":"search_skills","success":true,"data":{"_raw":"oops"},"error":null,"v":1}
     ));
     try testing.expectEqual(@as(i64, 0), try countEvents(&ctx.db, alloc, "sess_1"));
 }
@@ -1589,7 +1607,7 @@ test "markResultStale records the refusal instead of deleting the verdict" {
 /// One skill as the ledger remembers it for a session.
 pub const SessionSkillUse = struct {
     skill_name: []u8,
-    /// The skill was offered by `list_skills` at some point.
+    /// The skill was offered by `search_skills` at some point.
     listed: bool,
     /// The skill was actually read by `use_skill`.
     loaded: bool,
@@ -1695,12 +1713,12 @@ test "sessionSkillSet separates OFFERED skills from READ skills" {
     defer ctx.db.deinit();
 
     const listed =
-        \\{"tool":"list_skills","success":true,"data":{"global_skills":[{"name":"used-one","description":"d","path":"/p"},{"name":"ignored-one","description":"d","path":"/p"}],"local_skills":[],"cwd":"/cwd"},"error":null,"v":1}
+        \\{"tool":"search_skills","success":true,"data":{"query":"","skills":[{"name":"used-one","description":"d","scope":"global","path":"/p"},{"name":"ignored-one","description":"d","scope":"global","path":"/p"}],"count":2,"total":2},"error":null,"v":1}
     ;
     const loaded =
         \\{"tool":"use_skill","success":true,"data":{"skill_name":"used-one","content":"body","loaded":true},"error":null,"v":1}
     ;
-    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "list_skills", listed));
+    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "search_skills", listed));
     recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "use_skill", loaded));
 
     const set = try sessionSkillSet(alloc, &ctx.db, "sess_1");

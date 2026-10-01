@@ -34,7 +34,7 @@ import { normalizeToolContent } from './_shared/toolOutputParser'
  *   Error:
  *     <read_compacted_messages><error>...</error></read_compacted_messages>
  *
- * Parsing uses regex (matches the pattern in ReadFile/ListSkills/Search)
+ * Parsing uses regex (matches the pattern in ReadFile/SearchSkills/Search)
  * because the backend emits well-formed XML and regex is plenty for this
  * fixed shape. DOMParser (used by CompactionCard) would also work but is
  * heavier than necessary here.

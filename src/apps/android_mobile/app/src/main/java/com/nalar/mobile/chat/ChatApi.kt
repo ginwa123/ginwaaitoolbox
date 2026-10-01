@@ -239,7 +239,7 @@ object ChatApi {
     /** Same tool set the web grants its chat box, so both clients can drive an agent. */
     const val DEFAULT_ALLOWED_TOOLS =
         "search_tool,view_tool,use_tool,command,search,load_memory," +
-            "save_memory,list_skills,use_skill,used_tools,ask_user"
+            "save_memory,search_skills,use_skill,used_tools,ask_user"
 
     fun parseMessages(body: String): ChatPage {
         val json = JSONObject(body)

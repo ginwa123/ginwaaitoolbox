@@ -28,6 +28,7 @@ enum class ToolKind {
     MemorySave,
     MemoryLoad,
     MemoryList,
+    // The rendering kind, not the wire name: the tool on the wire is `search_skills`.
     SkillList,
     SkillUse,
     SkillMutation,
@@ -292,14 +293,40 @@ sealed interface ToolBody {
     data class SkillEntry(
         val name: String = "",
         val description: String = "",
+        /**
+         * `global` or `local`, per row. Only `search_skills` sends it; the
+         * shared entry carries it as an empty string everywhere else, so the
+         * badge renders as nothing rather than as a blank.
+         */
+        val scope: String = "",
         val path: String = "",
     )
 
+    /**
+     * One page of `search_skills`.
+     *
+     * The wire shape is the paged-search contract `search_tool` already uses:
+     * one `skills` array plus the counts that say whether this page is the
+     * whole answer. The `global_skills` / `local_skills` pair it replaced was a
+     * *listing* shape — a regex search can interleave the scopes in any order,
+     * so scope is a per-row badge now, not a section heading.
+     */
     data class SkillList(
-        val global: List<SkillEntry> = emptyList(),
-        val local: List<SkillEntry> = emptyList(),
+        val query: String = "",
+        /** Rows in *this* page. Not the number of matches. */
+        val count: Int = 0,
+        /** Matches before paging. */
+        val total: Int = 0,
+        val truncated: Boolean = false,
+        /** Where the next page starts; null when this page is the last one. */
+        val nextOffset: Int? = null,
+        val skills: List<SkillEntry> = emptyList(),
     ) : ToolBody {
-        val totalCount: Int get() = global.size + local.size
+        /**
+         * False when the card is showing a slice of the answer, so no renderer
+         * or test reads a short page as "these are all of them".
+         */
+        val sawEverything: Boolean get() = !truncated && count >= total
     }
 
     data class SkillUse(
@@ -409,6 +436,8 @@ sealed interface ToolBody {
         val query: String = "",
         val count: Int = 0,
         val total: Int = 0,
+        /** A partial page. The same flag `search_skills` sends. */
+        val truncated: Boolean = false,
         val tools: List<SkillEntry> = emptyList(),
     ) : ToolBody {
         // `view_tool` / `use_tool` on a miss: found=false with an error, in an
@@ -531,7 +560,9 @@ object ToolCard {
         toolName == "save_memory" -> ToolKind.MemorySave
         toolName == "load_memory" -> ToolKind.MemoryLoad
         toolName == "list_memory" -> ToolKind.MemoryList
-        toolName == "list_skills" -> ToolKind.SkillList
+        // The wire name of ToolKind.SkillList. The kind kept its own name
+        // because it names the renderer, not the tool.
+        toolName == "search_skills" -> ToolKind.SkillList
         toolName == "use_skill" -> ToolKind.SkillUse
         toolName == "add_skill" || toolName == "edit_skill" ||
             toolName == "remove_skill" -> ToolKind.SkillMutation
@@ -728,10 +759,23 @@ object ToolCard {
                 },
             )
 
-            ToolKind.SkillList -> ToolBody.SkillList(
-                global = data.arrayOrEmpty("global_skills").mapObjects { it.toSkillEntry() },
-                local = data.arrayOrEmpty("local_skills").mapObjects { it.toSkillEntry() },
-            )
+            // One array of rows that carry their own scope: a regex search can
+            // interleave `global` and `local`, so there is no section to split
+            // on. `count` is this page, `total` is every match before paging —
+            // the header shows the pair, and a missing `total` falls back to the
+            // rows we can actually see rather than claiming zero matches.
+            ToolKind.SkillList -> {
+                val skills = data.arrayOrEmpty("skills").mapObjects { it.toSkillEntry() }
+                val count = data.intOrNull("count") ?: skills.size
+                ToolBody.SkillList(
+                    query = data.string("query"),
+                    count = count,
+                    total = data.intOrNull("total") ?: count,
+                    truncated = data.boolOr("truncated", fallback = false),
+                    nextOffset = data.intOrNull("next_offset"),
+                    skills = skills,
+                )
+            }
 
             ToolKind.SkillUse -> ToolBody.SkillUse(
                 skillName = data.string("skill_name"),
@@ -839,6 +883,7 @@ object ToolCard {
                 query = data.string("query"),
                 count = data.intOrNull("count") ?: 0,
                 total = data.intOrNull("total") ?: 0,
+                truncated = data.boolOr("truncated", fallback = false),
                 tools = data.arrayOrEmpty("tools").mapObjects { it.toSkillEntry() },
             )
 
@@ -863,6 +908,7 @@ object ToolCard {
     private fun JSONObject.toSkillEntry() = ToolBody.SkillEntry(
         name = string("name"),
         description = string("description"),
+        scope = string("scope"),
         path = string("path"),
     )
 
@@ -894,7 +940,9 @@ object ToolCard {
             is ToolBody.MemorySave -> body.id
             is ToolBody.MemoryList -> "${body.memories.size}"
             is ToolBody.MemoryLoad -> body.query
-            is ToolBody.SkillList -> null
+            // The query is what a *search* is about, so it is the card's
+            // identity — same as the other two search tools.
+            is ToolBody.SkillList -> body.query.ifEmpty { null }
             is ToolBody.SkillUse -> body.skillName
             is ToolBody.SkillMutation -> body.skillName.ifEmpty { body.name }
             is ToolBody.KanbanMove -> body.taskName
@@ -922,6 +970,9 @@ object ToolCard {
         ToolKind.Glob -> listOf("pattern", "path")
         ToolKind.SkillUse, ToolKind.SkillMutation -> listOf("skill_name", "name", "path")
         ToolKind.MemoryLoad -> listOf("query", "id")
+        // A placeholder row has no result yet, so the query has to come from
+        // the arguments or a running card says nothing about what it is asking.
+        ToolKind.SkillList -> listOf("query")
         ToolKind.Progressive -> listOf("name", "query")
         ToolKind.KanbanMove -> listOf("task_name", "task_id")
         ToolKind.Worktree -> listOf("path", "branch")
@@ -948,13 +999,14 @@ object ToolCard {
 
             is ToolBody.SubAgentCatalog -> "${body.count}"
             is ToolBody.MemoryLoad -> "${body.count}/${body.totalCount}"
-            is ToolBody.SkillList -> "${body.totalCount}"
+            // Both paged searches read their header the same way, because they
+            // send the same counts: rows in this page over rows in the result.
+            is ToolBody.SkillList -> pagingMeta(body.count, body.total, body.truncated)
             is ToolBody.KanbanList -> "${body.totalCount}"
             is ToolBody.PresentFiles -> "${body.count}"
             is ToolBody.GenerateImage -> "${body.count}"
-            is ToolBody.ProgressiveTool -> body.query.takeIf { it.isNotEmpty() }?.let {
-                "${body.count}/${body.total}"
-            }
+            is ToolBody.ProgressiveTool -> body.query.takeIf { it.isNotEmpty() }
+                ?.let { pagingMeta(body.count, body.total, body.truncated) }
 
             else -> null
         }
@@ -974,6 +1026,20 @@ object ToolCard {
         body.exitCode?.let { add(it.toString()) }
         if (body.truncated) add("truncated")
         if (body.timedOut) add("timeout")
+    }.joinToString(" · ")
+
+    /**
+     * The header for a paged result: rows in this page over rows in the whole
+     * result, with a partial page marked rather than passed off as the answer.
+     *
+     * Shared by the two paged searches, `search_tool` and `search_skills`,
+     * because they send the same `count` / `total` / `truncated` and a card
+     * that worded the same fact two ways would be a defect, not a variant. The
+     * `· truncated` marker is [shellBadges]' spelling of the same warning.
+     */
+    private fun pagingMeta(count: Int, total: Int, truncated: Boolean): String = buildList {
+        add("$count/$total")
+        if (truncated) add("truncated")
     }.joinToString(" · ")
 
     /**

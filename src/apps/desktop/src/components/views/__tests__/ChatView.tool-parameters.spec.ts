@@ -50,7 +50,7 @@ const PARAMETERS_BRANCHES = [
   '<TextReplace',
   '<ShellTool',
   '<UseSkill',
-  '<ListSkills',
+  '<SearchSkills',
   '<AddSkill',
   '<EditSkill',
   '<RemoveSkill',

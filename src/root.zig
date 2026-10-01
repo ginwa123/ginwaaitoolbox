@@ -752,7 +752,7 @@ pub const change_agent = @import("modules/agent/tools/change_agent.zig");
 pub const skill_tools = @import("modules/agent/tools/skill_tools.zig");
 pub const use_skill_tool = skill_tools;
 pub const remove_skill_tool = skill_tools;
-pub const list_skills_tool = skill_tools;
+pub const search_skills_tool = skill_tools;
 // 2026-08-14 — first-level directory listing tool (Task 5 of the same plan).
 pub const list_directory = @import("modules/agent/tools/list_directory.zig");
 pub const memories = @import("modules/agent/tools/memories.zig");

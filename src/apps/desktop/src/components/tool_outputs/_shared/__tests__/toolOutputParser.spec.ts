@@ -18,7 +18,7 @@ import {
   parseMcp,
   parsePwsh,
   parseShell,
-  parseListSkills,
+  parseSearchSkills,
   parseMetadata,
   parseReadFile,
   parseRemoveFile,
@@ -353,23 +353,113 @@ describe('parseSearch', () => {
   })
 })
 
-describe('parseListSkills', () => {
-  it('parses global + local skill blocks', () => {
-    const r = parseListSkills({
-      global_skills: [{ name: 'auth', description: 'handles auth', path: '/g.md' }],
-      local_skills: [{ name: 'x', description: '', path: '' }],
+describe('parseSearchSkills', () => {
+  it('parses flat skills[] rows with their per-row scope', () => {
+    const r = parseSearchSkills({
+      query: 'auth',
+      pattern_mode: 'regex',
+      scope: null,
+      count: 2,
+      total: 2,
+      offset: 0,
+      limit: 20,
+      skills: [
+        { name: 'auth', description: 'handles auth', scope: 'global', path: '/g/SKILL.MD' },
+        { name: 'auth-local', description: '', scope: 'local', path: '/l/SKILL.MD' },
+      ],
+      truncated: false,
+      next_offset: null,
+      hint: 'h',
     })
-    expect(r.totalCount).toBe(2)
-    expect(r.globalSkills).toHaveLength(1)
-    expect(r.globalSkills[0]).toMatchObject({
+    expect(r.query).toBe('auth')
+    expect(r.patternMode).toBe('regex')
+    expect(r.scope).toBeNull()
+    expect(r.skills).toHaveLength(2)
+    expect(r.skills[0]).toEqual({
       name: 'auth',
       description: 'handles auth',
-      path: '/g.md',
+      scope: 'global',
+      path: '/g/SKILL.MD',
     })
-    expect(r.localSkills).toHaveLength(1)
+    expect(r.skills[1]).toMatchObject({ scope: 'local' })
   })
-  it('returns totalCount=0 for empty content', () => {
-    expect(parseListSkills({}).totalCount).toBe(0)
+  it('keeps the paging fields of a truncated page', () => {
+    const r = parseSearchSkills({
+      query: 'a',
+      pattern_mode: 'all',
+      pattern_warning: null,
+      scope: 'local',
+      count: 2,
+      total: 7,
+      offset: 4,
+      limit: 2,
+      skills: [
+        { name: 'a1', description: '', scope: 'local', path: '/1/SKILL.MD' },
+        { name: 'a2', description: '', scope: 'local', path: '/2/SKILL.MD' },
+      ],
+      truncated: true,
+      next_offset: 6,
+      hint: 'call again with offset=6',
+    })
+    expect(r.count).toBe(2)
+    expect(r.total).toBe(7)
+    expect(r.offset).toBe(4)
+    expect(r.limit).toBe(2)
+    expect(r.truncated).toBe(true)
+    expect(r.nextOffset).toBe(6)
+    expect(r.scope).toBe('local')
+    expect(r.hint).toBe('call again with offset=6')
+  })
+  it('surfaces a pattern_warning verbatim', () => {
+    const r = parseSearchSkills({
+      query: 'foo(',
+      pattern_mode: 'literal_fallback',
+      pattern_warning: 'unbalanced ( — matched as a literal',
+      skills: [],
+    })
+    expect(r.patternWarning).toBe('unbalanced ( — matched as a literal')
+    expect(r.patternMode).toBe('literal_fallback')
+  })
+  it('drops rows with no name and tolerates a non-array skills field', () => {
+    const r = parseSearchSkills({ skills: [{ description: 'nameless' }, 'nope', null] })
+    expect(r.skills).toHaveLength(0)
+    const bad = parseSearchSkills({ skills: 'not-an-array' })
+    expect(bad.skills).toHaveLength(0)
+  })
+  it('yields zero rows and no throw for empty / missing data', () => {
+    const empty = parseSearchSkills({})
+    expect(empty.skills).toHaveLength(0)
+    expect(empty.count).toBe(0)
+    expect(empty.total).toBe(0)
+    expect(empty.query).toBe('')
+    expect(empty.truncated).toBe(false)
+    expect(empty.patternWarning).toBeNull()
+    expect(empty.offset).toBeNull()
+    expect(empty.limit).toBeNull()
+    expect(empty.nextOffset).toBeNull()
+    expect(empty.hint).toBeNull()
+
+    expect(parseSearchSkills(null).skills).toHaveLength(0)
+    expect(parseSearchSkills(undefined).skills).toHaveLength(0)
+    expect(parseSearchSkills('not json').skills).toHaveLength(0)
+    // count / total fall back to the rendered row count.
+    const rowsOnly = parseSearchSkills({
+      skills: [{ name: 'x', description: 'd', scope: 'global', path: '/p' }],
+    })
+    expect(rowsOnly.count).toBe(1)
+    expect(rowsOnly.total).toBe(1)
+  })
+  it('unwraps a full tool envelope to its data payload', () => {
+    const r = parseSearchSkills({
+      tool: 'search_skills',
+      success: true,
+      data: {
+        query: 'db',
+        skills: [{ name: 'db', description: 'db stuff', scope: 'global', path: '/db/SKILL.MD' }],
+      },
+    })
+    expect(r.query).toBe('db')
+    expect(r.skills).toHaveLength(1)
   })
 })
 
@@ -562,7 +652,9 @@ describe('parseListDirectory', () => {
     const r = parseListDirectory({
       path: '/proj',
       count: 1,
-      entries: [{ name: 'link.txt', path: '/proj/link.txt', is_directory: false, is_symlink: true }],
+      entries: [
+        { name: 'link.txt', path: '/proj/link.txt', is_directory: false, is_symlink: true },
+      ],
     })
     expect(r.entries[0]?.isSymlink).toBe(true)
     expect(r.entries[0]?.isDirectory).toBe(false)

@@ -25,7 +25,7 @@ pub const SearchToolRule = core.SearchToolRule;
 // Progressive tool search: `search_tool` is the agent's special tool — the
 // mandate to search the catalog for the tool a task needs (search_tool ->
 // view_tool -> use_tool). Gated on search_tool being in the resolved tool set.
-// Skills: `list_skills` / `use_skill` are the agent's special skills — the
+// Skills: `search_skills` / `use_skill` are the agent's special skills — the
 // mandate to load the skill a task needs. Gated on use_skill being present.
 pub const ProgressiveToolRule = core.ProgressiveToolRule;
 pub const SkillsToolRule = core.SkillsToolRule;

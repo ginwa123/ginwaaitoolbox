@@ -814,7 +814,7 @@ pub fn handle_tool(
             }
 
             // Skill Evals usage ledger (Migration 095). Records what this
-            // session was OFFERED (`list_skills`) and what it actually READ
+            // session was OFFERED (`search_skills`) and what it actually READ
             // (`use_skill`), with the hash of the body it read. `session_skills`
             // cannot answer either of those: it keeps only the latest body per
             // (session, skill), has no loop index, and is written by `use_skill`

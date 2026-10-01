@@ -418,19 +418,109 @@ class ToolCardModelTest {
     // ─── skills ─────────────────────────────────────────────────────────────
 
     @Test
-    fun `list_skills separates global from project`() {
+    fun `search_skills reads each row's own scope`() {
+        val model = ToolCard.from(
+            toolRow(
+                "search_skills",
+                """{"query":"git","pattern_mode":"regex","pattern_warning":null,
+                   "scope":null,"count":2,"total":2,"offset":0,"limit":20,
+                   "skills":[{"name":"g","description":"d","scope":"global","path":"/g"},
+                   {"name":"l","description":"d","scope":"local","path":"/l"}],
+                   "truncated":false,"next_offset":null,"hint":""}""",
+            ),
+        )
+
+        assertEquals(ToolKind.SkillList, model.kind)
+        // The search may return the two scopes in either order, so scope is a
+        // property of the row. Reading it as "which array was this in" cannot
+        // survive the rename to one merged `skills` array.
+        val body = model.body as ToolBody.SkillList
+        assertEquals(listOf("g" to "global", "l" to "local"), body.skills.map { it.name to it.scope })
+        assertEquals(listOf("/g", "/l"), body.skills.map { it.path })
+        assertEquals("git", body.query)
+        assertEquals("git", model.primary)
+    }
+
+    /**
+     * `count` is this page, `total` is every match before paging. A card that
+     * reads `count` as the total tells the reader that three skills is all the
+     * query found, when there are nineteen and the agent has not seen them.
+     */
+    @Test
+    fun `a truncated search_skills page reports count of total and admits the gap`() {
+        val model = ToolCard.from(
+            toolRow(
+                "search_skills",
+                """{"query":"git","pattern_mode":"literal","pattern_warning":null,
+                   "scope":"global","count":2,"total":19,"offset":0,"limit":2,
+                   "skills":[{"name":"a","description":"","scope":"global","path":"/a"},
+                   {"name":"b","description":"","scope":"global","path":"/b"}],
+                   "truncated":true,"next_offset":2,"hint":"narrow the query"}""",
+            ),
+        )
+
+        val body = model.body as ToolBody.SkillList
+        assertEquals(2, body.count)
+        assertEquals(19, body.total)
+        assertEquals(2, body.nextOffset)
+        assertTrue(body.truncated)
+        assertFalse(body.sawEverything)
+        // Same header spelling as `search_tool`: this-page/total, and a partial
+        // page is marked rather than passed off as the whole result.
+        assertEquals("2/19 · truncated", model.rightMeta)
+    }
+
+    @Test
+    fun `a complete search_skills page claims nothing is missing`() {
+        val model = ToolCard.from(
+            toolRow(
+                "search_skills",
+                """{"query":"git","pattern_mode":"literal","pattern_warning":null,
+                   "scope":"global","count":2,"total":2,"offset":0,"limit":20,
+                   "skills":[{"name":"a","description":"","scope":"global","path":"/a"},
+                   {"name":"b","description":"","scope":"global","path":"/b"}],
+                   "truncated":false,"next_offset":null,"hint":""}""",
+            ),
+        )
+
+        val body = model.body as ToolBody.SkillList
+        assertTrue(body.sawEverything)
+        assertEquals("2/2", model.rightMeta)
+    }
+
+    /**
+     * `count` is optional on an older row and `skills` is the ground truth.
+     * Defaulting `total` to zero would put a bare `0/0` over two rendered rows,
+     * which reads as "this tool found nothing".
+     */
+    @Test
+    fun `a search_skills page without counts falls back to the rows it has`() {
         val body = ToolCard.from(
             toolRow(
-                "list_skills",
-                """{"global_skills":[{"name":"g","description":"d","path":"/g"}],
-                   "local_skills":[{"name":"l","description":"d","path":"/l"}],
-                   "cwd":"/proj"}""",
+                "search_skills",
+                """{"query":"git","skills":[
+                   {"name":"a","description":"","scope":"global","path":"/a"}]}""",
             ),
         ).body as ToolBody.SkillList
 
-        assertEquals(listOf("g"), body.global.map { it.name })
-        assertEquals(listOf("l"), body.local.map { it.name })
-        assertEquals(2, body.totalCount)
+        assertEquals(1, body.count)
+        assertEquals(1, body.total)
+        assertTrue(body.sawEverything)
+    }
+
+    /**
+     * A placeholder row carries no result, so the query has to come from the
+     * arguments — otherwise a running card says nothing about what it asked.
+     */
+    @Test
+    fun `a running search_skills shows the query from its arguments`() {
+        val model = ToolCard.from(
+            toolRow("search_skills", "null", parameters = """{"query":"git.*","limit":20}"""),
+        )
+
+        assertTrue(model.pending)
+        assertEquals("git.*", model.primary)
+        assertNull(model.rightMeta)
     }
 
     /**
@@ -658,7 +748,7 @@ class ToolCardModelTest {
             "read_file", "write_file", "bash", "pwsh", "run_command", "command",
             "search", "glob", "list_directory", "text_replace", "update_plan",
             "get_plan", "ask_user", "spawn_sub_agent", "list_sub_agent",
-            "save_memory", "load_memory", "list_memory", "list_skills",
+            "save_memory", "load_memory", "list_memory", "search_skills",
             "use_skill", "add_skill", "edit_skill", "remove_skill",
             "kanban_move_task", "kanban_list", "present_files", "generate_image",
             "set_git_worktree", "read_workspace_session", "search_tool",

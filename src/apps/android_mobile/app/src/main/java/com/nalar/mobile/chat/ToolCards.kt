@@ -862,31 +862,68 @@ private fun MemoryListBody(body: ToolBody.MemoryList) {
 
 @Composable
 private fun SkillListBody(body: ToolBody.SkillList) {
-    SkillBlock(label = "global", entries = body.global)
-    SkillBlock(label = "project", entries = body.local)
+    if (body.skills.isEmpty()) {
+        Text(
+            text = "(no matching skill)",
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            color = NalarDim,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+        )
+        return
+    }
+    body.skills.forEach { entry -> SkillRow(entry) }
+    if (!body.sawEverything) MoreResultsNote(body.nextOffset)
 }
 
+/**
+ * One name + description row, shared by the two paged-search cards.
+ *
+ * `scope` is a badge on the row rather than a section heading because a regex
+ * search returns global and local skills in whatever order they match; the
+ * bracket form is `kanban_list`'s, for the same reason.
+ */
 @Composable
-private fun SkillBlock(label: String, entries: List<ToolBody.SkillEntry>) {
-    if (entries.isEmpty()) return
-    ToolSectionLabel(text = label, meta = entries.size.toString(), color = NalarAccentSoft)
-    entries.forEach { entry ->
-        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)) {
+private fun SkillRow(entry: ToolBody.SkillEntry) {
+    Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)) {
+        Text(
+            text = buildString {
+                append(entry.name)
+                if (entry.scope.isNotBlank()) {
+                    append("  [").append(entry.scope).append("]")
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            color = NalarText,
+        )
+        if (entry.description.isNotBlank()) {
             Text(
-                text = entry.name,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                color = NalarText,
+                text = entry.description,
+                style = MaterialTheme.typography.labelSmall,
+                color = NalarMuted,
             )
-            if (entry.description.isNotBlank()) {
-                Text(
-                    text = entry.description,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = NalarMuted,
-                )
-            }
         }
     }
+}
+
+/**
+ * The foot of a page that is not the whole answer.
+ *
+ * Same wording and same place as `kanban_list`'s, because the failure it
+ * prevents is the same one: a reader who sees three of nineteen skills and no
+ * note concludes the query only matched three. `next_offset` is the server's
+ * own pointer to the rest, so it is shown when there is one.
+ */
+@Composable
+private fun MoreResultsNote(nextOffset: Int?) {
+    val suffix = nextOffset?.let { " (next page starts at offset $it)" }.orEmpty()
+    Text(
+        text = "more results exist; narrow the query to see them$suffix",
+        style = MaterialTheme.typography.labelSmall,
+        color = NalarDim,
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+    )
 }
 
 @Composable
@@ -1057,23 +1094,9 @@ private fun ProgressiveBody(body: ToolBody.ProgressiveTool) {
                 .testTag("progressive_description"),
         )
     }
-    body.tools.forEach { tool ->
-        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)) {
-            Text(
-                text = tool.name,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                color = NalarText,
-            )
-            if (tool.description.isNotBlank()) {
-                Text(
-                    text = tool.description,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = NalarMuted,
-                )
-            }
-        }
-    }
+    // The same row renderer `search_skills` uses: both are paged searches over
+    // a list of `{name, description, …}` objects, so the two cards look alike.
+    body.tools.forEach { tool -> SkillRow(tool) }
 }
 
 /** 1234 → "1.2 KB". Decimal units, because that is what a file manager shows. */

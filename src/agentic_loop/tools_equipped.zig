@@ -9,7 +9,7 @@ const AgentTool = nalarcore.agent.AgentTool;
 const read_file_mod = nalarcore.read_file;
 const text_replace_mod = nalarcore.text_replace_tool;
 const write_file_mod = nalarcore.write_file;
-const list_skills_mod = nalarcore.skill_tools;
+const search_skills_mod = nalarcore.skill_tools;
 const memories_mod = nalarcore.memories;
 const list_memory_mod = nalarcore.list_memory_tool;
 const save_memory_mod = nalarcore.memory;
@@ -91,7 +91,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         used_tools_mod.used_tools_tool,
         // 2026-08-28 — add_mcp_server agent tool (Task 5).
         add_mcp_server_mod.add_mcp_server_tool,
-        list_skills_mod.list_skills_tool,
+        search_skills_mod.search_skills_tool,
         // list_memory_mod.list_memory_tool,
         save_memory_mod.save_memory_tool,
         load_memory_mod.load_memory_tool,
@@ -213,7 +213,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // === AGENT MANAGEMENT (auto-save) ===
 
         // === SKILL MANAGEMENT ===
-        .{ .name = "list_skills", .exec = tools.execListSkills, .tool_def = list_skills_mod.list_skills_tool },
+        .{ .name = "search_skills", .exec = tools.execSearchSkills, .tool_def = search_skills_mod.search_skills_tool },
         .{ .name = "use_skill", .exec = tools.execUseSkill, .tool_def = use_skill_mod.use_skill_tool, .auto_save_skill = true },
         .{ .name = "remove_skill", .exec = tools.execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool },
 
@@ -364,7 +364,7 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     remove_skill_mod.remove_skill_tool.function.name,
     add_skill_mod.add_skill_tool.function.name,
     edit_skill_mod.edit_skill_tool.function.name,
-    list_skills_mod.list_skills_tool.function.name,
+    search_skills_mod.search_skills_tool.function.name,
 
     // spawn
     spawn_sub_agent_tool.spawn_sub_agent_tool.function.name,

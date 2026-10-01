@@ -349,7 +349,7 @@ pub const skills_system_prompt =
     \\
     \\## BEFORE WRITING: CHECK FOR AN EXISTING SKILL
     \\
-    \\Run `list_skills` (or check the index) before creating a new skill.
+    \\Run `search_skills` (or check the index) before creating a new skill.
     \\If one already covers this procedure — even loosely — update it
     \\instead of creating a near-duplicate. Skills should consolidate
     \\over time, not accumulate.
@@ -427,7 +427,7 @@ pub const skills_system_prompt =
     \\
     \\**Rules:**
     \\- Name in `kebab-case`, descriptive enough to recognize from
-    \\  `list_skills` output.
+    \\  `search_skills` output.
     \\- Description must be scannable in 1 second — it's what you read
     \\  when skimming the index.
     \\- Procedure steps should be atomic — one action per step.

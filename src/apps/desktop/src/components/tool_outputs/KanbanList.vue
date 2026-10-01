@@ -45,7 +45,7 @@
     Error: a red block with the full error message.
 
   Style is consistent with the rest of the tool_outputs components
-  (ReadFile, SetGitWorktree, ListSkills): monospace, rounded-md,
+  (ReadFile, SetGitWorktree, SearchSkills): monospace, rounded-md,
   border + soft card bg, violet tool-name, ✗/✓ status indicators,
   expand/collapse `+`/`−` toggle on the right.
 -->

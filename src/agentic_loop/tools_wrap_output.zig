@@ -196,7 +196,7 @@ test "wrapToolOutput - empty parameters string emits empty object" {
     const allocator = testing.allocator;
     const out = try wrapToolOutput(
         allocator,
-        "list_skills",
+        "search_skills",
         "",
         true,
         null,
