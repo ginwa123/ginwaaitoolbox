@@ -277,7 +277,9 @@ function syncToConfig() {
     ...(skillEvalsSettings.value.enabled !== skillEvalsHydrated.value
       ? {
           skill_evals: {
-            ...(skillEvalsRaw.value ?? {}),
+            // Spreading a missing block already contributes nothing —
+            // an explicit `?? {}` fallback is dead weight here.
+            ...skillEvalsRaw.value,
             enabled: skillEvalsSettings.value.enabled,
           },
         }
