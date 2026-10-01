@@ -610,36 +610,34 @@ def test_returning_to_the_bottom_rearms_the_stick(ui_harness: UIHarness, page) -
     assert final["scrollTop"] >= final["appBottom"] - SLACK_PX, f"reader stranded: {final}"
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "SEPARATE, PRE-EXISTING defect, not the at-bottom ruler this file was "
-        "written for. A large remeasure yanks an at-bottom reader ~15.9k px up "
-        "with NO content change (scrollHeight 96873 -> 96868) while the "
-        "rendered window expands from 34 to 66 rows, and the stick then reads "
-        "the displaced reader as deliberately scrolled up. Reproduced here so "
-        "the claim is on record; the app's arrow is CORRECT in this state — the "
-        "reader really is no longer at the bottom, something moved them."
-    ),
-)
 def test_a_large_remeasure_does_not_yank_an_at_bottom_reader(
     ui_harness: UIHarness, page
 ) -> None:
-    """Reproduction for a second, independent cause of "not autoscrolling".
+    """The anchor-compensation jump — the defect this test was an xfail for.
 
-    Same user-visible symptom as the ruler bug — the reader ends up not at the
-    bottom and the chat stops following — but a different mechanism, so it
-    needs its own root-cause pass. Kept as a live (non-strict) xfail so the
-    reproduction cannot silently rot: when the anchor-compensation jump is
-    fixed this test starts passing and XPASS is reported, which is the signal
-    to delete the marker.
+    This WAS a `strict=False` xfail: a large remeasure yanked an at-bottom
+    reader ~15.9k px up with NO content change (scrollHeight 96873 -> 96868)
+    while the rendered window expanded from 34 to 66 rows, and the stick then
+    read the displaced reader as deliberately scrolled up. The marker said to
+    delete it when the compensation was fixed — that is what happened, in
+    `VirtualScroller.measureItems` (an at-bottom reader is re-targeted at the
+    bottom edge instead of compensated around the anchor) plus the stale
+    tail-cap fix in `recordTailContentBottom`. So this is now a real assertion:
+    if the fix regresses, the xfail is gone and the test goes red.
 
-    The signature to look for: `scrollTop` drops by thousands of px while
-    `scrollHeight` is unchanged, and `rendered` jumps. That combination means a
-    viewport write with no content cause — the scroller moved the reader, not
-    the transcript.
+    Root cause in one line: the anchor's job is to hold still whatever the
+    reader is looking at, and a reader at the bottom has no view to preserve —
+    the content they are reading is what the pass just resized. So the pass
+    preserved a position they never chose, thousands of pixels above the
+    newest content, and ChatView's `isAtBottom` correctly reported the position
+    the scroller had put them in.
 
-    The sequence matters, and getting it wrong XPASSes: the jump only happens
+    The signature to look for if it ever regresses: `scrollTop` drops by
+    thousands of px while `scrollHeight` is unchanged, and `rendered` jumps.
+    That combination means a viewport write with no content cause — the
+    scroller moved the reader, not the transcript.
+
+    The sequence matters, and getting it wrong passes: the jump only happens
     after the reader has been UP the history and returned via the
     jump-to-bottom button, i.e. once the height model has been corrected for a
     window that was not the tail. A stream on a freshly-opened chat does not
