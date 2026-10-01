@@ -308,7 +308,6 @@ const STUB_CONFIG = {
   },
 }
 
-/** Replace calls whose query is missing `doc` — the clobber shape. */
 function replacesDroppingDoc() {
   return replaceMock.mock.calls.filter((call) => {
     const q = (call[0] ?? {}).query as Record<string, string> | undefined
@@ -316,11 +315,13 @@ function replacesDroppingDoc() {
   })
 }
 
-describe('AppLayout — opening a document from a project survives the URL watchers', () => {
-  it('a ?doc= click is not undone a microtask later by the store->URL mirror', async () => {
+const DOC_PATH = `/app/${WS_ID}/doc/${DOC_ID}`
+
+describe('AppLayout — a document is a PAGE, not a ?doc= overlay', () => {
+  it('a document click is not undone a microtask later by the store->URL mirror', async () => {
     // The user's exact state: sitting on a PROJECT path, because that is
-    // where the Documents section lives. Path-based URLs carry no `view=`
-    // query param, which is what let the mirror past its own guard.
+    // where the Documents section lives. The click navigates to the doc
+    // PATH now, so there is no `doc` query for the mirror to strip.
     navigate(PROJECT_PATH)
     const wrapper = mount(AppLayout, { global: { stubs: STUB_CONFIG } })
     await flush()
@@ -333,16 +334,17 @@ describe('AppLayout — opening a document from a project survives the URL watch
 
     // DocumentsList.selectDocument's exact order: the router.replace is
     // async, so the synchronous store writes below happen FIRST and the
-    // query lands a microtask later.
+    // navigation lands a microtask later.
     ws.setActiveWorkspaceItem(null)
     ws.setActiveTask(null)
     await flush()
-    navigate(PROJECT_PATH, { doc: DOC_ID })
+    navigate(DOC_PATH)
     await flush()
 
-    // The regression: the mirror re-adopted the project from the path and
-    // then router.replace'd a URL with no `doc` — so the document the user
-    // just clicked never opened, with no error anywhere to explain it.
+    // The regression this file was written for: the mirror re-adopted the
+    // project from the path and then router.replace'd a URL that lost the
+    // document, so the click appeared to do nothing. With the document on
+    // its own path the mirror has no `doc` to drop.
     expect(replacesDroppingDoc()).toHaveLength(0)
 
     // And the URL->store watcher must not re-adopt the project either: the
@@ -352,42 +354,67 @@ describe('AppLayout — opening a document from a project survives the URL watch
     wrapper.unmount()
   })
 
-  it('regression-guard: the mirror CARRIES ?doc= so a store write cannot close the editor', async () => {
-    // Cold boot / refresh on a document deep link. The URL restore adopts
-    // the item from the path and the mirror fires with no prior state to
-    // bail on — before the fix this was a second, click-free way to lose
-    // the open document.
-    navigate(PROJECT_PATH, { doc: DOC_ID })
+  it('a cold boot on a document path keeps the document and drops the project', async () => {
+    // The refresh / shared-link case. Before the path shape this was a
+    // second, click-free way to lose the open document: the URL restore
+    // adopted the item from the path and the mirror fired with no prior
+    // state to bail on.
+    navigate(DOC_PATH)
+    useDocumentsStore().documents = [DOC]
+    useDocumentsStore().loaded = true
     const wrapper = mount(AppLayout, { global: { stubs: STUB_CONFIG } })
     await flush()
 
     const ws = useWorkspacesStore()
     ws.workspaces = [makeWorkspace()]
-    replaceMock.mockClear()
 
-    ws.setActiveWorkspaceItem(ITEM_ID)
-    await flush()
-
+    // The document is open, and no `?doc=` was invented on the way in.
+    expect(wrapper.find('[data-testid="documents-view"]').exists()).toBe(true)
     expect(replacesDroppingDoc()).toHaveLength(0)
     wrapper.unmount()
   })
 
-  it('the document is an overlay inside <main>, not a 50/50 sibling of it', async () => {
+  it('the document REPLACES the main view instead of stacking over it', async () => {
+    // The heart of the change. As an overlay this rendered alongside the
+    // chat/kanban underneath, and the chat's floating chrome out-painted
+    // the overlay's z-index (PR #749). A page unmounts what it replaces,
+    // so the overlap cannot happen at all.
+    navigate(PROJECT_PATH)
+    const wrapper = mount(AppLayout, { global: { stubs: STUB_CONFIG } })
+    await flush()
+    const ws = useWorkspacesStore()
+    ws.workspaces = [makeWorkspace()]
+    ws.setActiveWorkspaceItem(ITEM_ID)
+    await flush()
+    expect(wrapper.find('[data-kanban-view="stub"]').exists()).toBe(true)
+
+    useDocumentsStore().documents = [DOC]
+    useDocumentsStore().loaded = true
+    navigate(DOC_PATH)
+    await flush()
+
+    // DocumentsView is deliberately NOT stubbed — the assertion is about
+    // which branch of the main-view chain wins.
+    expect(wrapper.find('main [data-testid="documents-view"]').exists()).toBe(true)
+    // ...and the view it replaced is gone, not merely covered.
+    expect(wrapper.find('[data-kanban-view="stub"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('a legacy ?doc= URL is rewritten to the document path on boot', async () => {
+    // Bookmarks and links shared before this change still point at
+    // `?doc=<id>`. They must land on the document, not on the chat that
+    // used to be underneath it.
     navigate(PROJECT_PATH, { doc: DOC_ID })
     useDocumentsStore().documents = [DOC]
     useDocumentsStore().loaded = true
-
-    // DocumentsView is deliberately NOT stubbed here — the assertion is
-    // about where AppLayout puts it and how it fills <main>.
     const wrapper = mount(AppLayout, { global: { stubs: STUB_CONFIG } })
     await flush()
 
-    const inMain = wrapper.find('main [data-testid="documents-view"]')
-    expect(inMain.exists()).toBe(true)
-    // `absolute inset-0` is what makes it COVER the project behind it.
-    // As a `flex-1` sibling of <main> it split the surface in half.
-    expect(inMain.classes()).toContain('absolute')
-    expect(inMain.classes()).toContain('inset-0')
+    const rewritten = replaceMock.mock.calls.filter((call) => (call[0] ?? {}).path === DOC_PATH)
+    expect(rewritten.length).toBeGreaterThan(0)
+    // The `doc` query is dropped in the rewrite — the path carries it now.
+    expect((rewritten[0]![0] as { query?: Record<string, string> }).query?.doc).toBeUndefined()
     wrapper.unmount()
   })
 })

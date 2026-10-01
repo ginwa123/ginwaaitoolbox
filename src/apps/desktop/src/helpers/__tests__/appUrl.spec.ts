@@ -134,6 +134,57 @@ describe('appUrl — path-based URL contract (2026-09-22 revamp)', () => {
     })
   })
 
+  describe('document page shape (Migration 095)', () => {
+    it('parses /app/{ws}/doc/{id}', () => {
+      expect(parseAppPath('/app/ws_1/doc/doc_9')).toEqual({
+        kind: 'doc',
+        workspaceId: 'ws_1',
+        documentId: 'doc_9',
+      })
+    })
+    it('ignores a trailing slash', () => {
+      expect(parseAppPath('/app/ws_1/doc/doc_9/')).toEqual({
+        kind: 'doc',
+        workspaceId: 'ws_1',
+        documentId: 'doc_9',
+      })
+    })
+    it('does not swallow the sibling shapes', () => {
+      // `doc` and `chat` have the same segment count, so an ordering slip
+      // in the parser would silently turn a document into a chat.
+      expect(parseAppPath('/app/ws_1/chat/s').kind).toBe('chat')
+      expect(parseAppPath('/app/ws_1').kind).toBe('workspace')
+      expect(parseAppPath('/app/ws_1/projects/p').kind).toBe('project')
+      expect(parseAppPath('/app/ws_1/projects/p/chat/t').kind).toBe('projectChat')
+    })
+    it('a bare /app/doc is NOT a workspace named "doc"', () => {
+      // Otherwise a malformed document URL boots the user into a
+      // workspace that does not exist.
+      expect(parseAppPath('/app/doc').kind).toBe('other')
+    })
+    it('builds /app/{ws}/doc/{id} and carries sub-state', () => {
+      expect(
+        buildAppUrl({ workspaceId: 'ws_1', documentId: 'doc_9', query: { tab: 't1' } }),
+      ).toEqual({ path: '/app/ws_1/doc/doc_9', query: { tab: 't1' } })
+    })
+    it('a document is exclusive with chat/project targets', () => {
+      // Both at once means the caller lost track of what it navigates to;
+      // silently picking one would hide the bug behind a wrong URL.
+      expect(() =>
+        buildAppUrl({ workspaceId: 'ws_1', documentId: 'doc_9', chatSessionId: 's' }),
+      ).toThrow(/cannot combine/)
+      expect(() =>
+        buildAppUrl({ workspaceId: 'ws_1', documentId: 'doc_9', projectId: 'p' }),
+      ).toThrow(/cannot combine/)
+    })
+    it('requires a workspace', () => {
+      expect(() => buildAppUrl({ documentId: 'doc_9' })).toThrow(/workspaceId is required/)
+    })
+    it('a document path is canonical (no legacy rewrite)', () => {
+      expect(detectLegacyAppUrl('/app/ws_1/doc/doc_9', {})).toBeNull()
+    })
+  })
+
   describe('detectLegacyAppUrl', () => {
     it('canonical URLs → null', () => {
       expect(detectLegacyAppUrl('/app', {})).toBeNull()

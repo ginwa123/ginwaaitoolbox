@@ -153,6 +153,41 @@ async function handleBootUrl(): Promise<void> {
     // leave the URL alone, boot normally below.
   }
 
+  // 3b. Legacy `?doc=<id>` overlay (Migration 095 shipped documents this
+  // way — a query param on whatever page you happened to be on). Rewrite
+  // to the `/app/{ws}/doc/{id}` path so a bookmarked or shared link lands
+  // on the document instead of a chat/project that used to be underneath
+  // it. Runs on any app path, not just `/app`, because that is exactly
+  // where those links point. Without a workspace on the path there is
+  // nothing to build from, so the URL is left alone and the view still
+  // renders (legacy `useCurrentMainView` fallback) rather than 404ing.
+  if (typeof query.doc === 'string' && query.doc.length > 0) {
+    // The workspace comes from the path the overlay was layered on
+    // (`/app/{ws}`, `/app/{ws}/chat/…`, `/app/{ws}/projects/…`), or from
+    // `?workspaceId=` for a bare-`/app` deep link.
+    const legacy = parseAppPath(path)
+    const docWs =
+      legacy.kind === 'workspace' ||
+      legacy.kind === 'chat' ||
+      legacy.kind === 'doc' ||
+      legacy.kind === 'project' ||
+      legacy.kind === 'projectChat'
+        ? legacy.workspaceId
+        : query.workspaceId
+    if (docWs) {
+      const { doc: _droppedDoc, ...rest } = query
+      void _droppedDoc
+      const target = buildAppUrl({
+        workspaceId: docWs,
+        documentId: query.doc,
+        query: keepTabParam(rest),
+      })
+      path = target.path
+      query = target.query
+      router.replace({ path, query })
+    }
+  }
+
   // 4. Canonical boot from the (possibly rewritten) path.
   const parsed = parseAppPath(path)
   if (parsed.kind === 'chat') {
@@ -161,6 +196,13 @@ async function handleBootUrl(): Promise<void> {
     fetchChatSessionCwd(parsed.sessionId)
   } else if (parsed.kind === 'projectChat') {
     workspacesStore.setActiveTask(parsed.chatTaskId)
+  } else if (parsed.kind === 'doc') {
+    // A document is its own page: drop any chat/project selection so the
+    // sidebar's single-active-row contract holds and the document does
+    // not look like it is "inside" a chat that is no longer on screen.
+    workspacesStore.setActiveWorkspaceItem(null)
+    workspacesStore.setActiveTask(null)
+    navigationStore.setActiveChat('', navigationStore.activeChatName)
   } else {
     const q = route.query as Record<string, string | undefined>
     navigationStore.initFromUrl(
@@ -668,23 +710,11 @@ watch(
         sub.detail = urlDetail
       }
     }
-    // Carry the open document (?doc=<id>, Migration 095) the same way, or
-    // any store write re-`router.replace`s a URL with it stripped and the
-    // editor closes itself. Same-project only, matching the `detail` rule
-    // above: switching projects is a deliberate navigation away from the
-    // open document. This is also the only thing protecting a cold boot /
-    // refresh on `…/projects/P?doc=<id>`, where the URL restore adopts the
-    // item from the path and the mirror fires with no prior state to bail on.
-    const urlDoc = route.query.doc as string | undefined
-    if (urlDoc) {
-      const urlDocProject =
-        pathParsed.kind === 'project' || pathParsed.kind === 'projectChat'
-          ? pathParsed.projectId
-          : parseItemIdWithChat((route.query.itemId as string) ?? '').itemId
-      if (!urlDocProject || urlDocProject === safeItemId) {
-        sub.doc = urlDoc
-      }
-    }
+    // Documents (Migration 095) used to need carrying here: `?doc=<id>`
+    // was a query overlay, so any store write re-`router.replace`d a URL
+    // with it stripped and the editor closed itself. Now that a document
+    // is its own PATH shape, the store-to-URL mirror never targets it —
+    // there is no `doc` query to drop.
 
     let target: AppUrlLocation | null = null
     if (wsId && safeItemId) {
@@ -1127,18 +1157,23 @@ const fetchChatSessionCwd = async (sessionId: string) => {
   }
 }
 
+// The open document's id, read from the PATH rather than
+// `route.params.documentId`. AppLayout derives everything else through
+// `parseAppPath`, and the legacy `?doc=` fallback keeps a pre-migration
+// link working until the boot rewrite above swaps it for the path. Going
+// through `route.params` instead would make the view depend on the
+// router having populated params, which is exactly what a hand-rolled
+// route object (tests, some deep-link entry points) does not do.
+const activeDocumentId = computed(() => {
+  const parsed = parseAppPath(route.path)
+  if (parsed.kind === 'doc') return parsed.documentId
+  const legacy = route.query.doc
+  return typeof legacy === 'string' && legacy.length > 0 ? legacy : ''
+})
+
 const currentView = computed(() => {
   const path = route.path
   if (path === '/app/settings') return 'settings'
-  // Documents viewer (Migration 095). `?doc=<id>` is a query overlay on
-  // whatever path the user is on, so it must be checked BEFORE the
-  // path-shape branches below — a project path that happens to be
-  // current would otherwise win and the document would never render.
-  // After `settings` because that page is a dedicated route and must
-  // always win.
-  if (typeof route.query.doc === 'string' && route.query.doc.length > 0) {
-    return 'documents'
-  }
   // NEW (plan: 2026-09-02-kanban-settings-as-page). Path-based
   // kanban-settings route (/app/kanban/:itemId/settings). Must come
   // BEFORE the route.query.view fallthrough because the URL has no
@@ -1180,6 +1215,11 @@ const currentView = computed(() => {
   // the query default below ('chat'); the boot rewrite converts them
   // to paths on the next tick.
   const parsedPath = parseAppPath(path)
+  // Document page (Migration 095). It is a PAGE, not an overlay: it sits
+  // in the same `v-else-if` chain as every other main view, so the chat
+  // behind it is unmounted rather than stacked under. Checked before the
+  // workspace/chat branches so nothing else can claim a doc path.
+  if (parsedPath.kind === 'doc') return 'documents'
   if (
     parsedPath.kind === 'workspace' ||
     parsedPath.kind === 'project' ||
@@ -2512,17 +2552,12 @@ watch(
     // a chat from a board, or across chats). Mirrors the legacy
     // `?view=chat` branch below.
     const isOverlayView = view === 'gitfile' || view === 'skill' || view === 'code-editor'
-    // Documents (Migration 095) are a query overlay and the document IS
-    // the main content, so the path underneath is stale context — the
-    // same precedence `currentView` and `useCurrentMainView` already give
-    // `doc` (both check it before every path shape). This watcher was the
-    // one place that didn't, which is what broke document opening: it
-    // watches `route.query`, so a query-only `?doc=` change re-ran the
-    // project branch below and re-adopted the path's project, which
-    // re-fired the store->URL mirror and `router.replace`d a URL with the
-    // `doc` param stripped. The click's own navigation was undone a
-    // microtask later, so the row appeared to do nothing at all.
-    if (typeof query.doc === 'string' && query.doc.length > 0) return
+    // Documents (Migration 095) are now a PATH shape (`/app/{ws}/doc/{id}`),
+    // so this watcher does not need a special guard for them the way the
+    // `?doc=` overlay needed one: a path change is read by the branch
+    // below like any other. The guard that WAS here existed only because
+    // a query-only change re-ran the path branch underneath; that class
+    // of bug is gone with the query param.
     if (parsed.kind === 'chat') {
       if (activeChatId.value !== `chat-${parsed.sessionId}`) {
         workspacesStore.setActiveWorkspaceItem(null)
@@ -2972,6 +3007,31 @@ defineExpose({
         />
       </div>
 
+      <!-- Document page (Migration 095). FIRST branch of the main view
+           chain, so it REPLACES whatever was open — the chat is unmounted
+           rather than left mounted underneath.
+
+           This is why it is a `v-else-if` here and not a standalone
+           `v-if` overlay: as an overlay it inherited the path it was
+           opened from, and the chat's floating chrome (z-20/30/31)
+           out-painted its z-index: 10, so the composer dock and scroll
+           slider floated over the document. Being a page removes the
+           overlap by construction instead of relying on a z-index
+           ordering. The GitFileViewer / SkillViewer / code-editor
+           overlays above are still overlays and still need the chat's
+           own stacking containment (`isolation: isolate` on
+           `.chat-column`).
+
+           `:key` forces a fresh mount when the user moves between two
+           documents (Back/Forward keeps the same component mounted, and
+           DocumentsView loads on id change anyway — the key just makes
+           the switch unambiguous). The id comes from the PATH, so a
+           refresh or a shared link restores the same document. -->
+      <DocumentsView
+        v-else-if="currentView === 'documents' && activeDocumentId"
+        :key="'doc-' + activeDocumentId"
+        :document-id="activeDocumentId"
+      />
       <!-- Kanban settings page (plan: 2026-09-02-kanban-settings-as-page).
            Mounted INSIDE the <main> v-else-if chain (BEFORE KanbanView)
            so the settings page REPLACES the kanban board — no overlay.
@@ -3365,23 +3425,6 @@ defineExpose({
           always null here.
         -->
       </div>
-
-      <!-- Documents viewer (Migration 095). INSIDE <main> and absolutely
-           positioned, matching the GitFileViewer / Skill Viewer overlays
-           above. It used to be a `flex-1` sibling of <main>, which meant
-           the open document and the project behind it split the surface
-           50/50. The `doc` id comes from the URL, so a refresh or a
-           shared link restores the same document. Guarded on the id
-           being non-empty because `currentView` already checked it — the
-           v-if is here so a racing route change cannot mount the view
-           with an undefined prop. Standalone `v-if`, not `v-else-if`:
-           `settings` and `documents` are mutually exclusive in
-           `currentView`, and this no longer chains to <SettingsView>
-           because it lives in a different element. -->
-      <DocumentsView
-        v-if="currentView === 'documents' && typeof route.query.doc === 'string'"
-        :document-id="route.query.doc as string"
-      />
     </main>
 
     <!-- Settings page -->

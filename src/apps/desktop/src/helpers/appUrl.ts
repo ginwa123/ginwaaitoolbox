@@ -7,6 +7,7 @@
  *   /app                                            landing (creates a workspace)
  *   /app/{workspaceId}                              workspace selected
  *   /app/{workspaceId}/chat/{sessionId}             chat open
+ *   /app/{workspaceId}/doc/{documentId}             document open (Migration 095)
  *   /app/{workspaceId}/projects/{projectId}         project open
  *   /app/{workspaceId}/projects/{projectId}/chat/{taskId}
  *                                                   task chat over a project
@@ -19,7 +20,10 @@
  *
  * Unchanged: `/app/settings`, `/app/kanban/:itemId/settings`.
  * Legacy (rewritten once at boot to the shapes above, never emitted):
- * `/app/chat/:sid`, `/app/task/:tid`, and every `?view=…` query URL.
+ * `/app/chat/:sid`, `/app/task/:tid`, every `?view=…` query URL, and
+ * `?doc=<id>` on any app path — the document used to be a query OVERLAY on
+ * whichever page you were on, so it inherited that page's path and two
+ * documents on two different paths had two different URLs.
  *
  * ## Why this exists
  *
@@ -45,6 +49,12 @@ export interface AppUrlTarget {
   projectId?: string | null | undefined
   /** Task chat id open over a project (requires projectId). */
   chatTaskId?: string | null | undefined
+  /**
+   * Document id (Migration 095). Emits `/app/{ws}/doc/{id}` — a PAGE, not
+   * a query overlay: the document replaces the main view, so it must not
+   * borrow the path of whatever page happened to be open underneath it.
+   */
+  documentId?: string | null | undefined
   /** Project sub-state (pageId / detail / sorts / panel …). Passed through. */
   query?: Record<string, string> | null | undefined
 }
@@ -58,6 +68,7 @@ export type ParsedAppPath =
   | { kind: 'landing' }
   | { kind: 'workspace'; workspaceId: string }
   | { kind: 'chat'; workspaceId: string; sessionId: string }
+  | { kind: 'doc'; workspaceId: string; documentId: string }
   | { kind: 'project'; workspaceId: string; projectId: string }
   | { kind: 'projectChat'; workspaceId: string; projectId: string; chatTaskId: string }
   | { kind: 'other'; path: string }
@@ -66,9 +77,12 @@ export type ParsedAppPath =
  * First path segments that are route keywords, never workspace ids.
  * Without this, `/app/chat/sess_9` would parse as workspace `chat` —
  * the legacy routes must stay `{ kind: 'other' }` so the boot rewrite
- * (not the normal view derivation) handles them.
+ * (not the normal view derivation) handles them. `doc` is here for a
+ * different reason: a bare `/app/doc` is a malformed document URL, and
+ * silently reading it as a workspace named "doc" would boot the user
+ * into a workspace that does not exist.
  */
-const RESERVED_FIRST_SEGMENTS = new Set(['chat', 'task', 'settings', 'kanban', 'projects'])
+const RESERVED_FIRST_SEGMENTS = new Set(['chat', 'doc', 'task', 'settings', 'kanban', 'projects'])
 
 const nonEmpty = (v: string | null | undefined): v is string =>
   typeof v === 'string' && v.length > 0
@@ -84,13 +98,20 @@ export function buildAppUrl(input: AppUrlTarget): AppUrlLocation {
   const chatSessionId = (input.chatSessionId ?? '').toString().trim()
   const projectId = (input.projectId ?? '').toString().trim()
   const chatTaskId = (input.chatTaskId ?? '').toString().trim()
+  const documentId = (input.documentId ?? '').toString().trim()
   const query: Record<string, string> = { ...input.query }
 
   if (!workspaceId) {
-    if (chatSessionId || projectId || chatTaskId) {
-      throw new Error('buildAppUrl: workspaceId is required for chat/project targets')
+    if (chatSessionId || projectId || chatTaskId || documentId) {
+      throw new Error('buildAppUrl: workspaceId is required for chat/project/document targets')
     }
     return { path: '/app', query }
+  }
+  // A document is a PAGE that replaces the main view, so it is exclusive
+  // with chat/project the same way chatSessionId and projectId are. Two of
+  // these at once means a caller lost track of what it is navigating to.
+  if (documentId && (chatSessionId || projectId || chatTaskId)) {
+    throw new Error('buildAppUrl: documentId cannot combine with a chat/project target')
   }
   if (chatSessionId && (projectId || chatTaskId)) {
     throw new Error('buildAppUrl: chatSessionId cannot combine with a project target')
@@ -100,7 +121,9 @@ export function buildAppUrl(input: AppUrlTarget): AppUrlLocation {
   }
 
   let path = `/app/${workspaceId}`
-  if (chatSessionId) {
+  if (documentId) {
+    path += `/doc/${documentId}`
+  } else if (chatSessionId) {
     path += `/chat/${chatSessionId}`
   } else if (projectId) {
     path += `/projects/${projectId}`
@@ -120,6 +143,11 @@ export function parseAppPath(rawPath: string): ParsedAppPath {
   if (path === '/app') return { kind: 'landing' }
   let m = /^\/app\/([^/]+)\/chat\/([^/]+)$/.exec(path)
   if (m?.[1] && m[2]) return { kind: 'chat', workspaceId: m[1], sessionId: m[2] }
+  // `doc` before the project/workspace branches: `/app/{ws}/doc/{id}` has
+  // the same segment count as `/app/{ws}/chat/{sid}`, and matching it after
+  // them would let a future `chat` branch swallow a document.
+  m = /^\/app\/([^/]+)\/doc\/([^/]+)$/.exec(path)
+  if (m?.[1] && m[2]) return { kind: 'doc', workspaceId: m[1], documentId: m[2] }
   m = /^\/app\/([^/]+)\/projects\/([^/]+)\/chat\/([^/]+)$/.exec(path)
   if (m?.[1] && m[2] && m[3]) {
     return { kind: 'projectChat', workspaceId: m[1], projectId: m[2], chatTaskId: m[3] }

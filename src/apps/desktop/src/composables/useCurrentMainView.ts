@@ -63,6 +63,17 @@ import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 export type CurrentMainView =
   | { kind: 'chat'; sessionId: string; workspaceId?: string }
   | {
+      /** Document page (Migration 095). `/app/{ws}/doc/{id}` — a PAGE
+       *  shape, so the document REPLACES the main view and the chat is
+       *  not mounted underneath it. `workspaceId` is optional: a deep
+       *  link that resolves before a workspace is active still renders,
+       *  and an unresolvable one lets the view say so instead of
+       *  guessing. */
+      kind: 'document'
+      documentId: string
+      workspaceId?: string
+    }
+  | {
       kind: 'workspace'
       workspaceId?: string
       /** Optional: absent for a standalone `?workspaceId=X` selection
@@ -77,16 +88,6 @@ export type CurrentMainView =
       kind: 'kanban-settings'
       workspaceId?: string
       itemId: string
-    }
-  | {
-      /** Documents viewer (Migration 095). `?doc=<id>` overlays whatever
-       *  path the user is on, exactly as `?pageId=` overlays a project
-       *  path — a new router entry would be shadowed by
-       *  `/app/:workspaceId`, and the document id is not part of the
-       *  path's identity. */
-      kind: 'document'
-      documentId: string
-      workspaceId?: string
     }
   | { kind: 'none' }
 
@@ -103,32 +104,40 @@ export function useCurrentMainView(): ComputedRef<CurrentMainView> {
     // existing `workspace` kind (itemId = projectId) — every
     // row-highlight consumer keeps working unchanged. Legacy `?view=`
     // URLs are handled below until the boot rewrite removes them.
-    // Documents viewer (Migration 095). Before every path shape: the
-    // document is the main content area, so a project/chat path that
-    // happens to be under it must not win. `workspaceId` still comes from
-    // the path so the row highlight and the fetch scope agree.
+    const parsed = parseAppPath(route?.path ?? '')
+
+    // Document page (Migration 095). A PATH shape, so it is just another
+    // main view — no precedence fight with the other shapes, and no
+    // overlay to stack on top of whatever was open before.
+    if (parsed.kind === 'doc') {
+      return { kind: 'document', documentId: parsed.documentId, workspaceId: parsed.workspaceId }
+    }
+
+    // Legacy `?doc=<id>` overlay (how Migration 095 first shipped). Kept
+    // working until AppLayout's boot rewrite swaps the URL for the path,
+    // so a bookmarked or shared link still opens the document instead of
+    // silently falling through to whatever page it was layered on.
+    // AppLayout owns the rewrite — this composable must not navigate.
     if (typeof q.doc === 'string' && q.doc.length > 0) {
       // `parseAppPath` returns `other` for paths with no workspace of
       // their own (settings, kanban-settings) and `landing` for a bare
-      // `/app`. Only the four workspace-bearing kinds carry a
-      // `workspaceId`, so the other two read it off the query instead —
-      // a deep link that landed before a workspace was selected still
-      // resolves, and an unresolvable one stays `undefined` so the
-      // view can say so instead of guessing.
-      const docPath = parseAppPath(route?.path ?? '')
+      // `/app`. Only the workspace-bearing kinds carry a `workspaceId`,
+      // so the other two read it off the query instead — a deep link
+      // that landed before a workspace was selected still resolves, and
+      // an unresolvable one stays `undefined` so the view can say so
+      // instead of guessing.
       const docWorkspaceId =
-        docPath.kind === 'workspace' ||
-        docPath.kind === 'chat' ||
-        docPath.kind === 'project' ||
-        docPath.kind === 'projectChat'
-          ? docPath.workspaceId
+        parsed.kind === 'workspace' ||
+        parsed.kind === 'chat' ||
+        parsed.kind === 'project' ||
+        parsed.kind === 'projectChat'
+          ? parsed.workspaceId
           : typeof q.workspaceId === 'string' && q.workspaceId.length > 0
             ? q.workspaceId
             : undefined
       return { kind: 'document', documentId: q.doc, workspaceId: docWorkspaceId }
     }
 
-    const parsed = parseAppPath(route?.path ?? '')
     // Landing with a legacy `?view=` query is not the landing — fall
     // through to the query handling below (the boot rewrite converts
     // it to a path URL on the next tick).

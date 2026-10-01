@@ -39,7 +39,7 @@ Run (frontend served from THIS worktree; the backend binary may come from
 anywhere since only frontend code is under test):
     NALAR_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/nalarcore-linux-x86_64 \\
         /tmp/nalar-ui-venv/bin/python -m pytest -s \\
-        tests/functional_ui/chatview_document_covers_chat_test.py -v
+        tests/functional_ui/document_page_replaces_chat_test.py -v
 """
 
 from __future__ import annotations
@@ -97,8 +97,7 @@ def _open_chat_then_document(ui_harness, page, session_id: str) -> tuple[str, st
     )
     document_id = doc.json()["document"]["id"]
 
-    # Step 1 — the session is open (this is the half of the repro that
-    # leaves a ChatView mounted underneath).
+    # Step 1 — the session is open. A ChatView is now mounted.
     page.goto(
         h.web_url(f"/app/{workspace_id}/chat/{session_id}"),
         wait_until="load",
@@ -114,18 +113,13 @@ def _open_chat_then_document(ui_harness, page, session_id: str) -> tuple[str, st
         " return !!d && d.offsetHeight > 0; }",
         timeout=20000,
     )
-    # Not at the bottom -> the scroll-to-bottom arrow is on screen, which
-    # is one of the three elements the bug report showed leaking.
-    page.evaluate(
-        "() => { const el = document.querySelector('.messages-scroll-hide-native')"
-        " .querySelector('.virtual-scroller'); if (el) el.scrollTop = 0; }"
-    )
     page.wait_for_timeout(2500)
 
-    # Step 2 — click a document. Navigating with ?doc= is exactly what the
-    # sidebar's DOCUMENTS section does.
+    # Step 2 — click a document. It is its own PAGE now
+    # (`/app/{ws}/doc/{id}`), so this REPLACES the chat rather than
+    # layering over it — which is what removes the reported bug.
     page.goto(
-        h.web_url(f"/app/{workspace_id}/chat/{session_id}?doc={document_id}"),
+        h.web_url(f"/app/{workspace_id}/doc/{document_id}"),
         wait_until="load",
         timeout=30000,
     )
@@ -135,13 +129,21 @@ def _open_chat_then_document(ui_harness, page, session_id: str) -> tuple[str, st
     return workspace_id, document_id
 
 
-#: Who is painted on top at the centre of each piece of chat chrome, plus
-#: the containment the fix is supposed to install.
+#: Whether the chat is still mounted inside the MAIN VIEW AREA.
+#:
+#: Scoped to <main> on purpose: a bare `document.querySelector` also finds
+#: the sidebar's and right sidebar's own virtual scrollers, which are
+#: always present and say nothing about the main view.
+#:
+#: The document is a PAGE, so the strongest statement is not "the overlay
+#: covers the chat" but "the chat is GONE". Asserting only the former
+#: would pass against the old overlay design too — that is exactly the
+#: shape that shipped the bug.
 _PROBE_SCRIPT = r"""
 () => {
+  const main = document.querySelector('main');
   const overlay = document.querySelector('[data-testid="documents-view"]');
-  const column = document.querySelector('.chat-column');
-  if (!overlay || !column) return { missing: true };
+  if (!overlay || !main) return { missing: true };
 
   const describe = (el) => {
     if (!el) return 'null';
@@ -152,12 +154,10 @@ _PROBE_SCRIPT = r"""
     const r = el.getBoundingClientRect();
     return [r.left + r.width / 2, r.top + r.height / 2];
   };
-  // The three elements the bug screenshot actually showed on top of the
-  // document: the composer card, the scroll-to-bottom arrow, the slider.
   const targets = {
-    composerCard: document.querySelector('.composer-card'),
-    scrollToBottom: document.querySelector('.chat-scroll-to-bottom'),
-    scrollSlider: document.querySelector('.chat-scroll-slider'),
+    composerCard: main.querySelector('.composer-card'),
+    scrollToBottom: main.querySelector('.chat-scroll-to-bottom'),
+    scrollSlider: main.querySelector('.chat-scroll-slider'),
   };
   const points = {};
   for (const [name, el] of Object.entries(targets)) {
@@ -171,78 +171,68 @@ _PROBE_SCRIPT = r"""
     };
   }
 
-  const cs = getComputedStyle(column);
+  const column = main.querySelector('.chat-column');
   return {
     missing: false,
     points,
-    isolation: cs.isolation,
-    position: cs.position,
-    zIndex: cs.zIndex,
-    // The overlay is deliberately an overlay: the chat stays mounted
-    // behind it so Back/Forward and document switches stay instant.
-    chatStillMounted: !!document.querySelector('.composer-dock'),
+    // A document is its own page: nothing of the chat is left mounted.
+    chatColumnPresent: !!column,
+    composerPresent: !!main.querySelector('.composer-dock'),
+    scrollerPresent: !!main.querySelector('.virtual-scroller'),
+    kanbanPresent: !!main.querySelector('[data-kanban-view="stub"], .kanban-view'),
+    isolation: column ? getComputedStyle(column).isolation : null,
     docTitle: (document.querySelector('[data-testid="documents-title"]') || {}).textContent || '',
   };
 }
 """
 
 
-def test_document_overlay_paints_over_the_chat_chrome(ui_harness, page) -> None:
+def test_document_page_replaces_the_chat(ui_harness, page) -> None:
     session_id = "sess-doc-covers-chat"
-    _open_chat_then_document(ui_harness, page, session_id)
+    workspace_id, document_id = _open_chat_then_document(ui_harness, page, session_id)
 
     p = page.evaluate(_PROBE_SCRIPT)
-    print(f"\n[doc-covers-chat] probe: {p}")
-    assert not p.get("missing"), "document overlay or chat column not found"
-
-    for name in ("composerCard", "scrollToBottom", "scrollSlider"):
-        pt = p["points"][name]
-        # The scroll-to-bottom arrow is `v-if`-gated on not being at the
-        # bottom; the composer card and the slider are always present.
-        if pt.get("absent"):
-            continue
-        assert pt["insideDocOverlay"], (
-            f"{name} is painted ON TOP of the document at {pt['point']} "
-            f"(hit {pt['hit']}). The chat chrome leaked over the document "
-            "viewer — this is the reported bug."
-        )
+    print(f"\n[doc-page] probe: {p}")
+    assert not p.get("missing"), "document page not found"
 
     assert p["docTitle"].strip() == "Release plan", (
         f"document title is {p['docTitle']!r}, expected 'Release plan' — "
-        "the overlay may not have loaded at all"
+        "the page may not have loaded at all"
     )
 
+    # The document owns the main view. The chat it was opened from is
+    # unmounted, so there is nothing left to paint over the document.
+    assert not p["chatColumnPresent"], (
+        "the chat column is still mounted behind the document; a document is "
+        "a PAGE now, so it must replace the view rather than overlay it"
+    )
+    assert not p["composerPresent"], (
+        "the composer dock survived the document page — this is the "
+        "reported bug (chat chrome painted over the document)"
+    )
+    assert not p["scrollerPresent"], "the chat transcript survived the document page"
 
-def test_chat_column_opens_a_stacking_context(ui_harness, page) -> None:
-    """The containment itself, so the paint order is not a coincidence.
 
-    Without `isolation: isolate` the chat's z-ladder competes in the root
-    stacking context and the fix only holds for the three elements that
-    happen to exist today. This asserts the cause, so a future z-index
-    added to the chat cannot silently re-break every overlay.
+def test_document_page_carries_no_chat_z_index_leak(ui_harness, page) -> None:
+    """Whatever is painted at the chrome's old position must be the doc.
+
+    With the chat unmounted there is nothing at those coordinates but the
+    document, so this is a belt-and-braces check that the page really is
+    the only surface there — it would fail if a future refactor put a
+    floating overlay back without the chat's stacking containment.
     """
     session_id = "sess-doc-isolation"
     _open_chat_then_document(ui_harness, page, session_id)
 
     p = page.evaluate(_PROBE_SCRIPT)
-    print(f"\n[doc-covers-chat] isolation: {p}")
-    assert not p.get("missing"), "document overlay or chat column not found"
+    print(f"\n[doc-page] paint: {p}")
+    assert not p.get("missing"), "document page not found"
 
-    assert p["position"] == "relative", (
-        f".chat-column position is {p['position']!r}; the composer dock "
-        "anchors to it, so it must stay relative"
-    )
-    assert p["isolation"] == "isolate", (
-        f".chat-column computes isolation: {p['isolation']!r}, expected "
-        "'isolate'. Without it the chat's z-ladder escapes into the root "
-        "stacking context and outranks the document overlay's z-index: 10."
-    )
-
-    # And the chat really is still mounted behind the overlay — the fix is
-    # containment, not unmounting. If this ever flipped to False the paint
-    # assertions above would still pass while the behaviour regressed.
-    assert p["chatStillMounted"], (
-        "the chat is no longer mounted behind the document; the overlay is "
-        "supposed to COVER a still-mounted chat so document switches and "
-        "Back/Forward stay instant"
-    )
+    # Every probe target is gone with the chat; assert that explicitly
+    # rather than skipping, so a regression that resurrects the chrome
+    # cannot make this test vacuously true.
+    for name, pt in p["points"].items():
+        assert pt.get("absent"), (
+            f"{name} is still in the DOM on a document page ({pt}) — the "
+            "chat surface should be unmounted, not just covered"
+        )
