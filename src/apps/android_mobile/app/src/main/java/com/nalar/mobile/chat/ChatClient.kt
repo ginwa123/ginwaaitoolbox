@@ -223,9 +223,38 @@ class ChatClient(
         parse = WorkerApi::parseRunningSessionIds,
     )
 
-    private fun <T> get(
+    /**
+     * Whether a worker is registered on this one session right now.
+     *
+     * The authoritative answer to "did the run I am watching finish?", asked
+     * per-session so the [WorkerApi.WORKERS_PAGE_LIMIT] truncation in the
+     * global list cannot turn a live run into `false`.
+     *
+     * Separate from [loadRunningSessions] rather than a membership test against
+     * it: this is read at a moment when a wrong `false` destroys real state —
+     * a chat that un-freezes its placeholder mid-answer and drops the text it
+     * had streamed — so it cannot be served from a projection with a cap and a
+     * throttle on it. `RunningSessionsStore` answers the same question for the
+     * sidebar's spinner, where the cost of being briefly wrong is a glance;
+     * here it is the difference between a transcript and a lie.
+     */
+    fun isSessionRunning(sessionId: String): ChatResult<Boolean> =
+        when (val result = get(
+            path = WorkerApi.workersPathForSession(sessionId),
+            parse = WorkerApi::parseRunningSessionIds,
+        )) {
+            // A null parse comes back as `Unavailable`, never as `false`: an
+            // envelope without the array is not the server saying nothing is
+            // running.
+            is ChatResult.Loaded -> ChatResult.Loaded(sessionId in result.value)
+            is ChatResult.SignedOut -> ChatResult.SignedOut
+            is ChatResult.Rejected -> result
+            is ChatResult.Unavailable -> result
+        }
+
+    private fun <T : Any> get(
         path: String,
-        parse: (String) -> T,
+        parse: (String) -> T?,
     ): ChatResult<T> {
         val response = try {
             transport.get(path = path, headers = authenticatedHeaders(json = false))
@@ -235,9 +264,22 @@ class ChatClient(
         return interpretRead(response, parse)
     }
 
-    private fun <T> interpretRead(
+    /**
+     * [parse] returns null when the payload was readable but the field this
+     * read needs was **absent** — which is not the same answer as an empty one,
+     * and the difference is the whole point of a nullable `parse`.
+     *
+     * It used to return `ChatResult.Loaded(emptySet())` for both, so a payload
+     * without the array was indistinguishable from a server with nothing
+     * running, and the caller — a spinner, and now a streaming placeholder
+     * that would otherwise delete real text — acted on a fabricated empty.
+     * Every caller already treats `Unavailable` as "answer nothing, change
+     * nothing", which is the correct response to a shape it does not
+     * recognise.
+     */
+    private fun <T : Any> interpretRead(
         response: AuthHttpResponse,
-        parse: (String) -> T,
+        parse: (String) -> T?,
     ): ChatResult<T> {
         if (response.statusCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
             return ChatResult.SignedOut
@@ -251,7 +293,11 @@ class ChatClient(
             return ChatResult.Unavailable(messageForStatus(response.statusCode))
         }
         return try {
-            ChatResult.Loaded(parse(response.body))
+            // Null and "threw" are the same answer here on purpose: both mean
+            // the payload did not carry a field this read needs, and neither is
+            // an answer about the server's state.
+            parse(response.body)?.let { ChatResult.Loaded(it) }
+                ?: ChatResult.Unavailable("The server sent a response this app could not read.")
         } catch (_: Exception) {
             ChatResult.Unavailable("The server sent a response this app could not read.")
         }

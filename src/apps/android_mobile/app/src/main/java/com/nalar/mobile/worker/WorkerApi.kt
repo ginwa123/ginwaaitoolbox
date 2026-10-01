@@ -1,6 +1,7 @@
 package com.nalar.mobile.worker
 
 import org.json.JSONObject
+import java.net.URLEncoder
 
 /**
  * The agentic loop's run state: which sessions currently have a live worker.
@@ -31,6 +32,23 @@ object WorkerApi {
         "/api/workers?limit=$limit"
 
     /**
+     * The same list narrowed to one session.
+     *
+     * Separate from [workersPath] rather than a filter the caller applies,
+     * because the global list is truncated server-side at [WORKERS_PAGE_LIMIT]
+     * and a chat asking "am *I* still running?" from it gets `false` the day
+     * the server is busier than the cap — the one wrong answer this class
+     * exists to prevent. Asking for one session puts the filter in the query
+     * where the server applies it to the *whole* table before the limit bites,
+     * so the answer is exact no matter how many workers exist.
+     */
+    fun workersPathForSession(sessionId: String): String =
+        "/api/workers?session_id=${encodeQueryValue(sessionId)}&limit=1"
+
+    private fun encodeQueryValue(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name())
+
+    /**
      * Projects the workers envelope down to the ids that mean "busy".
      *
      * `session_id` is preferred and `id` is the fallback, because the two are
@@ -38,9 +56,19 @@ object WorkerApi {
      * paths send an empty `session_id` and put the session in `id`. Reading
      * `session_id` alone is how a spinner stays lit forever after the run it
      * was describing finished.
+     *
+     * **Null means "could not read the list", and it is not the same answer as
+     * an empty set.** "The server says nothing is running" and "the payload did
+     * not have the field" used to both arrive as `emptySet()`, so a caller
+     * acting on that would clear a live run's spinner because the envelope was
+     * not the shape it expected — the backend does always send the array, but a
+     * proxy, a captive portal or a future field rename is not a reason to
+     * declare the agent idle. `ChatClient` turns this null into
+     * `ChatResult.Unavailable`, which every caller already treats as "answer
+     * nothing, change nothing".
      */
-    fun parseRunningSessionIds(body: String): Set<String> {
-        val workers = JSONObject(body).optJSONArray("workers") ?: return emptySet()
+    fun parseRunningSessionIds(body: String): Set<String>? {
+        val workers = JSONObject(body).optJSONArray("workers") ?: return null
         val ids = LinkedHashSet<String>(workers.length())
         for (index in 0 until workers.length()) {
             val row = workers.optJSONObject(index) ?: continue

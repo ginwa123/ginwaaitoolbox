@@ -534,15 +534,35 @@ class ChatViewModel(
         loadJob = viewModelScope.launch {
             val storedCursor = withContext(ioDispatcher) { cache.readCursor(userId, sessionId) }
             val isFullReload = storedCursor == null
-            val result = withContext(ioDispatcher) {
-                // Cold (no cursor): a full descending load. Warm: only the tail
-                // past the cursor. The web switches the same way, and the reason
-                // is that a stored cursor is a *newest* row, not a page break.
-                client.loadMessages(
+            val (result, runIsActive) = withContext(ioDispatcher) {
+                // Two reads, one instant, because neither alone can tell a
+                // finished run from a live one.
+                //
+                // The transcript knows which turns have been *written*; the
+                // worker list knows whether anything is still *running*. The
+                // frames that normally retire a streaming placeholder —
+                // `chunk_final` and `llm_full` — are ordinary SSE frames on a
+                // connection the server keeps no replay buffer for, so a phone
+                // that was backgrounded, rotated or briefly offline across the
+                // end of a run misses both and cannot tell. Asking again is the
+                // only repair, and asking only one of these two questions is a
+                // repair that cannot see the failure it exists for.
+                val page = client.loadMessages(
                     sessionId = sessionId,
                     cursor = storedCursor,
+                    // Cold (no cursor): a full descending load. Warm: only the
+                    // tail past the cursor. The web switches the same way, and
+                    // the reason is that a stored cursor is a *newest* row, not
+                    // a page break.
                     direction = if (storedCursor == null) "desc" else "asc",
                 )
+                // A read that failed answers nothing, and the only safe answer
+                // to "nothing" here is "still running" — same rule
+                // `WorkerActivityViewModel` applies to its own set. Clearing a
+                // live answer because the network blipped is the same lie as
+                // never lighting one up.
+                val active = (client.isSessionRunning(sessionId) as? ChatResult.Loaded)?.value
+                page to (active ?: true)
             }
 
             if (requestGeneration != generation) return@launch
@@ -564,29 +584,114 @@ class ChatViewModel(
                     page = result.value,
                     sessionId = sessionId,
                     isFullReload = isFullReload,
+                    runIsActive = runIsActive,
                 )
             }
         }
+    }
+
+    /**
+     * What one refetch has to say about the turn that was in flight.
+     *
+     * [rows] is the transcript with every placeholder settled;
+     * [stillStreaming] is whether the header should go on claiming a run.
+     */
+    private class StreamingSettle(
+        val rows: List<ChatMessage>,
+        val stillStreaming: Boolean,
+    )
+
+    /**
+     * Reconciles the streaming placeholder against what the server just said.
+     *
+     * A placeholder is a *claim* that a turn exists on the server but has not
+     * been written yet. Two things mint one — the `llm_chunk` deltas and the
+     * in-memory snapshot read by [reattachInFlightTurn] — and the frames that
+     * normally retire it are delivered on a stream with no replay. Miss both
+     * and the phone keeps claiming a run that finished minutes ago: the header
+     * reads "Working…", the composer offers a Stop button for a worker that no
+     * longer exists, and a `streaming…` hint hangs under a turn that is already
+     * answered. Nothing else in the class can repair that — [ChatApi.mergeById]
+     * keeps a row whose id never appears in a server page, and a `streaming-`
+     * id by construction never does — so the refetch has to.
+     *
+     * Two facts arrive together and each settles a different half:
+     *
+     * - `incoming` is the authoritative transcript. A placeholder whose text is
+     *   a **prefix** of the newest assistant row in it is a turn that has
+     *   landed, and the row beside it is now the real one. This is the only
+     *   test here that deletes a row, so it runs on positive evidence only.
+     * - `runIsActive` is the backend's own answer to "is a worker on this
+     *   session". No worker means no further `llm_chunk` can arrive, so a
+     *   placeholder with no matching row is a turn that will never be written
+     *   at all — a cancel before the first token, or a crash — and its partial
+     *   text is the whole answer. It is unfrozen rather than dropped, which is
+     *   exactly what a reader who pressed Stop is given.
+     *
+     * A live run is left completely alone: no row is touched and the flag stays
+     * set, because a refetch during one is routine.
+     */
+    private fun settleStreaming(
+        rows: List<ChatMessage>,
+        incoming: List<ChatMessage>,
+        runIsActive: Boolean,
+    ): StreamingSettle {
+        if (rows.none { it.isStreamingPlaceholder }) {
+            // Nothing to settle, and nothing this refetch is entitled to
+            // conclude about a run: no row is frozen, so the flag belongs to
+            // whatever wrote it. Leaving it alone is the safe direction — the
+            // one thing that must never happen here is un-setting a flag whose
+            // cause this function cannot see.
+            return StreamingSettle(rows, stillStreaming = true)
+        }
+
+        // The placeholder is always the newest turn, so the row that can retire
+        // it is the newest assistant turn that is not itself a placeholder.
+        // Scoping the search that way is what keeps a short partial from
+        // matching some older answer that happens to start the same way.
+        val newestAssistant = (incoming + rows.filterNot { it.isStreamingPlaceholder })
+            .filter { it.role == ChatMessage.ROLE_ASSISTANT }
+            .maxByOrNull { it.sortKeyNanos }
+
+        val settled = rows.mapNotNull { row ->
+            if (!row.isStreamingPlaceholder) return@mapNotNull row
+            if (newestAssistant?.supersedesStreaming(row) == true) {
+                // The turn landed. Drop the stub; the canonical row arrives
+                // through the merge below and takes its place.
+                null
+            } else if (runIsActive) {
+                row
+            } else {
+                // No worker, no row: the turn ended without being written, so
+                // the text on screen is the answer and must stop claiming
+                // otherwise.
+                row.copy(isStreaming = false)
+            }
+        }
+        return StreamingSettle(rows = settled, stillStreaming = runIsActive && settled.any { it.isStreaming })
     }
 
     private suspend fun applyPage(
         page: ChatPage,
         sessionId: String,
         isFullReload: Boolean,
+        runIsActive: Boolean,
     ) {
         val incoming = page.messages.filterNot { message -> message.id in liveMessageIds }
         // Whatever the network just returned is newer than the cache, so the
         // prime must not be allowed to land on top of it.
         hasFreshContent = true
 
-        _uiState.update {
-            it.copy(
+        _uiState.update { state ->
+            val settle = settleStreaming(state.messages, incoming, runIsActive)
+            state.copy(
                 isLoading = false,
-                messages = ChatApi.mergeById(it.messages, incoming)
+                messages = ChatApi.mergeById(settle.rows, incoming)
                     .sortedBy { message -> message.sortKeyNanos },
+                isStreaming = state.isStreaming && settle.stillStreaming,
                 selectedProfileModel = page.selectedProfileModel
-                    .ifEmpty { it.selectedProfileModel },
-                cwd = page.cwd.ifEmpty { it.cwd },
+                    .ifEmpty { state.selectedProfileModel },
+                cwd = page.cwd.ifEmpty { state.cwd },
                 errorMessage = null,
             )
         }
@@ -865,12 +970,7 @@ class ChatViewModel(
                 // reading "Working…" with a Stop button against a run that is
                 // already gone, and the only thing that clears it is opening
                 // another chat.
-                is ChatResult.Loaded -> _uiState.update {
-                    it.copy(
-                        isStreaming = false,
-                        messages = it.messages.map { message -> message.copy(isStreaming = false) },
-                    )
-                }
+                is ChatResult.Loaded -> stopStreaming()
 
                 is ChatResult.Rejected,
                 is ChatResult.Unavailable,
@@ -965,6 +1065,38 @@ class ChatViewModel(
     }
 
     /**
+     * Drops the claim that a turn is still arriving — in **both** the places it
+     * is held, because the header and the transcript read different ones.
+     *
+     * [ChatUiState.isStreaming] drives `isChatWorking`, so it is what keeps the
+     * "Working…" label and the Stop button on screen. [ChatMessage.isStreaming]
+     * on the row drives `StreamingHint`, the "streaming…" line under the turn.
+     * Clearing only the state flag leaves a terminal failure rendering as a
+     * settled header over a turn that still claims to be mid-sentence — two
+     * halves of one truth, disagreeing, which is the state a reader has no way
+     * to interpret.
+     *
+     * The rows themselves are kept, unfrozen. The placeholder's text is real
+     * output the reader watched arrive, and [ChatViewModel.upsertFullMessage]
+     * still owns replacing it with the canonical row when that lands.
+     */
+    private fun stopStreaming(
+        errorMessage: String? = null,
+        isLive: Boolean? = null,
+    ) {
+        _uiState.update { state ->
+            state.copy(
+                isStreaming = false,
+                messages = state.messages.map { message ->
+                    if (message.isStreaming) message.copy(isStreaming = false) else message
+                },
+                errorMessage = errorMessage ?: state.errorMessage,
+                isLive = isLive ?: state.isLive,
+            )
+        }
+    }
+
+    /**
      * The bus's connection state, narrowed to the chat that is open.
      *
      * One socket means one set of transitions for the whole process, so this
@@ -1002,9 +1134,10 @@ class ChatViewModel(
             // label on screen for a run that cannot report anything again — the
             // same argument the `ChatStreamEvent.Failed` branch below makes for
             // an `is_error` frame.
-            is ChatStreamState.Failed -> _uiState.update {
-                it.copy(isLive = false, errorMessage = state.message, isStreaming = false)
-            }
+            is ChatStreamState.Failed -> stopStreaming(
+                errorMessage = state.message,
+                isLive = false,
+            )
         }
     }
 
@@ -1052,9 +1185,7 @@ class ChatViewModel(
             // A diagnostic frame (`is_error`) is not a run in progress, so it
             // must clear the flag too — otherwise the header claims the agent
             // is still working after it has given up.
-            is ChatStreamEvent.Failed -> _uiState.update {
-                it.copy(errorMessage = event.message, isStreaming = false)
-            }
+            is ChatStreamEvent.Failed -> stopStreaming(errorMessage = event.message)
 
             // Worker liveness is not this screen's state. It is kept for the
             // whole app in `RunningSessionsStore` and fed by
@@ -1165,8 +1296,7 @@ class ChatViewModel(
             // the time the canonical row lands, so flag-matching alone leaves
             // the stub on screen next to the real turn.
             val dropped = state.messages.filterNot { candidate ->
-                candidate.isStreaming ||
-                    candidate.id.startsWith(ChatMessage.STREAMING_ID_PREFIX) ||
+                candidate.isStreamingPlaceholder ||
                     candidate.id == message.id
             }
             state.copy(
