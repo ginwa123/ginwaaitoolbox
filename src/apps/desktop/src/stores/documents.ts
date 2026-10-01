@@ -13,17 +13,27 @@
 //     all restore the same view. Same reasoning as
 //     `ChatsList.isCurrentChat`.
 //
-// `try`/`catch` appears in the actions and nowhere else: this is the
+// `try`/`catch` appears in the write actions and nowhere else: this is the
 // sanctioned seam for a fallible operation, and each one records the
 // failure in `error` so the component can render it. A catch that
 // returned an empty list with no error would be the exact bug the
 // "No try/catch in the desktop app" rule exists to prevent — "no
 // documents" and "could not load documents" would look identical.
+//
+// The list is cache-first (`sync/DocumentEngineDb`, IndexedDB) like the
+// sidebar's Recent chats: paint cached rows immediately, then revalidate
+// and replace. `fetchDocuments` therefore has NO try/catch at all — the
+// Effect seam carries the failure, and `runSyncResult` hands the reason
+// back so `error` can still be rendered. That distinction is the whole
+// point: degrading to an empty list here would resurrect the exact bug
+// the paragraph above describes, just with a cache in front of it.
 
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import * as api from '../api'
 import type { Document } from '../api'
+import { documentEngineDb } from '../sync/DocumentEngineDb'
+import { runSyncEffectOr, runSyncResult, runSyncVoid } from '../sync/runtime'
 
 export const useDocumentsStore = defineStore('documents', () => {
   const documents = ref<Document[]>([])
@@ -45,19 +55,63 @@ export const useDocumentsStore = defineStore('documents', () => {
 
   const toMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
+  /**
+   * Cache-first list load, then revalidate — the shape ChatsList uses for
+   * the sidebar's Recent chats.
+   *
+   * The cache paint comes first and clears `loading`, so a returning user
+   * sees document titles immediately instead of an empty section while the
+   * network answers. `loaded` is set on the cache paint too: a cached list
+   * of zero documents is still "loaded, and there are none", which is what
+   * keeps the empty state honest instead of flashing "Loading".
+   *
+   * The revalidation is a FULL replace rather than a merge: `listDocuments`
+   * returns the whole workspace, so a document deleted elsewhere has to
+   * disappear. A merge would keep it in the store forever.
+   *
+   * Failure is still not emptiness. A failed revalidation leaves the cached
+   * rows on screen and records `error`; it never blanks the list.
+   */
   async function fetchDocuments(workspaceId: string): Promise<void> {
     if (!workspaceId) return
     loading.value = true
     error.value = null
     try {
-      const data = await api.listDocuments(workspaceId)
-      documents.value = data.documents
-      loaded.value = true
-    } catch (e) {
-      // Deliberately does NOT clear `documents`. A failed refresh must
-      // not blank a list the user is reading; it leaves the last good
-      // data on screen and surfaces the failure.
-      error.value = toMessage(e)
+      // 1. Paint from cache. A cache failure is not the caller's problem —
+      //    `runSyncEffectOr` reports it in dev and degrades to no rows, so a
+      //    broken IndexedDB just means "no instant paint", never a hard stop.
+      const cached = await runSyncEffectOr(
+        documentEngineDb.primeFromCache(workspaceId, Number.MAX_SAFE_INTEGER),
+        [],
+        'documents.primeFromCache',
+      )
+      if (cached.length > 0) {
+        documents.value = cached.map((r) => r.raw)
+        loaded.value = true
+        loading.value = false
+      }
+
+      // 2. Revalidate in the background and replace with the server's truth.
+      //    `runSyncResult` (not `runSyncEffect`) because this failure is
+      //    RENDERED: the section shows `error` instead of the empty state,
+      //    so the reason has to survive to the UI.
+      const result = await runSyncResult(
+        documentEngineDb.loadDelta(workspaceId),
+        'documents.loadDelta',
+      )
+      if (result.ok) {
+        documents.value = result.value.items.map((r) => r.raw)
+        loaded.value = true
+      } else {
+        error.value = result.reason
+        if (cached.length === 0) {
+          // Cold miss AND a revalidation that never arrived: there is
+          // nothing painted to protect, so the list stays empty and the
+          // error block carries the reason. A populated list is NEVER
+          // blanked here — the cached rows stay on screen above it.
+          documents.value = []
+        }
+      }
     } finally {
       loading.value = false
     }
@@ -78,6 +132,10 @@ export const useDocumentsStore = defineStore('documents', () => {
       // Saves a round-trip on the click that created it.
       documents.value = [document, ...documents.value]
       loaded.value = true
+      // Write through so the next cold boot paints this document without
+      // waiting for the revalidation. Best-effort: `putLocal` cannot fail
+      // the caller, and the in-memory list above is already correct.
+      await runSyncVoid(documentEngineDb.putDocument(workspaceId, document), 'documents.put')
       return document
     } catch (e) {
       error.value = toMessage(e)
@@ -98,6 +156,10 @@ export const useDocumentsStore = defineStore('documents', () => {
     try {
       const { document } = await api.updateDocument(workspaceId, documentId, patch)
       documents.value = documents.value.map((d) => (d.id === document.id ? document : d))
+      // Write through the edited row. Matters more here than for sessions:
+      // the cached row carries the BODY, so without this an offline reload
+      // would show the pre-edit document under the post-edit title.
+      await runSyncVoid(documentEngineDb.putDocument(workspaceId, document), 'documents.put')
       return document
     } catch (e) {
       error.value = toMessage(e)
@@ -114,6 +176,13 @@ export const useDocumentsStore = defineStore('documents', () => {
     try {
       await api.deleteDocument(workspaceId, documentId)
       documents.value = documents.value.filter((d) => d.id !== documentId)
+      // Evict from the cache too. Without this the deleted row survives in
+      // IndexedDB and the next cold boot paints a document that no longer
+      // exists — and clicking it would open a 404.
+      await runSyncVoid(
+        documentEngineDb.removeDocument(workspaceId, documentId),
+        'documents.remove',
+      )
       return true
     } catch (e) {
       error.value = toMessage(e)

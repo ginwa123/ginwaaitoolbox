@@ -39,9 +39,9 @@ function dbName(): string {
   return userId ? `${DB_NAME}:${userId}` : DB_NAME
 }
 
-// v2 added sessions; v3 adds the task-list cache.
-const DB_VERSION = 3
-const KNOWN_STORES = ['messages', 'sessions', 'tasks']
+// v2 added sessions; v3 adds the task-list cache; v4 adds documents.
+const DB_VERSION = 4
+const KNOWN_STORES = ['messages', 'sessions', 'tasks', 'documents']
 const TASK_STORE_KEY_PATH: string[] = ['ctx', 'id']
 /** Every store sorts on the engine's normalised `sortKey` field. */
 const SORT_KEY_PATH = 'sortKey'

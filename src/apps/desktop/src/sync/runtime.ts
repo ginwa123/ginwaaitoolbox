@@ -80,6 +80,29 @@ export async function runSyncVoid(
   if (Exit.isFailure(exit)) report(op, Cause.squash(exit.cause) as SyncError)
 }
 
+/**
+ * Run a fallible sync Effect and keep BOTH outcomes distinguishable.
+ *
+ * `runSyncEffect` degrades to `null`, which is right when "nothing there"
+ * and "could not check" lead to the same correct action. It is WRONG when
+ * the UI has to render the difference — a documents sidebar that shows
+ * "No documents yet" because the backend was down is the exact
+ * empty-vs-unavailable confusion this subsystem was ported to end, and the
+ * sidebar's "a failed fetch is not emptiness" contract depends on the
+ * message surviving. This variant hands back the reason so the caller can
+ * record it; use it wherever an `error` ref is rendered.
+ */
+export async function runSyncResult<A>(
+  effect: Effect.Effect<A, SyncError>,
+  op: string,
+): Promise<{ ok: true; value: A } | { ok: false; reason: string }> {
+  const exit = await Effect.runPromise(Effect.exit(effect))
+  if (Exit.isSuccess(exit)) return { ok: true, value: exit.value }
+  const error = Cause.squash(exit.cause) as SyncError
+  report(op, error)
+  return { ok: false, reason: describeSyncError(error) }
+}
+
 // Re-exported so specs and future slices can build a program with the store
 // in context without importing three modules.
 export { SyncStore, memorySyncStoreLayer, makeMemorySyncStore } from './SyncStore'
