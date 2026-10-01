@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
@@ -33,8 +32,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -135,23 +132,6 @@ fun ChatScreen(
      */
     onRefreshQueue: () -> Unit = {},
     onUseQueuedMessage: (QueuedChatMessage) -> Unit = {},
-    /**
-     * Start a new chat, and put this one behind it.
-     *
-     * A callback and not a navigation, because the graph owns navigation *and*
-     * the create: a chat belongs to a project, so the press has to become
-     * "which project?" before it can become a `POST`. See
-     * [com.nalar.mobile.network.NalarNavGraph].
-     */
-    onNewChat: () -> Unit = {},
-    /**
-     * A create is in flight.
-     *
-     * The affordance only. [com.nalar.mobile.recents.HomeViewModel.createTask]
-     * refuses a second one, so this is what stops the reader being offered a
-     * button that silently does nothing rather than saying "busy".
-     */
-    isCreatingChat: Boolean = false,
     /**
      * Put this chat on a different profile, or clear the override with `""`.
      */
@@ -265,43 +245,11 @@ fun ChatScreen(
                             )
                         }
                     },
-                    actions = {
-                        // The one thing the bar offers, and it is *not* the
-                        // stop control: that lives in the composer beside the
-                        // send it replaces, so there is exactly one answer to
-                        // "can I end this run" and it is on the control the
-                        // reader is already holding.
-                        //
-                        // A new chat, because a reader who has finished with
-                        // this one should not have to walk back through the
-                        // drawer, find the right project, and tap its `+` — the
-                        // drawer already has that path, and this is the one
-                        // that starts from where they are standing.
-                        IconButton(
-                            onClick = onNewChat,
-                            // Inert while a create is in flight. The ViewModel
-                            // guards it too; this is the affordance, that is
-                            // the invariant. Two chats from one tap is the
-                            // failure this exists to prevent.
-                            enabled = !isCreatingChat,
-                            modifier = Modifier
-                                .testTag("chat_new_chat")
-                                .semantics { contentDescription = "New chat" },
-                        ) {
-                            if (isCreatingChat) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                    color = NalarDim,
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Filled.Add,
-                                    contentDescription = null,
-                                )
-                            }
-                        }
-                    },
+                    // No action on the right. The drawer's "New Chat" row is the one
+                    // control that both this route and the shell share, so a `+`
+                    // here was a second answer to the same question — and one
+                    // reachable only from this screen, for a page the reader
+                    // reaches from everywhere else.
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = NalarBackground,
                         navigationIconContentColor = NalarText,
