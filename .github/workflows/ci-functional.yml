@@ -105,10 +105,12 @@ env:
 
 jobs:
   test:
-    # The platform and the shard are both in the caller's job id
-    # (`functional-linux-1`), so this name only has to say which shard
-    # of how many it is.
-    name: shard ${{ inputs.shard_index }}/${{ inputs.shard_total }}
+    # NO `name:` here, for the same reason as ci-backend.yml, and one more:
+    # ci.yml's caller jobs are already `functional Linux X64 · shard 1/3`,
+    # so naming this `shard 0/3` (zero-based, as the input is) rendered the
+    # check as `... shard 1/3 / shard 0/3`, which reads as an off-by-one bug
+    # in the thing that proves the shards partition the suite. Let it fall
+    # back to the job id.
     runs-on: ${{ inputs.os }}
     # A cold Windows cell has to build the vcpkg ports before anything can
     # link, then a ~90 MB zig build, then ~1/3 of the suites, each booting
@@ -361,7 +363,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          raw="$(zig env | sed -n 's/.*"global_cache_dir"[[:space:]]*:[[:space:]]*"\(.*\)",/\1/p')"
+          # ZON, NOT JSON. `zig env` prints
+          #     .{
+          #         .global_cache_dir = "/home/runner/.cache/zig",
+          #         ...
+          #     .}
+          # -- a leading dot on every key and `=` instead of `:`. The
+          # first version of this step parsed it as JSON, matched nothing,
+          # and failed every backend and functional job in the pipeline on
+          # a line that looks like it should work. The pattern is anchored
+          # to the start of the line and tolerant of both the trailing
+          # comma and its absence, because `global_cache_dir` is not the
+          # last key in every zig version's output.
+          raw="$(zig env | sed -n 's/^[[:space:]]*\.global_cache_dir[[:space:]]*=[[:space:]]*"\(.*\)".*$/\1/p')"
           if [ -z "$raw" ]; then
             echo "::error::zig env did not report global_cache_dir — cannot cache it"
             exit 1

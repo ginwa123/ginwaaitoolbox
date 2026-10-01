@@ -95,7 +95,11 @@ jobs:
     # The workflow default is `contents: read`; this job-level block
     # overrides it here AND in the caller, because a called workflow can
     # only ever be granted what the caller already holds.
-    name: ${{ inputs.label }}
+    # NO `name:` here on purpose. A job that calls a reusable workflow
+    # renders as `<caller job name> / <this job's name>`, and ci.yml
+    # already names each cell ("backend (Linux X64)"). Setting
+    # `name: ${{ inputs.label }}` produced the check
+    # `backend (Linux X64) / Linux X64`. Let this fall back to the job id.
     runs-on: ${{ inputs.os }}
     permissions:
       contents: write
@@ -783,7 +787,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          raw="$(zig env | sed -n 's/.*"global_cache_dir"[[:space:]]*:[[:space:]]*"\(.*\)",/\1/p')"
+          # ZON, NOT JSON. `zig env` prints
+          #     .{
+          #         .global_cache_dir = "/home/runner/.cache/zig",
+          #         ...
+          #     .}
+          # -- a leading dot on every key and `=` instead of `:`. The
+          # first version of this step parsed it as JSON, matched nothing,
+          # and failed every backend and functional job in the pipeline on
+          # a line that looks like it should work. The pattern is anchored
+          # to the start of the line and tolerant of both the trailing
+          # comma and its absence, because `global_cache_dir` is not the
+          # last key in every zig version's output.
+          raw="$(zig env | sed -n 's/^[[:space:]]*\.global_cache_dir[[:space:]]*=[[:space:]]*"\(.*\)".*$/\1/p')"
           if [ -z "$raw" ]; then
             echo "::error::zig env did not report global_cache_dir — cannot cache it"
             exit 1
