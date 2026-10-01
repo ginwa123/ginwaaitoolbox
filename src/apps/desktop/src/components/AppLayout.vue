@@ -2561,6 +2561,31 @@ watch(
       }
       chatSessionCwd.value = ''
       return
+    } else if (parsed.kind === 'doc') {
+      // A document is its own main view, so the chat / item / task
+      // selections must clear — exactly as `landing` does above.
+      //
+      // This is NOT optional. <main> does NOT have a single v-if chain:
+      // the standalone `v-if` on <DesignChatDialog> SPLITS it into two, so
+      // <DocumentsView> (early, first chain) and the standalone
+      // <ChatView v-else-if="activeChatId…"> (late, second chain) sit in
+      // DIFFERENT chains — and independent chains are not mutually
+      // exclusive. With `activeChatId` still set, clicking a document row
+      // rendered the chat UNDERNEATH the document: composer dock and
+      // transcript visible below it. A hard reload hid the bug only
+      // because a fresh boot carries no chat state, so it reproduced from
+      // a live chat session (the reported repro) and nowhere else.
+      if (workspacesStore.activeWorkspaceItemId !== null) {
+        workspacesStore.setActiveWorkspaceItem(null)
+      }
+      if (workspacesStore.activeTaskId !== null) {
+        workspacesStore.setActiveTask(null)
+      }
+      if (navigationStore.activeChatId !== '') {
+        navigationStore.clearActiveChat()
+      }
+      chatSessionCwd.value = ''
+      return
     }
 
     if (view === 'gitfile') {
