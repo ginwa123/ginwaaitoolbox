@@ -957,6 +957,11 @@ fun NalarNavGraph(
                 // page and whether the list has covered the server's count.
                 hasMore = homeState.canLoadMoreChats,
                 isLoadingMore = homeState.isLoadingMoreChats,
+                // A page that did not arrive is said out loud, and retryable by
+                // tapping. Nothing else on this screen can tell the reader the
+                // list is short because the *request* failed rather than
+                // because there is nothing more.
+                loadMoreError = homeState.loadMoreChatsError,
                 isLoading = homeState.isLoading && routeChats.isEmpty(),
                 onChatSelected = onSelectChat,
                 onOpenChat = { sessionId ->

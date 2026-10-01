@@ -21,21 +21,16 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.recents.ChatListFooter
+import com.nalar.mobile.recents.ChatListLoadMoreTrigger
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
 import com.nalar.mobile.ui.NalarDim
 import com.nalar.mobile.ui.NalarText
-import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** Reserved key for the footer row, which is not a chat. */
 private const val LOAD_MORE_KEY = "__project_chats_footer__"
@@ -45,13 +40,6 @@ private const val CONTENT_TYPE_SENTINEL = "sentinel"
 private const val CONTENT_TYPE_CHAT = "chat"
 
 private const val CONTENT_TYPE_STATE = "state"
-
-/**
- * How many rows from the end arm the next page. Matches the drawer's
- * [com.nalar.mobile.recents.RecentsSidebar] band for the same reason: the fetch
- * should already be in flight by the time the reader reaches the end.
- */
-private const val LOAD_MORE_INDEX_THRESHOLD = 2
 
 /**
  * Every chat in one project, full-screen, paging on scroll.
@@ -104,29 +92,18 @@ fun ProjectChatsScreen(
     val hasMore = page?.hasMore ?: false
     val listState = rememberLazyListState()
 
-    // One page per approach to the end.
-    //
-    // This latch is deliberately NOT shared with the drawer's. Two scrollers
-    // paging the same project through one flag would let a scroll here suppress
-    // a fetch the drawer is waiting for, and vice versa.
-    var loadMoreLatched by remember { mutableStateOf(true) }
-
-    LaunchedEffect(listState, chats.size, hasMore, isLoading) {
-        snapshotFlow {
-            val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            info.totalItemsCount > 0 && last >= info.totalItemsCount - 1 - LOAD_MORE_INDEX_THRESHOLD
-        }
-            .distinctUntilChanged()
-            .collect { nearBottom ->
-                if (!nearBottom) {
-                    loadMoreLatched = false
-                } else if (!loadMoreLatched) {
-                    loadMoreLatched = true
-                    onLoadMore()
-                }
-            }
-    }
+    // One page per approach to the end — *and* one when the reader cannot
+    // approach the end at all. A project the drawer previewed is five rows
+    // long, five rows do not fill a phone, and a `LazyColumn` with no overflow
+    // has no scroll offset to change, so a scroll-only trigger leaves a project
+    // with more than five chats permanently unreadable. Same trigger as the
+    // workspace list, so the two cannot drift back apart.
+    ChatListLoadMoreTrigger(
+        listState = listState,
+        canPage = hasMore && chats.isNotEmpty() && !isLoading,
+        rowCount = chats.size,
+        onLoadMore = onLoadMore,
+    )
 
     Scaffold(
         modifier = modifier.testTag("project_chats_screen"),

@@ -21,6 +21,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -529,5 +531,78 @@ class HomeViewModelPaginationTest {
         model.loadMoreChats()
         s.drain()
         assertEquals(listOf("c1", "c2", "c3"), cache.readChats("user_a", "ws_1")?.map { it.id })
+    }
+
+    @Test
+    fun aFailedPageIsRecordedBecauseScrollIsNotAlwaysAnAvailableRecovery() = paginationTest { s ->
+        // The failure this records: a page that does not arrive used to leave
+        // the state exactly as a page that had not been *asked for* — the same
+        // rows, `has_more` still true, and no complaint. On the full-screen
+        // list that is indistinguishable from "the server says there is no
+        // more", except the footer keeps promising older chats that a list
+        // which does not fill the screen gives the reader no way to reach.
+        val transport = PagedTransport(
+            pagesByWorkspace = mapOf(
+                "ws_1" to listOf(
+                    page(listOf("c1", "c2"), hasMore = true, nextCursor = "cur-1", total = 9),
+                ),
+            ),
+        )
+        val model = model(s.ioDispatcher, transport)
+        model.onUserChanged("user_a")
+        s.drain()
+        assertNull(model.uiState.value.loadMoreChatsError)
+
+        transport.offline = true
+        model.loadMoreChats()
+        s.drain()
+
+        assertNotNull(
+            "a page that did not arrive has to be sayable",
+            model.uiState.value.loadMoreChatsError,
+        )
+        // The rows stay, and `has_more` stays true, so asking again re-requests
+        // the same window rather than pretending the list ended here.
+        assertEquals(listOf("c1", "c2"), model.uiState.value.chats.map { it.id })
+        assertTrue(model.uiState.value.hasMoreChats)
+
+        transport.offline = false
+        model.loadMoreChats()
+        s.drain()
+
+        // A page that lands clears it, so the footer is not left complaining
+        // about a failure the reader has already answered.
+        assertNull(model.uiState.value.loadMoreChatsError)
+    }
+
+    @Test
+    fun aReloadSupersedesAPageFailureRatherThanLeavingItOnScreen() = paginationTest { s ->
+        val transport = PagedTransport(
+            pagesByWorkspace = mapOf(
+                "ws_1" to listOf(
+                    page(listOf("c1", "c2"), hasMore = true, nextCursor = "cur-1", total = 9),
+                ),
+            ),
+        )
+        val model = model(s.ioDispatcher, transport)
+        model.onUserChanged("user_a")
+        s.drain()
+
+        transport.offline = true
+        model.loadMoreChats()
+        s.drain()
+        assertNotNull(model.uiState.value.loadMoreChatsError)
+
+        // A pull-to-refresh is a new question with a new answer. Leaving the
+        // old page's failure on screen would be a stale complaint about a page
+        // nobody is waiting for any more — and the refresh is failing too, so
+        // "the last page failed" is now the least useful thing it could say.
+        model.refresh()
+        s.drain()
+
+        assertNull(model.uiState.value.loadMoreChatsError)
+        // The refresh's own failure is reported instead, on the channel that
+        // already means "what you are looking at is stale".
+        assertNotNull(model.uiState.value.errorMessage)
     }
 }
