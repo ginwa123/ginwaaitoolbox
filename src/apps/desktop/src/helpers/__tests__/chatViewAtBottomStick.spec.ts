@@ -566,9 +566,23 @@ describe('wiring — both sides really use the shared ruler', () => {
     expect(src).toMatch(/defineExpose\(\{[\s\S]*?bottomScrollTop,/)
     // If scrollToBottom ever grows its own copy of the math, the two drift —
     // which is the entire class of bug this spec exists for.
-    expect(src).toMatch(
-      /const scrollToBottom = \(behavior: ScrollBehavior = 'auto'\) => \{\s*if \(!containerRef\.value\) return\s*containerRef\.value\.scrollTo\(\{ top: bottomScrollTop\(\), behavior \}\)/,
-    )
+    //
+    // Asserted on the FUNCTION BODY, not on one exact statement sequence. The
+    // body legitimately grew a line: it now records where it left the reader
+    // (`settledBottom`) so the next measure pass can tell that a bottom
+    // reader has not moved. A regex pinned to the old two-line shape failed on
+    // that bookkeeping even though the delegation never changed — a contract
+    // test that breaks on a rename of a local is not protecting the contract.
+    // What is pinned is the claim itself: the value scrolled to comes from
+    // `bottomScrollTop()`, and the arithmetic the shared ruler exists to
+    // eliminate is absent from the body.
+    const body =
+      /const scrollToBottom = \(behavior: ScrollBehavior = 'auto'\) => \{([\s\S]*?)\n\}/.exec(src)
+    const fn = body?.[1] ?? ''
+    if (fn === '') throw new Error('could not locate the scrollToBottom body to assert on')
+    expect(fn).toMatch(/bottomScrollTop\(\)/)
+    expect(fn).toMatch(/scrollTo\(\{\s*top:\s*\w+,?\s*behavior\s*\}\)/)
+    expect(fn).not.toMatch(/scrollHeight\s*-\s*clientHeight/)
   })
 
   it('ChatView measures at-bottom with bottomScrollTop, not the raw sizer', async () => {

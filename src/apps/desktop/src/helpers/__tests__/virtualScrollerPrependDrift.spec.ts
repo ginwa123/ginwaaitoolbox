@@ -40,11 +40,31 @@ describe('VirtualScroller prepend height remap (100-message lifecycle)', () => {
 
   it('sizer converges to Σ real heights through scroll + prepend + append', async () => {
     const wrapper = mount(VirtualScroller, {
-      props: { items: mk(20), buffer: 30, defaultItemHeight: 64, totalCount: 0, loadMoreAtTop: true },
+      props: {
+        items: mk(20),
+        buffer: 30,
+        defaultItemHeight: 64,
+        totalCount: 0,
+        loadMoreAtTop: true,
+      },
     })
     const el = wrapper.element as HTMLElement
     Object.defineProperty(el, 'clientHeight', { value: 800, configurable: true })
-    Object.defineProperty(el, 'scrollHeight', { value: 20 * 64, configurable: true })
+    // In a real browser the container's `scrollHeight` IS the sizer's height.
+    // A value frozen at the initial `20 * 64` contradicts the height model the
+    // moment the real (~8616px) heights are measured, and anything that reads
+    // the container's geometry to decide where the bottom is — including
+    // `VirtualScroller.bottomScrollTop()` and therefore `measureItems`'
+    // at-bottom target — is then reading a constant lie. Read the sizer
+    // instead, so the fixture tracks the model the way the DOM does.
+    const sizerEl = () => el.querySelector('.virtual-scroller-sizer') as HTMLElement
+    Object.defineProperty(el, 'scrollHeight', {
+      configurable: true,
+      get(): number {
+        const modelled = parseFloat(sizerEl()?.style.height ?? '')
+        return Number.isFinite(modelled) && modelled > 0 ? modelled : 20 * 64
+      },
+    })
     await nextTick()
 
     const setRealHeights = () => {
@@ -146,7 +166,9 @@ describe('VirtualScroller prepend height remap (100-message lifecycle)', () => {
     await nextTick()
 
     // Pre-prepend: acc[3] = 100+200+300 = 600.
-    expect(parseFloat((el.querySelector('.virtual-scroller-sizer') as HTMLElement).style.height)).toBe(600)
+    expect(
+      parseFloat((el.querySelector('.virtual-scroller-sizer') as HTMLElement).style.height),
+    ).toBe(600)
 
     const vm = wrapper.vm as unknown as { beginPreserve: (n: number) => void }
     vm.beginPreserve(2)
@@ -155,7 +177,9 @@ describe('VirtualScroller prepend height remap (100-message lifecycle)', () => {
     // stays 600 (the heights still describe their own items). The
     // corruption the old remap guarded against is now impossible by
     // construction.
-    expect(parseFloat((el.querySelector('.virtual-scroller-sizer') as HTMLElement).style.height)).toBe(600)
+    expect(
+      parseFloat((el.querySelector('.virtual-scroller-sizer') as HTMLElement).style.height),
+    ).toBe(600)
     wrapper.unmount()
   })
 })

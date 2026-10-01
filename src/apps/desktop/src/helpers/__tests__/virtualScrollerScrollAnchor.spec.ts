@@ -126,6 +126,104 @@ describe('computeAnchorCompensation', () => {
     expect(result.shiftPx).toBe(0)
     expect(result.newScrollTop).toBe(base.prevScrollTop)
   })
+
+  // ── The at-bottom target ────────────────────────────────────────────────
+  //
+  // A reader at the bottom is not anchored to anything: they are reading the
+  // newest content, and a remeasure pass is exactly what just resized it.
+  // These are the numbers from the recorded browser capture that motivated the
+  // branch (tests/functional_ui/chatview_at_bottom_stick_ui_test.py,
+  // test_a_large_remeasure_does_not_yank_an_at_bottom_reader): a long chat
+  // whose window expanded 34 → 66 rows produced a −15,900px prefix delta and
+  // dragged the reader that far up, which ChatView read as leaving the bottom
+  // and which disarmed the auto-stick for every remaining chunk.
+
+  it('targets the bottom, not the anchor, when the reader was at the bottom', () => {
+    const result = computeAnchorCompensation({
+      ...base,
+      // The reader was parked at the bottom: scrollTop 96000.
+      prevScrollTop: 96000,
+      oldAnchorTop: 96000,
+      newAnchorTop: 96000 - 15900, // the model above the anchor shrank
+      atBottomTarget: 96868, // the bottom edge AFTER the pass
+    })
+    expect(result.target).toBe('bottom')
+    // The model delta is still reported — it was absorbed, not ignored.
+    expect(result.shiftPx).toBe(-15900)
+    // …but the reader is left ON the bottom, not 15,900px above it. The
+    // anchor rule would have written 80100 here.
+    expect(result.newScrollTop).toBe(96868)
+    expect(result.clamped).toBe(false)
+  })
+
+  it('keeps the reader on the bottom when the model above the anchor GREW', () => {
+    const result = computeAnchorCompensation({
+      ...base,
+      prevScrollTop: 96000,
+      oldAnchorTop: 96000,
+      newAnchorTop: 96000 + 2400,
+      atBottomTarget: 98400,
+    })
+    expect(result.target).toBe('bottom')
+    expect(result.shiftPx).toBe(2400)
+    expect(result.newScrollTop).toBe(98400)
+  })
+
+  it('still uses the anchor when no bottom target is passed', () => {
+    // The helper is not entitled to judge whether the reader is at the bottom —
+    // that is the caller's read of the live DOM, and it passes `atBottomTarget`
+    // only when the answer was yes. Omitting it must give exactly the
+    // pre-existing anchor behaviour, which is what holds a reader 4000px up in
+    // the history still while the model above them is corrected.
+    const result = computeAnchorCompensation({
+      ...base,
+      prevScrollTop: 5000,
+      oldAnchorTop: 5000,
+      newAnchorTop: 4400,
+    })
+    expect(result.target).toBe('anchor')
+    expect(result.shiftPx).toBe(-600)
+    expect(result.newScrollTop).toBe(4400)
+  })
+
+  it('omitting atBottomTarget keeps the pre-existing anchor behaviour', () => {
+    // Guards the "we changed the default" failure mode: every caller that does
+    // not opt in must get exactly what it got before the branch existed.
+    const result = computeAnchorCompensation({
+      ...base,
+      oldAnchorTop: 3200,
+      newAnchorTop: 3840,
+    })
+    expect(result.target).toBe('anchor')
+    expect(result.newScrollTop).toBe(3840)
+  })
+
+  it('a no-op prefix delta writes nothing even at the bottom', () => {
+    // Ordered after the `shiftPx === 0` early return on purpose: a pass that
+    // changed nothing above the anchor must not nudge the reader at all.
+    const result = computeAnchorCompensation({
+      ...base,
+      prevScrollTop: 96000,
+      oldAnchorTop: 96000,
+      newAnchorTop: 96000,
+      atBottomTarget: 96868,
+    })
+    expect(result.shiftPx).toBe(0)
+    expect(result.newScrollTop).toBe(96000)
+    expect(result.target).toBe('anchor')
+  })
+
+  it('clamps a negative bottom target at 0 rather than scrolling above the top', () => {
+    const result = computeAnchorCompensation({
+      ...base,
+      prevScrollTop: 120,
+      oldAnchorTop: 120,
+      newAnchorTop: -50,
+      atBottomTarget: -30,
+    })
+    expect(result.target).toBe('bottom')
+    expect(result.newScrollTop).toBe(0)
+  })
 })
 
 // ─── Integration tests (mounted component) ───────────────────────────────────
@@ -147,7 +245,21 @@ function mountScroller(n: number) {
   })
   const el = wrapper.element as HTMLElement
   Object.defineProperty(el, 'clientHeight', { value: 800, configurable: true })
-  Object.defineProperty(el, 'scrollHeight', { value: n * 64, configurable: true })
+  // In a real browser the container's `scrollHeight` IS the sizer's height.
+  // A static `n * 64` does not move as items are measured, and that breaks any
+  // at-bottom predicate reading it: `VirtualScroller.bottomScrollTop()` is
+  // `scrollHeight - clientHeight` off the real-bottom override, so a reader
+  // deep in a long chat (scrollTop 40000 of a ~102,000px model) would be
+  // judged "at the bottom" the moment their scrollTop passed the stale total.
+  // Read the sizer so the fixture tracks the height model the way the DOM does.
+  const sizer = el.querySelector('.virtual-scroller-sizer') as HTMLElement | null
+  Object.defineProperty(el, 'scrollHeight', {
+    configurable: true,
+    get(): number {
+      const modelled = sizer ? Number.parseFloat(sizer.style.height) : 0
+      return modelled > 0 ? modelled : n * 64
+    },
+  })
   return { wrapper, el }
 }
 
@@ -286,6 +398,109 @@ describe('VirtualScroller measurement anchor compensation', () => {
     // v1 would have computed Σ(700−64) over 70..99 = 19080 — wrong
     // baseline AND blind to the unmeasured drift (43..69).
     expect(el.scrollTop).toBe(57100)
+    wrapper.unmount()
+  })
+
+  // ── The bottom is not an anchor ────────────────────────────────────────
+  //
+  // The report: with many messages and a long response the chat stops
+  // auto-scrolling to the bottom. Mechanism: the reader is at the bottom, the
+  // window expands as the long response grows, a batch of rows above the anchor
+  // measures for the first time, the prefix delta runs to thousands of px, and
+  // the compensation writes scrollTop that far UP. ChatView reads that write —
+  // programmatic or not — as "the user left the bottom", the stick disarms, and
+  // every remaining chunk lands off-screen.
+  //
+  // The reader at the bottom has no view to preserve, so the pass must
+  // re-target them at the bottom instead of around the anchor.
+
+  it('keeps a reader AT THE BOTTOM on the bottom when the model above the anchor shifts', async () => {
+    const { wrapper, el } = mountScroller(255)
+    const vm = wrapper.vm as unknown as {
+      bottomScrollTop: () => number
+      remeasure: () => void
+    }
+    await nextTick()
+
+    // Teach the estimator a 400px profile so the model is realistically tall
+    // (~102,000px) and a prefix correction is measured in thousands of px —
+    // the scale the bug needs. Phase 1 measures the first window at 400px.
+    scroll(el, 0)
+    await nextTick()
+    vi.advanceTimersByTime(60)
+    mockAllChildren(el, 400)
+    scroll(el, 0)
+    vi.advanceTimersByTime(60)
+    await nextTick()
+
+    // Park the reader on the app's own bottom (the same number
+    // `scrollToBottom` writes and ChatView's `isAtBottom` is measured
+    // against), and let the settle land.
+    const bottom = vm.bottomScrollTop()
+    scroll(el, bottom)
+    await nextTick()
+    vi.advanceTimersByTime(60)
+    await nextTick()
+    expect(el.scrollTop).toBe(bottom)
+    expect(bottom).toBeGreaterThan(50000) // precondition: a long chat
+
+    // Now the pass that used to strand them: every row above the anchor
+    // measures far SHORTER than the 400px the model had reserved, so the
+    // prefix above the anchor collapses and the anchor rule would subtract
+    // ~15,900px from scrollTop.
+    mockAllChildren(el, 100)
+    scroll(el, bottom)
+    vi.advanceTimersByTime(60)
+    await nextTick()
+
+    const after = el.scrollTop
+    const nowBottom = vm.bottomScrollTop()
+    console.log(
+      `[at-bottom-anchor] bottom=${bottom} after=${after} nowBottom=${nowBottom} delta=${
+        nowBottom - after
+      }`,
+    )
+    expect(nowBottom - after).toBeLessThanOrEqual(10)
+    wrapper.unmount()
+  })
+
+  it('still compensates around the anchor for a reader in the history', async () => {
+    // The other half, and the reason the anchor pass exists: the new branch
+    // must not make a reader 40,000px up drift when the model above them is
+    // corrected. Same setup, opposite position.
+    const { wrapper, el } = mountScroller(255)
+    await nextTick()
+
+    scroll(el, 0)
+    await nextTick()
+    vi.advanceTimersByTime(60)
+    mockAllChildren(el, 400)
+    scroll(el, 0)
+    vi.advanceTimersByTime(60)
+    await nextTick()
+
+    // Deep in the history, far from the bottom.
+    scroll(el, 40000)
+    await nextTick()
+    vi.advanceTimersByTime(60)
+    mockAllChildren(el, 400)
+    scroll(el, 40000)
+    vi.advanceTimersByTime(60)
+    await nextTick()
+    const before = el.scrollTop
+
+    // Rows above the anchor get shorter; the reader must ride the correction
+    // rather than jump.
+    mockAllChildren(el, 250)
+    scroll(el, before)
+    vi.advanceTimersByTime(60)
+    await nextTick()
+
+    console.log(`[history-anchor] before=${before} after=${el.scrollTop}`)
+    // They moved (the model above them shrank) but stayed nowhere near the
+    // bottom — which is the whole point: the anchor rule owns this reader.
+    expect(el.scrollTop).toBeLessThan(before)
+    expect(el.scrollTop).toBeLessThan(40000)
     wrapper.unmount()
   })
 
