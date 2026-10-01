@@ -20,15 +20,61 @@
  *     viewport) is simulated by raising the container's scrollHeight and
  *     emitting `content-shift` from the VirtualScroller child — the exact
  *     event the scroller emits when its measured total grows.
+ *
+ * ⛔  WHY THIS FILE USES A `vi.mock` MODULE FACTORY, NOT `vi.spyOn`
+ *
+ * This spec was dead: it mocked `api.getChatHistory` with `vi.spyOn`, which no
+ * longer reaches ChatView's history load, so `.virtual-scroller` never mounted
+ * and BOTH tests failed with ".virtual-scroller not mounted" — on every run,
+ * in CI and locally, since the `chatEngineDb` refactor. The symptom class this
+ * file guards therefore had no working guard at all.
+ *
+ * There are TWO seams, and both must be a hoisted module mock:
+ *   1. `chatEngineDb` (`sync/ChatEngineDb.ts`) drives the cache prime and the
+ *      delta. Its constructor is
+ *        `constructor(private fetchFn: typeof getChatHistory = getChatHistory)`
+ *      and that default is bound ONCE, when `new ChatEngineDb()` runs at module
+ *      load — a `vi.spyOn` installed later replaces the property on the api
+ *      module object but does NOT rebind the already-captured `fetchFn`.
+ *   2. `api.fetchChatHistoryEffect(...)` is called DIRECTLY by ChatView for the
+ *      authoritative network load in `runHistoryLoadAttempt`. Mocking only (1)
+ *      leaves (2) hitting the real network: the fetch fails in jsdom, the retry
+ *      loop keeps `isLoading` true, `isInitializing` never clears, and the
+ *      `<VirtualScroller>` (gated on `!isInitializing && …`) never renders.
+ *
+ * `vi.mock` IS hoisted above the module graph, so `chatEngineDb`'s captured
+ * `fetchFn` resolves to the mock. That is the only seam that works.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { createApp, nextTick, type App as VueApp } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
+import { Effect } from 'effect'
 
 import * as api from '../../api'
 import ChatView from '../../components/views/ChatView.vue'
 import VirtualScroller from '../../helpers/VirtualScroller.vue'
+
+// ── The hoisted api mock (see "WHY THIS FILE USES A vi.mock MODULE FACTORY") ──
+const historyRows: unknown[] = []
+const historyResponse = () => ({
+  messages: historyRows,
+  has_more: false,
+  next_cursor: null,
+  cwd: '/tmp',
+  git_worktree_cwd: '',
+  max_total_tokens: 0,
+  max_capacity_total_tokens: 0,
+  skills: [],
+})
+vi.mock('../../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api')>()
+  return {
+    ...actual,
+    getChatHistory: () => Promise.resolve(historyResponse()),
+    fetchChatHistoryEffect: () => Effect.succeed(historyResponse()),
+  }
+})
 import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../../helpers/sseClient'
 
@@ -101,25 +147,17 @@ function makeStubClient(initial: SseState): SseClient {
 }
 
 function installApiMocks(): void {
-  const messages = Array.from({ length: 100 }, (_, i) => ({
-    id: `msg_${i}`,
-    role: 'user' as const,
-    content: `Message ${i}`,
-    created_at: i,
-    image_url: '',
-    finish_reason: '',
-  }))
-  vi.spyOn(api, 'getChatHistory').mockResolvedValue({
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    messages: messages as any,
-    has_more: false,
-    next_cursor: null,
-    cwd: '/tmp',
-    git_worktree_cwd: '',
-    max_total_tokens: 0,
-    max_capacity_total_tokens: 0,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any)
+  historyRows.length = 0
+  for (let i = 0; i < 100; i++) {
+    historyRows.push({
+      id: `msg_${i}`,
+      role: 'user' as const,
+      content: `Message ${i}`,
+      created_at: i,
+      image_url: '',
+      finish_reason: '',
+    })
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
   vi.spyOn(api, 'getSession').mockResolvedValue({
@@ -150,11 +188,15 @@ async function mountChatView(chatId: string): Promise<VueWrapper> {
     props: { chatId, chatName: 'Test Chat' },
     attachTo: document.body,
   })
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 0))
+  // Wait for the transcript to paint. The scroller's mount gate is
+  // `!isInitializing && (isLoading || messageGroups.length > 0)`, and
+  // `isInitializing` only clears once the history load settles — so the
+  // scroller's presence IS the load-completed signal, and keying the wait on it
+  // turns a silent "never rendered" into the one error that explains it.
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 40))
     await nextTick()
-    const streaming = (wrapper.vm as unknown as { isStreaming?: boolean }).isStreaming
-    if (streaming) break
+    if (wrapper.find('.virtual-scroller').exists()) break
   }
   // Let mount-time timers (VirtualScroller 100ms measure, loadMore 200ms
   // debounce, initial-load rAFs) flush so the scenario starts clean.
@@ -165,7 +207,12 @@ async function mountChatView(chatId: string): Promise<VueWrapper> {
 
 function findScrollerContainer(wrapper: VueWrapper): HTMLElement {
   const el = wrapper.find('.virtual-scroller')
-  if (!el.exists()) throw new Error('.virtual-scroller not mounted')
+  if (!el.exists()) {
+    throw new Error(
+      '.virtual-scroller not mounted — the history load never settled, so this ' +
+        'test would otherwise assert nothing (check the vi.mock seam above)',
+    )
+  }
   return el.element as HTMLElement
 }
 
