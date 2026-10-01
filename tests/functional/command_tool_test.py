@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from default_tools import DEFAULT_AGENT_TOOLS, agent_defaults_without
 from harness import FunctionalHarness
 
 
@@ -123,13 +124,12 @@ class TestCommandRegistry:
 
 
 class TestCommandEnableDisable:
-    # Fresh agents are born with the 26-tool defaults (sorted ASC) — see
-    # commit 43e37c8e (21-tool defaults expansion) and
-    # docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md.
-    # (`delete_memory` removed 2026-09-12: memory is append-only.)
-    _DEFAULTS = ["add_skill", "ask_user", "command", "edit_skill", "get_plan", "glob", "list_directory", "list_skills", "list_sub_agent", "load_memory", "present_files", "read_file", "read_workspace_session", "remove_file", "remove_skill", "save_memory", "search", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "used_tools", "view_tool", "write_file"]
-    # Post-DELETE expectation: the 26-tool list minus "command" (25 others, ASC).
-    _DEFAULTS_MINUS_COMMAND = ["add_skill", "ask_user", "edit_skill", "get_plan", "glob", "list_directory", "list_skills", "list_sub_agent", "load_memory", "present_files", "read_file", "read_workspace_session", "remove_file", "remove_skill", "save_memory", "search", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "used_tools", "view_tool", "write_file"]
+    # Fresh agents are born with the seeded defaults (sorted ASC) — the
+    # shared list in default_tools.py, which points at
+    # src/agentic_loop/tools_equipped.zig::DEFAULT_AGENT_TOOLS.
+    _DEFAULTS = DEFAULT_AGENT_TOOLS
+    # Post-DELETE expectation: that same list minus "command", still ASC.
+    _DEFAULTS_MINUS_COMMAND = agent_defaults_without("command")
 
     def test_command_enable_list_disable_lifecycle(
         self, harness: FunctionalHarness
@@ -166,9 +166,10 @@ class TestCommandEnableDisable:
 
 
 class TestLegacyNamesRejected:
-    # Fresh agents seed the 26-tool defaults (sorted ASC, commit 43e37c8e;
-    # ask_user added 2026-09-16).
-    _DEFAULTS = ["add_skill", "ask_user", "command", "edit_skill", "get_plan", "glob", "list_directory", "list_skills", "list_sub_agent", "load_memory", "present_files", "read_file", "read_workspace_session", "remove_file", "remove_skill", "save_memory", "search", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "used_tools", "view_tool", "write_file"]
+    # Same shared seed list as TestCommandEnableDisable — the point of
+    # these tests is that a legacy name is REJECTED and the seeded set
+    # is left exactly as it was.
+    _DEFAULTS = DEFAULT_AGENT_TOOLS
 
     def test_bash_enable_now_400s_after_unify(
         self, harness: FunctionalHarness

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import pytest
 
+from default_tools import DEFAULT_KANBAN_SEEDED_TOOLS
 from harness import FunctionalHarness, harness_path
 
 
@@ -78,7 +79,7 @@ def test_bundle_get_fresh_returns_defaults(harness: FunctionalHarness) -> None:
         expect=200,
     )
     body = r.json()
-    assert body.get("tools") == ["add_skill", "ask_user", "command", "edit_skill", "get_plan", "glob", "kanban_list", "kanban_move_task", "list_directory", "list_skills", "list_sub_agent", "load_memory", "present_files", "read_file", "read_workspace_session", "remove_file", "remove_skill", "save_memory", "search", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "used_tools", "view_tool", "write_file"], (
+    assert body.get("tools") == DEFAULT_KANBAN_SEEDED_TOOLS, (
         f"fresh kanban should seed defaults, got: {body!r}"
     )
 

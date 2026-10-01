@@ -717,10 +717,18 @@ class FunctionalHarness:
         if self.dry_run:
             print(f"[dry-run] would rmtree: {self.temp_dir}")
         else:
-            # On Windows, rmtree can fail with PermissionError if the DB or log
-            # is still held for a moment after child exit (AV, indexing, etc.).
-            # Retry with backoff; the child is already dead at this point.
-            # Windows needs more retries for vite log (child tree may linger).
+            # The child tree is already dead, but "dead" is not "finished
+            # writing": a shell nalar spawned (the PTY a terminal test
+            # drives) can still be flushing its last writes into the temp
+            # HOME, and POSIX rmtree surfaces that as ENOTEMPTY — a
+            # directory that got a new entry between the scan and the
+            # delete. Windows hits the same race with PermissionError.
+            # Both platforms therefore retry with the same backoff; the
+            # Windows-only branch used to `raise` on the first POSIX
+            # failure, so the loop below was dead code off Windows and
+            # the tempdir leaked into /tmp with the test reported red.
+            # The final `raise last_exc` still surfaces a tree that never
+            # became removable.
             last_exc = None
             retries = 10 if os.name == "nt" else 5
             for _ in range(retries):
@@ -730,10 +738,7 @@ class FunctionalHarness:
                     break
                 except OSError as e:
                     last_exc = e
-                    if os.name == "nt":
-                        time.sleep(1.0)
-                        continue
-                    raise
+                    time.sleep(1.0)
             if last_exc is not None:
                 raise last_exc
 

@@ -105,6 +105,11 @@ def _open_chat_and_terminal(
 
     page.locator('[data-testid="chat-right-sidebar-tab-terminal"]').click()
     page.locator('[data-testid="terminal-xterm"]').wait_for(timeout=10000, state="visible")
+    # Opening the tab does NOT spawn a PTY — TerminalTab.vue keeps the
+    # tab idle ("Terminals only start when you ask - nothing spawns on
+    # open.") and waits for an explicit `+`. Start the first session
+    # ourselves, exactly as the component's own unit spec does.
+    page.locator('[data-testid="terminal-empty-new"]').click()
     # First session connected: chip shows the live dot.
     page.locator('[data-testid="terminal-session-chip"]', has_text="●").first.wait_for(
         timeout=20000, state="visible"

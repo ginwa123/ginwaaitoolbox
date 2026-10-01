@@ -90,6 +90,37 @@ def _poll_for(
     raise AssertionError(f"marker {marker!r} never appeared; last={last!r} seen={seen!r}")
 
 
+def _settle_cursor(
+    harness: FunctionalHarness,
+    session_id: str,
+    quiet_reads: int = 2,
+    deadline_s: float = 10.0,
+) -> int:
+    """Poll forward until the session stops producing output; return the cursor.
+
+    A PTY never really stops: after the marker round-trips, the shell
+    redraws its prompt and re-emits the command echo. So a cursor read
+    taken the instant the marker shows up can still be behind the
+    server's ring buffer, and the NEXT read at that cursor correctly
+    returns those not-yet-drained bytes — which looks exactly like a
+    replay. Draining until two consecutive reads come back empty is
+    what makes "no replay" a statement about the server rather than
+    about how fast the test asked.
+    """
+    cursor = 0
+    quiet = 0
+    deadline = time.time() + deadline_s
+    while time.time() < deadline and quiet < quiet_reads:
+        page = _output(harness, session_id, cursor)
+        cursor = page.get("cursor", cursor)
+        if page.get("data", "") == "":
+            quiet += 1
+        else:
+            quiet = 0
+            time.sleep(0.2)
+    return cursor
+
+
 # ─── Test 1: full round-trip ───────────────────────────────────────────────
 
 
@@ -108,11 +139,18 @@ def test_create_input_output_round_trip(harness: FunctionalHarness) -> None:
 
         _poll_for(harness, session_id, marker)
 
-        # A second poll with the fresh cursor returns no replay.
-        fresh = _output(harness, session_id, cursor=0)
-        assert fresh.get("cursor", 0) > 0
-        again = _output(harness, session_id, cursor=fresh["cursor"])
-        assert again.get("data", "") == "" or marker not in again.get("data", "")
+        # Let the prompt redraw drain, then hold the cursor fixed: a
+        # repeat read at a cursor the server has already served must
+        # come back empty. Reading from a cursor taken by a DIFFERENT
+        # request (the old `cursor=0` then `fresh["cursor"]` pair) is
+        # what raced — see _settle_cursor.
+        settled = _settle_cursor(harness, session_id)
+        assert settled > 0, "session produced no output at all"
+        again = _output(harness, session_id, cursor=settled)
+        assert again.get("data", "") == "", (
+            f"re-reading from settled cursor {settled} replayed "
+            f"{again.get('data', '')!r}"
+        )
     finally:
         harness.http("DELETE", f"/api/terminal/sessions/{session_id}", expect=200)
 
