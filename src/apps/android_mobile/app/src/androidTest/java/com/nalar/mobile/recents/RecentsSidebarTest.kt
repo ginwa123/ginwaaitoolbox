@@ -583,6 +583,89 @@ class RecentsSidebarTest {
     }
 
     @Test
+    fun aFoldedProjectLightsFromTheRecentsAlone() {
+        // The gap this closes, and the state the report's screenshot was in:
+        // every project row folded, so no page was ever loaded and the
+        // indicator had nothing to read. The recents are held for the whole
+        // workspace at all times and now carry each chat's own project, so the
+        // row resolves with no request and no fan-out.
+        val recentsWithProjects = listOf(
+            chats[0].copy(projectId = "item-a"),
+            chats[1].copy(projectId = "item-b"),
+        )
+        val foldedProjects = ProjectsState(
+            expanded = true,
+            items = listOf(
+                ProjectSummary("item-a", "workspace-a", ProjectTypes.KANBAN, "sprint board"),
+                ProjectSummary("item-b", "workspace-a", ProjectTypes.AGENT, "release bot"),
+            ),
+            expandedItemIds = emptySet(),
+            // Nothing loaded — both projects are folded.
+            chats = emptyMap(),
+            isLoading = false,
+            errorMessage = null,
+        )
+
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = recentsWithProjects,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    // One live worker, in the project whose page was never loaded.
+                    runningSessionIds = setOf("chat-a2"),
+                    projects = foldedProjects,
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("project_running_item-b").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("project_running_item-a").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("projects_section_header_running").assertIsDisplayed()
+    }
+
+    @Test
+    fun aRunningChatWithNoProjectLightsNoProjectRow() {
+        // The case that must not be "helpfully" attributed somewhere. A chat
+        // outside any project is ordinary — the server sends "" — and guessing
+        // which project owns it is how a spinner ends up on the wrong row.
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats.map { it.copy(projectId = null) },
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    runningSessionIds = setOf("chat-a2"),
+                    // Same two projects, both with nothing loaded — so the
+                    // recents are the only thing that could attribute a run.
+                    projects = ProjectsState(
+                        expanded = true,
+                        items = listOf(
+                            ProjectSummary(
+                                "item-a", "workspace-a", ProjectTypes.KANBAN, "sprint board",
+                            ),
+                            ProjectSummary(
+                                "item-b", "workspace-a", ProjectTypes.AGENT, "release bot",
+                            ),
+                        ),
+                        expandedItemIds = emptySet(),
+                        chats = emptyMap(),
+                        isLoading = false,
+                        errorMessage = null,
+                    ),
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("project_running_item-a").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("project_running_item-b").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("projects_section_header_running").assertDoesNotExist()
+        // The chat row itself still spins — the recents indicator never
+        // depended on the project.
+        composeTestRule.onNodeWithTag("chat_row_running_chat-a2").assertIsDisplayed()
+    }
+
+    @Test
     fun anIdleProjectsSectionLightsNothing() {
         composeTestRule.setContent {
             NalarTheme {

@@ -401,11 +401,57 @@ class RecentsApiTest {
         created: String = "2026-09-26 05:07:34",
         updated: String = "2026-09-26 05:12:37",
         lastHumanTouched: String = "2026-09-26 05:07:34",
+        workspaceItemId: String? = null,
     ): String = """
         {"sessions":[{"session_id":"task_1","cwd":"/tmp",
          "created_at":"$created","updated_at":"$updated",
          "agent":"code-reviewer","session_name":"$sessionName",
-         "last_human_touched_at":"$lastHumanTouched"}],
+         "last_human_touched_at":"$lastHumanTouched",
+         "workspace_item_id":${workspaceItemId?.let { "\"$it\"" } ?: "null"}}],
         "total":1,"has_more":false,"next_cursor":null}
     """.trimIndent()
+
+    // ── The project a session belongs to ───────────────────────────────────
+    //
+    // `GET /api/session` scopes its list by `workspace_id`, which the server
+    // resolves down to a set of task ids and then throws the project away. So
+    // this field is the only thing that lets a client holding the recents say
+    // "this project has work in flight" without loading every project's chats.
+
+    @Test
+    fun parseChatsReadsTheProjectOffTheWire() {
+        val chats = RecentsApi.parseChats(
+            sessionJson(workspaceItemId = "item_1790255955308289403"),
+            workspaceId = "ws_1",
+        )
+
+        assertEquals("item_1790255955308289403", chats.single().projectId)
+    }
+
+    @Test
+    fun aSessionInNoProjectHasNoProjectRatherThanABlankOne() {
+        // The server COALESCEs to "" and a chat outside any project is normal,
+        // so blank must collapse to null — the answer "this cannot light a
+        // project spinner", not a project whose id is the empty string.
+        assertNull(
+            RecentsApi.parseChats(sessionJson(workspaceItemId = null), "ws_1").single().projectId,
+        )
+        assertNull(
+            RecentsApi.parseChats(sessionJson(workspaceItemId = ""), "ws_1").single().projectId,
+        )
+    }
+
+    @Test
+    fun anOlderServerWithNoProjectFieldStillParses() {
+        // The field is additive on the wire, so a client that meets a server
+        // predating it must get rows, not a crash — and rows it cannot
+        // attribute, which is exactly the old behaviour.
+        val legacy = """{"sessions":[{"session_id":"task_1","session_name":"A chat"}],
+            "total":1,"has_more":false,"next_cursor":null}"""
+
+        val chats = RecentsApi.parseChats(legacy, workspaceId = "ws_1")
+
+        assertEquals("task_1", chats.single().id)
+        assertNull(chats.single().projectId)
+    }
 }

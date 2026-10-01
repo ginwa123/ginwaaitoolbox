@@ -410,7 +410,7 @@ private fun SidebarBody(
         // Which project rows are busy, resolved once for the whole section
         // rather than per row — the header asks the same question, and N rows
         // each re-scanning the loaded chat pages is N answers to one.
-        val runningProjectIds = projects.runningProjectIds(runningSessionIds)
+        val runningProjectIds = projects.runningProjectIds(runningSessionIds, visibleChats)
 
         // The preview the drawer renders, and the one thing it does not decide
         // for itself. `HomeViewModel` fetched exactly this many rows, so

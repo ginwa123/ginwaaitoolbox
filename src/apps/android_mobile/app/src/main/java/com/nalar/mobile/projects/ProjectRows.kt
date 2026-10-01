@@ -38,6 +38,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.formatRelativeTime
 import com.nalar.mobile.recents.formatRelativeTimeForAccessibility
 import com.nalar.mobile.ui.NalarAccent
@@ -86,20 +87,41 @@ class ProjectsState(
      * header) — one `processingState[task.id]` lookup per task, and a task id
      * *is* a session id, which is the join this method performs.
      *
-     * It only knows about a project whose chats have been loaded, because that
-     * is the only place their ids exist: this section loads a project's page
-     * when the reader unfolds it and never otherwise, deliberately (see
-     * [ProjectsApi] on why the phone does not pull the whole tree). So a
-     * collapsed project with a run in flight stays dark until it is opened,
-     * and a run the reader can already see spinning in Recent is the one they
-     * have an answer for. Reporting a spinner on a project we cannot attribute
-     * the run to would be worse than reporting none.
+     * Two sources, because the web has one and the phone does not. The web
+     * loads every project's tasks up front (`is_include_items=true`) so it can
+     * ask about any project without asking again; this section loads a
+     * project's page only when the reader unfolds it, deliberately (see
+     * [ProjectsApi] on why a phone does not pull the whole tree on a metered
+     * connection). So [chats] alone would light a spinner only for a project
+     * the reader has opened — and in the very state the report was taken, every
+     * project row folded.
+     *
+     * [recents] is what closes that. The recents list is the one list the
+     * drawer holds for the whole workspace at all times, and it now carries
+     * each session's own `workspace_item_id` (`ChatSummary.projectId`), so a
+     * collapsed project resolves from data already on screen — no request, no
+     * per-project fan-out.
+     *
+     * A running session this cannot attribute — no project, or one outside the
+     * page the caller passed — still lights nothing. Guessing which project a
+     * run belongs to is how a spinner ends up on the wrong row.
      */
-    fun runningProjectIds(runningSessionIds: Set<String>): Set<String> {
+    fun runningProjectIds(
+        runningSessionIds: Set<String>,
+        recents: List<ChatSummary> = emptyList(),
+    ): Set<String> {
         if (runningSessionIds.isEmpty()) return emptySet()
-        return chats.filterValues { page ->
+
+        val fromUnfoldedProjects = chats.filterValues { page ->
             page.chats.any { chat -> chat.id in runningSessionIds }
         }.keys
+
+        val fromRecents = recents.asSequence()
+            .filter { chat -> chat.id in runningSessionIds }
+            .mapNotNull { chat -> chat.projectId?.takeIf { it.isNotBlank() } }
+            .toSet()
+
+        return fromUnfoldedProjects + fromRecents
     }
 
     /**
