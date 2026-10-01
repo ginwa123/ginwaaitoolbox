@@ -409,16 +409,16 @@ test "execSearchTool: a regex finds tools a literal substring could not, end to 
     try db.init(threaded.io(), ":memory:");
     try Migration085.up(&db, testing.allocator);
 
-    // The literal text "^(list|load|save)_" appears in no tool name or
+    // The literal text "^(list|load|save|search)_" appears in no tool name or
     // description, so a substring search would return nothing. The rows below
     // can only come from the pattern language.
-    const args = "{\"query\":\"^(list|load|save)_\"}";
+    const args = "{\"query\":\"^(list|load|save|search)_\"}";
     const out = try searchToolOutput(a, &db, threaded.io(), args);
 
     try testing.expect(std.mem.indexOf(u8, out, "\"pattern_mode\":\"regex\"") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"pattern_warning\":null") != null);
     const total = try totalOf(a, out);
-    try testing.expect(total >= 5); // list_directory/list_skills/list_sub_agent + load_/save_memory at least
+    try testing.expect(total >= 5); // list_directory/search_skills/list_sub_agent + load_/save_memory at least
     try testing.expect(std.mem.indexOf(u8, out, "\"name\":\"save_memory\"") != null);
 
     // Enabled tools are NOT discoverable (they are already in the tool list).
@@ -461,10 +461,10 @@ test "execSearchTool: limit/offset page the matches and report the true total" {
         a,
         &db,
         threaded.io(),
-        "{\"query\":\"^(list|load|save)_\",\"limit\":3,\"offset\":0}",
+        "{\"query\":\"^(list|load|save|search)_\",\"limit\":3,\"offset\":0}",
     );
     const total = try totalOf(a, page1);
-    try testing.expect(total >= 5); // list_directory/list_skills/list_sub_agent + load_/save_memory
+    try testing.expect(total >= 5); // list_directory/search_skills/list_sub_agent + load_/save_memory
     try testing.expect(total > 3); // otherwise "page 2" would be empty
     try testing.expect(std.mem.indexOf(u8, page1, "\"count\":3") != null);
     try testing.expect(std.mem.indexOf(u8, page1, "\"offset\":0,\"limit\":3") != null);
@@ -475,7 +475,7 @@ test "execSearchTool: limit/offset page the matches and report the true total" {
         a,
         &db,
         threaded.io(),
-        "{\"query\":\"^(list|load|save)_\",\"limit\":3,\"offset\":3}",
+        "{\"query\":\"^(list|load|save|search)_\",\"limit\":3,\"offset\":3}",
     );
     const expect_page2_count = try std.fmt.allocPrint(a, "\"count\":{d}", .{total - 3});
     try testing.expect(std.mem.indexOf(u8, page2, expect_page2_count) != null);

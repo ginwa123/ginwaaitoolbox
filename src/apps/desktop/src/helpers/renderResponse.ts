@@ -210,7 +210,7 @@ const renderTool = (content: string, tool_name: string | undefined): string => {
   }
 
   if (
-    tool_name === 'list_skills' ||
+    tool_name === 'search_skills' ||
     tool_name === 'use_skill' ||
     tool_name === 'add_skill' ||
     tool_name === 'edit_skill'

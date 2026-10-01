@@ -176,9 +176,12 @@ pub const SkillsToolRule =
     \\from scratch, and it is what the user expects when they wrote the skill.
     \\
     \\**The loop — two calls, and no skills are pre-listed in this prompt:**
-    \\- `list_skills` — every installed skill (global `~/.config/nalar/skills/`
-    \\  + local `.nalar/skills/`) with its name, description and exact `path`.
-    \\  Nothing is pre-injected, so this call IS the discovery step.
+    \\- `search_skills` — find installed skills by name or description
+    \\  (global `~/.config/nalar/skills/` + local `.nalar/skills/`).
+    \\  Nothing is pre-injected, so this call IS the discovery step. `query` is a
+    \\  regex and results are PAGED: narrow with a pattern instead of pulling the
+    \\  whole library in, then page with `offset` when `total` says there is
+    \\  more. Every row carries its `scope` and the exact `path`.
     \\- `use_skill` — load one skill's full instructions by the EXACT `path` from
     \\  that result. The path is case-sensitive and ends in `SKILL.MD`; pass it
     \\  verbatim. Never construct it from the skill name — `~` is not expanded
@@ -194,7 +197,7 @@ pub const SkillsToolRule =
     \\  usually records the failure mode you just hit.
     \\
     \\**Self-check:** "is there a skill that covers this task, and have I loaded
-    \\it?" If the answer is yes and no, you are working blind. One `list_skills`
+    \\it?" If the answer is yes and no, you are working blind. One `search_skills`
     \\call is cheap — never guess at what a skill contains.
 ;
 

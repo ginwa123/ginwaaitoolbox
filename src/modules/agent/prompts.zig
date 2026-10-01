@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const prompts = @import("prompts/prompts.zig");
 const memory_prompts = @import("prompts/memory.zig");
-const tool_list_skills_mod = @import("tools/skill_tools.zig");
+const tool_search_skills_mod = @import("tools/skill_tools.zig");
 const tool_models = @import("Agent.zig");
 const tool_memories_mod = @import("tools/memories.zig");
 
@@ -153,7 +153,7 @@ test "build_agent_prompt loads memory files into Global Knowledge section" {
 // build_agent_prompt — Available Skills listing
 // -------------------------------------------------------------------------
 
-test "build_agent_prompt omits Available Skills section when list_skills tool is absent" {
+test "build_agent_prompt omits Available Skills section when search_skills tool is absent" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
@@ -175,7 +175,7 @@ test "build_agent_prompt omits Available Skills section when list_skills tool is
         try std.Io.File.writeStreamingAll(f, io,
             \\---
             \\name: test-gated-skill
-            \\description: "Should be hidden when list_skills is absent"
+            \\description: "Should be hidden when search_skills is absent"
             \\---
             \\
         );
@@ -185,7 +185,7 @@ test "build_agent_prompt omits Available Skills section when list_skills tool is
     defer env.deinit();
     try env.put("HOME", tmp_home);
 
-    // Tools list intentionally does NOT include list_skills
+    // Tools list intentionally does NOT include search_skills
     const tools = [_]AgentTool{
         makeTool("read_file", "Read a file"),
     };
@@ -213,10 +213,10 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    // list_skills IS in the tools list, but env is null → graceful skip
+    // search_skills IS in the tools list, but env is null → graceful skip
     const tools = [_]AgentTool{
         makeTool("read_file", "Read a file"),
-        makeTool("list_skills", "List available skills"),
+        makeTool("search_skills", "Search available skills"),
     };
     const prompt = try prompts_mod.build_agent_prompt(
         alloc,
@@ -1628,7 +1628,7 @@ test "ResponseFormatting teaches the <html> wrapper tag" {
 // mandates wired into buildMessages. Four properties are pinned:
 //   1. Content: each rule names its tools and states the mandate.
 //   2. No bloat: no rule pre-lists skills, and buildMessages never injects
-//      skill bodies — discovery stays a `list_skills` call so the cacheable
+//      skill bodies — discovery stays a `search_skills` call so the cacheable
 //      system-prompt prefix does not grow with the user's skill library.
 //   3. Cache-stability: all four are appended unconditionally (no hasTool
 //      gate), so the block is byte-identical for every agent and the shared
@@ -1654,11 +1654,11 @@ test "ProgressiveToolRule names the special tool and the three-call loop" {
     try std.testing.expect(contains(prompt, "Before hand-rolling"));
 }
 
-test "SkillsToolRule names the special skills and the list->use loop" {
+test "SkillsToolRule names the special skills and the search->use loop" {
     const prompt: []const u8 = SkillsToolRule;
 
     try std.testing.expect(contains(prompt, "your special skills"));
-    const i_list = std.mem.indexOf(u8, prompt, "- `list_skills`").?;
+    const i_list = std.mem.indexOf(u8, prompt, "- `search_skills`").?;
     const i_use = std.mem.indexOf(u8, prompt, "- `use_skill`").?;
     try std.testing.expect(i_list < i_use);
     // Mandate: load the skill the task needs, before improvising.
@@ -1694,7 +1694,7 @@ test "static contract: buildMessages appends all four rules unconditionally" {
     // reaches — so the gate there does not protect the live prompt.
     try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"search_tool\")"));
     try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"use_skill\")"));
-    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"list_skills\")"));
+    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"search_skills\")"));
     try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"load_memory\")"));
     try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"save_memory\")"));
     try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"read_workspace_session\")"));

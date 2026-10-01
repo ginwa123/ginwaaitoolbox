@@ -43,7 +43,7 @@ pub fn toJson(allocator: std.mem.Allocator, list: []const MemoryInfo) ![]const u
 /// Execute the `list_memory` tool. Returns a JSON string for the LLM.
 ///
 /// Returns `{"memories":[],"error":"MissingEnvironment"}` when
-/// the environment is not available (matches list_skills behavior).
+/// the environment is not available (matches search_skills behavior).
 ///
 /// Caller owns the returned memory and must free it with `allocator.free()`.
 pub fn execute_list_memory(

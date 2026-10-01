@@ -2038,6 +2038,12 @@ pub const allMigrations: []const Migration = &.{
     // `workspace_id` on the row IS the isolation boundary; the agent
     // tools resolve it server-side from the calling session.
     .{ .version = Migration098CreateDocuments.version, .name = Migration098CreateDocuments.name, .up = Migration098CreateDocuments.up },
+    // Migration 099 — rename the `list_skills` agent tool to `search_skills`.
+    // The tool name is a PERSISTED allowlist entry (`agent_tools` /
+    // `agent_kanban_tools` / `users.config_json`), so a registry-only rename
+    // would silently strip the tool from every existing agent and from every
+    // customised checklist.
+    .{ .version = Migration099RenameListSkillsTool.version, .name = Migration099RenameListSkillsTool.name, .up = Migration099RenameListSkillsTool.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -3751,6 +3757,262 @@ pub const Migration098CreateDocuments = struct {
         , &[_][]const u8{});
     }
 };
+
+// Migration 099 — rename the `list_skills` agent tool to `search_skills`.
+//
+// WHY a data migration: the tool name is not decoration, it is a PERSISTED
+// allowlist entry. `agent_tools.tool_name` (agents + routines) and
+// `agent_kanban_tools.tool_name` (kanban boards) are seeded once at item
+// creation and read back by `agentToolsAllowed` / `allowlistFilter`, which
+// keeps ONLY tools whose name is in that list. Rename the registry without
+// touching these rows and every existing agent silently loses the tool —
+// with no error anywhere, exactly the "silently vanishes" failure mode the
+// prompts tests guard against on the prompt side.
+//
+// Also rewritten: `users.config_json`, whose top-level `tools` checklist is
+// what seeds NEW items (`seedDefaultAgentTools`). A user who customised their
+// checklist would otherwise never see `search_skills` on the next agent they
+// create. The replacement is on the quoted JSON token, not the bare word, so
+// it cannot rewrite a description that merely mentions the tool.
+//
+// `session_progressive_tool` is left alone on purpose: `list_skills` was in
+// `DEFAULT_AGENT_TOOLS`, so it was never offered by `search_tool` and there is
+// no row to rename. The whole migration is idempotent — the second run
+// matches nothing.
+pub const Migration099RenameListSkillsTool = struct {
+    pub const version: u32 = 99;
+    pub const name = "rename_list_skills_tool";
+
+    /// True when `name` is a table in this database. Used so the rename is a
+    /// no-op on a database that does not have every one of the three
+    /// allowlist tables, instead of aborting the whole migration on
+    /// "no such table".
+    fn tableExists(allocator: std.mem.Allocator, db: *SqliteBackend, table: []const u8) !bool {
+        var q = try db.query(
+            allocator,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+            &[_][]const u8{table},
+        );
+        defer q.deinit();
+        const row = (try q.next()) orelse return false;
+        defer row.deinit(allocator);
+        return std.mem.eql(u8, row.values[0], "1");
+    }
+
+    fn renameIn(allocator: std.mem.Allocator, db: *SqliteBackend, table: []const u8, owner_col: []const u8) !void {
+        if (!try tableExists(allocator, db, table)) return;
+
+        // A plain `UPDATE ... SET tool_name = 'search_skills'` trips
+        // UNIQUE(owner, tool_name) for an owner that ALREADY has the new name
+        // (easy to hit: config.json and the seed defaults are edited by hand),
+        // and `UPDATE OR IGNORE` would then silently SKIP that row — leaving
+        // `list_skills` behind. So: insert a new row under a fresh id, then
+        // delete the stale one. `INSERT OR IGNORE` covers the one case where
+        // the owner already has `search_skills` — the pre-existing row wins
+        // and the checklist still ends with exactly one entry.
+        //
+        // The id is suffixed rather than reused: `id` is the PRIMARY KEY, so
+        // re-inserting the same value would make OR IGNORE swallow the insert
+        // and the follow-up DELETE would then delete the only row.
+        const sql = try std.fmt.allocPrint(
+            allocator,
+            \\INSERT OR IGNORE INTO {s} (id, {s}, tool_name, enabled, created_at)
+            \\SELECT id || '_m099', {s}, 'search_skills', enabled, created_at
+            \\FROM {s} WHERE tool_name = 'list_skills'
+        , .{ table, owner_col, owner_col, table });
+        defer allocator.free(sql);
+        try db.exec(allocator, sql, &[_][]const u8{});
+
+        const del = try std.fmt.allocPrint(
+            allocator,
+            "DELETE FROM {s} WHERE tool_name = 'list_skills'",
+            .{table},
+        );
+        defer allocator.free(del);
+        try db.exec(allocator, del, &[_][]const u8{});
+    }
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Three allowlist tables, one per item type — agents and routines are
+        // separate tables even though both are read the same way.
+        try renameIn(allocator, db, "agent_tools", "agent_id");
+        try renameIn(allocator, db, "agent_kanban_tools", "kanban_id");
+        try renameIn(allocator, db, "agent_routine_tools", "routine_id");
+
+        if (!try tableExists(allocator, db, "users")) return;
+
+        // Quoted JSON token only — `"list_skills"` → `"search_skills"`.
+        // `LIKE '%"list_skills"%'` keeps the WHERE off rows that do not
+        // mention the tool at all.
+        try db.exec(allocator,
+            \\UPDATE users SET config_json = REPLACE(config_json, '"list_skills"', '"search_skills"')
+            \\WHERE config_json LIKE '%"list_skills"%'
+        , &[_][]const u8{});
+    }
+};
+
+// ───────────────────────── tests: Migration 099 ─────────────────────────
+
+test "Migration099 renames agent_tools rows and preserves enabled + count" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "CREATE TABLE agent_tools (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(agent_id, tool_name))", &[_][]const u8{});
+    try ctx.db.exec(alloc, "INSERT INTO agent_tools (id, agent_id, tool_name, enabled) VALUES ('at_1', 'ag_1', 'list_skills', 1)", &[_][]const u8{});
+    try ctx.db.exec(alloc, "INSERT INTO agent_tools (id, agent_id, tool_name, enabled) VALUES ('at_2', 'ag_1', 'bash', 1)", &[_][]const u8{});
+
+    try Migration099RenameListSkillsTool.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc, "SELECT tool_name, enabled FROM agent_tools WHERE agent_id = 'ag_1' ORDER BY tool_name", &.{});
+    defer q.deinit();
+
+    const row = (try q.next()) orelse return error.NoRow;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("bash", row.values[0]);
+    const row2 = (try q.next()) orelse return error.NoRow;
+    defer row2.deinit(alloc);
+    try testing.expectEqualStrings("search_skills", row2.values[0]);
+    try testing.expectEqualStrings("1", row2.values[1]);
+
+    // Exactly two rows before and after — the rename never duplicates.
+    if (try q.next()) |extra| {
+        extra.deinit(alloc);
+        return error.UnexpectedExtraRow;
+    }
+}
+
+test "Migration099 renames every per-item-type allowlist table" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Agents, kanban boards AND routines each get their own table; miss one
+    // and that item type silently loses the tool while the others keep it.
+    const cases = [_]struct { table: []const u8, owner: []const u8 }{
+        .{ .table = "agent_tools", .owner = "agent_id" },
+        .{ .table = "agent_kanban_tools", .owner = "kanban_id" },
+        .{ .table = "agent_routine_tools", .owner = "routine_id" },
+    };
+
+    for (cases) |c| {
+        const create = try std.fmt.allocPrint(
+            alloc,
+            "CREATE TABLE {s} (id TEXT PRIMARY KEY, {s} TEXT NOT NULL, tool_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE({s}, tool_name))",
+            .{ c.table, c.owner, c.owner },
+        );
+        defer alloc.free(create);
+        try ctx.db.exec(alloc, create, &[_][]const u8{});
+
+        const seed = try std.fmt.allocPrint(
+            alloc,
+            "INSERT INTO {s} (id, {s}, tool_name, enabled) VALUES ('x_1', 'own_1', 'list_skills', 1)",
+            .{ c.table, c.owner },
+        );
+        defer alloc.free(seed);
+        try ctx.db.exec(alloc, seed, &[_][]const u8{});
+    }
+
+    try Migration099RenameListSkillsTool.up(&ctx.db, alloc);
+
+    for (cases) |c| {
+        const sql = try std.fmt.allocPrint(alloc, "SELECT tool_name FROM {s}", .{c.table});
+        defer alloc.free(sql);
+        var q = try ctx.db.query(alloc, sql, &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.NoRow;
+        defer row.deinit(alloc);
+        testing.expectEqualStrings("search_skills", row.values[0]) catch |err| {
+            std.debug.print("table {s}: {s}\n", .{ c.table, @errorName(err) });
+            return err;
+        };
+    }
+}
+
+test "Migration099 keeps one row when an owner already has the new name" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "CREATE TABLE agent_tools (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(agent_id, tool_name))", &[_][]const u8{});
+    try ctx.db.exec(alloc, "INSERT INTO agent_tools (id, agent_id, tool_name, enabled) VALUES ('at_1', 'ag_1', 'list_skills', 1)", &[_][]const u8{});
+    try ctx.db.exec(alloc, "INSERT INTO agent_tools (id, agent_id, tool_name, enabled) VALUES ('at_2', 'ag_1', 'search_skills', 1)", &[_][]const u8{});
+
+    try Migration099RenameListSkillsTool.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_tools WHERE tool_name = 'search_skills'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NoRow;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+
+    var q2 = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_tools WHERE tool_name = 'list_skills'", &.{});
+    defer q2.deinit();
+    const row2 = (try q2.next()) orelse return error.NoRow;
+    defer row2.deinit(alloc);
+    try testing.expectEqualStrings("0", row2.values[0]);
+}
+
+test "Migration099 is idempotent and never leaves both names behind" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "CREATE TABLE agent_tools (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(agent_id, tool_name))", &[_][]const u8{});
+    try ctx.db.exec(alloc, "INSERT INTO agent_tools (id, agent_id, tool_name, enabled) VALUES ('at_1', 'ag_1', 'list_skills', 1)", &[_][]const u8{});
+
+    try Migration099RenameListSkillsTool.up(&ctx.db, alloc);
+    try Migration099RenameListSkillsTool.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_tools WHERE tool_name = 'list_skills'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NoRow;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+
+    var q2 = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_tools WHERE tool_name = 'search_skills'", &.{});
+    defer q2.deinit();
+    const row2 = (try q2.next()) orelse return error.NoRow;
+    defer row2.deinit(alloc);
+    try testing.expectEqualStrings("1", row2.values[0]);
+}
+
+test "Migration099 rewrites the config.json tools checklist token only" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "CREATE TABLE users (id TEXT PRIMARY KEY, config_json TEXT)", &[_][]const u8{});
+    try ctx.db.exec(alloc, "INSERT INTO users (id, config_json) VALUES ('u_1', '{\"tools\":[\"bash\",\"list_skills\",\"use_skill\"]}')", &[_][]const u8{});
+    try ctx.db.exec(alloc, "INSERT INTO users (id, config_json) VALUES ('u_2', '{\"tools\":[\"bash\"]}')", &[_][]const u8{});
+
+    try Migration099RenameListSkillsTool.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc, "SELECT config_json FROM users WHERE id = 'u_1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NoRow;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("{\"tools\":[\"bash\",\"search_skills\",\"use_skill\"]}", row.values[0]);
+
+    // The row that never mentioned the tool is untouched.
+    var q2 = try ctx.db.query(alloc, "SELECT config_json FROM users WHERE id = 'u_2'", &.{});
+    defer q2.deinit();
+    const row2 = (try q2.next()) orelse return error.NoRow;
+    defer row2.deinit(alloc);
+    try testing.expectEqualStrings("{\"tools\":[\"bash\"]}", row2.values[0]);
+}
+
+test "Migration099 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration099RenameListSkillsTool.version) return;
+    }
+    return error.Migration099NotRegistered;
+}
 
 test "Migration078 creates agents table with correct columns" {
     const alloc = testing.allocator;

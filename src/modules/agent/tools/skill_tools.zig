@@ -1,4 +1,4 @@
-//! Skill agent tools: `list_skills` + `use_skill` + `remove_skill` +
+//! Skill agent tools: `search_skills` + `use_skill` + `remove_skill` +
 //! `add_skill` + `edit_skill`.
 //!
 //! Merged from the five `*_skill*.zig` tool modules (2026-09-11
@@ -28,41 +28,91 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
-// ─── list_skills ───
+// ─── search_skills ───
 
-/// Shared data structure for skills list - used by both HTTP handler and AI agent tool
+/// Shared data structure for the raw per-tier skill listing. Shared by the
+/// HTTP `/skills` handler and by `search_skills`, which flattens the tiers
+/// into scope-tagged rows before matching.
 pub const SkillsListData = struct {
     global_skills: []const skills.SkillInfo,
     local_skills: []const skills.SkillInfo,
     cwd: ?[]const u8,
 };
 
-/// Tool definition for list_skills
-pub const list_skills_tool_system_prompt =
-    \\## List Skills Tool — Behavior
-    \\Use `list_skills` to discover available skills (global + local).
-    \\- Call to refresh the skill list before picking a skill to load. No parameters required beyond `cwd`.
+/// Input for `search_skills`. Every field is optional: no args returns the
+/// first page of every installed skill. `query` is a regex unless `literal`
+/// is set — the same matching-mode contract as the `search` and `search_tool`
+/// agent tools. `limit`/`offset` page the matches so a large skill library
+/// cannot flood the context window, and `scope` narrows to one tier
+/// (omitted = every tier, because discovery is legitimately multi-tier).
+pub const SearchSkillsInput = struct {
+    query: ?[]const u8 = null,
+    literal: ?bool = null,
+    scope: ?[]const u8 = null,
+    limit: ?i64 = null,
+    offset: ?i64 = null,
+    /// Overrides the session cwd for the local tier. Optional; the exec
+    /// adapter supplies `ctx.cwd` when the model omits it.
+    cwd: ?[]const u8 = null,
+};
+
+pub const search_skills_tool_system_prompt =
+    \\## Search Skills Tool — Behavior
+    \\Use `search_skills` to find installed skills by name or description (global + local tiers).
+    \\- `query` is a REGEX (case-insensitive, unanchored) matched against each skill's name AND description. A pattern finds skills a phrase cannot: `doc|documentation`, `^zig`, `\btest\`. A query with no metacharacters still behaves as a plain substring search.
+    \\- Set `literal: true` when the query is literal text (e.g. `*.zig`, `fn(`) — otherwise its metacharacters are interpreted.
+    \\- Results are PAGED: `limit` (default 40, max 200) caps how many rows you get back, `total` is the real match count, and `offset` skips matches. The `hint` names the exact next offset instead of dumping the whole library into your context.
+    \\- An invalid pattern is not a failure: it is matched as a literal substring and the result carries `pattern_warning` listing the supported syntax. Read it instead of retrying blindly.
+    \\- `scope` narrows to ONE tier (`global` = `~/.config/nalar/skills/`, `local` = `<cwd>/.nalar/skills/`). Omit it to search both. Every row carries its own `scope`.
+    \\- Omitting `query` is a valid discovery call — it returns the first page of everything installed.
+    \\- Match on the `name`/`description`, then call `use_skill` with that row's EXACT `path`.
     \\
 ;
 
-pub const list_skills_tool = AgentTool{
+pub const search_skills_tool = AgentTool{
     .type = "function",
     .function = .{
-        .name = "list_skills",
-        .description = "List all available skills with brief descriptions. Use this to discover what capabilities you can load.",
+        .name = "search_skills",
+        .description =
+        \\Search the installed skills (global + local tiers) by name or description. `query` is a case-insensitive REGEX matched against each skill's name AND description, so one pattern reaches a skill spelled several ways (`doc|documentation`, `^zig`, `\btest\`, `(save|load)_memory`); pass `literal: true` when the query is literal text. Results are PAGED — `limit` (default 40) caps the rows returned, `total` is the real match count, and `offset` continues the listing — so a big skill library never floods your context. Every row carries its `scope` and the exact `path` to pass to use_skill. Omit `query` to page through everything installed; pass `scope` to search one tier only.
+        ,
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
+                    .name = "query",
+                    .type = "string",
+                    .description = "Regex, matched case-insensitively against every installed skill's name and description. A pattern finds skills a phrase cannot: 'doc|documentation' = either spelling in one call, '^zig' = the zig-prefixed ones, '\\btest\\b' = the word without matching 'testify'. Supported: literals, '.', '[...]', '\\d \\w \\s \\b', '*', '+', '?', '{m,n}' ranges, '( )' groups, '|', '^', '$'. A metacharacter-free query is still a plain substring search. An invalid pattern is matched as a literal substring instead and the result says so in pattern_warning. Omit to list the start of the library.",
+                },
+                .{
+                    .name = "literal",
+                    .type = "boolean",
+                    .description = "Treat `query` as a literal string — regex metacharacters like '.', '*', '[', '(' are matched verbatim. Set this for code-shaped queries ('*.zig', 'fn('). Default false (regex mode).",
+                },
+                .{
+                    .name = "scope",
+                    .type = "string",
+                    .description = "Optional tier filter: 'global' (~/.config/nalar/skills/) or 'local' (<cwd>/.nalar/skills/). Omit to search BOTH tiers. Every result row carries its own `scope`.",
+                },
+                .{
+                    .name = "limit",
+                    .type = "number",
+                    .description = "Maximum matches in THIS response (default 40, max 200). Results are paged to keep the context window small. The result always reports the true `total` — raise limit, or page with offset, only when you need more.",
+                },
+                .{
+                    .name = "offset",
+                    .type = "number",
+                    .description = "Skip the first N matches, for paging a broad query (default 0). The previous page's `hint` names the exact offset that continues it.",
+                },
+                .{
                     .name = "cwd",
                     .type = "string",
-                    .description = "Absolute working directory for the command. REQUIRED — always set explicitly. " ++
-                        "Never assume the current directory. All relative paths in the command resolve from here.",
+                    .description = "Absolute working directory the local tier is resolved from. Optional — the session's own working directory is used when omitted.",
                 },
             },
             .required = &.{},
         },
-        .system_prompt = list_skills_tool_system_prompt,
+        .system_prompt = search_skills_tool_system_prompt,
     },
 };
 
@@ -119,21 +169,8 @@ pub fn toJson(allocator: std.mem.Allocator, data: SkillsListData) ![]const u8 {
     return std.json.Stringify.valueAlloc(allocator, data, .{});
 }
 
-/// Execute the list_skills tool - returns a JSON string for AI agent
-/// Caller owns the returned memory and must free it with allocator.free()
-pub fn execute_list_skills(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    cwd_param: ?[]const u8,
-    environment: ?*const std.process.Environ.Map,
-) ![]const u8 {
-    const data = try listAllSkills(allocator, io, cwd_param, environment);
-    defer freeSkillsListData(allocator, data);
-    return toJson(allocator, data);
-}
-
-/// Parsed shape of `execute_list_skills` output, for tests.
-pub const ListSkillsOutput = struct {
+/// Parsed shape of `toJson`'s output, for tests.
+pub const SkillsListDataJson = struct {
     global_skills: []skills.SkillInfo,
     local_skills: []skills.SkillInfo,
     cwd: ?[]const u8 = null,
@@ -164,7 +201,7 @@ pub const UseSkillResult = struct {
 /// Tool definition for use_skill
 pub const use_skill_tool_system_prompt =
     \\## Use Skill Tool — Behavior
-    \\Use `use_skill` to load a skill's full instructions by exact file path (from `list_skills`).
+    \\Use `use_skill` to load a skill's full instructions by exact file path (from `search_skills`).
     \\- The path is case-sensitive and ends in `SKILL.MD` — don't construct it from the name. Pass it verbatim.
     \\
 ;
@@ -493,7 +530,7 @@ pub const add_skill_tool_system_prompt =
     \\## Add Skill Tool — Behavior
     \\Use `add_skill` to create a new reusable skill file.
     \\- Provide `name`, `description`, and markdown `content`. Use to capture a proven workflow for future sessions.
-    \\- Check for existing skill with `list_skills` first to avoid duplicates.
+    \\- Check for existing skill with `search_skills` first to avoid duplicates.
     \\
 ;
 
@@ -1115,7 +1152,7 @@ pub fn editSkillJsonErrorEmpty(allocator: std.mem.Allocator, error_msg: []const 
     return editSkillJsonError(allocator, "", error_msg);
 }
 
-// ─── tests: list_skills ───
+// ─── tests: toJson (the HTTP `/skills` wire shape) ───
 
 test "toJson on empty lists parses to empty arrays and null cwd" {
     const alloc = std.testing.allocator;
@@ -1129,7 +1166,7 @@ test "toJson on empty lists parses to empty arrays and null cwd" {
     const json = try toJson(alloc, data);
     defer alloc.free(json);
 
-    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSlice(SkillsListDataJson, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expectEqual(@as(usize, 0), parsed.value.global_skills.len);
     try std.testing.expectEqual(@as(usize, 0), parsed.value.local_skills.len);
@@ -1155,7 +1192,7 @@ test "toJson carries raw skill fields, parsed" {
     defer alloc.free(json);
 
     // Raw text needs no escaping in JSON — parse and compare verbatim.
-    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSlice(SkillsListDataJson, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expectEqual(@as(usize, 1), parsed.value.global_skills.len);
     try std.testing.expectEqualStrings("test <skill>", parsed.value.global_skills[0].name);
@@ -1175,7 +1212,7 @@ test "toJson includes cwd when present, parsed" {
     const json = try toJson(alloc, data);
     defer alloc.free(json);
 
-    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSlice(SkillsListDataJson, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expectEqualStrings("/test/cwd", parsed.value.cwd orelse "");
 }
@@ -1195,7 +1232,7 @@ test "toJson generates valid JSON" {
     // Should be valid JSON structure
     try std.testing.expect(std.mem.startsWith(u8, json, "{"));
     try std.testing.expect(std.mem.endsWith(u8, json, "}"));
-    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    const parsed = try std.json.parseFromSlice(SkillsListDataJson, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expectEqual(@as(usize, 0), parsed.value.global_skills.len);
     try std.testing.expectEqual(@as(usize, 0), parsed.value.local_skills.len);
@@ -1214,120 +1251,6 @@ test "freeSkillsListData handles empty arrays" {
     freeSkillsListData(alloc, data);
 }
 
-test "execute_list_skills - finds local skill in cwd workspace" {
-    // Regression test: ensure execute_list_skills correctly uses the cwd
-    // parameter to find local skills. The execListSkills wiring in
-    // tool_registry.zig used to pass null instead of ctx.cwd, which made
-    // local skills invisible to the agent.
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    const skill_name = "test-list-local-skill";
-    const tmp_path = "/tmp/nalar-list-skills-test";
-
-    // Clean up any leftover from previous failed runs
-    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
-
-    // Pre-create a local skill file in the temp cwd
-    const skill_dir_path = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", skill_name });
-    defer alloc.free(skill_dir_path);
-    try std.Io.Dir.cwd().createDirPath(io, skill_dir_path);
-
-    const skill_file_path = try std.fs.path.join(alloc, &[_][]const u8{ skill_dir_path, "SKILL.MD" });
-    defer alloc.free(skill_file_path);
-
-    const skill_content =
-        \\---
-        \\name: test-list-local-skill
-        \\description: "Test description for list regression"
-        \\---
-        \\
-        \\# Test content
-        \\
-    ;
-    {
-        const f = try std.Io.Dir.createFileAbsolute(io, skill_file_path, .{});
-        defer std.Io.File.close(f, io);
-        try std.Io.File.writeStreamingAll(f, io, skill_content);
-    }
-
-    // Build a minimal environment map so listAllSkills can look up the global path.
-    // Point HOME to a non-existent dir so global lookup returns no skills (clean output).
-    var env = std.process.Environ.Map.init(alloc);
-    defer env.deinit();
-    try env.put("HOME", "/tmp/nalar-nonexistent-home-for-list-test");
-
-    // Call execute_list_skills with the tmp_path as cwd
-    const output = try execute_list_skills(alloc, io, tmp_path, &env);
-    defer alloc.free(output);
-
-    // The local skill should appear in the local_skills array
-    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    try std.testing.expectEqual(@as(usize, 1), parsed.value.local_skills.len);
-    try std.testing.expectEqualStrings(skill_name, parsed.value.local_skills[0].name);
-    try std.testing.expectEqualStrings("Test description for list regression", parsed.value.local_skills[0].description);
-    try std.testing.expectEqualStrings(tmp_path, parsed.value.cwd orelse "");
-}
-
-test "execute_list_skills - does not show local skill from a different cwd" {
-    // Counterpart test: when the cwd does NOT contain the skill, it should
-    // not appear in local_skills. This guards against a regression where
-    // the OS-level cwd (instead of the passed-in cwd) is used.
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    const skill_name = "test-list-other-cwd-skill";
-    const skill_cwd = "/tmp/nalar-list-skills-other-cwd";
-    const query_cwd = "/tmp/nalar-list-skills-different-cwd";
-
-    // Clean up
-    std.Io.Dir.cwd().deleteTree(io, skill_cwd) catch {};
-    std.Io.Dir.cwd().deleteTree(io, query_cwd) catch {};
-    defer {
-        std.Io.Dir.cwd().deleteTree(io, skill_cwd) catch {};
-        std.Io.Dir.cwd().deleteTree(io, query_cwd) catch {};
-    }
-
-    // Create the skill in skill_cwd
-    const skill_dir_path = try std.fs.path.join(alloc, &[_][]const u8{ skill_cwd, ".nalar", "skills", skill_name });
-    defer alloc.free(skill_dir_path);
-    try std.Io.Dir.cwd().createDirPath(io, skill_dir_path);
-
-    const skill_file_path = try std.fs.path.join(alloc, &[_][]const u8{ skill_dir_path, "SKILL.MD" });
-    defer alloc.free(skill_file_path);
-
-    const skill_content =
-        \\---
-        \\name: test-list-other-cwd-skill
-        \\description: "Skill in different cwd"
-        \\---
-        \\
-        \\# Test content
-        \\
-    ;
-    {
-        const f = try std.Io.Dir.createFileAbsolute(io, skill_file_path, .{});
-        defer std.Io.File.close(f, io);
-        try std.Io.File.writeStreamingAll(f, io, skill_content);
-    }
-
-    // Build a minimal environment map
-    var env = std.process.Environ.Map.init(alloc);
-    defer env.deinit();
-    try env.put("HOME", "/tmp/nalar-nonexistent-home-for-list-test");
-
-    // Call with a DIFFERENT cwd — the skill should not appear
-    const output = try execute_list_skills(alloc, io, query_cwd, &env);
-    defer alloc.free(output);
-
-    // The local skill should NOT appear (because it's in skill_cwd, not query_cwd)
-    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    try std.testing.expectEqual(@as(usize, 0), parsed.value.local_skills.len);
-}
-// ─── tests: use_skill ───
 
 test "use_skill_tool - has correct tool definition" {
     try std.testing.expectEqualStrings("use_skill", use_skill_tool.function.name);

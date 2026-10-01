@@ -3,7 +3,7 @@
  * the XML response from the `kanban_list` agent tool. The component is
  * purely presentational (no API calls), so no mocks are needed.
  *
- * Mirrors the SetGitWorktree / ListSkills tool_output style. Covers
+ * Mirrors the SetGitWorktree / SearchSkills tool_output style. Covers
  * the three XML shapes the backend can produce (see kanban_list.zig:200-236):
  *   1. Success with columns + tasks
  *   2. Empty board (kanban exists but 0 columns) — uses <hint> not <error>

@@ -1140,12 +1140,12 @@ test "a skill that was only LISTED is still evaluated when configured" {
 
     // Only a `listed` event — the agent was offered the skill and never read it.
     const listed =
-        \\{"tool":"list_skills","success":true,"data":{"global_skills":[{"name":"offered-only","description":"d","path":"/p"}],"local_skills":[],"cwd":"/cwd"},"error":null,"v":1}
+        \\{"tool":"search_skills","success":true,"data":{"query":"","skills":[{"name":"offered-only","description":"d","scope":"global","path":"/p"}],"count":1,"total":1},"error":null,"v":1}
     ;
     skill_evals_db.recordSkillToolEvents(alloc, &ctx.db, null, .{
         .io = io,
         .session_id = "sess_1",
-        .tool_name = "list_skills",
+        .tool_name = "search_skills",
         .tool_result_json = listed,
         .loop_index = 1,
         .llm_history_id = "h1",

@@ -1,12 +1,19 @@
-// Exec wrappers for the skill agent tools (`list_skills` / `use_skill` /
+// Exec wrappers for the skill agent tools (`search_skills` / `use_skill` /
 // `remove_skill` / `add_skill` / `edit_skill`) — merged 2026-09-11
 // skills-merge refactor: one file, five exec fns. The public names
-// (`execListSkills` / `execUseSkill` / `execRemoveSkill` / `execAddSkill` /
+// (`execSearchSkills` / `execUseSkill` / `execRemoveSkill` / `execAddSkill` /
 // `execEditSkill`) and behavior are unchanged.
+//
+// `search_skills` replaced the old `list_skills`: same skill library, but the
+// agent now narrows with a regex query and pages through the matches instead
+// of pulling every row into context. Matching + rendering live in
+// `skills_search.zig` (next to `progressive_catalog.zig`), because the regex
+// engine is under `src/agentic_loop/` and `src/modules/` must not import it.
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const tools = @import("tools.zig");
+const skills_search = @import("skills_search.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
@@ -15,20 +22,108 @@ const agent = nalarcore.agent;
 const skill_tools_mod = nalarcore.skill_tools;
 const wrapToolOutput = tools.wrapToolOutput;
 
-// ─── list_skills ───
+// ─── search_skills ───
 
-pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    // Pass ctx.cwd so local skills are looked up in the session's workspace
-    // (the same directory add_skill/edit_skill/remove_skill write to), matching
-    // how those tools are invoked. Passing null here would make list_skills fall
-    // back to the server's OS-level cwd, causing local skills to be invisible.
-    const inner = skill_tools_mod.execute_list_skills(ctx.allocator, ctx.io, ctx.cwd, ctx.environment) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_skills failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "list_skills", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
+pub fn execSearchSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        skill_tools_mod.SearchSkillsInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch {
+        const output = try wrapToolOutput(
+            ctx.allocator,
+            "search_skills",
+            tc.function.arguments,
+            false,
+            "search_skills failed to parse input (expected {\"query\"?: string, \"literal\"?: bool, \"scope\"?: string, \"limit\"?: number, \"offset\"?: number, \"cwd\"?: string})",
+            "",
+        );
+        return .{ .output = output, .output_allocated = true };
     };
-    const output = try wrapToolOutput(ctx.allocator, "list_skills", tc.function.arguments, true, null, inner);
-    return ToolExecResult{ .output = output, .output_allocated = true };
+    defer parsed.deinit();
+
+    // ── Paging bounds ──
+    // Rejected, never silently clamped: the model pages by offset from the
+    // `total` it was shown, so a quiet clamp would make its next call land on
+    // the wrong window. The messages name the accepted range.
+    const limit: usize = blk: {
+        const raw = parsed.value.limit orelse @as(i64, @intCast(skills_search.DEFAULT_SEARCH_LIMIT));
+        if (raw < 1) {
+            const msg = try std.fmt.allocPrint(ctx.allocator, "search_skills: limit must be at least 1 (got {d})", .{raw});
+            const output = try wrapToolOutput(ctx.allocator, "search_skills", tc.function.arguments, false, msg, "");
+            return .{ .output = output, .output_allocated = true };
+        }
+        if (raw > @as(i64, @intCast(skills_search.MAX_SEARCH_LIMIT))) {
+            const msg = try std.fmt.allocPrint(
+                ctx.allocator,
+                "search_skills: limit must be at most {d} (got {d})",
+                .{ skills_search.MAX_SEARCH_LIMIT, raw },
+            );
+            const output = try wrapToolOutput(ctx.allocator, "search_skills", tc.function.arguments, false, msg, "");
+            return .{ .output = output, .output_allocated = true };
+        }
+        break :blk @intCast(raw);
+    };
+    const offset: usize = blk: {
+        const raw = parsed.value.offset orelse 0;
+        if (raw < 0) {
+            const msg = try std.fmt.allocPrint(ctx.allocator, "search_skills: offset must not be negative (got {d})", .{raw});
+            const output = try wrapToolOutput(ctx.allocator, "search_skills", tc.function.arguments, false, msg, "");
+            return .{ .output = output, .output_allocated = true };
+        }
+        break :blk @intCast(raw);
+    };
+
+    // An unparseable scope is an explicit error, never a zero-row answer:
+    // "no skills matched" and "you named a tier that does not exist" are
+    // different facts and the model needs the second one.
+    const scope_filter: ?skills_search.Scope = blk: {
+        const raw = parsed.value.scope orelse break :blk null;
+        if (raw.len == 0) break :blk null;
+        if (skills_search.parseScope(raw)) |s| break :blk s;
+        const msg = try std.fmt.allocPrint(ctx.allocator, "search_skills: unknown scope '{s}' — {s}", .{ raw, skills_search.ACCEPTED_SCOPES_MSG });
+        const output = try wrapToolOutput(ctx.allocator, "search_skills", tc.function.arguments, false, msg, "");
+        return .{ .output = output, .output_allocated = true };
+    };
+
+    // Prefer the model's explicit `cwd`, else the session's own workspace —
+    // the same directory add_skill/edit_skill/remove_skill write to, and the
+    // one the old `execListSkills` regression test pinned (it once passed
+    // null here, which made local skills invisible to the agent).
+    const cwd = parsed.value.cwd orelse ctx.cwd;
+
+    const data = skill_tools_mod.listAllSkills(ctx.allocator, ctx.io, cwd, ctx.environment) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "search_skills failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "search_skills", tc.function.arguments, false, err_msg, "");
+        return .{ .output = output, .output_allocated = true };
+    };
+    defer skill_tools_mod.freeSkillsListData(ctx.allocator, data);
+
+    const rows = try skills_search.collectRows(ctx.allocator, data);
+    defer ctx.allocator.free(rows);
+
+    const query = parsed.value.query orelse "";
+    const outcome = try skills_search.matchQuery(ctx.allocator, rows, query, .{
+        .literal = parsed.value.literal orelse false,
+        .scope = scope_filter,
+    });
+    defer ctx.allocator.free(outcome.rows);
+
+    const page = skills_search.pageSlice(outcome.rows, offset, limit);
+    const inner = try skills_search.renderSearchResult(ctx.allocator, page, .{
+        .total = outcome.rows.len,
+        .offset = offset,
+        .limit = limit,
+        .query = query,
+        .scope = scope_filter,
+        .mode = outcome.mode,
+        .warning = outcome.warning,
+    });
+    defer ctx.allocator.free(inner);
+
+    const output = try wrapToolOutput(ctx.allocator, "search_skills", tc.function.arguments, true, null, inner);
+    return .{ .output = output, .output_allocated = true };
 }
 
 // ─── use_skill ───

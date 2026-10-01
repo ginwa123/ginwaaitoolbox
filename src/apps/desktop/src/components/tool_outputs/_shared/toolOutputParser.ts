@@ -511,47 +511,75 @@ export function parseSearch(data: unknown): ParsedSearch {
   }
 }
 
-export interface ParsedListSkills {
-  globalSkills: Array<{ name: string; description: string; path: string }>
-  localSkills: Array<{ name: string; description: string; path: string }>
-  totalCount: number
-}
-
-interface SkillBlock {
+/**
+ * One row of a `search_skills` page. `scope` is 'global' or 'local' — the
+ * per-row tag the backend flattens the two-tier listing into. `path` is the
+ * EXACT, case-sensitive `SKILL.MD` path to hand to `use_skill`.
+ */
+export interface SkillSearchRow {
   name: string
   description: string
+  scope: string
   path: string
 }
 
-function parseSkillRecord(item: unknown): SkillBlock | null {
+/**
+ * `search_skills` result. Mirrors `ParsedSearchTool` field-for-field
+ * (`query` / `count` / `total` / `truncated` / `hint`) so the two catalog
+ * cards share one paging convention, plus the paging and pattern fields
+ * `search_tool` has no use for (`pattern_mode` / `pattern_warning` /
+ * `scope` / `offset` / `limit` / `next_offset`).
+ *
+ * `scope: null` means the request named no tier and BOTH were searched.
+ */
+export interface ParsedSearchSkills {
+  query: string
+  patternMode: string | null
+  patternWarning: string | null
+  scope: string | null
+  count: number
+  total: number
+  offset: number | null
+  limit: number | null
+  skills: SkillSearchRow[]
+  truncated: boolean
+  nextOffset: number | null
+  hint: string | null
+}
+
+function parseSkillRecord(item: unknown): SkillSearchRow | null {
   const r = asRecord(item)
   const name = strField(r, 'name')
   if (!name) return null
   return {
     name,
     description: strField(r, 'description'),
+    scope: strField(r, 'scope'),
     path: strField(r, 'path'),
   }
 }
 
-export function parseListSkills(data: unknown): ParsedListSkills {
+export function parseSearchSkills(data: unknown): ParsedSearchSkills {
   const o = unwrapDataRecord(data)
-  const globalSkills: SkillBlock[] = []
-  const localSkills: SkillBlock[] = []
-  const globalRaw = Array.isArray(o.global_skills) ? o.global_skills : []
-  for (const item of globalRaw) {
-    const block = parseSkillRecord(item)
-    if (block) globalSkills.push(block)
-  }
-  const localRaw = Array.isArray(o.local_skills) ? o.local_skills : []
-  for (const item of localRaw) {
-    const block = parseSkillRecord(item)
-    if (block) localSkills.push(block)
+  const skills: SkillSearchRow[] = []
+  const skillsRaw = Array.isArray(o.skills) ? o.skills : []
+  for (const item of skillsRaw) {
+    const row = parseSkillRecord(item)
+    if (row) skills.push(row)
   }
   return {
-    globalSkills,
-    localSkills,
-    totalCount: globalSkills.length + localSkills.length,
+    query: strField(o, 'query'),
+    patternMode: strOrNullField(o, 'pattern_mode'),
+    patternWarning: strOrNullField(o, 'pattern_warning'),
+    scope: strOrNullField(o, 'scope'),
+    count: numOrNullField(o, 'count') ?? skills.length,
+    total: numOrNullField(o, 'total') ?? skills.length,
+    offset: numOrNullField(o, 'offset'),
+    limit: numOrNullField(o, 'limit'),
+    skills,
+    truncated: boolField(o, 'truncated', false),
+    nextOffset: numOrNullField(o, 'next_offset'),
+    hint: strOrNullField(o, 'hint'),
   }
 }
 
