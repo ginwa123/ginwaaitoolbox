@@ -62,6 +62,17 @@ const syncRunParam = (runId: string) => {
 
 const selectedRunId = ref<string>(readRunParam())
 
+/**
+ * Empty-state shortcut to the toggle that actually controls this panel.
+ * `?section=evals` is the URL-backed tab param NalarSettings.vue reads, so
+ * the destination is deep-linkable and survives a refresh. `push`, not
+ * `replace`: leaving the chat to change a setting is a real navigation step
+ * the user may want to Back out of.
+ */
+function openSettings() {
+  void router.push({ path: '/app/settings', query: { section: 'evals' } })
+}
+
 // ─── loading ────────────────────────────────────────────────────────────
 
 async function load() {
@@ -227,8 +238,17 @@ const hasAnything = computed(() => runs.value.length > 0 || results.value.length
       class="px-3 py-6 text-xs text-neutral-400"
       data-testid="evals-empty"
     >
-      No skill has been evaluated yet. Turn on <code>skill_evals.enabled</code> in
-      <code>config.json</code> and run a session that loads a skill.
+      Nothing here yet. If Skill Evals is off, turn it on in
+      <button
+        type="button"
+        class="underline underline-offset-2 cursor-pointer"
+        style="color: var(--color-violet)"
+        data-testid="evals-empty-open-settings"
+        @click="openSettings"
+      >
+        Settings → Skill Evals
+      </button>
+      and run a session that loads a skill.
     </div>
 
     <div v-else class="flex-1 min-h-0 overflow-auto">
@@ -256,9 +276,7 @@ const hasAnything = computed(() => runs.value.length > 0 || results.value.length
               <span class="text-xs font-mono truncate">{{ run.id }}</span>
               <span class="text-xs text-neutral-400">{{ run.status }}</span>
             </div>
-            <div class="text-xs text-neutral-500">
-              {{ run.trigger }} · {{ run.session_id }}
-            </div>
+            <div class="text-xs text-neutral-500">{{ run.trigger }} · {{ run.session_id }}</div>
           </button>
         </li>
       </ul>

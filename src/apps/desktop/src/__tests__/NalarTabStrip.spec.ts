@@ -22,12 +22,13 @@ describe('NalarTabStrip', () => {
     })
   })
 
-  it('renders all 4 tab labels in order: General / Profiles / MCP Servers / Tools (no Sub-agents)', () => {
+  it('renders all 5 tab labels in order: General / Profiles / MCP Servers / Tools / Skill Evals (no Sub-agents)', () => {
     // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
     // General tab is FIRST. Tab order matters — operational settings
     // (notification toggles + retry delay) belong at the top. The
     // Tools tab sits after MCP Servers (plan
-    // 2026-09-22-tools-menu-config-default-tools).
+    // 2026-09-22-tools-menu-config-default-tools). Skill Evals is
+    // LAST — it is the switch for the `run_skill_eval` tool.
     const wrapper = mount(NalarTabStrip, {
       props: { modelValue: 'general' },
     })
@@ -38,6 +39,7 @@ describe('NalarTabStrip', () => {
       'Profiles',
       'MCP Servers',
       'Tools',
+      'Skill Evals',
     ])
   })
 
@@ -55,7 +57,7 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'general' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(4)
+    expect(buttons.length).toBe(5)
     await buttons[2]!.trigger('click')
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['mcp'])
   })
@@ -74,7 +76,7 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'mcp' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(4)
+    expect(buttons.length).toBe(5)
     expect(buttons[0]!.attributes('aria-selected')).toBe('false')
     expect(buttons[2]!.attributes('aria-selected')).toBe('true')
     expect(buttons[3]!.attributes('aria-selected')).toBe('false')
@@ -127,7 +129,7 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'profiles' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(4)
+    expect(buttons.length).toBe(5)
     await buttons[0]!.trigger('click')
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['general'])
   })

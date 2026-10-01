@@ -69,7 +69,7 @@ pub const SkillEvalsConfig = struct {
 /// Declared at file scope rather than nested inside `LlmConfigJson` because
 /// Zig requires every struct field to precede any declaration, and the field
 /// that uses this type sits in the middle of that struct.
-const SkillEvalsJson = struct {
+pub const SkillEvalsJson = struct {
     enabled: bool = false,
     max_skills_per_run: u32 = 8,
     max_evals_per_day: u32 = 10,

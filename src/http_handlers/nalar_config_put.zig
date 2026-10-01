@@ -201,6 +201,23 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         });
     }
 
+    // Skill Evals. `null` (absent key, or explicit JSON null — both parse
+    // to `null`) means "no change", so the on-disk block parsed into
+    // `config_json` above survives a save from any Settings tab that does
+    // not render the Evals section. A present object replaces it wholesale,
+    // duping `apply_mode` because the parsed input slice dies with this
+    // function's scope.
+    if (input.skill_evals) |se| {
+        config_json.skill_evals = .{
+            .enabled = se.enabled,
+            .max_skills_per_run = se.max_skills_per_run,
+            .max_evals_per_day = se.max_evals_per_day,
+            .fact_lease_seconds = se.fact_lease_seconds,
+            .include_listed_without_loading = se.include_listed_without_loading,
+            .apply_mode = if (se.apply_mode) |am| try allocator.dupe(u8, am) else null,
+        };
+    }
+
     // Handle profiles - accept BOTH the on-disk shape (object map) and the
     // granular change-list shape (array of ProfileChange). The frontend's
     // main settings panel sends the on-disk shape (Record<name, profile>);
@@ -666,6 +683,13 @@ pub const ConfigInput = struct {
     /// list after registry validation at apply time. Borrowed slices from
     /// the request body — the handler dupes them before writing.
     tools: ?[]const []const u8 = null,
+    /// Skill Evals master switch + knobs. Absent OR explicit JSON `null`
+    /// → no change, so a Settings save from a tab that never rendered
+    /// the Evals section preserves the on-disk block. A present object
+    /// replaces it wholesale. Mirrors `config.SkillEvalsJson` — the
+    /// tolerant shape, so an unrecognised `apply_mode` degrades on the
+    /// next load rather than making config.json unloadable.
+    skill_evals: ?config.SkillEvalsJson = null,
 };
 
 const ProfileChange = struct {
@@ -757,6 +781,13 @@ const ConfigJson = struct {
     /// owned copy when the input provides a new list. `null` emits JSON
     /// `null`, which every reader treats as "key absent".
     tools: ?[]const []const u8 = null,
+    /// Skill Evals block. NON-OPTIONAL so it is always re-emitted: a
+    /// `?… = null` here would serialize to JSON `null`, which the
+    /// runtime parser rejects for this struct and which would erase a
+    /// user's opt-in on every save. Absent on disk → the field defaults
+    /// (`enabled = false`), which is the same value the runtime would
+    /// have used anyway, so materializing it changes no behaviour.
+    skill_evals: config.SkillEvalsJson = .{},
 };
 
 /// Apply the optional `tools` input onto the on-disk write struct.
@@ -2209,5 +2240,117 @@ test "tools field is declared in ALL FOUR wire/disk structs (the PUT-strip footg
     if (std.mem.indexOf(u8, put_impl, "InvalidToolName: '{s}' is not in the unified tool registry") == null) {
         std.debug.print("!! PUT handler missing InvalidToolName 400 body !!\n", .{});
         return error.PutInvalidToolNameBodyMissing;
+    }
+}
+
+test "skill_evals survives a Settings save (the PUT-strip footgun, for skill_evals)" {
+    // `tools` has the guard above; `skill_evals` had NOTHING, which is how
+    // the block was silently deleted from config.json on every save. Lock
+    // the same five sites so dropping any one fails `zig build test`:
+    // PUT input, PUT write struct, GET read struct, the GET pipe, and the
+    // response struct.
+    const allocator = std.testing.allocator;
+    const put_src = try readSource_merged(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(put_src);
+    const get_src = try readSource_merged(allocator, "src/http_handlers/nalar_config_get.zig");
+    defer allocator.free(get_src);
+    const resp_src = try readSource_merged(allocator, "src/http_handlers/http_response.zig");
+    defer allocator.free(resp_src);
+    const put_impl = put_src[0 .. std.mem.indexOf(u8, put_src, "// ===== Tests merged from") orelse put_src.len];
+    const get_impl = get_src[0 .. std.mem.indexOf(u8, get_src, "// ===== Tests merged from") orelse get_src.len];
+    const resp_impl = resp_src[0 .. std.mem.indexOf(u8, resp_src, "// ===== Tests merged from") orelse resp_src.len];
+
+    // 1. ConfigInput (PUT input) — OPTIONAL, so an omitting client is a
+    //    no-op rather than a reset.
+    if (std.mem.indexOf(u8, put_impl, "skill_evals: ?config.SkillEvalsJson = null,") == null) {
+        std.debug.print("!! ConfigInput missing skill_evals !!\n", .{});
+        return error.ConfigInputMissingSkillEvals;
+    }
+    // 2. ConfigJson (PUT write struct) — NON-OPTIONAL. This is the exact
+    //    omission that erased the block; an optional field here would also
+    //    serialize to JSON null, which the runtime parser rejects.
+    if (std.mem.indexOf(u8, put_impl, "skill_evals: config.SkillEvalsJson = .{},") == null) {
+        std.debug.print("!! PUT ConfigJson write struct missing skill_evals !!\n", .{});
+        return error.PutWriteStructMissingSkillEvals;
+    }
+    // 3. The apply block — a present input must actually reach disk.
+    if (std.mem.indexOf(u8, put_impl, "if (input.skill_evals) |se|") == null) {
+        std.debug.print("!! PUT handler does not apply input.skill_evals !!\n", .{});
+        return error.PutSkillEvalsApplyMissing;
+    }
+    // 4. GET read struct + the pipe into the response.
+    if (std.mem.indexOf(u8, get_impl, "skill_evals: config.SkillEvalsJson = .{},") == null) {
+        std.debug.print("!! GET ConfigJson missing skill_evals !!\n", .{});
+        return error.GetConfigJsonMissingSkillEvals;
+    }
+    if (std.mem.indexOf(u8, get_impl, ".enabled = cfg.skill_evals.enabled") == null) {
+        std.debug.print("!! GET handler does not pipe cfg.skill_evals !!\n", .{});
+        return error.GetSkillEvalsNotWired;
+    }
+    // 5. NalarConfigResponse + the wire struct it defaults to.
+    if (std.mem.indexOf(u8, resp_impl, "skill_evals: SkillEvalsResponse = .{},") == null) {
+        std.debug.print("!! NalarConfigResponse missing skill_evals !!\n", .{});
+        return error.ResponseMissingSkillEvals;
+    }
+    if (std.mem.indexOf(u8, resp_impl, "pub const SkillEvalsResponse = struct {") == null) {
+        std.debug.print("!! SkillEvalsResponse wire struct missing !!\n", .{});
+        return error.SkillEvalsResponseStructMissing;
+    }
+}
+
+test "an enabled skill_evals block round-trips through the PUT write struct" {
+    // The grep test above proves the field is DECLARED. This proves it
+    // BEHAVES: the exact round-trip that used to return
+    // `skill_evals survived=false`.
+    const allocator = std.testing.allocator;
+    const on_disk =
+        \\{"skill_evals":{"enabled":true,"max_skills_per_run":3},"notify_on_complete":true}
+    ;
+    var parsed = try std.json.parseFromSlice(ConfigJson, allocator, on_disk, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    try testing.expect(parsed.value.skill_evals.enabled);
+    try testing.expectEqual(@as(u32, 3), parsed.value.skill_evals.max_skills_per_run);
+
+    // A save that does not mention skill_evals (every other Settings tab)
+    // re-serializes the whole config. The opt-in must still be there.
+    const out = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_tab });
+    defer allocator.free(out);
+    if (std.mem.indexOf(u8, out, "\"skill_evals\"") == null) {
+        std.debug.print("!! skill_evals was stripped on save: {s}\n", .{out});
+        return error.SkillEvalsStrippedOnSave;
+    }
+    if (std.mem.indexOf(u8, out, "\"enabled\": true") == null) {
+        std.debug.print("!! skill_evals.enabled lost its value on save: {s}\n", .{out});
+        return error.SkillEvalsEnabledLostOnSave;
+    }
+
+    // And the block must never serialize to JSON null — the runtime parser
+    // rejects null for this struct, so that would make config unloadable.
+    if (std.mem.indexOf(u8, out, "\"skill_evals\": null") != null) {
+        std.debug.print("!! skill_evals serialized to null: {s}\n", .{out});
+        return error.SkillEvalsSerializedToNull;
+    }
+}
+
+test "the response serializes skill_evals.enabled so the toggle can render it" {
+    const allocator = std.testing.allocator;
+    const off = try http_response.makeNalarConfigResponse(allocator, .{});
+    defer allocator.free(off);
+    // Absent on disk must read as OFF, never a phantom ON.
+    if (std.mem.indexOf(u8, off, "\"skill_evals\":{\"enabled\":false") == null) {
+        std.debug.print("!! default response omits skill_evals.enabled: {s}\n", .{off});
+        return error.SkillEvalsMissingFromDefaultResponse;
+    }
+
+    const on = try http_response.makeNalarConfigResponse(allocator, .{
+        .skill_evals = .{ .enabled = true, .apply_mode = "propose" },
+    });
+    defer allocator.free(on);
+    if (std.mem.indexOf(u8, on, "\"enabled\":true") == null) {
+        std.debug.print("!! response does not serialize skill_evals.enabled=true: {s}\n", .{on});
+        return error.SkillEvalsEnabledNotSerialized;
     }
 }

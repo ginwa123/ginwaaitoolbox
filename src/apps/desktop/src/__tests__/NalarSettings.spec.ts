@@ -50,23 +50,39 @@ describe('NalarSettings (orchestrator)', () => {
     })
   })
 
-  it('renders the 4 tab labels in order: General / Profiles / MCP Servers / Tools (no global Sub-agents)', async () => {
+  it('renders the tab labels in order: General / Profiles / MCP Servers / Tools / Skill Evals (no global Sub-agents)', async () => {
     // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
     // General tab is the FIRST tab. Tab order matters — operational
     // settings (notification toggles + retry delay) belong at the top.
     // Plan 2026-09-04-subagents-per-profile: the global Sub-agents tab
     // is removed — sub-agents live inside each profile row. The Tools
     // tab sits after MCP Servers (plan
-    // 2026-09-22-tools-menu-config-default-tools).
+    // 2026-09-22-tools-menu-config-default-tools). Skill Evals is last:
+    // it is the switch for the `run_skill_eval` tool, and the tab is
+    // deep-linkable via `?section=evals`.
     mockGet.mockResolvedValueOnce({})
     const wrapper = mount(NalarSettings, {
       global: { stubs: { Teleport: true } },
     })
     await flushPromises()
     const tabs = wrapper.findAll('button[role="tab"]').map((b) => b.text().trim())
-    expect(tabs).toEqual(['General', 'Profiles', 'MCP Servers', 'Tools'])
+    expect(tabs).toEqual(['General', 'Profiles', 'MCP Servers', 'Tools', 'Skill Evals'])
     expect(wrapper.text()).not.toContain('Defaults')
     expect(wrapper.find('[data-tab-id="sub-agents"]').exists()).toBe(false)
+  })
+
+  it('deep-links ?section=evals to the Skill Evals toggle', async () => {
+    // The Evals sidebar panel links here when it has nothing to show, so
+    // the destination must be reachable by URL alone (a refresh or a
+    // shared link has to land on the toggle, not the first tab).
+    const router = await makeSettingsRouter({ section: 'evals' })
+    mockGet.mockResolvedValueOnce({})
+    const wrapper = mount(NalarSettings, {
+      global: { plugins: [router], stubs: { Teleport: true } },
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-tab-id="evals"][data-active="true"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="skill-evals-section"]').exists()).toBe(true)
   })
 
   it('never mounts the global SubAgentsSection (per-profile lists are the only editor)', async () => {

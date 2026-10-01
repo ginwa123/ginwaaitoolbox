@@ -409,6 +409,10 @@ pub const NalarConfigResponse = struct {
     /// slices — the caller keeps the parsed config alive until the
     /// response is serialized.
     tools: ?[]const []const u8 = null,
+    /// Skill Evals switch + knobs, echoed so the Settings toggle can
+    /// render the current state. Borrowed slices — the caller must keep
+    /// the parsed config alive until the response is serialized.
+    skill_evals: SkillEvalsResponse = .{},
 };
 
 /// Wire format for a single sub-agent entry. Mirrors
@@ -424,6 +428,19 @@ pub const SubAgentResponse = struct {
     url_style: []const u8,
     api_key: []const u8,
     system_prompt: []const u8,
+};
+
+/// Wire format for the Skill Evals block. Mirrors
+/// `LlmConfig.SkillEvalsJson` field-for-field, for the same reason
+/// `SubAgentResponse` lives here — the response boundary serializes
+/// without importing the internal config module.
+pub const SkillEvalsResponse = struct {
+    enabled: bool = false,
+    max_skills_per_run: u32 = 8,
+    max_evals_per_day: u32 = 10,
+    fact_lease_seconds: u32 = 300,
+    include_listed_without_loading: bool = true,
+    apply_mode: ?[]const u8 = null,
 };
 
 pub fn makeNalarConfigResponse(allocator: std.mem.Allocator, response: NalarConfigResponse) ![]u8 {
