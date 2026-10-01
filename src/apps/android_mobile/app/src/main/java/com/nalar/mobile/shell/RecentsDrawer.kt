@@ -38,9 +38,23 @@ fun RecentsDrawerContent(
     isLoading: Boolean = false,
     errorMessage: String? = null,
     onRetry: () -> Unit = {},
-    isLoadingMore: Boolean = false,
+    /**
+     * Whether the workspace holds chats the drawer is not showing, and the
+     * server's count of them all.
+     *
+     * Forwarded to both drawers from here rather than from each call site: they
+     * are one drawer, and a `See all chats ›` row that one of them offers and
+     * the other does not is a drawer that disagrees with itself.
+     */
     hasMoreChats: Boolean = false,
-    onLoadMore: () -> Unit = {},
+    chatsTotal: Int = 0,
+    /**
+     * Leave the drawer for the full recents list.
+     *
+     * A destination, and the drawer closes on the way — for the same reason a
+     * chat row does: the list behind it is somewhere to go, not a filter.
+     */
+    onOpenAllChats: () -> Unit = {},
     /**
      * Forwarded, not interpreted: the set is app-wide and the row that draws
      * the busy dot lives in the sidebar. Swallowing it here would silently drop
@@ -74,14 +88,6 @@ fun RecentsDrawerContent(
     recentsExpanded: Boolean = true,
     onToggleRecentsSection: () -> Unit = {},
     /**
-     * Whether the reader has asked to see past the recents preview, and the tap
-     * that asks. Forwarded for the same reason [recentsExpanded] is: the two
-     * drawers are one drawer, and a preview that survives a screen switch in one
-     * of them and not the other is a drawer that forgets.
-     */
-    recentsShowAll: Boolean = false,
-    onToggleRecentsShowAll: () -> Unit = {},
-    /**
      * The top-level "New Chat" row, forwarded here rather than wired in each of
      * the two call sites — the whole reason this file exists. A caller that
      * forgot to pass it would render a drawer whose one always-available action
@@ -102,9 +108,9 @@ fun RecentsDrawerContent(
         isLoading = isLoading,
         errorMessage = errorMessage,
         onRetry = onRetry,
-        isLoadingMore = isLoadingMore,
         hasMoreChats = hasMoreChats,
-        onLoadMore = onLoadMore,
+        chatsTotal = chatsTotal,
+        onOpenAllChats = onOpenAllChats,
         runningSessionIds = runningSessionIds,
         isAuthEnabled = isAuthEnabled,
         signedInEmail = signedInEmail,
@@ -114,8 +120,6 @@ fun RecentsDrawerContent(
         projectActions = projectActions,
         recentsExpanded = recentsExpanded,
         onToggleRecents = onToggleRecentsSection,
-        recentsShowAll = recentsShowAll,
-        onToggleRecentsShowAll = onToggleRecentsShowAll,
         isCreatingChat = isCreatingChat,
         onNewChat = onNewChat,
     )

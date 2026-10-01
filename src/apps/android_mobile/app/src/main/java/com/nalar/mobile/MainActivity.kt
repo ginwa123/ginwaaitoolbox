@@ -211,11 +211,14 @@ class MainActivity : ComponentActivity() {
                     positionStore = positionStore,
                     onSelectWorkspace = homeViewModel::selectWorkspace,
                     onSelectChat = homeViewModel::selectChat,
-                    onLoadMoreChats = homeViewModel::loadMoreChats,
                     onToggleProjectsSection = homeViewModel::toggleProjectsSection,
                     onToggleProjectExpanded = homeViewModel::toggleProjectExpanded,
                     onEnsureProjectChatsLoaded = homeViewModel::ensureProjectChatsLoaded,
                     onLoadMoreProjectChats = homeViewModel::loadMoreProjectChats,
+                    // The full-screen recents list's next page. The drawer's
+                    // five rows never page — the destination button is what
+                    // gets the reader to this.
+                    onLoadMoreChats = homeViewModel::loadMoreChats,
                     onRetryProjects = homeViewModel::retryProjects,
                     // The create's only ViewModel-facing half. The graph owns
                     // the sheet and the navigation; the ViewModel owns the POST
@@ -243,7 +246,6 @@ class MainActivity : ComponentActivity() {
                     createdChats = homeViewModel.createdChat,
                     onDismissTaskCreateError = homeViewModel::dismissTaskCreateError,
                     onToggleRecentsSection = homeViewModel::toggleRecentsSection,
-            onToggleRecentsShowAll = homeViewModel::toggleRecentsShowAll,
                     onRetryHome = homeViewModel::refresh,
                     onOpenSession = chatViewModel::openSession,
                     onChatDraftChanged = chatViewModel::onDraftChanged,

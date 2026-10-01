@@ -321,7 +321,6 @@ private fun ResumeGraph(
         positionStore = positionStore,
         onSelectWorkspace = {},
         onSelectChat = {},
-        onLoadMoreChats = {},
         onRetryHome = {},
         onOpenSession = onOpenSession,
         onChatDraftChanged = {},

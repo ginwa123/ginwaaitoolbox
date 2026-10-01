@@ -171,7 +171,6 @@ private fun GraphWithChatState(
         positionStore = FixedPosition(LastPosition(workspaceId = "ws_a", sessionId = "sess_1")),
         onSelectWorkspace = {},
         onSelectChat = {},
-        onLoadMoreChats = {},
         onRetryHome = {},
         onOpenSession = {},
         onChatDraftChanged = {},

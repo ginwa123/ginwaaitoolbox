@@ -1,13 +1,13 @@
 package com.nalar.mobile.recents
 
-import com.nalar.mobile.testing.InMemoryProjectsCache
-import com.nalar.mobile.projects.KanbanClient
-import com.nalar.mobile.projects.ProjectsClient
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.projects.KanbanClient
+import com.nalar.mobile.projects.ProjectsClient
 import com.nalar.mobile.storage.LastPositionStore
 import com.nalar.mobile.testing.InMemoryLastPositionStore
+import com.nalar.mobile.testing.InMemoryProjectsCache
 import com.nalar.mobile.testing.InMemoryRecentsCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -25,8 +25,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The scroll's contract at the ViewModel level: one page per request, appended
- * in order, stopped on the server's word rather than on an assumption.
+ * The two halves of the recents list, which fetch differently on purpose.
+ *
+ * The **drawer's preview** is one request for [RecentsApi.DRAWER_PREVIEW_ROWS]
+ * rows and stops there — nothing behind it but the destination row. The
+ * **full-screen list** pages behind `loadMoreChats`, one page per scroll.
+ * Every test below is one of the ways those two can be confused with each other:
+ * a drawer that pages anyway, a screen that pages from the wrong cursor, a
+ * second workspace's cursor carried across, a session that ends mid-page.
  *
  * Main and IO run on SEPARATE schedulers, for the same reason as
  * [HomeViewModelCacheTest] — on a single scheduler the fetch completes inline
@@ -78,8 +84,8 @@ class HomeViewModelPaginationTest {
      * Serves scripted pages for `/api/session` and records what each request
      * asked for, so the resume position is assertable rather than assumed.
      *
-     * Pages are indexed *per workspace* — a test that switches workspaces
-     * would otherwise get workspace B's script replayed for A.
+     * Pages are indexed *per workspace* — a test that switches workspaces would
+     * otherwise get workspace B's script replayed for A.
      */
     private class PagedTransport(
         private val pagesByWorkspace: Map<String, List<String>> = emptyMap(),
@@ -88,6 +94,7 @@ class HomeViewModelPaginationTest {
     ) : AuthTransport {
         var offline = false
         val requestedCursors = mutableListOf<String?>()
+        val requestedLimits = mutableListOf<String?>()
         val requestedWorkspaces = mutableListOf<String?>()
         var chatsRequests = 0
 
@@ -107,6 +114,7 @@ class HomeViewModelPaginationTest {
             requestedWorkspaces += workspaceId
             requestedCursors += path.substringAfter("cursor=", "")
                 .takeIf { path.contains("cursor=") }
+            requestedLimits += path.substringAfter("limit=", "").substringBefore("&")
 
             val script = pagesByWorkspace[workspaceId].orEmpty()
             val index = servedPerWorkspace.getOrDefault(workspaceId, 0)
@@ -153,6 +161,86 @@ class HomeViewModelPaginationTest {
         return """{"sessions":[$rows],"total":$total,"has_more":$hasMore,"next_cursor":$cursor}"""
     }
 
+    // ── The drawer: one request, sized to the preview ──────────────────
+
+    @Test
+    fun theDrawerAsksForExactlyThePreviewRowsAndStopsThere() = paginationTest { s ->
+        // The whole point of sizing the request to the preview: the drawer has
+        // no hidden second cap in the composable, and no reason to ask for more
+        // than it draws.
+        val transport = PagedTransport(
+            pagesByWorkspace = mapOf(
+                "ws_1" to listOf(
+                    page(
+                        listOf("c1", "c2", "c3", "c4", "c5"),
+                        hasMore = true,
+                        nextCursor = "cur-1",
+                        total = 30,
+                    ),
+                ),
+            ),
+        )
+        val model = model(s.ioDispatcher, transport)
+        model.onUserChanged("user_a")
+        s.drain()
+
+        assertEquals(listOf("c1", "c2", "c3", "c4", "c5"), model.uiState.value.chats.map { it.id })
+        assertEquals(RecentsApi.DRAWER_PREVIEW_ROWS.toString(), transport.requestedLimits.single())
+        // No more may exist, so the destination row has something to say — and
+        // the header reports the workspace's real size, not the five on screen.
+        assertTrue(model.uiState.value.hasMoreChats)
+        assertEquals(30, model.uiState.value.chatsTotal)
+    }
+
+    @Test
+    fun aShortWorkspaceAsksOnceAndSaysThereIsNoMore() = paginationTest { s ->
+        val transport = PagedTransport(
+            pagesByWorkspace = mapOf(
+                "ws_1" to listOf(
+                    page(listOf("c1", "c2"), hasMore = false, nextCursor = "cur-1", total = 2),
+                ),
+            ),
+        )
+        val model = model(s.ioDispatcher, transport)
+        model.onUserChanged("user_a")
+        s.drain()
+
+        // `next_cursor` is still set — the server emits one whenever a page is
+        // non-empty — so this is the assertion that `has_more`, not a non-null
+        // cursor, is what ends the list.
+        assertFalse(model.uiState.value.hasMoreChats)
+        assertFalse(model.uiState.value.canLoadMoreChats)
+        assertEquals(2, model.uiState.value.chatsTotal)
+
+        model.loadMoreChats()
+        s.drain()
+
+        assertEquals(1, transport.chatsRequests)
+    }
+
+    @Test
+    fun nothingIsRequestedBeforeTheFirstPageHasLanded() = paginationTest { s ->
+        val transport = PagedTransport(
+            pagesByWorkspace = mapOf(
+                "ws_1" to listOf(
+                    page(listOf("c1"), hasMore = true, nextCursor = "cur-1", total = 9),
+                ),
+            ),
+        )
+        val model = model(s.ioDispatcher, transport)
+        model.onUserChanged("user_a")
+
+        // Still loading: the screen's scroll may already be at the bottom of an
+        // empty list, and paging from here would append onto nothing.
+        model.loadMoreChats()
+        s.drain()
+
+        assertEquals(1, transport.chatsRequests)
+        assertEquals(listOf("c1"), model.uiState.value.chats.map { it.id })
+    }
+
+    // ── The full-screen list: one page per scroll ──────────────────────
+
     @Test
     fun scrollingToTheBottomAppendsTheNextPage() = paginationTest { s ->
         val transport = PagedTransport(
@@ -173,10 +261,19 @@ class HomeViewModelPaginationTest {
         model.loadMoreChats()
         s.drain()
 
-        // The point of the feature: older chats arrive on their own.
+        // The point of the destination page: older chats arrive on its scroll.
         assertEquals(listOf("c1", "c2", "c3", "c4"), model.uiState.value.chats.map { it.id })
         // Page 2 must resume from page 1's cursor rather than restart the list.
         assertEquals(listOf(null, "cur-1"), transport.requestedCursors)
+        // And it asks for a full page, not another five — the preview size is
+        // the drawer's, not the list's.
+        assertEquals(
+            listOf(
+                RecentsApi.DRAWER_PREVIEW_ROWS.toString(),
+                RecentsApi.CHATS_PAGE_LIMIT.toString(),
+            ),
+            transport.requestedLimits,
+        )
         assertFalse(model.uiState.value.hasMoreChats)
     }
 
@@ -205,55 +302,9 @@ class HomeViewModelPaginationTest {
     }
 
     @Test
-    fun scrollingStopsOnceTheServerSaysThereIsNoMore() = paginationTest { s ->
-        val transport = PagedTransport(
-            pagesByWorkspace = mapOf(
-                "ws_1" to listOf(
-                    page(listOf("c1"), hasMore = false, nextCursor = "cur-1", total = 1),
-                ),
-            ),
-        )
-        val model = model(s.ioDispatcher, transport)
-        model.onUserChanged("user_a")
-        s.drain()
-
-        // `next_cursor` is still set — the server emits one whenever a page is
-        // non-empty — so this is the assertion that `has_more`, not a
-        // non-null cursor, is what ends the list.
-        assertFalse(model.uiState.value.hasMoreChats)
-        assertFalse(model.uiState.value.canLoadMoreChats)
-
-        model.loadMoreChats()
-        s.drain()
-
-        assertEquals(1, transport.chatsRequests)
-    }
-
-    @Test
-    fun nothingIsRequestedBeforeTheFirstPageHasLanded() = paginationTest { s ->
-        val transport = PagedTransport(
-            pagesByWorkspace = mapOf(
-                "ws_1" to listOf(
-                    page(listOf("c1"), hasMore = true, nextCursor = "cur-1", total = 9),
-                ),
-            ),
-        )
-        val model = model(s.ioDispatcher, transport)
-        model.onUserChanged("user_a")
-
-        // Still loading: the scroll may already be at the bottom of an empty
-        // list, and paging from here would append onto nothing.
-        model.loadMoreChats()
-        s.drain()
-
-        assertEquals(1, transport.chatsRequests)
-        assertEquals(listOf("c1"), model.uiState.value.chats.map { it.id })
-    }
-
-    @Test
     fun aPageThatRepeatsRowsOnesAlreadyShownEndsTheScroll() = paginationTest { s ->
         // A server that keeps replaying the same window would otherwise put the
-        // sidebar into an unbounded fetch loop against a cursor that never
+        // screen into an unbounded fetch loop against a cursor that never
         // advances. The dedupe means the page adds nothing, so the scroll stops.
         val transport = PagedTransport(
             pagesByWorkspace = mapOf(
@@ -284,8 +335,8 @@ class HomeViewModelPaginationTest {
         val transport = PagedTransport(
             pagesByWorkspace = mapOf(
                 "ws_1" to listOf(
-                    page(listOf("c1", "c2"), hasMore = true, nextCursor = "cur-1", total = 4),
-                    page(listOf("c2", "c3"), hasMore = false, nextCursor = "cur-2", total = 4),
+                    page(listOf("c1", "c2"), hasMore = true, nextCursor = "cur-1", total = 3),
+                    page(listOf("c2", "c3"), hasMore = false, nextCursor = "cur-2", total = 3),
                 ),
             ),
         )
@@ -321,8 +372,8 @@ class HomeViewModelPaginationTest {
         s.drain()
 
         val state = model.uiState.value
-        // Blanking a working sidebar, or silently ending the list, would both be
-        // worse than a page that did not arrive.
+        // Blanking a working list, or silently ending it, would both be worse
+        // than a page that did not arrive.
         assertEquals(listOf("c1", "c2"), state.chats.map { it.id })
         assertFalse(state.isLoadingMoreChats)
         assertTrue("a failed page must be retryable", state.hasMoreChats)
@@ -448,9 +499,35 @@ class HomeViewModelPaginationTest {
         model.refresh()
         s.drain()
 
-        // Pages the user had scrolled in are cut: a reload re-fetches page 1 and
-        // pages forward again, so keeping them would resurrect deleted chats.
+        // Pages the reader had scrolled in are cut: a reload re-fetches the
+        // preview and pages forward again, so keeping them would resurrect
+        // deleted chats.
         assertEquals(listOf("c1", "c2"), model.uiState.value.chats.map { it.id })
         assertEquals(null, transport.requestedCursors.last())
+    }
+
+    @Test
+    fun thePreviewIsWhatTheCacheGetsToo() = paginationTest { s ->
+        // The cache is what a cold boot paints, so writing a *merged* list here
+        // would make the next launch show more rows than the drawer asked for.
+        // The full-screen list's pages do write through — that is the one path
+        // where the cache is allowed to exceed the preview.
+        val cache = InMemoryRecentsCache()
+        val transport = PagedTransport(
+            pagesByWorkspace = mapOf(
+                "ws_1" to listOf(
+                    page(listOf("c1", "c2"), hasMore = true, nextCursor = "cur-1", total = 4),
+                    page(listOf("c3"), hasMore = false, nextCursor = "cur-2", total = 4),
+                ),
+            ),
+        )
+        val model = model(s.ioDispatcher, transport, cache)
+        model.onUserChanged("user_a")
+        s.drain()
+        assertEquals(listOf("c1", "c2"), cache.readChats("user_a", "ws_1")?.map { it.id })
+
+        model.loadMoreChats()
+        s.drain()
+        assertEquals(listOf("c1", "c2", "c3"), cache.readChats("user_a", "ws_1")?.map { it.id })
     }
 }

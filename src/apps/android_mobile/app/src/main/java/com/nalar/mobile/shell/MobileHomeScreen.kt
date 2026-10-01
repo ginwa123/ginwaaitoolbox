@@ -92,9 +92,23 @@ fun MobileHomeScreen(
     isLoading: Boolean = false,
     errorMessage: String? = null,
     onRetry: () -> Unit = {},
-    isLoadingMoreChats: Boolean = false,
+    /**
+     * Whether the workspace holds chats the drawer is not showing, and the
+     * server's count of them all.
+     *
+     * Forwarded to both drawers from here rather than from each call site: they
+     * are one drawer, and a `See all chats ›` row that one of them offers and
+     * the other does not is a drawer that disagrees with itself.
+     */
     hasMoreChats: Boolean = false,
-    onLoadMoreChats: () -> Unit = {},
+    chatsTotal: Int = 0,
+    /**
+     * Leave the drawer for the full recents list.
+     *
+     * A destination, and the drawer closes on the way — for the same reason a
+     * chat row does: the list behind it is somewhere to go, not a filter.
+     */
+    onOpenAllChats: () -> Unit = {},
     /**
      * Session ids with a live worker. Hoisted all the way down to each row, and
      * app-wide rather than per-view, because the shell and the chat are
@@ -131,17 +145,6 @@ fun MobileHomeScreen(
      */
     recentsExpanded: Boolean = true,
     onToggleRecentsSection: () -> Unit = {},
-    /**
-     * Whether the recents are showing every loaded chat rather than the first
-     * few, and the tap that changes it.
-     *
-     * Hoisted, not local, for the same reason [recentsExpanded] is: this screen
-     * composes the drawer twice and the chat route composes the same one again,
-     * so a preview held locally here would be gone by the time the reader
-     * looked at a chat.
-     */
-    recentsShowAll: Boolean = false,
-    onToggleRecentsShowAll: () -> Unit = {},
     /**
      * The top-level "New Chat" row's busy flag and its tap.
      *
@@ -223,6 +226,15 @@ fun MobileHomeScreen(
         closeDrawer()
         onNewChat()
     }
+
+    // The destination row, closed behind it. Same shape as `newChatAndClose`
+    // and for the same reason: the list behind the row is a *place to go*, so
+    // leaving the sheet open on top of it is the drawer hiding the page the
+    // reader asked for.
+    val openAllChatsAndClose: () -> Unit = {
+        closeDrawer()
+        onOpenAllChats()
+    }
     val selectedWorkspace = workspaces.firstOrNull { it.id == selectedWorkspaceId }
     val selectedChat = scopedChats.firstOrNull { it.id == selectedChatId }
 
@@ -269,9 +281,9 @@ fun MobileHomeScreen(
                             isLoading = isLoading,
                             errorMessage = errorMessage,
                             onRetry = onRetry,
-                            isLoadingMore = isLoadingMoreChats,
                             hasMoreChats = hasMoreChats,
-                            onLoadMore = onLoadMoreChats,
+                            chatsTotal = chatsTotal,
+                            onOpenAllChats = openAllChatsAndClose,
                             runningSessionIds = runningSessionIds,
                             isAuthEnabled = isAuthEnabled,
                             signedInEmail = signedInEmail,
@@ -281,8 +293,6 @@ fun MobileHomeScreen(
                             projectActions = projectActions,
                             recentsExpanded = recentsExpanded,
                             onToggleRecentsSection = onToggleRecentsSection,
-                            recentsShowAll = recentsShowAll,
-                            onToggleRecentsShowAll = onToggleRecentsShowAll,
                             isCreatingChat = isCreatingChat,
                             onNewChat = newChatAndClose,
                         )
@@ -318,9 +328,9 @@ fun MobileHomeScreen(
                             isLoading = isLoading,
                             errorMessage = errorMessage,
                             onRetry = onRetry,
-                            isLoadingMore = isLoadingMoreChats,
                             hasMoreChats = hasMoreChats,
-                            onLoadMore = onLoadMoreChats,
+                            chatsTotal = chatsTotal,
+                            onOpenAllChats = openAllChatsAndClose,
                             runningSessionIds = runningSessionIds,
                             isAuthEnabled = isAuthEnabled,
                             signedInEmail = signedInEmail,
@@ -330,8 +340,6 @@ fun MobileHomeScreen(
                             projectActions = projectActions,
                             recentsExpanded = recentsExpanded,
                             onToggleRecentsSection = onToggleRecentsSection,
-                            recentsShowAll = recentsShowAll,
-                            onToggleRecentsShowAll = onToggleRecentsShowAll,
                             isCreatingChat = isCreatingChat,
                             onNewChat = newChatAndClose,
                         )

@@ -61,6 +61,7 @@ import com.nalar.mobile.chat.QueuedChatMessage
 import com.nalar.mobile.login.LoginCredentials
 import com.nalar.mobile.login.LoginScreen
 import com.nalar.mobile.recents.ChatSummary
+import com.nalar.mobile.recents.RecentsChatsScreen
 import com.nalar.mobile.recents.HomeUiState
 import com.nalar.mobile.shell.MobileHomeScreen
 import com.nalar.mobile.shell.RecentsDrawerContent
@@ -110,12 +111,31 @@ object NalarRoutes {
     const val ARG_WORKSPACE_ID = "workspaceId"
     const val ARG_ITEM_ID = "itemId"
 
+    /**
+     * Every chat in one workspace, full-screen.
+     *
+     * The destination behind the drawer's `See all chats ›` row, and the third
+     * piece of the shape the project section already uses: a preview inline, a
+     * button, a page behind it. A *sibling* of [CHAT] and [PROJECT] for the
+     * same reason they are siblings of each other — nesting it under either
+     * would make Back from a chat mean "pop the list".
+     *
+     * One id, unlike [PROJECT]'s two, and that is forced by the wire in the
+     * other direction: `/api/session?workspace_id=…` needs nothing but the
+     * workspace, so a two-argument route here would be a second id with
+     * nothing to resolve it from.
+     */
+    const val CHATS = "chats/{workspaceId}"
+
     fun chat(sessionId: String): String = "chat/${UriEncoding.encode(sessionId)}"
 
     fun recordDetail(recordId: Long): String = "network/record/$recordId"
 
     fun project(workspaceId: String, itemId: String): String =
         "project/${UriEncoding.encode(workspaceId)}/${UriEncoding.encode(itemId)}"
+
+    fun chats(workspaceId: String): String =
+        "chats/${UriEncoding.encode(workspaceId)}"
 }
 
 /**
@@ -256,7 +276,6 @@ fun NalarNavGraph(
     positionStore: LastPositionStore,
     onSelectWorkspace: (String) -> Unit,
     onSelectChat: (String) -> Unit,
-    onLoadMoreChats: () -> Unit,
     /**
      * The four project actions the drawer and the project screen share.
      *
@@ -267,6 +286,16 @@ fun NalarNavGraph(
     onToggleProjectExpanded: (String) -> Unit = {},
     onEnsureProjectChatsLoaded: (String) -> Unit = {},
     onLoadMoreProjectChats: (String) -> Unit = {},
+    /**
+     * The full-screen recents list's next page.
+     *
+     * The drawer never pages — its five rows are one request and a destination
+     * row — so this is reached only by [NalarRoutes.CHATS]. It is a callback
+     * rather than a direct `loadMoreChats()` for the same reason the project
+     * actions are: a graph rendered with inert data in a test needs no
+     * ViewModel behind it.
+     */
+    onLoadMoreChats: () -> Unit = {},
     onRetryProjects: () -> Unit = {},
     /**
      * Create a chat or a memory under a project.
@@ -321,7 +350,6 @@ fun NalarNavGraph(
      * they are one drawer, and a preview the reader expanded in the shell must
      * still be expanded when they open the drawer from inside a chat.
      */
-    onToggleRecentsShowAll: () -> Unit = {},
     onRetryHome: () -> Unit,
     onOpenSession: (String) -> Unit,
     onChatDraftChanged: (String) -> Unit,
@@ -421,6 +449,17 @@ fun NalarNavGraph(
     // which the chat destination claims with a [BackHandler] for exactly that
     // reason.
     val goBack: () -> Unit = { navController.goBackToPreviousOrShell() }
+
+    // Leave the drawer for the full recents list.
+    //
+    // A no-op on a blank workspace id rather than a guess: the route names its
+    // own workspace, and `chats/` with an empty segment would resolve to
+    // nothing while looking like it worked.
+    val openChats: (String) -> Unit = { workspaceId ->
+        if (workspaceId.isNotBlank()) {
+            navController.navigate(NalarRoutes.chats(workspaceId))
+        }
+    }
 
     // Built once, here, and handed to both drawers and the project screen.
     //
@@ -708,9 +747,6 @@ fun NalarNavGraph(
                     isLoading = homeState.isLoading,
                     errorMessage = homeState.errorMessage,
                     onRetry = onRetryHome,
-                    isLoadingMoreChats = homeState.isLoadingMoreChats,
-                    hasMoreChats = homeState.hasMoreChats,
-                    onLoadMoreChats = onLoadMoreChats,
                     runningSessionIds = runningSessionIds,
                     isAuthEnabled = authState.isAuthEnabled,
                     signedInEmail = authState.userEmail,
@@ -725,8 +761,13 @@ fun NalarNavGraph(
                     projectActions = projectActions,
                     recentsExpanded = homeState.isRecentsExpanded,
                     onToggleRecentsSection = onToggleRecentsSection,
-                    recentsShowAll = homeState.isRecentsShowAll,
-                    onToggleRecentsShowAll = onToggleRecentsShowAll,
+                    // The destination row, fed from the same state that decides
+                    // whether to offer it — one notion of "there is more", so
+                    // the button can never appear over a list that already holds
+                    // all of it.
+                    hasMoreChats = homeState.hasMoreChats,
+                    chatsTotal = homeState.chatsTotal,
+                    onOpenAllChats = { openChats(homeState.selectedWorkspaceId.orEmpty()) },
                     // The drawer's top-level New Chat. The screen wraps this
                     // with the drawer dismissal; nothing here navigates — the
                     // createdChat collector above does, once the create lands.
@@ -841,9 +882,6 @@ fun NalarNavGraph(
                         isLoading = homeState.isLoading,
                         errorMessage = homeState.errorMessage,
                         onRetry = onRetryHome,
-                        isLoadingMore = homeState.isLoadingMoreChats,
-                        hasMoreChats = homeState.hasMoreChats,
-                        onLoadMore = onLoadMoreChats,
                         // The same set the shell's drawer shows it in: a chat
                         // busy in the background is busy in both copies of the
                         // list, and this is the one the reader is looking at.
@@ -860,10 +898,76 @@ fun NalarNavGraph(
                         // a chat.
                         recentsExpanded = homeState.isRecentsExpanded,
                         onToggleRecentsSection = onToggleRecentsSection,
-                        recentsShowAll = homeState.isRecentsShowAll,
-                        onToggleRecentsShowAll = onToggleRecentsShowAll,
+                        // Same row, same reason: the shell's drawer and the
+                        // chat route's are one drawer, so a destination one
+                        // offers and the other does not is a drawer that
+                        // forgets where it was.
+                        hasMoreChats = homeState.hasMoreChats,
+                        chatsTotal = homeState.chatsTotal,
+                        // Dismiss explicitly, the way `onOpenChat` does two
+                        // lines up. The list behind the row is a place to go,
+                        // and leaving this modal sheet on top of it is the
+                        // drawer hiding the page the reader asked for.
+                        onOpenAllChats = {
+                            openChats(homeState.selectedWorkspaceId.orEmpty())
+                            dismissDrawer()
+                        },
                     )
                 },
+            )
+        }
+
+        composable(
+            route = NalarRoutes.CHATS,
+            arguments = listOf(
+                navArgument(NalarRoutes.ARG_WORKSPACE_ID) { type = NavType.StringType },
+            ),
+            deepLinks = listOf(
+                navDeepLink { uriPattern = "nalar://chats/{workspaceId}" },
+            ),
+        ) { backStackEntry ->
+            // The drawer's five rows are already in `HomeUiState` — that is the
+            // point of sharing the ViewModel, so opening this page costs one
+            // request and only the pages past the preview are fetched here.
+            //
+            // Scoped by the route's workspace rather than the state's, because a
+            // deep link names a workspace the drawer may never have selected.
+            val routeWorkspaceId = backStackEntry.arguments
+                ?.getString(NalarRoutes.ARG_WORKSPACE_ID)
+                .orEmpty()
+            val routeChats = if (routeWorkspaceId == homeState.selectedWorkspaceId) {
+                homeState.chats
+            } else {
+                // A cold deep link: nothing was fetched for this scope, and
+                // showing the previous workspace's chats under this one's title
+                // would be worse than showing nothing.
+                emptyList()
+            }
+
+            RecentsChatsScreen(
+                workspaceName = homeState.workspaces
+                    .firstOrNull { it.id == routeWorkspaceId }
+                    ?.displayName
+                    ?: "Chats",
+                chats = routeChats,
+                selectedChatId = homeState.selectedChatId,
+                runningSessionIds = runningSessionIds,
+                // The ViewModel's own "keep asking", not `has_more` re-derived
+                // here — it is the only place that knows about the in-flight
+                // page and whether the list has covered the server's count.
+                hasMore = homeState.canLoadMoreChats,
+                isLoadingMore = homeState.isLoadingMoreChats,
+                isLoading = homeState.isLoading && routeChats.isEmpty(),
+                onChatSelected = onSelectChat,
+                onOpenChat = { sessionId ->
+                    // Push, not replace: there IS a list under this one and Back
+                    // from the chat must return to it — the same reason the
+                    // project route pushes.
+                    onOpenSession(sessionId)
+                    navController.navigate(NalarRoutes.chat(sessionId))
+                },
+                onLoadMore = onLoadMoreChats,
+                onBack = goBack,
             )
         }
 

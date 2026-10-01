@@ -28,8 +28,30 @@ object RecentsApi {
      */
     const val WORKSPACES_PATH = "/api/workspaces?is_include_items=false"
 
-    /** Matches the desktop store's first page. */
-    const val CHATS_PAGE_LIMIT = 30
+    /**
+     * How many rows the drawer's preview asks for.
+     *
+     * Five is the drawer, not the data: a drawer on a phone is a switchboard,
+     * and thirty rows of chat titles push the Projects section — the part of
+     * this drawer people navigate *by* — off the bottom of the screen. The rows
+     * behind this are one tap away, on a full-screen page, which is the same
+     * trade the project section makes and the reason both name this constant
+     * the same way.
+     *
+     * The request is sized to the preview so there is no second, hidden cap in
+     * the composable to drift from it: the drawer renders what it fetched.
+     */
+    const val DRAWER_PREVIEW_ROWS = 5
+
+    /**
+     * How many rows one page of the **full-screen** list asks for.
+     *
+     * Twenty is `ProjectsApi.TASKS_PAGE_LIMIT`, deliberately: this list and a
+     * project's chats are the same shape — a preview inline, a page behind it,
+     * paging on scroll — so they pay the same cost per screen and not two
+     * different ones. A request size, never a list size.
+     */
+    const val CHATS_PAGE_LIMIT = 20
 
     /**
      * `workspace_id` is only honoured when it resolves to real sessions, so this
@@ -86,8 +108,9 @@ object RecentsApi {
     ): List<ChatSummary> = parseChatsPage(body, workspaceId).chats
 
     /**
-     * One page of recents plus everything the scroll needs to know whether to
-     * ask for another one.
+     * One page of recents plus everything a *drain* needs to know whether to
+     * ask for another one. The sidebar walks pages until this says the list is
+     * finished; nothing else in the app pages the recents list.
      *
      * Two of those fields are traps, and both are the server's contract rather
      * than this client's choice (`buildSessionListJson` in

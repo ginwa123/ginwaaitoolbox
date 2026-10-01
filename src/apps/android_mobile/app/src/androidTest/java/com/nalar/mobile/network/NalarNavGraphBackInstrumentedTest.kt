@@ -170,7 +170,6 @@ private fun TestNavGraph(navController: NavHostController) {
         positionStore = NoLastPosition,
         onSelectWorkspace = {},
         onSelectChat = {},
-        onLoadMoreChats = {},
         onRetryHome = {},
         onOpenSession = {},
         onChatDraftChanged = {},

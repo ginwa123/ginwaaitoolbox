@@ -329,15 +329,27 @@ internal fun ProjectChatRow(
 }
 
 /**
- * The one control in this feature that leaves the drawer.
+ * The one control in either section that leaves the drawer.
  *
  * Words and a chevron, never a count. Two jobs in one row: it tells the reader
  * the list continues, and it is the route to reading it. A chevron is the
  * right affordance for both — the row goes somewhere.
+ *
+ * One implementation for the project section and the recents section, because
+ * they are the same control pointed at a different list: a second copy is a
+ * second place for the two sections' "what does this do" to drift apart, and
+ * the whole reason they can be read side by side is that they cannot.
+ *
+ * [subject] is the only thing that differs — "in this project" / "in this
+ * workspace" — and it exists so a screen-reader user is told which list the
+ * destination covers rather than hearing the same two words twice in one
+ * drawer. [testTag] likewise, because two rows with one tag cannot both be
+ * addressed in a test.
  */
 @Composable
 internal fun SeeAllChatsRow(
-    projectId: String,
+    testTag: String,
+    subject: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -346,10 +358,10 @@ internal fun SeeAllChatsRow(
         modifier = modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp)
-            .testTag("project_see_all_$projectId")
+            .testTag(testTag)
             .semantics {
                 role = Role.Button
-                contentDescription = "See all chats in this project"
+                contentDescription = "See all chats $subject"
             },
         shape = RoundedCornerShape(10.dp),
         color = NalarAccent.copy(alpha = 0.10f),

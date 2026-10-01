@@ -37,6 +37,10 @@ class RecentsClient(
     /**
      * One page of recents for [workspaceId]. Pass the previous page's
      * `nextCursor` to get the next one; leave it null for the first page.
+     *
+     * One request per call on purpose: `HomeViewModel` owns the drain, so the
+     * loop that stops it, re-seeds it on a workspace switch and drops it on
+     * sign-out all live in one place rather than being spread across here.
      */
     fun loadChats(
         workspaceId: String,
