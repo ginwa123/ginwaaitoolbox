@@ -30,6 +30,11 @@ pub const SearchToolRule = core.SearchToolRule;
 pub const ProgressiveToolRule = core.ProgressiveToolRule;
 pub const SkillsToolRule = core.SkillsToolRule;
 pub const SkillEvalToolRule = core.SkillEvalToolRule;
+// The WRITE half of the loop: create a skill from what the task just taught,
+// and edit one an eval flags. Same unconditional-append reasoning — the
+// tools it names (`add_skill` / `edit_skill`) are always equipped, so gating
+// on them would only fragment the cached prefix.
+pub const SkillWriteToolRule = core.SkillWriteToolRule;
 pub const ReadWorkspaceSessionToolRule = core.ReadWorkspaceSessionToolRule;
 pub const MemoryToolRule = core.MemoryToolRule;
 pub const CrossProjectCwdRule = core.CrossProjectCwdRule;

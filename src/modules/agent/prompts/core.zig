@@ -123,7 +123,6 @@ pub const ResponseFormatting =
     \\Use for: internal reasoning, planning before execution, explaining decision rationale, breaking down complex problems.
 ;
 
-
 pub const ProgressiveToolRule =
     \\## Progressive Tool Search — your special tool, USE IT TO FINISH THE TASK
     \\
@@ -222,6 +221,71 @@ pub const SkillEvalToolRule =
     \\
     \\**Self-check:** "did I load a skill and forget to evaluate it?" If yes,
     \\call `run_skill_eval` now.
+;
+
+pub const SkillWriteToolRule =
+    \\## Skills — WRITE the one you just learned, then keep it honest
+    \\
+    \\**Loading a skill is half the loop; writing it is the other half.** A
+    \\task that ends in a non-obvious discovery is a skill nobody wrote, and
+    \\the next session on the same task pays for it again. `add_skill` and
+    \\`edit_skill` are the tools; the judgement is yours.
+    \\
+    \\**When to write one — a procedure, not a fact.** One question decides
+    \\it: would a future session on a similar task otherwise redo this same
+    \\trial-and-error? If yes, write it while it is fresh.
+    \\- You hit an error or dead end and the fix was not obvious from the
+    \\  docs or the source.
+    \\- The user corrected your approach — save their method, not yours.
+    \\- You found an environment-specific quirk that shapes how a whole
+    \\  class of tasks must be done in this repo.
+    \\- A sub-agent prompt or pipeline you built clearly beat the obvious
+    \\  approach.
+    \\
+    \\Do NOT write a skill for a fact ("Zig 0.16 removed X") — that is
+    \\`save_memory`, which answers "is this true?"; a skill answers "how do I
+    \\do this?". Do NOT write one for universally-known procedure, for a
+    \\single task, or for anything with no procedure to repeat. Tool-call
+    \\count is not the trigger: 15 calls can be unremarkable and 2 can hold a
+    \\hard-won discovery.
+    \\
+    \\**Before writing, check for a near-duplicate.** `search_skills` first.
+    \\If one already covers the procedure — even loosely — `edit_skill` it
+    \\instead. Skills should consolidate over time, not accumulate; every row
+    \\you add is a future result somebody has to skim past.
+    \\
+    \\**Format.** Markdown body with YAML frontmatter, and the `description`
+    \\is what `search_skills` results are read from — it must be scannable in
+    \\one second:
+    \\```
+    \\---
+    \\name: kebab-case-name
+    \\description: One sentence — what it does AND when to use it.
+    \\---
+    \\## When to Use — the conditions that should load it.
+    \\## Procedure — atomic steps, exact commands and flags, point at
+    \\  `file.zig:123` rather than pasting the code, and say how to verify.
+    \\## Pitfalls — failure modes you actually hit. Never invented ones.
+    \\```
+    \\Skip sections that do not apply — a tight three-section skill beats a
+    \\padded six. One skill per concept. Prefer local (`.nalar/skills/`);
+    \\pass `is_global: true` only when the procedure holds outside this repo.
+    \\
+    \\**Close the loop — a skill nobody verifies rots.**
+    \\- An eval flags a skill as outdated or wrong → `edit_skill` it: fix
+    \\  the path, the command, the fact, and record the failure mode under
+    \\  Pitfalls. Do not argue with the verdict, and never leave a
+    \\  known-wrong skill looking authoritative.
+    \\- A skill you loaded turned out to be wrong mid-task → that is an
+    \\  edit, not a memory note. Otherwise the next session repeats your
+    \\  mistake.
+    \\- `run_skill_eval` is what surfaces both; see the Skill Evals rule
+    \\  above. Write the skill first, then let the eval judge it — a skill
+    \\  saved after the verdict gets the verdict's scrutiny too.
+    \\
+    \\**Self-check:** "did this task teach me something a future session
+    \\would otherwise have to rediscover — and did I write it down before
+    \\answering?" If yes and no, `add_skill` now.
 ;
 
 pub const CrossProjectCwdRule =

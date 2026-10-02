@@ -129,6 +129,11 @@ pub fn buildMessages(
     // do, which is what keeps the cacheable prefix one hit instead of N
     // fragments. Same reasoning as the four rules above.
     try final_system.appendSlice(allocator, prompts_const.SkillEvalToolRule);
+    // The write half of the skills loop, after the eval rule it closes.
+    // Unconditional for the same reason: `add_skill` / `edit_skill` are in
+    // the default equipped set, so a gate on them would be a constant that
+    // costs a cacheable-prefix fragment and buys nothing.
+    try final_system.appendSlice(allocator, prompts_const.SkillWriteToolRule);
     _ = activeAgentContent;
 
     // 2. WorkingDirectoryContext — NALAR.md / CLAUDE.md / AGENTS.md (right after static sections)
