@@ -1,10 +1,28 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 
-const props = defineProps<{
-  show: boolean
-  currentName: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    show: boolean
+    currentName: string
+    /**
+     * Dialog heading / field label / input placeholder. The defaults say
+     * "Task" because the kanban card was the first caller, but the same
+     * modal is reused by the sidebar chat-row context menu, where "Rename
+     * Task" would name a concept the user is not looking at. Overridable
+     * rather than forked so the confirm/cancel/keyboard behaviour stays
+     * in one place.
+     */
+    heading?: string
+    label?: string
+    placeholder?: string
+  }>(),
+  {
+    heading: 'Rename Task',
+    label: 'Task Name',
+    placeholder: 'Task name',
+  },
+)
 
 const emit = defineEmits<{
   close: []
@@ -15,14 +33,17 @@ const name = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 
 // Reset value when modal opens, focus input
-watch(() => props.show, async (show) => {
-  if (show) {
-    name.value = props.currentName
-    await nextTick()
-    nameInput.value?.focus()
-    nameInput.value?.select()
-  }
-})
+watch(
+  () => props.show,
+  async (show) => {
+    if (show) {
+      name.value = props.currentName
+      await nextTick()
+      nameInput.value?.focus()
+      nameInput.value?.select()
+    }
+  },
+)
 
 const handleClose = () => {
   emit('close')
@@ -55,37 +76,36 @@ const handleKeydown = (event: KeyboardEvent) => {
         @keydown="handleKeydown"
       >
         <!-- Backdrop -->
-        <div
-          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          @click="handleClose"
-        />
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="handleClose" />
 
         <!-- Modal Content -->
         <div
           class="relative w-full max-w-sm mx-4 p-6 rounded-xl shadow-2xl"
-          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
         >
           <!-- Header -->
           <h3
             class="text-title-sm font-semibold mb-4"
-            style="color: var(--semantic-text);"
+            style="color: var(--semantic-text)"
+            data-testid="rename-modal-heading"
           >
-            Rename Task
+            {{ heading }}
           </h3>
 
           <!-- Name Input -->
           <div class="mb-6">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
-              Task Name
+              {{ label }}
             </label>
             <input
               ref="nameInput"
               v-model="name"
               type="text"
-              placeholder="Task name"
+              :placeholder="placeholder"
+              data-testid="rename-modal-input"
               class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200"
               style="
                 background-color: var(--semantic-sidebar-bg);
@@ -100,15 +120,22 @@ const handleKeydown = (event: KeyboardEvent) => {
             <button
               @click="handleClose"
               class="px-4 py-2 rounded-lg text-body font-medium transition-all duration-200"
-              style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
+              style="
+                background-color: var(--semantic-sidebar-bg);
+                color: var(--semantic-text-muted);
+              "
             >
               Cancel
             </button>
             <button
               @click="handleRename"
               :disabled="!name.trim() || name.trim() === currentName"
+              data-testid="rename-modal-save"
               class="px-4 py-2 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+              style="
+                background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+                color: var(--color-bg);
+              "
             >
               Save
             </button>

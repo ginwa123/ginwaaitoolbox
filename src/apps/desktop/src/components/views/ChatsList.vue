@@ -20,7 +20,8 @@ import { sessionEngineDb, toSessionRow } from '../../sync/SessionEngineDb'
 import { runSyncEffect, runSyncEffectOr, runSyncVoid } from '../../sync/runtime'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
-import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
+import ChatRowContextMenu from '../shell/ChatRowContextMenu.vue'
+import RenameTaskModal from '../dialogs/RenameTaskModal.vue'
 import GitBranchMenu from '../shell/GitBranchMenu.vue'
 
 const router = useRouter()
@@ -205,23 +206,150 @@ watch(
   { deep: false },
 )
 
-// Right-click "Open in new tab" for a chat row. Position state +
-// dismiss wiring live in useContextMenu; the row payload (chat id)
-// lives here so @open can target it.
+// Right-click action menu for a chat row. Position state + dismiss
+// wiring live in useContextMenu; the row payload lives here so the menu
+// can label itself and so each emit knows WHICH row was picked.
 const { menuPos, openAt, close: closeContextMenu } = useContextMenu()
 const contextMenuChatId = ref<string | null>(null)
 
+// Mirrors `navItems`'s element shape. Kept as a separate ref rather
+// than re-reading navItems on every emit so the menu keeps rendering
+// the row it was opened on even if the list reloads underneath it.
+const contextMenuChat = ref<{
+  id: string
+  name: string
+  selected_profile_model?: string
+  is_auto_retry_until_stop?: string
+} | null>(null)
+
+// Re-entry lock for "Stop agent": the row stays actionable while the
+// POST is in flight otherwise, and a double-click fires it twice.
+const isStoppingChat = ref(false)
+
 const onChatRowContextMenu = (event: MouseEvent, item: { id: string; name: string }) => {
   contextMenuChatId.value = item.id
+  contextMenuChat.value = item
   openAt(event)
+}
+
+// Read the picked row straight off navItems so handlers always see the
+// freshest `selected_profile_model` / `is_auto_retry_until_stop`, falling
+// back to the snapshot taken at open time.
+const pickedChat = () => {
+  const id = contextMenuChatId.value
+  if (!id) return null
+  return navItems.value.find((item) => item.id === id) ?? contextMenuChat.value
 }
 
 const openContextMenuInBackground = () => {
   const id = contextMenuChatId.value
   contextMenuChatId.value = null
+  contextMenuChat.value = null
   closeContextMenu()
   if (!id) return
   openChatInNewTab({ id })
+}
+
+// ─── Rename ────────────────────────────────────────────────────────────────
+//
+// Goes through `api.updateTaskSimple`, NOT `api.updateSession`, and the
+// difference is load-bearing:
+//
+//   updateTaskSimple → PUT /api/workspaces/tasks/:task_id →
+//     task_update.updateTaskName → cascade to llm_history.updateSessionName,
+//     whose SQL is `UPDATE sessions SET name = ?` and nothing else.
+//
+//   updateSession    → PUT /api/llm/session/:id →
+//     session_update calls updateSessionSelectedProfileModel UNCONDITIONALLY,
+//     and api/index.ts fills that field with '' whenever the caller omits it.
+//     Empty means CLEAR on the wire (session_update.zig:13), so a rename
+//     through this path would silently reset the chat's model profile AND
+//     bump updated_at, jumping the row to the top of a list sorted by it.
+//
+// Both end at the same `sessions.name`; only one touches anything else.
+// The cascade ends in a `session_updated` SSE broadcast, which the
+// onSessionEvent subscription above turns back into a loadChats().
+const renameModalOpen = ref(false)
+const renameModalName = ref('')
+
+const startRenameFromMenu = () => {
+  const chat = pickedChat()
+  if (!chat) return
+  closeContextMenu()
+  renameModalName.value = chat.name
+  renameModalOpen.value = true
+}
+
+const confirmRename = async (name: string) => {
+  const id = contextMenuChatId.value ?? contextMenuChat.value?.id ?? null
+  // The menu is already closed; the row is identified by the last pick.
+  const targetId = id ?? navItems.value.find((item) => item.name === renameModalName.value)?.id
+  if (!targetId) return
+
+  // Optimistic paint so the row doesn't flicker back to the old name
+  // while the PUT is in flight. The SSE reload replaces this a moment
+  // later regardless of the outcome.
+  const row = navItems.value.find((item) => item.id === targetId)
+  if (row) row.name = name
+
+  try {
+    await api.updateTaskSimple(targetId, { name })
+  } catch (err) {
+    // Revert: the server is the source of truth and the SSE reload will
+    // restore it, but do not leave a name on screen that was never saved.
+    if (row) row.name = renameModalName.value
+    console.error('Failed to rename chat:', err)
+  }
+}
+
+// ─── Unattended mode ───────────────────────────────────────────────────────
+//
+// `is_auto_retry_until_stop` lives on `sessions`, so this one genuinely
+// has to go through updateSession — which means selectedProfile must be
+// sent back explicitly. Passing only the flag would take the same
+// profile-clearing path described above.
+const isUnattended = (chat: { is_auto_retry_until_stop?: string }): boolean =>
+  chat.is_auto_retry_until_stop === '1'
+
+const toggleUnattendedFromMenu = async () => {
+  const chat = pickedChat()
+  closeContextMenu()
+  if (!chat) return
+
+  const next = isUnattended(chat) ? '0' : '1'
+  const row = navItems.value.find((item) => item.id === chat.id)
+  const previous = row?.is_auto_retry_until_stop
+  // Optimistic flip; reverted on failure. KanbanView.handleUnattendedToggle
+  // lets SSE repaint instead, but a context-menu pick reads as a toggle
+  // and an un-flipped switch under the cursor looks broken.
+  if (row) row.is_auto_retry_until_stop = next
+
+  try {
+    await api.updateSession(chat.id, {
+      isAutoRetryUntilStop: next,
+      selectedProfile: chat.selected_profile_model ?? '',
+    })
+  } catch (err) {
+    if (row) row.is_auto_retry_until_stop = previous
+    console.error('Failed to toggle unattended mode:', err)
+  }
+}
+
+// ─── Stop agent ────────────────────────────────────────────────────────────
+const stopAgentFromMenu = async () => {
+  const chat = pickedChat()
+  closeContextMenu()
+  if (!chat || isStoppingChat.value) return
+  isStoppingChat.value = true
+  try {
+    await api.stopSession(chat.id)
+  } catch (err) {
+    // stopSession already swallows transport failures into
+    // {success:false}; this only fires on a programming error.
+    console.error('Failed to stop agent:', err)
+  } finally {
+    isStoppingChat.value = false
+  }
 }
 
 // Right-click menu on the git icon: open GitHub branch / PR URLs in
@@ -969,6 +1097,7 @@ defineExpose({
             @click="onChatRowClick($event, item)"
             @auxclick="onChatRowAuxClick($event, item)"
             @contextmenu.prevent="onChatRowContextMenu($event, item)"
+            :data-testid="`chat-row-${item.id}`"
             class="relative w-full flex items-center gap-2 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-dense transition-all duration-150 border-t border-transparent overflow-hidden"
             :class="isCurrentChat(item.id) ? 'border-[--color-border]/60' : ''"
             :style="
@@ -1084,11 +1213,27 @@ defineExpose({
        div stays so the layout spacing is unchanged. -->
   <div v-else class="mb-2 shrink-0" data-testid="collapsed-chats-placeholder" />
 
-  <OpenInNewTabMenu
+  <ChatRowContextMenu
     v-if="menuPos"
     :x="menuPos.x"
     :y="menuPos.y"
-    @open="openContextMenuInBackground"
+    :chat-name="contextMenuChat?.name ?? ''"
+    :is-processing="contextMenuChatId ? !!processingState[contextMenuChatId] : false"
+    :unattended="isUnattended(contextMenuChat ?? {})"
+    :is-stopping="isStoppingChat"
+    @rename="startRenameFromMenu"
+    @toggle-unattended="toggleUnattendedFromMenu"
+    @stop="stopAgentFromMenu"
+    @open-in-new-tab="openContextMenuInBackground"
+  />
+  <RenameTaskModal
+    :show="renameModalOpen"
+    :current-name="renameModalName"
+    heading="Rename chat"
+    label="Chat name"
+    placeholder="Chat name"
+    @close="renameModalOpen = false"
+    @rename="confirmRename"
   />
   <GitBranchMenu
     v-if="gitMenuPos"
