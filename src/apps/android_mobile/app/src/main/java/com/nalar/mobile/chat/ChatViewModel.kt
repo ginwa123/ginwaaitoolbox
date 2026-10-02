@@ -1284,6 +1284,25 @@ class ChatViewModel(
      * The canonical row for a turn. It replaces any row with the same id and
      * drops the streaming placeholder, then goes straight into the cache so a
      * cold start after this turn reads the completed text rather than a stub.
+     *
+     * **Appended, never re-sorted**, and that is the whole point.
+     *
+     * The backend's `llm_full` payload (`SseEventLLMHistory`,
+     * `src/agentic_loop/sse_on_event_send_llm_history.zig:19-56`) declares no
+     * `created_at` member, so a row decoded from a frame arrives with a sort key
+     * of `0`. Sorting that against a transcript whose every other row carries a
+     * real nanosecond timestamp files the turn the reader JUST SENT at **index
+     * 0** — the top of the chat — while the viewport is pinned to the last index.
+     * The reader watches a spinner appear over a conversation that never shows
+     * their own words, and the defect then persists: `liveMessageIds` suppresses
+     * the REST repair, and [rawObjectFor] writes `created_at = "0"` so a cold
+     * start re-reads the same wrong position.
+     *
+     * An `llm_full` frame is by construction the row the worker has *just*
+     * written, so arrival order *is* chronological order. The Vue web relies on
+     * exactly that and pushes the frame with a local clock
+     * (`ChatView.vue:3870-3873`); this mirrors it rather than inventing a second
+     * ordering rule for the same wire.
      */
     private fun upsertFullMessage(sessionId: String, event: ChatStreamEvent.Full) {
         val message = event.message
@@ -1300,11 +1319,20 @@ class ChatViewModel(
                     candidate.id == message.id
             }
             state.copy(
-                messages = (dropped + message).sortedBy { it.sortKeyNanos },
+                messages = dropped + message.stampedForArrival(dropped),
                 isStreaming = false,
                 errorMessage = null,
             )
         }
+
+        // The STAMPED row is what goes to disk, not the frame as it arrived.
+        // `rawObjectFor` persists `created_at = sortKeyNanos`, so writing the
+        // unstamped copy stores `"0"` and the next cold start re-sorts this turn
+        // to the top of the chat — the exact defect this stamps it to prevent,
+        // re-armed on every restart. `update` publishes synchronously, so the
+        // stamped row is already in the state by the time this reads it back.
+        val placed = _uiState.value.messages.lastOrNull { it.id == message.id }
+            ?: message
 
         viewModelScope.launch {
             withContext(ioDispatcher) {
@@ -1312,11 +1340,39 @@ class ChatViewModel(
                     userId,
                     sessionId,
                     listOfNotNull(
-                        ChatCacheCodec.toCachedMessage(sessionId, rawObjectFor(message)),
+                        ChatCacheCodec.toCachedMessage(sessionId, rawObjectFor(placed)),
                     ),
                 )
             }
         }
+    }
+
+    /**
+     * Gives a frame-delivered row a sort key it can actually be ordered by.
+     *
+     * A row that already carries a server timestamp is left alone: that
+     * timestamp is the authority, and a local clock must never outrank it.
+     *
+     * One that does not gets this phone's arrival clock — **floored just above
+     * every row already on screen**. The floor is what makes the fix independent
+     * of the phone's clock being right: a device whose clock is an hour behind
+     * the server's would otherwise stamp its own turn with an older key than the
+     * transcript around it and re-sort it back to where it just came from. The
+     * floor is computed against the rows that survive the merge, and skips the
+     * `Long.MAX_VALUE` sentinel the streaming placeholder uses, so it can never
+     * overflow on the increment.
+     */
+    private fun ChatMessage.stampedForArrival(siblings: List<ChatMessage>): ChatMessage {
+        if (sortKeyNanos > 0L) return this
+        val millis = nowMillis()
+        val newestSibling = siblings
+            .map { it.sortKeyNanos }
+            .filter { it in 1 until Long.MAX_VALUE }
+            .maxOrNull() ?: 0L
+        return copy(
+            createdAtEpochMillis = millis,
+            sortKeyNanos = maxOf(millis * ChatApi.NANOS_PER_MILLI, newestSibling + 1L),
+        )
     }
 
     /**
