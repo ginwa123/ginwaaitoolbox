@@ -179,7 +179,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-07-15-glob-respect-ignore-files.md` | ✅ | `respect_ignore_files` param (#98) |
 | `2026-07-15-search-respect-ignore-files.md` | ✅ | `respect_ignore_files` param (#96) |
 | `2026-07-15-retry-delay.md` | ✅ | Configurable retry delay 0–60 000 ms (PR #93) |
-| `2025-04-03-web-search-tools-design.md` | ✅ | `web_search.zig` + `execute_web_search` registered |
+| `2025-04-03-web-search-tools-design.md` | ✅ | superseded 2026-10-02 — the URL-browser shim was replaced by a real search tool (`web_search` + `list_web_search_providers`); see plan 2026-10-02-web-search-tool.md |
 | `2025-03-18-lsp-definition-simple.md` | 🟡 | Session-based LSP client (not 1-shot as planned) |
 | `2025-03-18-lsp-definition-tdd-simple.md` | 🟡 | TDD tests for LSP simple |
 | `2025-03-18-lsp-tools-integration.md` | 🟡 | All 5 LSP tools registered (definition/references/hover/document_symbol/workspace_symbol) |
@@ -1004,7 +1004,7 @@ The 107 implementation plans once held here have been consolidated into this SPE
 2025-03-29-biomejs-linter-integration          ✅ installed then removed
 2025-03-30-chatbox-implementation              🗑️ SolidJS — replaced by Vue 3
 2025-03-31-session-queue-messages              ✅ Migration018
-2025-04-03-web-search-tools-design             ✅ web_search.zig
+2025-04-03-web-search-tools-design             ✅ web_search.zig (superseded 2026-10-02 by 2026-10-02-web-search-tool)
 2026-01-15-llm-completion-notification         ✅ OS notification
 2026-03-17-add-is-input-is-output-columns      ✅ Migration016
 2026-03-19-tui-read-file-display               ✅ TUI existed, then removed
