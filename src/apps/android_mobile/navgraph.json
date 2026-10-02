@@ -11,7 +11,7 @@
       ],
       "deepLinks": [],
       "isStart": true,
-      "line": 703,
+      "line": 683,
       "placeholders": [],
       "route": "SHELL",
       "screens": [
@@ -36,7 +36,7 @@
         "nalar://chat/{sessionId}"
       ],
       "isStart": false,
-      "line": 780,
+      "line": 760,
       "placeholders": [
         "sessionId"
       ],
@@ -61,7 +61,7 @@
         "nalar://chats/{workspaceId}"
       ],
       "isStart": false,
-      "line": 930,
+      "line": 910,
       "placeholders": [
         "workspaceId"
       ],
@@ -87,7 +87,7 @@
         "nalar://project/{workspaceId}/{itemId}"
       ],
       "isStart": false,
-      "line": 989,
+      "line": 969,
       "placeholders": [
         "workspaceId",
         "itemId"
@@ -111,7 +111,7 @@
         "nalar://network"
       ],
       "isStart": false,
-      "line": 1068,
+      "line": 1048,
       "placeholders": [],
       "route": "NETWORK",
       "screens": [
@@ -133,7 +133,7 @@
         "nalar://network/record/{recordId}"
       ],
       "isStart": false,
-      "line": 1078,
+      "line": 1058,
       "placeholders": [
         "recordId"
       ],
@@ -317,7 +317,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 744,
+          "line": 724,
           "note": "NalarRoutes.chat(sessionId)"
         }
       ],
@@ -337,7 +337,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 982,
+          "line": 962,
           "note": "NalarRoutes.chat(sessionId)"
         }
       ],
@@ -357,7 +357,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 1035,
+          "line": 1015,
           "note": "NalarRoutes.chat(sessionId)"
         }
       ],
@@ -377,7 +377,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 1074,
+          "line": 1054,
           "note": "NalarRoutes.recordDetail(recordId)"
         }
       ],
@@ -397,7 +397,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 1214,
+          "line": 1216,
           "note": "NalarRoutes.chat(sessionId)"
         }
       ],
@@ -417,7 +417,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 780,
+          "line": 760,
           "note": "nalar://chat/{sessionId}"
         }
       ],
@@ -437,7 +437,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 930,
+          "line": 910,
           "note": "nalar://chats/{workspaceId}"
         }
       ],
@@ -457,7 +457,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 989,
+          "line": 969,
           "note": "nalar://project/{workspaceId}/{itemId}"
         }
       ],
@@ -477,7 +477,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 1068,
+          "line": 1048,
           "note": "nalar://network"
         }
       ],
@@ -497,7 +497,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 1078,
+          "line": 1058,
           "note": "nalar://network/record/{recordId}"
         }
       ],
@@ -517,7 +517,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 780,
+          "line": 760,
           "note": "BackHandler { goBack() }"
         }
       ],
@@ -537,7 +537,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 930,
+          "line": 910,
           "note": "onBack = goBack"
         }
       ],
@@ -557,7 +557,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 989,
+          "line": 969,
           "note": "onBack = goBack"
         }
       ],
@@ -577,7 +577,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 1068,
+          "line": 1048,
           "note": "onBack = goBack"
         }
       ],
@@ -597,7 +597,7 @@
       "sites": [
         {
           "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-          "line": 1078,
+          "line": 1058,
           "note": "onBack = goBack"
         }
       ],
@@ -615,7 +615,7 @@
       "severity": "error",
       "site": {
         "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-        "line": 930,
+        "line": 910,
         "note": "CHATS"
       },
       "subject": "chats/{workspaceId}",
@@ -627,7 +627,7 @@
       "severity": "error",
       "site": {
         "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-        "line": 989,
+        "line": 969,
         "note": "PROJECT"
       },
       "subject": "project/{workspaceId}/{itemId}",
@@ -647,7 +647,7 @@
       "severity": "info",
       "site": {
         "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-        "line": 1078,
+        "line": 1058,
         "note": "RECORD_DETAIL"
       },
       "subject": "network/record/{recordId}",
@@ -695,7 +695,7 @@
   },
   "meta": {
     "generatedBy": "tools/navgraph/build.py",
-    "gitSha": "d72db456",
+    "gitSha": "46e43fc1",
     "manifestFile": "src/apps/android_mobile/app/src/main/AndroidManifest.xml",
     "manifestHosts": {
       "chat": 53,

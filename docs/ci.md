@@ -383,6 +383,26 @@ them:
   the more valuable of the two signals, so a red Gradle build upstream must
   not turn ten scenarios into "skipped".
 
+### The navigation audit page is a committed artifact
+
+`android-apk` runs `tools/navgraph/build.py --check`, and `android-test`
+re-checks the same two files from `navgraph_contract_test.py`. Both fail if
+`navgraph.html` / `navgraph.json` no longer match `NalarNavGraph.kt`, so
+**any** edit to the nav graph — including one that only shifts lines, which is
+most of them — has to be followed by:
+
+```bash
+python src/apps/android_mobile/tools/navgraph/build.py
+```
+
+This guard is red on `main` more often than it should be, and the reason is
+that regeneration is a manual step with no local gate: nothing runs `--check`
+before the 20-minute `android-apk` job does. `navgraph.html` and
+`navgraph.json` went stale twice after #765 landed, purely from later commits
+moving lines above the anchors. The fix is not to weaken the guard — a
+committed page that is confidently wrong is worse than no page — it is to run
+the one command above before pushing a `.kt` change.
+
 ### Why they no longer wait for the backend matrix
 
 `android-apk` used to be sequenced strictly after **all three** backend cells,
@@ -460,6 +480,7 @@ zig build functional-test-ui                    # Playwright suites
 bash scripts/ci-install-linux-deps.sh           # what CI installs on Ubuntu
 cd src/apps/desktop && pnpm lint:check          # the `lint` CI job
 bash scripts/ci-change-filter.sh --selftest     # the path classifier
+python src/apps/android_mobile/tools/navgraph/build.py --check   # the navgraph staleness guard
 ```
 
 Run ONE shard of the functional suite exactly as CI does:
