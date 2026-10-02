@@ -92,11 +92,11 @@ pub const command_result_to_json = shell.result_to_json;
 pub const command_tool_system_prompt =
     \\## Command Tool — Behavior
     \\Use `command` to execute shell commands. The host OS picks the shell automatically: `bash` on Linux/macOS, `pwsh` (PowerShell Core) on Windows, with automatic silent fallback to `cmd.exe /c` on Windows when `pwsh` is not installed.
-    \\Every command MUST start with `timeout <seconds>` and bound output with `| head -n <N>` or `| tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh) (except under the cmd.exe fallback — see below).
+    \\Do NOT prefix commands with a shell `timeout` utility — the mandatory_timeout field is the deadline enforcer, and a `timeout N ...` prefix is both redundant and unavailable on Windows. Bound output with `| head -n <N>` or `| tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh) (except under the cmd.exe fallback — see below).
     \\- Prefer `search`/`read_file`/`glob` for code exploration over shell `rg`/`grep`/`find`.
     \\- Always set `cwd` explicitly to an absolute path. Never assume the working directory.
     \\- Use `background=true` for long-running processes; it returns PID + log path.
-    \\- Under the cmd.exe fallback (Windows without pwsh): do NOT prefix `timeout N` (the mandatory_timeout field is the enforcer); do NOT use `| head -n` (use max_lines, findstr, or more); use cmd syntax — dir / where / type / %VAR% / && chaining / double-quotes for URLs (single quotes are literal under cmd).
+    \\- Under the cmd.exe fallback (Windows without pwsh): do NOT use `| head -n` (use max_lines, findstr, or more); use cmd syntax — dir / where / type / %VAR% / && chaining / double-quotes for URLs (single quotes are literal under cmd).
     \\
 ;
 
@@ -117,7 +117,8 @@ pub const command_tool = AgentTool{
         \\
         \\## Command Rules (enforced in code)
         \\Every command MUST:
-        \\- start with `timeout <seconds>`
+        \\- set `mandatory_timeout` (the deadline IS the timeout — there is no
+        \\  shell `timeout` prefix to write; do not add one)
         \\- limit output using `| head -n <N> or tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh) to prevent huge output
         \\- avoid commands that produce unbounded output
         \\- use ripgrep (rg) instead of grep/find for searching
@@ -139,8 +140,7 @@ pub const command_tool = AgentTool{
         \\there. If the shell executable is not on PATH, the spawn fails
         \\with `FileNotFound` at spawn time — except on Windows, where a
         \\missing `pwsh` retries the command under `cmd.exe /c` (see dispatch
-        \\above). Under `cmd.exe`: no `timeout N` prefix (mandatory_timeout is
-        \\the enforcer), no `| head -n` (use max_lines / findstr / more),
+        \\above). Under `cmd.exe`: no `| head -n` (use max_lines / findstr / more),
         \\single quotes are literal (keep URLs in double quotes), env vars are
         \\`%NAME%`, chain with `&&`, list with `dir`, locate with `where`,
         \\print files with `type`.
@@ -163,12 +163,13 @@ pub const command_tool = AgentTool{
                     .name = "command",
                     .type = "string",
                     .description =
-                    \\Command to execute.
+                    \\Command to execute. Do NOT prefix it with a shell
+                    \\`timeout N` — mandatory_timeout is the deadline.
                     \\
-                    \\On bash hosts: `timeout 10 zig build 2>&1 | head -n 50`.
+                    \\On bash hosts: `zig build 2>&1 | head -n 50`.
                     \\On pwsh hosts: `Get-ChildItem | Select-Object -First 30`.
-                    \\GOOD (bash): `timeout 10 rg 'MyStruct' src/ | head -n 50`
-                    \\GOOD (bash): `timeout 10 fd MyStruct src/ | head -n 50`
+                    \\GOOD (bash): `rg 'MyStruct' src/ | head -n 50`
+                    \\GOOD (bash): `fd MyStruct src/ | head -n 50`
                     \\GOOD (pwsh): `Get-ChildItem | Select-Object -First 30`
                     ,
                 },
@@ -185,7 +186,9 @@ pub const command_tool = AgentTool{
                     \\to run. When the deadline elapses the shell process is killed
                     \\(SIGKILL on POSIX, TerminateProcess on Windows) so the agent
                     \\cannot hang on a runaway command. There is no default — the
-                    \\tool returns `MandatoryTimeoutMissing` if you omit this.
+                    \\tool returns `MandatoryTimeoutMissing` if you omit this, and
+                    \\it is the ONLY timeout — never prefix the command itself with
+                    \\a shell `timeout N`.
                     \\Pick a value that matches what the command realistically
                     \\needs (a few seconds for ls/cat, 30–60 s for builds,
                     \\300+ s for long compilations).
@@ -251,6 +254,98 @@ pub const command_tool = AgentTool{
 
 const testing = std.testing;
 const command = @import("command.zig");
+
+test "command_tool schema: no `timeout` prefix rule in the LLM-facing text" {
+    // The tool description and system prompt used to instruct the model to
+    // write `timeout <seconds> <cmd>`. That rule is gone — the only deadline
+    // is the `mandatory_timeout` field, enforced in shell.execute_shell.
+    // The negative "do NOT prefix" wording is still allowed; what must not
+    // come back is a rule that tells the model to START with one.
+    const desc = command.command_tool.function.description;
+    const prompt = command.command_tool_system_prompt;
+
+    const banned = [_][]const u8{
+        "start with `timeout",
+        "Every command MUST start with `timeout",
+        "timeout <seconds>",
+        "- start with `timeout",
+        "timeout 10 ",
+    };
+    for ([_][]const u8{ desc, prompt }) |text| {
+        for (banned) |needle| {
+            if (std.mem.indexOf(u8, text, needle) != null) {
+                std.debug.print(
+                    "\n!! command tool text still tells the model to use a `timeout` prefix: {s}\n",
+                    .{needle},
+                );
+                return error.TimeoutPrefixRuleStillPresent;
+            }
+        }
+    }
+    // ...and the replacement guidance is actually there in both places: the
+    // Command Rules bullet in the description, and the opening line of the
+    // system prompt.
+    try testing.expect(std.mem.indexOf(u8, desc, "do not add one") != null);
+    try testing.expect(std.mem.indexOf(u8, prompt, "Do NOT prefix commands") != null);
+    // The `command` param's own examples must not open with a timeout either.
+    for (command.command_tool.function.parameters.properties) |prop| {
+        if (!std.mem.eql(u8, prop.name, "command")) continue;
+        try testing.expect(std.mem.indexOf(u8, prop.description, "timeout 10 ") == null);
+        try testing.expect(std.mem.indexOf(u8, prop.description, "Do NOT prefix") != null);
+    }
+}
+
+test "command_tool schema: mandatory_timeout stays required and is the only timeout param" {
+    // Param audit: `mandatory_timeout` is still in `.required`, and the
+    // prompt-text removal did not leave a stray `timeout` sibling behind.
+    const params = command.command_tool.function.parameters;
+
+    var found_mt = false;
+    var forbidden_param: ?[]const u8 = null;
+    for (params.properties) |prop| {
+        if (std.mem.eql(u8, prop.name, "mandatory_timeout")) found_mt = true;
+        if (std.mem.eql(u8, prop.name, "timeout")) forbidden_param = prop.name;
+    }
+    if (forbidden_param != null) {
+        std.debug.print(
+            "\n!! command tool grew a `timeout` param ({s}) — mandatory_timeout is the only deadline\n",
+            .{forbidden_param.?},
+        );
+        return error.StrayTimeoutParam;
+    }
+    try testing.expect(found_mt);
+
+    var required_mt = false;
+    for (params.required) |name| {
+        if (std.mem.eql(u8, name, "mandatory_timeout")) required_mt = true;
+    }
+    try testing.expect(required_mt);
+}
+
+test "command.execute_command still enforces mandatory_timeout at runtime" {
+    // The prompt-text change is cosmetic; the CODE enforcement is the
+    // contract. A call with mandatory_timeout = null must still fail with
+    // MandatoryTimeoutMissing (and 0 must too) — otherwise removing the
+    // `timeout N` prefix rule would silently leave commands unbounded.
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    try testing.expectError(
+        error.MandatoryTimeoutMissing,
+        command.execute_command(testing.allocator, std.testing.io, .{
+            .command = "echo hi",
+            .cwd = "/tmp",
+            .mandatory_timeout = null,
+        }),
+    );
+    try testing.expectError(
+        error.MandatoryTimeoutMissing,
+        command.execute_command(testing.allocator, std.testing.io, .{
+            .command = "echo hi",
+            .cwd = "/tmp",
+            .mandatory_timeout = 0,
+        }),
+    );
+}
 
 test "command_tool schema: tool name is 'command'" {
     try testing.expectEqualStrings("command", command.command_tool.function.name);
