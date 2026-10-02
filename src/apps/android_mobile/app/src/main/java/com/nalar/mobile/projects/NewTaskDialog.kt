@@ -1,5 +1,6 @@
 package com.nalar.mobile.projects
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,15 +14,16 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,9 +67,8 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
 import com.nalar.mobile.chat.BitmapPickedImageReader
 import com.nalar.mobile.chat.ChatAttachments
@@ -116,10 +117,16 @@ data class NewTaskDialogData(
  * The reasons for each of those, and the two places where the phone cannot do
  * what the browser does, are on the composable that owns them.
  *
- * A full-screen [Dialog] rather than an `AlertDialog` because the web's form is
- * roughly a phone screen and a half tall and scrolls, and an `AlertDialog`
- * pins its own header and buttons around a body it will not let grow: the
- * Settings block would be unreachable on the device this ships to.
+ * Full-screen rather than an `AlertDialog` because the web's form is roughly a
+ * phone screen and a half tall and scrolls, and an `AlertDialog` pins its own
+ * header and buttons around a body it will not let grow: the Settings block
+ * would be unreachable on the device this ships to.
+ *
+ * Drawn as an overlay in the activity's composition rather than inside a
+ * platform `Dialog` window, and the commit row's visibility depends on it —
+ * see the comment on the [Surface] below for the whole of it. The caller is
+ * responsible for painting it over whatever it covers
+ * ([com.nalar.mobile.network.NalarNavGraph] mounts it after the `NavHost`).
  */
 @Composable
 fun NewTaskDialog(
@@ -201,134 +208,153 @@ fun NewTaskDialog(
         onSubmit(form.copy(tags = committedTags, runAgent = runAgent))
     }
 
-    Dialog(
-        onDismissRequest = { if (!isSubmitting) onClose() },
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+    // The form covers the board rather than floating above it, so Back has to be
+    // claimed explicitly: a `Dialog` used to get this from the window for free,
+    // and an overlay that swallowed the screen without taking Back would strand
+    // a reader who presses it on the way out of the form.
+    BackHandler(enabled = !isSubmitting) { onClose() }
+
+    // Not a platform `Dialog`, and the reason is a bug this form shipped with.
+    // `Dialog(usePlatformDefaultWidth = false)` measures its content against
+    // `Configuration.screenHeightDp` — the *whole* display, status bar and
+    // navigation bar included — and then calls `window.setLayout()` with the
+    // child's measured size (`DialogLayout.internalOnMeasure` /
+    // `internalOnLayout` in compose-ui's `AndroidDialog.android.kt`). A
+    // `fillMaxSize()` surface therefore fills the raw display, and the pinned
+    // commit row at the bottom of the form lands underneath the navigation bar:
+    // "▶ Create task & run agent" is drawn at the very edge of the screen and
+    // half of it is clipped away, so the one control the whole form exists for
+    // is the one control nobody can see or tap.
+    //
+    // `windowInsetsPadding` cannot rescue that from inside the dialog — the
+    // window is sized from the child, so the decor's own inset padding is
+    // added *on top* of an already-full-height child and pushed off the bottom.
+    // Drawn in the activity's composition instead, the form's bounds are the
+    // window's bounds and [WindowInsets.safeDrawing] is the honest answer to
+    // "where is the safe area", the same one the chat composer and the login
+    // screen already read correctly.
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .testTag("create_task_dialog"),
+        color = NalarBackgroundRaised,
+        contentColor = NalarText,
     ) {
-        // `Dialog` takes no `modifier` of its own — it is a platform window, not
-        // a composable node — so the full-size and the test tag both ride on the
-        // `Surface` that fills it.
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .testTag("create_task_dialog"),
-            color = NalarBackgroundRaised,
-            contentColor = NalarText,
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                NewTaskHeader(
-                    isSubmitting = isSubmitting,
-                    onBack = onClose,
-                    onClose = onClose,
-                )
-                if (errorMessage != null) {
-                    ErrorBanner(errorMessage)
-                }
-                Column(
+        Column(modifier = Modifier.fillMaxSize()) {
+            NewTaskHeader(
+                isSubmitting = isSubmitting,
+                onBack = onClose,
+                onClose = onClose,
+            )
+            if (errorMessage != null) {
+                ErrorBanner(errorMessage)
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    // The IME is part of `safeDrawing`, which the root already
+                    // pads for, so the scroll area stops where the footer does.
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FieldLabel("Task name")
+                OutlinedTextField(
+                    value = form.name,
+                    onValueChange = { form = form.copy(name = it) },
+                    readOnly = isSubmitting,
+                    singleLine = true,
+                    placeholder = { Text("Enter task name…") },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
                     modifier = Modifier
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp)
-                        .imePadding(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    FieldLabel("Task name")
-                    OutlinedTextField(
-                        value = form.name,
-                        onValueChange = { form = form.copy(name = it) },
-                        readOnly = isSubmitting,
-                        singleLine = true,
-                        placeholder = { Text("Enter task name…") },
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("create_task_name"),
-                        colors = kanbanFieldColors(),
-                    )
+                        .fillMaxWidth()
+                        .testTag("create_task_name"),
+                    colors = kanbanFieldColors(),
+                )
 
-                    if (data.columns.isNotEmpty()) {
-                        ColumnPicker(
-                            columns = data.columns,
-                            selectedId = form.columnId,
-                            expanded = columnMenuOpen,
-                            onExpandedChange = { columnMenuOpen = it },
-                            onSelect = {
-                                form = form.copy(columnId = it)
-                                columnMenuOpen = false
-                            },
-                        )
-                    }
-
-                    FieldLabel("Description")
-                    HintText("Markdown supported. Type @ to link a file. Paste or attach images.")
-                    OutlinedTextField(
-                        value = form.description,
-                        onValueChange = { form = form.copy(description = it) },
-                        readOnly = isSubmitting,
-                        // Tall enough to write in: this is the card's face, read
-                        // at a glance on the board.
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 140.dp)
-                            .testTag("create_task_description"),
-                        colors = kanbanFieldColors(),
-                    )
-                    AttachmentRow(
-                        imageCount = form.imageUrls.size,
-                        enabled = !isSubmitting,
-                        canPick = true,
-                        onPick = {
-                            // `PickVisualMedia` needs no runtime permission on
-                            // any API level, so there is nothing to ask for
-                            // first — a permission dialog in front of "attach a
-                            // screenshot" is a dialog that gets in the way.
-                            picker.launch(
-                                PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.ImageOnly,
-                                ),
-                            )
+                if (data.columns.isNotEmpty()) {
+                    ColumnPicker(
+                        columns = data.columns,
+                        selectedId = form.columnId,
+                        expanded = columnMenuOpen,
+                        onExpandedChange = { columnMenuOpen = it },
+                        onSelect = {
+                            form = form.copy(columnId = it)
+                            columnMenuOpen = false
                         },
                     )
-                    if (readError != null) {
-                        Text(
-                            text = readError!!,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = NalarError,
-                            modifier = Modifier.testTag("create_task_attach_error"),
-                        )
-                    }
-
-                    FieldLabel("Tags")
-                    HintText("Optional. Press Enter or comma to add. Letters, digits, underscores, hyphens.")
-                    TagRow(
-                        tags = form.tags,
-                        draft = tagDraft,
-                        isSubmitting = isSubmitting,
-                        onDraftChange = { tagDraft = it },
-                        onCommit = { tagDraft = "" },
-                        onRemove = { tag -> form = form.copy(tags = form.tags - tag) },
-                    )
-
-                    NewTaskSettings(
-                        form = form,
-                        data = data,
-                        isSubmitting = isSubmitting,
-                        profileMenuOpen = profileMenuOpen,
-                        onProfileMenuChange = { profileMenuOpen = it },
-                        onChange = { form = it },
-                    )
-                    Spacer(Modifier.height(12.dp))
                 }
-                NewTaskFooter(
-                    canSubmit = canSubmit,
-                    isSubmitting = isSubmitting,
-                    commitMenuOpen = commitMenuOpen,
-                    onCommitMenuChange = { commitMenuOpen = it },
-                    onCreateAndRun = { commit(runAgent = true) },
-                    onCreateOnly = { commit(runAgent = false) },
-                    onCancel = onClose,
+
+                FieldLabel("Description")
+                HintText("Markdown supported. Type @ to link a file. Paste or attach images.")
+                OutlinedTextField(
+                    value = form.description,
+                    onValueChange = { form = form.copy(description = it) },
+                    readOnly = isSubmitting,
+                    // Tall enough to write in: this is the card's face, read
+                    // at a glance on the board.
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 140.dp)
+                        .testTag("create_task_description"),
+                    colors = kanbanFieldColors(),
                 )
+                AttachmentRow(
+                    imageCount = form.imageUrls.size,
+                    enabled = !isSubmitting,
+                    canPick = true,
+                    onPick = {
+                        // `PickVisualMedia` needs no runtime permission on
+                        // any API level, so there is nothing to ask for
+                        // first — a permission dialog in front of "attach a
+                        // screenshot" is a dialog that gets in the way.
+                        picker.launch(
+                            PickVisualMediaRequest(
+                                ActivityResultContracts.PickVisualMedia.ImageOnly,
+                            ),
+                        )
+                    },
+                )
+                if (readError != null) {
+                    Text(
+                        text = readError!!,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NalarError,
+                        modifier = Modifier.testTag("create_task_attach_error"),
+                    )
+                }
+
+                FieldLabel("Tags")
+                HintText("Optional. Press Enter or comma to add. Letters, digits, underscores, hyphens.")
+                TagRow(
+                    tags = form.tags,
+                    draft = tagDraft,
+                    isSubmitting = isSubmitting,
+                    onDraftChange = { tagDraft = it },
+                    onCommit = { tagDraft = "" },
+                    onRemove = { tag -> form = form.copy(tags = form.tags - tag) },
+                )
+
+                NewTaskSettings(
+                    form = form,
+                    data = data,
+                    isSubmitting = isSubmitting,
+                    profileMenuOpen = profileMenuOpen,
+                    onProfileMenuChange = { profileMenuOpen = it },
+                    onChange = { form = it },
+                )
+                Spacer(Modifier.height(12.dp))
             }
+            NewTaskFooter(
+                canSubmit = canSubmit,
+                isSubmitting = isSubmitting,
+                commitMenuOpen = commitMenuOpen,
+                onCommitMenuChange = { commitMenuOpen = it },
+                onCreateAndRun = { commit(runAgent = true) },
+                onCreateOnly = { commit(runAgent = false) },
+                onCancel = onClose,
+            )
         }
     }
 }
@@ -968,10 +994,12 @@ private fun NewTaskFooter(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(NalarBackgroundRaised)
-                .navigationBarsPadding()
-                .imePadding()
+                // No `navigationBarsPadding` here: the form's root already
+                // reserves the safe area for the whole surface, so padding
+                // again would float this row a system-bar's worth above the
+                // screen edge it was drawn to clear.
                 .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.End,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(
@@ -989,7 +1017,15 @@ private fun NewTaskFooter(
                     containerColor = NalarAccent,
                     contentColor = NalarBackground,
                 ),
-                modifier = Modifier.testTag("create_task_create_and_run"),
+                // `weight`, not a natural width: `Row` hands each unweighted
+                // child only what the ones before it left behind, so on a narrow
+                // phone the label "▶  Create task & run agent" — the whole point
+                // of the button — was laid out 74dp wide and clipped to
+                // nothing readable. Taking the remaining width says which of
+                // the three controls is the one that matters.
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("create_task_create_and_run"),
             ) {
                 if (isSubmitting) {
                     CircularProgressIndicator(
@@ -1000,7 +1036,14 @@ private fun NewTaskFooter(
                     Spacer(Modifier.width(8.dp))
                     Text("Creating…")
                 } else {
-                    Text("▶  Create task & run agent")
+                    // One line: the label is the whole affordance, and a
+                    // second line would push the pinned row taller than the
+                    // space the safe area leaves it.
+                    Text(
+                        "▶  Create task & run agent",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
             Button(
