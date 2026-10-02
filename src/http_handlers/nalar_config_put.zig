@@ -846,14 +846,24 @@ fn applyWebSearchInput(
         return .{ .provider = "", .reason = "", .message = message, .allocator = allocator };
     }
 
-    var out: std.json.ObjectMap = .init(allocator);
-    errdefer out.deinit();
+    var out = try json.ObjectMap.init(allocator, &.{}, &.{});
+    errdefer out.deinit(allocator);
 
     var it = body.object.iterator();
     while (it.next()) |entry| {
         const name = entry.key_ptr.*;
-        if (web_search_mask.validateProvider(name, entry.value_ptr.*)) |reason| {
-            const r: []const u8 = reason orelse "is not a usable provider";
+        const reason = web_search_mask.validateProvider(name, entry.value_ptr.*) catch |e| blk: {
+            const r = switch (e) {
+                error.BadProviderName => "has no usable name",
+                error.BadPinnedUrl => "`url` must be https and must not be loopback, private or link-local",
+                error.MissingCurl => "`curl` is required and must not be empty",
+                error.MissingKeyPlaceholder => "has a key configured but its curl has no {key} — put {key} where the credential belongs",
+                error.UnexpectedKeyPlaceholder => "has no key configured but its curl contains {key}",
+                error.UnparseableCurl => "has a curl this tool cannot parse as a GET request",
+            };
+            break :blk r;
+        };
+        if (reason) |r| {
             const message = try std.fmt.allocPrint(
                 allocator,
                 "web_search provider '{s}': {s}",
@@ -862,8 +872,8 @@ fn applyWebSearchInput(
             return .{ .provider = name, .reason = r, .message = message, .allocator = allocator };
         }
 
-        var clean: std.json.ObjectMap = .init(allocator);
-        errdefer clean.deinit();
+        var clean = try json.ObjectMap.init(allocator, &.{}, &.{});
+        errdefer clean.deinit(allocator);
         var inner = entry.value_ptr.object.iterator();
         while (inner.next()) |f| {
             // Drop an empty or masked credential; never store `""`. The
@@ -872,13 +882,13 @@ fn applyWebSearchInput(
                 const k = switch (f.value_ptr.*) {
                     .string => |v| v,
                     else => {
-                        try clean.put(f.key_ptr.*, f.value_ptr.*);
+                        try clean.put(allocator, f.key_ptr.*, f.value_ptr.*);
                         continue;
                     },
                 };
                 if (k.len == 0 or web_search_mask.isMaskFor(k)) continue;
             }
-            try clean.put(f.key_ptr.*, f.value_ptr.*);
+            try clean.put(allocator, f.key_ptr.*, f.value_ptr.*);
         }
         // Graft the stored key back when the incoming one was the mask.
         // `config_json.web_search` still holds the ON-DISK document at this
@@ -888,13 +898,13 @@ fn applyWebSearchInput(
                 if (prev == .object) {
                     if (prev.object.get(name)) |before| {
                         if (before == .object) {
-                            if (before.object.get("key")) |k| try clean.put("key", k);
+                            if (before.object.get("key")) |k| try clean.put(allocator, "key", k);
                         }
                     }
                 }
             }
         }
-        try out.put(name, .{ .object = clean });
+        try out.put(allocator, name, .{ .object = clean });
     }
     config_json.web_search = .{ .object = out };
     return null;
