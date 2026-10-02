@@ -819,13 +819,23 @@ pub fn getSessionMessagesSorted(
         , .{ cursor_cmp, order_part });
         argv = &.{ session_id, c, limit_str };
     } else {
+        // 2026-10-02-scrollback-order-key: the FIRST page (no cursor) must order
+        // by the MESSAGE's own timestamp, not `s.created_at`. `s.created_at` is
+        // the session's creation time — constant across every row of the
+        // session — so it never broke the tie and the real key became `h.id`,
+        // which is not monotonic with created_at_nano. The cursor branch above
+        // already filters and orders on `h.created_at_nano`; because this branch
+        // disagreed, `direction=desc&limit=1000` returned the WRONG window
+        // (skipping the newest rows, including ancient ones) and `next_cursor`
+        // — derived from `messages.items[limit-1]` — pointed into the middle of
+        // the session, so the next scroll-back page came back empty.
         const order_part = switch (sort_spec) {
-            .created_at_asc => " ORDER BY s.created_at ASC, h.id ASC",
-            .created_at_desc => " ORDER BY s.created_at DESC, h.id DESC",
+            .created_at_asc => " ORDER BY h.created_at_nano ASC, h.id ASC",
+            .created_at_desc => " ORDER BY h.created_at_nano DESC, h.id DESC",
             .id_asc => " ORDER BY h.id ASC",
             .id_desc => " ORDER BY h.id DESC",
-            .role_asc => " ORDER BY h.role ASC, s.created_at ASC, h.id ASC",
-            .role_desc => " ORDER BY h.role DESC, s.created_at DESC, h.id DESC",
+            .role_asc => " ORDER BY h.role ASC, h.created_at_nano ASC, h.id ASC",
+            .role_desc => " ORDER BY h.role DESC, h.created_at_nano DESC, h.id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
@@ -871,13 +881,17 @@ pub fn getSessionMessagesSorted(
             , .{ cursor_cmp, order_part });
             argv = &.{ session_id, c, limit_str };
         } else {
+            // 2026-10-02-scrollback-order-key: the first page must order by the
+            // Same 2026-10-02-scrollback-order-key fix as the primary branch
+            // above: the no-cursor fallback must order by `h.created_at_nano`
+            // to agree with the cursor filter and with `next_cursor`.
             const order_part = switch (sort_spec) {
-                .created_at_asc => " ORDER BY s.created_at ASC, h.id ASC",
-                .created_at_desc => " ORDER BY s.created_at DESC, h.id DESC",
+                .created_at_asc => " ORDER BY h.created_at_nano ASC, h.id ASC",
+                .created_at_desc => " ORDER BY h.created_at_nano DESC, h.id DESC",
                 .id_asc => " ORDER BY h.id ASC",
                 .id_desc => " ORDER BY h.id DESC",
-                .role_asc => " ORDER BY h.role ASC, s.created_at ASC, h.id ASC",
-                .role_desc => " ORDER BY h.role DESC, s.created_at DESC, h.id DESC",
+                .role_asc => " ORDER BY h.role ASC, h.created_at_nano ASC, h.id ASC",
+                .role_desc => " ORDER BY h.role DESC, h.created_at_nano DESC, h.id DESC",
             };
             sql = try std.fmt.allocPrint(allocator,
                 \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
