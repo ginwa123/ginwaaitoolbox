@@ -85,6 +85,10 @@ _GEOM_SCRIPT = r"""
   const content = el.querySelector('.virtual-scroller-content');
   const m = /translate3d\(0px,\s*([-\d.]+)px/.exec(content.style.transform || '');
   const kids = [...content.children];
+  const rows = kids.map((k) => [
+    parseInt(k.getAttribute('data-vs-index'), 10),
+    k.offsetHeight,
+  ]);
   return {
     scrollTop: el.scrollTop,
     scrollHeight: el.scrollHeight,
@@ -97,6 +101,7 @@ _GEOM_SCRIPT = r"""
       ? parseInt(kids[kids.length - 1].getAttribute('data-vs-index'), 10)
       : null,
     rendered: kids.length,
+    rows,
   };
 }
 """
@@ -104,7 +109,7 @@ _GEOM_SCRIPT = r"""
 _STEP_PX = 60
 _STEPS = 12
 _COVER_TOL_PX = 120
-_TRACK_TOL_PX = 250
+_TRACK_TOL_PX = 60
 
 
 def _geom(page) -> dict:
@@ -112,6 +117,43 @@ def _geom(page) -> dict:
     assert g is not None, "chat scroller not found"
     assert g["topSpacer"] is not None, "content transform missing"
     return g
+
+
+def _track_violation(prev: dict, cur: dict, n: int) -> str | None:
+    """The JUMP check: did the top spacer agree with the rows that left?
+
+    It used to be ``abs(d_spacer - d_scroll) > _TRACK_TOL_PX``, which is not a
+    sound invariant for a row-based scroller. The spacer only ever moves in
+    whole-row steps while the scroll moves continuously, so that difference is
+    small only by luck. With ``_STEP_PX`` pinned at 60 the old check reduced to
+    "d_spacer <= 310", and this fixture's adjacent TALL rows release ~322px in
+    one 60px step, so no implementation could satisfy it — it has failed on
+    every run since it was added (e9d65b76).
+
+    The real pop-in signature is the spacer disagreeing with the rows it
+    actually released, so measure those heights and require the two to agree.
+    On the plain small-scroll case the delta is 0 on every step.
+
+    Only applied when the window moves DOWN (rows leaving it are always ones it
+    has already rendered and measured). Scrolling UP into the unmeasured head
+    moves the spacer by the model's ESTIMATES for rows that were never
+    rendered, so there is nothing on the DOM to compare against — the HOLE
+    checks are what guard that direction.
+    """
+    d_spacer = cur["topSpacer"] - prev["topSpacer"]
+    prev_first, cur_first = prev["firstIdx"], cur["firstIdx"]
+    if prev_first is None or cur_first is None or cur_first <= prev_first:
+        return None
+    released = sum(
+        h for idx, h in (prev.get("rows") or []) if prev_first <= idx < cur_first
+    )
+    if abs(d_spacer - released) <= _TRACK_TOL_PX:
+        return None
+    return (
+        f"step {n}: JUMP "
+        f"(d_spacer={d_spacer:.0f} released={released:.0f} "
+        f"win {prev_first}->{cur_first})"
+    )
 
 
 def test_small_scrolls_neither_hole_nor_jump(ui_harness, page) -> None:
@@ -163,15 +205,12 @@ def test_small_scrolls_neither_hole_nor_jump(ui_harness, page) -> None:
                 f"(viewport_bot={s + v:.0f} box_bot={box_bot:.0f} sizer={cur['sizerH']:.0f} "
                 f"win=[{cur['firstIdx']},{cur['lastIdx']}] rendered={cur['rendered']})"
             )
-        # JUMP: window must track the scroll ~1:1.
-        d_scroll = s - prev["scrollTop"]
-        d_spacer = cur["topSpacer"] - prev["topSpacer"]
-        if abs(d_spacer - d_scroll) > _TRACK_TOL_PX:
-            violations.append(
-                f"step {n}: JUMP "
-                f"(d_scroll={d_scroll:.0f} d_spacer={d_spacer:.0f} "
-                f"win {prev['firstIdx']}->{cur['firstIdx']})"
-            )
+        # JUMP: the spacer must agree with the rows that left the window.
+        # See _track_violation for why comparing it against the scroll delta is
+        # unsound for a row-based scroller.
+        violation = _track_violation(prev, cur, n)
+        if violation is not None:
+            violations.append(violation)
 
     assert not violations, "pop-in signatures on small scrolls:\n" + "\n".join(violations)
 
@@ -225,12 +264,9 @@ def _audit(samples: list[dict]) -> list[str]:
             )
         d_scroll = s - prev["scrollTop"]
         d_spacer = cur["topSpacer"] - prev["topSpacer"]
-        if abs(d_spacer - d_scroll) > _TRACK_TOL_PX:
-            violations.append(
-                f"step {n}: JUMP "
-                f"(d_scroll={d_scroll:.0f} d_spacer={d_spacer:.0f} "
-                f"win {prev['firstIdx']}->{cur['firstIdx']})"
-            )
+        violation = _track_violation(prev, cur, n)
+        if violation is not None:
+            violations.append(violation)
     return violations
 
 
