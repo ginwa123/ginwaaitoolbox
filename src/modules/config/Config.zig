@@ -92,6 +92,26 @@ fn parseApplyMode(raw: ?[]const u8) SkillEvalsConfig.ApplyMode {
     return .propose;
 }
 
+/// Map the wire block onto the runtime struct.
+///
+/// Single source of truth for the mapping, so the two paths that can produce
+/// a `SkillEvalsConfig` cannot drift apart on defaults: `LlmConfig.init` here,
+/// and the per-session resolution the agent loop does under `--auth` (where the
+/// singleton never sees the user's saved file). Everything is by value — the
+/// one borrowed field, `apply_mode`, becomes an enum — so the result outlives
+/// the parsed document.
+pub fn skillEvalsFromJson(wire: SkillEvalsJson) SkillEvalsConfig {
+    return .{
+        .enabled = wire.enabled,
+        .max_skills_per_run = wire.max_skills_per_run,
+        .max_evals_per_day = wire.max_evals_per_day,
+        .fact_lease_seconds = wire.fact_lease_seconds,
+        .include_listed_without_loading = wire.include_listed_without_loading,
+        // Tolerant: absent or unrecognised degrades to `propose`.
+        .apply_mode = parseApplyMode(wire.apply_mode),
+    };
+}
+
 pub const LlmConfig = struct {
     allocator: std.mem.Allocator,
     api_key: []const u8,
@@ -632,15 +652,7 @@ pub const LlmConfig = struct {
             .notify_on_complete = config_json.notify_on_complete,
             .notify_on_error = config_json.notify_on_error,
             .web_launch_enabled = config_json.web_launch_enabled,
-            .skill_evals = .{
-                .enabled = config_json.skill_evals.enabled,
-                .max_skills_per_run = config_json.skill_evals.max_skills_per_run,
-                .max_evals_per_day = config_json.skill_evals.max_evals_per_day,
-                .fact_lease_seconds = config_json.skill_evals.fact_lease_seconds,
-                .include_listed_without_loading = config_json.skill_evals.include_listed_without_loading,
-                // Tolerant: absent or unrecognised degrades to `propose`.
-                .apply_mode = parseApplyMode(config_json.skill_evals.apply_mode),
-            },
+            .skill_evals = skillEvalsFromJson(config_json.skill_evals),
             .retry_delay_ms = config_json.retry_delay_ms,
             // Top-level compaction defaults — restored in plan
             // 2026-07-07-compaction-inline. Persisted as raw optional
