@@ -1,0 +1,6 @@
+# `build.py` imports `navgraph.py` by name, so running the tool from the
+# project root leaves a __pycache__ beside them. The repo's root .gitignore
+# scopes its __pycache__ rules per test suite rather than globally; this is the
+# same idea for one tool directory, and is narrower than a repo-wide rule would
+# be — nothing else in `src/` is Python.
+__pycache__/
