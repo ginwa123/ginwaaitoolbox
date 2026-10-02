@@ -14,6 +14,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as http from "node:http";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 const SERVER_NAME = "mcp-http-hello-world";
@@ -51,7 +53,9 @@ function getServer(): McpServer {
     "print_name",
     "Print this server's name and version. Takes no arguments.",
     async () => ({
-      content: [{ type: "text", text: `i am ${SERVER_NAME} v${SERVER_VERSION}` }],
+      content: [
+        { type: "text", text: `i am ${SERVER_NAME} v${SERVER_VERSION}` },
+      ],
     }),
   );
   mcp.tool(
@@ -123,9 +127,33 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-main().catch((err) => {
-  console.error(
-    `mcp-http-hello-world: fatal: ${err instanceof Error ? err.stack : String(err)}`,
-  );
-  process.exit(1);
-});
+/** True only when this file is the process entry point.
+ *
+ * A listening server has no business starting just because something imported
+ * this module, and that hazard is not hypothetical: Node resolves an
+ * unresolvable bare specifier against the nearest package's `main`, so vite's
+ * optional-dependency probe `require("fsevents")` landed here, ran main() under
+ * vitest's own argv, and died with `invalid port: "run"` before vitest printed
+ * its banner. Gating on the entry point makes the module inert for every
+ * importer rather than only the one that tripped over it.
+ *
+ * realpathSync on both sides because the zig wrapper invokes us through a
+ * `bin/../../src/...` argv[1] and Node resolves symlinks when it loads us. */
+function isEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
+  main().catch((err) => {
+    console.error(
+      `mcp-http-hello-world: fatal: ${err instanceof Error ? err.stack : String(err)}`,
+    );
+    process.exit(1);
+  });
+}

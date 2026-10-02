@@ -70,7 +70,6 @@ from chatview_at_bottom_stick_ui_test import (
     _emit_chunk,
     _emit_turn,
     _geom,
-    _open_chat,
     _scroll_to_fraction,
 )
 
@@ -99,7 +98,20 @@ def _seed_session(h: UIHarness, workspace_id: str, session_id: str) -> None:
 def _open(page, h: UIHarness, session_id: str) -> None:
     workspace_id = create_workspace(h)
     _seed_session(h, workspace_id, session_id)
-    _open_chat(page, h, workspace_id, session_id)
+    # Not chatview_at_bottom_stick_ui_test._open_chat: that helper makes its OWN
+    # workspace and seeds its OWN transcript, and this file seeds an alternating
+    # user/assistant turn shape instead — calling it was both a signature error
+    # and the wrong seeding. Open the view directly, but keep that helper's
+    # waits: both tests below assert on scrollTop deltas, which mean nothing
+    # until the virtual scroller has rendered and its model has learned the
+    # head's median.
+    open_chatview(page, h, workspace_id, session_id)
+    page.wait_for_function(
+        "() => { const w = document.querySelector('.messages-scroll-hide-native');"
+        " return !!(w && w.querySelector('.virtual-scroller')); }",
+        timeout=30000,
+    )
+    page.wait_for_timeout(2500)
 
 
 def _settle(page) -> None:

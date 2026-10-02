@@ -453,8 +453,18 @@ def test_exhausted_history_never_fires_a_scroll_back_request(ui_harness, page) -
     page.wait_for_timeout(1200)
 
     probe = _probe(page)
-    assert _cursored(probe["requests"]) == [], (
-        f"has_more=false still produced scroll-back requests: {probe['requests']}"
+    band = _commit_band_px(_client_height(page))
+    # A cursor in the query string is NOT proof of a scroll-back.
+    # `chatEngineDb.loadDelta` re-hits this same endpoint with a STORED cursor to
+    # refresh the tail after mount/resync, and it fires wherever the reader
+    # happens to be — not at the top. So filter to requests issued from inside
+    # the load-more band: only those could have been a scroll-back arm. This is
+    # the same predicate the prefetch test above uses, and it keeps this test
+    # honest — a real regression arms at scrollTop≈0 and is still caught.
+    from_band = [r for r in _cursored(probe["requests"]) if r["scrollTop"] <= band]
+    assert not from_band, (
+        f"has_more=false still produced scroll-back requests from inside the "
+        f"load-more band (band={band:.0f}px): {from_band}"
     )
 
 
