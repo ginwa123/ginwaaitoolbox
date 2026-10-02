@@ -449,6 +449,11 @@ const onPick = (act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'stop' |
 </template>
 
 <style scoped>
+/* Mirrored in `components/shell/ChatRowContextMenu.vue` — Vue scoped
+   styles cannot cross component boundaries, so a change to one block
+   needs the same change in the other. Lifting these to a global sheet
+   is the real fix; it is deliberately not done here because it would
+   restyle every menu in the app at once. */
 .menu-row {
   display: flex;
   align-items: center;
