@@ -629,7 +629,7 @@ pub const LlmConfig = struct {
     pub const WebSearchProvidersMap = std.StringHashMap(WebSearchProviderEntry);
 
     /// Free every owned string in a `WebSearchProvidersMap`, then the map.
-    fn freeWebSearchProvidersMap(map: *WebSearchProvidersMap, allocator: std.mem.Allocator) void {
+    pub fn freeWebSearchProvidersMap(map: *WebSearchProvidersMap, allocator: std.mem.Allocator) void {
         var it = map.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
@@ -721,7 +721,7 @@ pub const LlmConfig = struct {
     }
 
     /// Parse a full `WebSearchProvidersMap` from the body of `web_search`.
-    fn parseWebSearchProvidersMap(
+    pub fn parseWebSearchProvidersMap(
         allocator: std.mem.Allocator,
         raw: json.Value,
     ) !WebSearchProvidersMap {
