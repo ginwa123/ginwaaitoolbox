@@ -6,6 +6,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
 const user_config_store = nalarcore.user_config_store;
+const web_search_mask = @import("web_search_mask.zig");
 const parse_thinking_mod = nalarcore.parse_thinking;
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 const LlmConfig = config.LlmConfig;
@@ -189,6 +190,20 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // whole list, but only after every name is checked against
     // `UNIFIED_TOOL_REGISTRY` (the load path stays tolerant of
     // hand-edited names; PUT is the validation gate).
+    // Web-search providers are validated HERE, at save time, rather than
+    // being tolerated at load time. Without this,
+    // `parseWebSearchProviderEntry` would `warn` and DROP a bad entry, and
+    // the symptom would be "Settings shows a provider, the agent says none
+    // are configured" — the exact indistinguishable-failure class this
+    // repo keeps fighting. A 400 naming the offending provider is the
+    // difference between a five-second fix and a bug report.
+    if (try applyWebSearchInput(allocator, &config_json, input.web_search)) |bad| {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = bad.message }),
+        });
+    }
+
     if (try applyToolsInput(allocator, &config_json, input.tools)) |bad| {
         const msg = try std.fmt.allocPrint(
             allocator,
@@ -683,6 +698,7 @@ pub const ConfigInput = struct {
     /// list after registry validation at apply time. Borrowed slices from
     /// the request body — the handler dupes them before writing.
     tools: ?[]const []const u8 = null,
+    web_search: ?json.Value = null,
     /// Skill Evals master switch + knobs. Absent OR explicit JSON `null`
     /// → no change, so a Settings save from a tab that never rendered
     /// the Evals section preserves the on-disk block. A present object
@@ -781,6 +797,11 @@ const ConfigJson = struct {
     /// owned copy when the input provides a new list. `null` emits JSON
     /// `null`, which every reader treats as "key absent".
     tools: ?[]const []const u8 = null,
+    /// Web-search providers, keyed by name. Parsed from the on-disk document
+    /// so an input that omits `web_search` round-trips the existing value
+    /// instead of erasing it; replaced wholesale when the input provides a
+    /// new map. Same contract as `tools` directly above.
+    web_search: ?json.Value = null,
     /// Skill Evals block. NON-OPTIONAL so it is always re-emitted: a
     /// `?… = null` here would serialize to JSON `null`, which the
     /// runtime parser rejects for this struct and which would erase a
@@ -798,6 +819,87 @@ const ConfigJson = struct {
 /// tab never erases the checklist. A present list (including `[]`)
 /// replaces it wholesale with owned copies (validated first, so a
 /// rejected name can never half-apply).
+/// A rejected provider: which one, and why.
+const WebSearchRejection = struct {
+    provider: []const u8,
+    reason: []const u8,
+    message: []const u8, // owned
+    allocator: std.mem.Allocator,
+};
+
+/// Validate and store `web_search`. Returns a rejection the caller turns
+/// into a 400, or null on success / when the field is absent.
+///
+/// An entry with a blank `key` has the field REMOVED rather than stored as
+/// `""`: `SqliteBackend.exec` binds an empty slice as SQL NULL, and `""` is
+/// exactly the shape that survives a JSON round-trip while meaning "unset".
+/// A masked key (`sk…7f2`) is also removed here — it means "unchanged", and
+/// the stored secret is restored from the existing document further down.
+fn applyWebSearchInput(
+    allocator: std.mem.Allocator,
+    config_json: *ConfigJson,
+    input: ?json.Value,
+) !?WebSearchRejection {
+    const body = input orelse return null;
+    if (body != .object) {
+        const message = try std.fmt.allocPrint(allocator, "web_search must be an object", .{});
+        return .{ .provider = "", .reason = "", .message = message, .allocator = allocator };
+    }
+
+    var out: std.json.ObjectMap = .init(allocator);
+    errdefer out.deinit();
+
+    var it = body.object.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        if (web_search_mask.validateProvider(name, entry.value_ptr.*)) |reason| {
+            const r: []const u8 = reason orelse "is not a usable provider";
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "web_search provider '{s}': {s}",
+                .{ name, r },
+            );
+            return .{ .provider = name, .reason = r, .message = message, .allocator = allocator };
+        }
+
+        var clean: std.json.ObjectMap = .init(allocator);
+        errdefer clean.deinit();
+        var inner = entry.value_ptr.object.iterator();
+        while (inner.next()) |f| {
+            // Drop an empty or masked credential; never store `""`. The
+            // stored secret is grafted back below.
+            if (std.mem.eql(u8, f.key_ptr.*, "key")) {
+                const k = switch (f.value_ptr.*) {
+                    .string => |v| v,
+                    else => {
+                        try clean.put(f.key_ptr.*, f.value_ptr.*);
+                        continue;
+                    },
+                };
+                if (k.len == 0 or web_search_mask.isMaskFor(k)) continue;
+            }
+            try clean.put(f.key_ptr.*, f.value_ptr.*);
+        }
+        // Graft the stored key back when the incoming one was the mask.
+        // `config_json.web_search` still holds the ON-DISK document at this
+        // point — it is only overwritten at the end.
+        if (clean.get("key") == null) {
+            if (config_json.web_search) |prev| {
+                if (prev == .object) {
+                    if (prev.object.get(name)) |before| {
+                        if (before == .object) {
+                            if (before.object.get("key")) |k| try clean.put("key", k);
+                        }
+                    }
+                }
+            }
+        }
+        try out.put(name, .{ .object = clean });
+    }
+    config_json.web_search = .{ .object = out };
+    return null;
+}
+
 fn applyToolsInput(
     allocator: std.mem.Allocator,
     config_json: *ConfigJson,

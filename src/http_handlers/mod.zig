@@ -83,6 +83,10 @@ test {
     // assertions) is now inline at the bottom of workspace_items_default.zig,
     // so this single import surfaces both halves.
     _ = @import("workspace_items_default.zig");
+
+    // web_search_mask: key masking + provider validation for the config
+    // handlers. Its tests only run if something imports it.
+    _ = @import("web_search_mask.zig");
 }
 pub const workspaceItemsUpdateHandler = @import("workspace_items_update.zig").workspaceItemsUpdateHandler;
 pub const workspaceItemsReorderHandler = @import("workspace_items_reorder.zig").workspaceItemsReorderHandler;

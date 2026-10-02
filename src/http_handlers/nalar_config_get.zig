@@ -6,6 +6,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
 const user_config_store = nalarcore.user_config_store;
+const web_search_mask = @import("web_search_mask.zig");
 const LlmConfig = config.LlmConfig;
 
 /// GET /api/config/nalar - Get nalar.json configuration
@@ -54,6 +55,11 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         };
         const cfg = parsed;
         _ = cfg.sub_agents;
+
+        // Mask every provider credential before it reaches the browser. The
+        // `Parsed` borrows from the config parse tree, so it is released
+        // after the response has been serialized.
+        const masked_web_search = web_search_mask.maskProviders(allocator, cfg.web_search);
         return res.jsonResponse(.{
             .status_code = 200,
             .data = try http_response.makeNalarConfigResponse(allocator, .{
@@ -69,6 +75,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                 .compaction_threshold_percent = cfg.compaction_threshold_percent,
                 .retry_delay_ms = cfg.retry_delay_ms,
                 .tools = cfg.tools,
+            .web_search = masked_web_search,
                 .skill_evals = .{
                     .enabled = cfg.skill_evals.enabled,
                     .max_skills_per_run = cfg.skill_evals.max_skills_per_run,
@@ -138,6 +145,11 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // never sent; prefix with underscore to mark intentionally unused.)
     _ = cfg.sub_agents;
 
+    // Mask every provider credential before it reaches the browser. Same as
+    // the auth branch above — BOTH allowlist sites need this, or the key is
+    // masked in one deployment mode and sent in cleartext in the other.
+    const masked_web_search = web_search_mask.maskProviders(allocator, cfg.web_search);
+
     return res.jsonResponse(.{
         .status_code = 200,
         .data = try http_response.makeNalarConfigResponse(allocator, .{
@@ -163,6 +175,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .compaction_threshold_percent = cfg.compaction_threshold_percent,
             .retry_delay_ms = cfg.retry_delay_ms,
             .tools = cfg.tools,
+            .web_search = masked_web_search,
             .skill_evals = .{
                 .enabled = cfg.skill_evals.enabled,
                 .max_skills_per_run = cfg.skill_evals.max_skills_per_run,
@@ -176,6 +189,9 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 }
 
 const ConfigJson = struct {
+    /// Configured web-search providers, keyed by provider name. Raw so the
+    /// handler can mask each `key` on the way out without re-typing it.
+    web_search: ?json.Value = null,
     /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
     /// Each value is a `{"url": "...", "headers": {...}}` object.
     mcp_servers: ?json.Value = null,
@@ -332,4 +348,40 @@ test "NalarConfigResponse serializes tools: null when absent, array when set" {
         std.debug.print("!! explicit [] does not serialize as an empty array !!\n", .{});
         return error.ToolsEmptyNotSerialized;
     }
+}
+
+// ─── web_search masking guard ──────────────────────────────────────────────
+
+test "both config GET branches mask web_search keys" {
+    // `GET /api/config/nalar` builds its response through TWO allowlist
+    // sites: one for `--auth` mode (users.config_json) and one for file
+    // mode. Editing only one means the credential is masked in one
+    // deployment and shipped to the browser in cleartext in the other —
+    // and the passing one is the one nobody tests.
+    //
+    // This test counts occurrences rather than trusting a review, because
+    // the two sites are visually near-identical and far apart in the file.
+    // Count only the HANDLER. The needle strings below appear verbatim in
+    // this very test, so scanning the whole file would count them and the
+    // assertion would never hold.
+    const full = @embedFile("nalar_config_get.zig");
+    const src = full[0 .. std.mem.indexOf(u8, full, "// ─── web_search masking guard") orelse full.len];
+
+    var mask_calls: usize = 0;
+    var wire_fields: usize = 0;
+    var idx: usize = 0;
+    while (std.mem.indexOfPos(u8, src, idx, "maskProviders(allocator")) |at| {
+        mask_calls += 1;
+        idx = at + 1;
+    }
+    idx = 0;
+    while (std.mem.indexOfPos(u8, src, idx, ".web_search = masked_web_search,")) |at| {
+        wire_fields += 1;
+        idx = at + 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), mask_calls);
+    try std.testing.expectEqual(@as(usize, 2), wire_fields);
+    // And the response struct must actually carry the field.
+    try std.testing.expect(std.mem.indexOf(u8, @embedFile("http_response.zig"), "web_search: ?std.json.Value = null,") != null);
 }
