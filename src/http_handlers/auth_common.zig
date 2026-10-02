@@ -132,6 +132,49 @@ pub fn ownerVisibilityClause(comptime alias: []const u8) []const u8 {
     );
 }
 
+/// SQL predicate for "workspaces `alias` may see", backed by the
+/// `workspace_members` join table (Migration 100).
+///
+/// This is the successor to `ownerVisibilityClause` for WORKSPACES ONLY.
+/// The old helper still serves `worker_list` and `llm_history`, which filter
+/// rows that are not workspace-scoped and therefore have no membership row.
+///
+/// Two rules, in one constant — the same two the column-based clause carried:
+///   1. the **system user sees everything** — with `--auth` off there is no
+///      identity and the system user IS the installation (decision
+///      2026-09-25). Written FIRST so it short-circuits before the subquery;
+///   2. otherwise: the caller is a member, OR the workspace carries the
+///      sentinel member row — i.e. it is shared. That second arm is what
+///      keeps every pre-`--auth` workspace visible to everybody, and it is
+///      why "add the `user_system` member" IS the share operation.
+///
+/// The bound owner must still be passed **twice** (sentinel test, then
+/// membership test), so all eight existing call sites keep binding
+/// `{ …, owner, owner }` with no parameter-order edit.
+///
+/// `alias` is the caller's table alias for `workspaces`. Note the
+/// subquery aliases the join table as `m`, so a caller passing "m" would
+/// shadow it — no current caller does.
+pub fn workspaceVisibilityClause(comptime alias: []const u8) []const u8 {
+    return std.fmt.comptimePrint(
+        "(? = '{s}' OR EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = {s}.id AND (m.user_id = ? OR m.user_id = '{s}')))",
+        .{ system_user_id, alias, system_user_id },
+    );
+}
+
+/// Map an owner id onto something safe to bind into a NOT NULL column.
+///
+/// `SqliteBackend.exec` binds an empty slice as SQL NULL, so writing a raw
+/// owner into `workspace_members.user_id` would raise a constraint violation
+/// rather than store an empty string. `resolveRequestUserId` can legitimately
+/// hand back "" on an allocation failure (see `workspaces_reorder`), and the
+/// legacy data model treats "" as the shared bucket, so the correct
+/// destination is the sentinel — which `isSharedOwner("")` already agrees
+/// with. Returns a borrowed slice; no allocation, nothing to free.
+pub fn normaliseOwnerId(user_id: []const u8) []const u8 {
+    return if (user_id.len == 0) system_user_id else user_id;
+}
+
 /// True when `user_id` is the shared/legacy bucket rather than a real
 /// owner. Callers use this to detect (and log) writes that fell back to
 /// the sentinel while `--auth` was on — a mis-scoping signal.
@@ -180,7 +223,7 @@ pub fn canSeeWorkspace(
     if (workspace_id.len == 0) return false;
     var q = db.query(
         allocator,
-        "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime ownerVisibilityClause("workspaces"),
+        "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime workspaceVisibilityClause("workspaces"),
         &[_][]const u8{ workspace_id, owner, owner },
     ) catch return false;
     defer q.deinit();
@@ -362,9 +405,7 @@ test "canSeeSession: own + shared visible, another user's hidden, system sees al
     defer db.deinit();
     try db.init(io, ":memory:");
     try db.exec(alloc, "CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT)", &.{});
-    try db.exec(alloc,
-        "INSERT INTO sessions (id, user_id) VALUES ('s_a','user_a'), ('s_b','user_b'), ('s_legacy',NULL)",
-        &.{});
+    try db.exec(alloc, "INSERT INTO sessions (id, user_id) VALUES ('s_a','user_a'), ('s_b','user_b'), ('s_legacy',NULL)", &.{});
 
     // Own session and shared legacy row: visible.
     try std.testing.expect(canSeeSession(alloc, &db, "s_a", "user_a"));
@@ -443,4 +484,80 @@ test "resolveRequestUserId maps a valid cookie to the owning user" {
     const stranger = try resolveRequestUserId(alloc, &db, true, anon);
     defer alloc.free(stranger);
     try std.testing.expectEqualStrings(system_user_id, stranger);
+}
+
+// ============================================================================
+// workspace_members — visibility clause + owner normalisation
+// ============================================================================
+//
+// See docs/plans/2026-10-02-workspace-members-shared-workspaces.md.
+// Migration 100 moved workspace ownership from a column on `workspaces` to a
+// many-to-many `workspace_members` table. These tests pin the SQL contract
+// that all eight call sites depend on.
+
+fn countByte(haystack: []const u8, needle: u8) usize {
+    var n: usize = 0;
+    for (haystack) |c| {
+        if (c == needle) n += 1;
+    }
+    return n;
+}
+
+test "workspaceVisibilityClause keeps the two-bind arity the call sites already use" {
+    const sql = workspaceVisibilityClause("workspaces");
+
+    // THE load-bearing assertion. All 8 workspaces call sites bind
+    // `{ ..., owner, owner }` because the pre-Migration-100 clause needed the
+    // owner twice (sentinel test + ownership test). The membership clause
+    // must consume exactly two binds too, or every one of those sites
+    // silently shifts its parameters.
+    try std.testing.expectEqual(@as(usize, 2), countByte(sql, '?'));
+
+    // The sentinel test comes FIRST and short-circuits before the subquery,
+    // which is what makes auth-off ("no identity, so the installation sees
+    // everything") free rather than a full table scan.
+    try std.testing.expect(std.mem.startsWith(u8, sql, "(? = 'user_system' OR EXISTS ("));
+}
+
+test "workspaceVisibilityClause expresses membership OR the shared legacy bucket" {
+    const sql = workspaceVisibilityClause("w");
+    // The caller is a member...
+    try std.testing.expect(std.mem.indexOf(u8, sql, "FROM workspace_members") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "m.workspace_id = w.id") != null);
+    // ...OR the workspace carries the sentinel member, i.e. it is shared.
+    // This is what keeps a pre-`--auth` workspace visible to everyone, and
+    // it is why adding that one member row IS the "share" operation.
+    try std.testing.expect(std.mem.indexOf(u8, sql, "m.user_id = 'user_system'") != null);
+
+    // The alias must be honoured, or the query will not compile: passing "w"
+    // must never emit a bare `workspaces.`.
+    try std.testing.expect(std.mem.indexOf(u8, sql, "workspaces.") == null);
+    const other = workspaceVisibilityClause("ws");
+    try std.testing.expect(std.mem.indexOf(u8, other, "m.workspace_id = ws.id") != null);
+    try std.testing.expect(countByte(other, '?') == 2);
+}
+
+test "workspaceVisibilityClause never reads workspaces.user_id" {
+    // The column is deprecated in Migration 100 but still EXISTS on disk.
+    // If this clause ever grew a `{alias}.user_id` arm again, the membership
+    // table would stop being the source of truth and the two could drift.
+    const sql = workspaceVisibilityClause("workspaces");
+    try std.testing.expect(std.mem.indexOf(u8, sql, "user_id IS NULL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, ".user_id = ''") == null);
+}
+
+test "normaliseOwnerId maps an empty owner to the sentinel, never NULL" {
+    // SqliteBackend.exec binds an empty slice as SQL NULL, and
+    // workspace_members.user_id is NOT NULL. Binding a raw empty owner is a
+    // runtime constraint violation — this helper is what prevents it.
+    try std.testing.expectEqualStrings(system_user_id, normaliseOwnerId(""));
+    try std.testing.expectEqualStrings(system_user_id, normaliseOwnerId(system_user_id));
+    try std.testing.expectEqualStrings("user_a", normaliseOwnerId("user_a"));
+}
+
+test "normaliseOwnerId is exactly isSharedOwner for the empty case" {
+    // The two must not drift: `workspaces_reorder` treats a shared owner as
+    // "see everything", so normalising to the sentinel has to agree with it.
+    try std.testing.expect(isSharedOwner(normaliseOwnerId("")));
+    try std.testing.expect(!isSharedOwner(normaliseOwnerId("user_a")));
 }

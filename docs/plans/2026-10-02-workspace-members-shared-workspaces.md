@@ -1,7 +1,11 @@
 # Shared workspaces — replacing `workspaces.user_id` with a `workspace_members` join table
 
-Status: **design for review**. Nothing here is implemented. Every claim is static
-analysis with a `file:line` citation; no build was run.
+Status: **implemented** in PR #781. Migration 100 shipped; `zig build`,
+`zig build test` (4228 tests) and the functional suites are green.
+
+Sections 4-6 below are the design as written. **Section 12 (As-built notes)**
+records what the implementation actually deviated on — read it before trusting
+a claim in the middle of this document.
 
 Task: `task_1790967164653_0` (kanban AGENTIC_KANBAN).
 
@@ -427,3 +431,71 @@ adds sharing.
   isolation work this extends.
 - `src/migrations/migration.zig:4579-4588` — `user_company_members`, the shape
   being copied.
+
+---
+
+## 12. As-built notes — where the implementation differed from this plan
+
+Written after the code shipped, so a reviewer does not have to re-derive it.
+
+### 12.1 `workspace_delete.useCase` needed a transaction-error mapping the plan missed
+
+`db.begin()` and `tx.commit()` return the full `sqlite.Error` set (13 variants:
+`BindFailed`, `TransactionClosed`, `DiskFull`, …), which is far wider than the
+handler-facing `WorkspaceDeleteError = { OutOfMemory, DatabaseError, NotFound }`.
+Both are now collapsed to `error.DatabaseError` at the call site so the
+handler's status-code switch stays the single place that decides what a client
+sees.
+
+### 12.2 A lazy-analysis blind spot — `useCase` was never compiled by `zig build test`
+
+`useCase` in `workspace_delete.zig` is reachable only from
+`workspaceDeleteHandler`, which only `main.zig` calls. Zig analyses lazily, so
+the `mod_tests` build **never looked at the function at all** — 12.1's type
+error left `zig build test` fully green and `zig build` was what failed.
+
+This is the more important finding: a green test suite was not evidence. The
+fix is an inline test in `workspace_delete.zig` that calls `useCase`, which
+both forces compilation and covers the membership cleanup. Two tests were
+added (cleanup happens; a refused delete takes nothing with it).
+
+### 12.3 `migration.zig` had to be rebuilt to avoid a 2 000-line `zig fmt` reflow
+
+`migration.zig` is **not** `zig fmt`-clean at HEAD, so formatting the file
+after inserting Migration 100 rewrote ~2 100 unrelated lines and buried the
+real change (the diff was 2 167 lines for ~135 lines of actual work). The file
+was restored from HEAD and only the new struct, the `allMigrations` entry and
+the new tests were spliced back — **+326 / −0**.
+
+Worth knowing for any future migration: run `zig fmt` on a *snippet*, not on
+the file, or the review diff is unreadable.
+
+### 12.4 The migration ledger table is `schema_migrations`
+
+Not `migrations`. The functional test asserts the row directly, so a
+migration that is callable but never registered cannot pass.
+
+### 12.5 Two of the new tests were wrong on first run
+
+Recorded because both were caught only by running them, and both are the kind
+of mistake that a plausible-looking assertion hides:
+
+- The sharing test first asserted a visibility boundary on `ws_1` — a fixture
+  row that is already in the shared legacy bucket, so `user_c` could see it
+  before any sharing happened. The assertion proved nothing. It now uses a
+  genuinely private workspace.
+- The migration-wiring test guessed the ledger table name as `migrations`. It
+  is `schema_migrations` (`migration.zig:1584`).
+
+### 12.6 `workspaces_reorder.zig`'s `catch ""` now fails closed
+
+Plan §5.2 called for this. It returns HTTP 500 rather than widening the caller
+to "see everything". `worker_list.zig:156` has the same `catch ""` and the same
+fail-open shape — **still unfixed, out of scope here, and worth its own ticket.**
+
+### 12.7 Role enforcement is still not in place, as designed
+
+Every member has full access. `workspace_members.role` is written, CHECK-
+constrained, and currently read by nothing. That is deliberate (§4.4) but it
+means sharing today is all-or-nothing at the workspace level — a `viewer`
+cannot yet be prevented from deleting.

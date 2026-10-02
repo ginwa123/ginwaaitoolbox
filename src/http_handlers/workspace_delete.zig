@@ -63,7 +63,7 @@ fn useCase(
     {
         var q = sqlite_db.query(
             allocator,
-            "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
+            "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime auth_common.workspaceVisibilityClause("workspaces"),
             &[_][]const u8{ id, owner, owner },
         ) catch {
             std.log.warn("workspaceDelete: visibility check failed for {s}", .{id});
@@ -77,13 +77,146 @@ fn useCase(
         if (row) |r| r.deinit(allocator);
     }
 
-    sqlite_db.exec(
+    // `begin`/`commit` return the full sqlite error set, which is far wider
+    // than this file's handler-facing set. Collapse it to DatabaseError here
+    // so the handler's status-code mapping below stays the single place
+    // that decides what a client sees.
+    var tx = sqlite_db.begin() catch {
+        std.log.warn("workspaceDelete: BEGIN failed for {s}", .{id});
+        return error.DatabaseError;
+    };
+    defer tx.commitOrRollback() catch {};
+    errdefer tx.rollback() catch {};
+
+    // Workspace first, still visibility-gated — a foreign id matches nothing
+    // and the tx rolls back, so a foreign caller can never strip a real
+    // owner's members. Members second: `PRAGMA foreign_keys` is OFF, so
+    // there is no ON DELETE CASCADE to lean on and orphan rows would pile up.
+    tx.exec(
         allocator,
-        "DELETE FROM workspaces WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
+        "DELETE FROM workspaces WHERE id = ? AND " ++ comptime auth_common.workspaceVisibilityClause("workspaces"),
         &[_][]const u8{ id, owner, owner },
     ) catch {
         std.log.warn("workspaceDelete: DELETE failed for {s}", .{id});
         return error.DatabaseError;
     };
+
+    tx.exec(
+        allocator,
+        "DELETE FROM workspace_members WHERE workspace_id = ?",
+        &[_][]const u8{id},
+    ) catch {
+        std.log.warn("workspaceDelete: member cleanup failed for {s}", .{id});
+        return error.DatabaseError;
+    };
+
+    tx.commit() catch {
+        std.log.warn("workspaceDelete: COMMIT failed for {s}", .{id});
+        return error.DatabaseError;
+    };
     return .{ .id = id };
+}
+
+// ============================================================================
+// useCase — membership cleanup
+// ============================================================================
+//
+// `useCase` is reachable ONLY from `workspaceDeleteHandler`, which only
+// `main.zig` calls. Zig analyses lazily, so the `mod_tests` build never
+// looked at it: when this use case grew a transaction whose `begin`/`commit`
+// return the full sqlite error set, `zig build test` stayed green and
+// `zig build` was the thing that failed. An inline test here is what closes
+// that gap — it forces compilation AND covers the new behaviour.
+
+const testing = std.testing;
+const sqlite = nalarcore.sqlite;
+
+const DeleteCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDeleteDb() !DeleteCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    try db.exec(alloc,
+        \\CREATE TABLE workspaces (
+        \\  id TEXT PRIMARY KEY,
+        \\  name TEXT NOT NULL,
+        \\  created_at DATETIME,
+        \\  updated_at DATETIME,
+        \\  position INTEGER,
+        \\  user_id TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_members (
+        \\  workspace_id TEXT NOT NULL,
+        \\  user_id TEXT NOT NULL,
+        \\  role TEXT NOT NULL DEFAULT 'viewer',
+        \\  joined_at DATETIME,
+        \\  invited_by TEXT,
+        \\  PRIMARY KEY (workspace_id, user_id)
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn countRows(ctx: *DeleteCtx, sql: []const u8, params: []const []const u8) !u64 {
+    const alloc = testing.allocator;
+    var q = try ctx.db.query(alloc, sql, params);
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    return std.fmt.parseInt(u64, row.values[0], 10);
+}
+
+/// A header bag with no Cookie, so `parseSessionToken` yields null and
+/// `resolveRequestUserId` resolves the sentinel. That is the "auth on, not
+/// logged in" path, and it is the cheapest way to reach a caller that is
+/// allowed to see everything without minting a real session token.
+const NoCookie = struct {
+    fn get(_: @This(), _: []const u8) ?[]const u8 {
+        return null;
+    }
+};
+
+test "workspaceDelete removes the membership rows, not just the workspace" {
+    const alloc = testing.allocator;
+    var ctx = try setupDeleteDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, name, user_id) VALUES ('ws_x', 'X', 'user_a')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ('ws_x', 'user_a', 'owner'), ('ws_x', 'user_b', 'viewer')", &.{});
+    try testing.expectEqual(@as(u64, 2), try countRows(&ctx, "SELECT COUNT(*) FROM workspace_members WHERE workspace_id = 'ws_x'", &.{}));
+
+    const r = try useCase(alloc, &ctx.db, "ws_x", true, NoCookie{});
+    try testing.expectEqualStrings("ws_x", r.id);
+
+    try testing.expectEqual(@as(u64, 0), try countRows(&ctx, "SELECT COUNT(*) FROM workspaces WHERE id = 'ws_x'", &.{}));
+    // The assertion this whole use case was changed to make: `PRAGMA
+    // foreign_keys` is OFF, so nothing else would ever remove these.
+    try testing.expectEqual(@as(u64, 0), try countRows(&ctx, "SELECT COUNT(*) FROM workspace_members WHERE workspace_id = 'ws_x'", &.{}));
+}
+
+test "workspaceDelete refuses an unknown workspace and deletes nothing" {
+    const alloc = testing.allocator;
+    var ctx = try setupDeleteDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, name, user_id) VALUES ('ws_x', 'X', 'user_a')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ('ws_x', 'user_a', 'owner')", &.{});
+
+    try testing.expectError(error.NotFound, useCase(alloc, &ctx.db, "ws_nope", true, NoCookie{}));
+
+    // The refused call must not have taken the real workspace's members with
+    // it — the cleanup only runs after a visibility-gated DELETE.
+    try testing.expectEqual(@as(u64, 1), try countRows(&ctx, "SELECT COUNT(*) FROM workspaces WHERE id = 'ws_x'", &.{}));
+    try testing.expectEqual(@as(u64, 1), try countRows(&ctx, "SELECT COUNT(*) FROM workspace_members WHERE workspace_id = 'ws_x'", &.{}));
 }
