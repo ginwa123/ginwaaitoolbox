@@ -1,4 +1,4 @@
-"""The project hook formats edited Zig without churning legacy files.
+"""The project hook runs zig fmt on edited Zig files.
 
 The hook itself (.nalar/hooks/register_hook.lua) is the deliverable, and it
 runs INSIDE nalar's vendored Lua interpreter, on every tool dispatch. There
@@ -11,18 +11,18 @@ system lua5.4 here is also 5.4.9, so running the shipped file under the
 system interpreter exercises the same semantics nalar gets. The test skips
 when no system Lua is present rather than silently passing.
 
-The bug this guards is measured, not hypothetical: `zig fmt` rewrites the
-whole file, and 20 of 40 sampled src/**/*.zig files are not fmt-clean
-(design_model.zig alone reformats by 1251 lines). An ungated hook turns a
-small edit into a diff of unrelated churn, so the HEAD-cleanliness guard is
-the behaviour under test — not an implementation detail.
+Behaviour under test: a .zig file edited by the agent comes out canonically
+formatted, and `zig fmt` rewrites the WHOLE file — pre-existing lines that
+were not fmt-clean get reformatted too. That whole-file rewrite is intended,
+not a bug: it is what "formatted" means for Zig, and the cleanup is wanted.
 
 Run:
-    python3 -m pytest tests/functional/hook_zig_fmt_test.py -v
+    uv run --with pytest python -m pytest tests/functional/hook_zig_fmt_test.py -v
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import textwrap
@@ -72,12 +72,6 @@ def _run_hook(lua: str, cwd: Path, tool_name: str, arguments: str) -> subprocess
     )
 
 
-def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=30
-    )
-
-
 def _fmt_clean(path: Path) -> bool:
     return subprocess.run(
         ["zig", "fmt", "--check", str(path)],
@@ -88,20 +82,15 @@ def _fmt_clean(path: Path) -> bool:
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """A throwaway git repo holding one fmt-clean and one legacy-dirty .zig."""
-    r = tmp_path / "repo"
-    (r / "src").mkdir(parents=True)
-    _git(r.parent, "init", "-q", str(r))
-    _git(r, "config", "user.email", "t@example.com")
-    _git(r, "config", "user.name", "t")
-
-    # Already canonical: the hook must keep it that way through an edit.
-    (r / "src" / "clean.zig").write_text(
+def workdir(tmp_path: Path) -> Path:
+    """A scratch dir holding one fmt-clean and one not-fmt-clean .zig file."""
+    d = tmp_path / "proj"
+    (d / "src").mkdir(parents=True)
+    (d / "src" / "clean.zig").write_text(
         "pub fn main() void {\n    const x = 1;\n}\n", encoding="utf-8"
     )
-    # Legacy hand-style: multi-line call args that zig fmt would collapse.
-    (r / "src" / "legacy.zig").write_text(
+    # Multi-line call args that zig fmt collapses onto one long line.
+    (d / "src" / "legacy.zig").write_text(
         "pub fn main() void {\n"
         "    call(veryLongArgumentName,\n"
         "        anotherRatherLongArgument,\n"
@@ -109,12 +98,7 @@ def repo(tmp_path: Path) -> Path:
         "}\n",
         encoding="utf-8",
     )
-    _git(r, "add", "-A")
-    _git(r, "commit", "-q", "-m", "base")
-
-    assert _fmt_clean(r / "src" / "clean.zig"), "fixture clean.zig must be fmt-clean"
-    assert not _fmt_clean(r / "src" / "legacy.zig"), "fixture legacy.zig must be fmt-dirty"
-    return r
+    return d
 
 
 def test_hook_file_is_valid_lua(lua: str) -> None:
@@ -129,111 +113,120 @@ def test_hook_file_is_valid_lua(lua: str) -> None:
     assert r.returncode == 0, f"hook failed to parse: {r.stderr}"
 
 
-def test_keeps_fmt_dirty_edit_canonical(lua: str, repo: Path) -> None:
-    """A 1-line edit to an already-clean file stays canonically formatted.
+def test_formats_the_edited_region(lua: str, workdir: Path) -> None:
+    """The headline behaviour: an edit lands canonically formatted.
 
-    Without the hook the edit lands in whatever shape the model wrote it;
-    the file is then no longer fmt-clean. This is the payoff of the whole
-    change: new Zig lands canonical without the model having to remember.
+    Without the hook the edit sits in whatever shape the model wrote it and
+    the file is left dirty. This is the payoff of the whole change: new Zig
+    comes out canonical without the model having to remember.
     """
-    target = repo / "src" / "clean.zig"
+    target = workdir / "src" / "clean.zig"
     target.write_text(
         "pub fn main() void {\n    const x    =    1;\n    const y = 2;\n}\n",
         encoding="utf-8",
     )
-    assert not _fmt_clean(target), "precondition: edit made the file dirty"
+    assert not _fmt_clean(target), "precondition: the edit made the file dirty"
 
-    r = _run_hook(lua, repo, "text_replace", '{"path": "src/clean.zig"}')
+    r = _run_hook(lua, workdir, "text_replace", '{"path": "src/clean.zig"}')
     assert r.returncode == 0, f"hook errored: {r.stderr}"
 
     assert _fmt_clean(target), (
-        "hook left an edited clean file unformatted:\n" + target.read_text()
+        "hook left an edited file unformatted:\n" + target.read_text()
     )
     assert target.read_text() == "pub fn main() void {\n    const x = 1;\n    const y = 2;\n}\n"
 
 
-def test_legacy_hand_styled_file_is_untouched(lua: str, repo: Path) -> None:
-    """The churn guard: a legacy dirty file keeps its hand style exactly.
+def test_formats_whole_file_not_just_the_edit(lua: str, workdir: Path) -> None:
+    """Pre-existing unformatted lines are normalised too — by design.
 
-    Its HEAD version was not fmt-clean, so formatting it would rewrite the
-    whole file. The edit must survive verbatim — this is the failure that
-    would otherwise land a 300-line diff on someone's PR.
+    `zig fmt` is a whole-file rewriter. Editing a line of a file that was
+    already not-fmt-clean sweeps the rest of the file canonical as well.
+    That churn is intentional: it is what "this file is formatted" means,
+    and it only ever lands in the file the agent just edited.
     """
-    target = repo / "src" / "legacy.zig"
-    edited = (
+    target = workdir / "src" / "legacy.zig"
+    target.write_text(
         "pub fn main() void {\n"
         "    call(veryLongArgumentName,\n"
         "        anotherRatherLongArgument,\n"
         "        &.{1, 2});\n"
-        "}\n"
+        "}\n",
+        encoding="utf-8",
     )
-    target.write_text(edited, encoding="utf-8")
+    assert not _fmt_clean(target), "precondition: file starts out not-fmt-clean"
 
-    r = _run_hook(lua, repo, "text_replace", '{"path": "src/legacy.zig"}')
+    r = _run_hook(lua, workdir, "text_replace", '{"path": "src/legacy.zig"}')
     assert r.returncode == 0, f"hook errored: {r.stderr}"
 
-    assert target.read_text() == edited, (
-        "hook reformatted a legacy hand-styled file it must leave alone:\n"
+    assert _fmt_clean(target), (
+        "hook did not bring the whole file to canonical form:\n"
         + target.read_text()
     )
+    # The edit must survive the reformat. Matched with a tolerant pattern
+    # because Zig 0.16 renders `.{1, 2}` as `.{ 1, 2 }` — asserting the
+    # literal text would be asserting my own spacing, not the behaviour.
+    assert re.search(r"&\.\{\s*1,\s*2\s*\}", target.read_text()), (
+        "the actual edit did not survive formatting:\n" + target.read_text()
+    )
+    assert "veryLongArgumentName" in target.read_text(), "existing code was lost"
 
 
-def test_new_untracked_file_is_formatted(lua: str, repo: Path) -> None:
-    """A brand-new file has no committed style to protect, so format it."""
-    target = repo / "src" / "fresh.zig"
-    target.write_text("pub fn f() void {\n    const a    =    1;\n}\n", encoding="utf-8")
-
-    r = _run_hook(lua, repo, "write_file", '{"path": "src/fresh.zig", "content": "x"}')
-    assert r.returncode == 0, f"hook errored: {r.stderr}"
-
-    assert _fmt_clean(target), "a newly created .zig should come out canonical"
-
-
-def test_syntax_broken_file_is_not_corrupted(lua: str, repo: Path) -> None:
+def test_syntax_broken_file_is_not_corrupted(lua: str, workdir: Path) -> None:
     """A mid-edit file that does not parse must be left byte-for-byte alone.
 
-    zig fmt exits non-zero without writing on a parse error, so the guard
-    never has to second-guess it; this asserts the real behaviour rather
-    than trusting the manual.
+    zig fmt exits non-zero without writing on a parse error, so a half-typed
+    file is never mangled. This asserts the real behaviour rather than
+    trusting the manual.
     """
-    target = repo / "src" / "clean.zig"
+    target = workdir / "src" / "clean.zig"
     broken = "pub fn main() void {\n    const x = ;\n}\n"
     target.write_text(broken, encoding="utf-8")
 
-    r = _run_hook(lua, repo, "text_replace", '{"path": "src/clean.zig"}')
+    r = _run_hook(lua, workdir, "text_replace", '{"path": "src/clean.zig"}')
     assert r.returncode == 0, f"hook errored: {r.stderr}"
 
     assert target.read_text() == broken, "hook corrupted a syntactically broken file"
 
 
-def test_non_zig_and_unknown_tools_are_noops(lua: str, repo: Path) -> None:
-    """Only .zig is gated/handled here; other paths and tools change nothing."""
-    target = repo / "src" / "notes.txt"
-    target.write_text("const    x=1\n", encoding="utf-8")
+def test_new_file_is_formatted(lua: str, workdir: Path) -> None:
+    """A brand-new .zig file is formatted like any other."""
+    target = workdir / "src" / "fresh.zig"
+    target.write_text("pub fn f() void {\n    const a    =    1;\n}\n", encoding="utf-8")
 
-    r = _run_hook(lua, repo, "write_file", '{"path": "src/notes.txt", "content": "x"}')
+    r = _run_hook(lua, workdir, "write_file", '{"path": "src/fresh.zig", "content": "x"}')
     assert r.returncode == 0, f"hook errored: {r.stderr}"
-    assert target.read_text() == "const    x=1\n", "hook touched a non-.zig file"
 
-    # A read-only tool that happens to carry a .zig path must not format.
-    z = repo / "src" / "clean.zig"
-    before = z.read_text()
-    r = _run_hook(lua, repo, "read_file", '{"path": "src/clean.zig"}')
-    assert r.returncode == 0, f"hook errored: {r.stderr}"
-    assert z.read_text() == before, "hook formatted on a non-edit tool"
+    assert _fmt_clean(target), "a newly created .zig should come out canonical"
 
 
-def test_absolute_path_is_handled(lua: str, repo: Path) -> None:
-    """Tool arguments can carry an absolute path; the guard must still work."""
-    target = repo / "src" / "clean.zig"
+def test_absolute_path_is_handled(lua: str, workdir: Path) -> None:
+    """Tool arguments can carry an absolute path."""
+    target = workdir / "src" / "clean.zig"
     target.write_text("pub fn main() void {\n    const q    =    3;\n}\n", encoding="utf-8")
 
-    r = _run_hook(lua, repo, "text_replace", f'{{"path": "{target}"}}')
+    r = _run_hook(lua, workdir, "text_replace", f'{{"path": "{target}"}}')
     assert r.returncode == 0, f"hook errored: {r.stderr}"
     assert _fmt_clean(target), "absolute-path edit was not formatted"
 
 
-def test_missing_file_does_not_error(lua: str, repo: Path) -> None:
+def test_non_zig_and_unknown_tools_are_noops(lua: str, workdir: Path) -> None:
+    """Only .zig and the prettier set are handled; other paths/tools change nothing."""
+    target = workdir / "src" / "notes.txt"
+    target.write_text("const    x=1\n", encoding="utf-8")
+
+    r = _run_hook(lua, workdir, "write_file", '{"path": "src/notes.txt", "content": "x"}')
+    assert r.returncode == 0, f"hook errored: {r.stderr}"
+    assert target.read_text() == "const    x=1\n", "hook touched a non-.zig file"
+
+    # A read-only tool that happens to carry a .zig path must not format.
+    z = workdir / "src" / "clean.zig"
+    before = z.read_text()
+    r = _run_hook(lua, workdir, "read_file", '{"path": "src/clean.zig"}')
+    assert r.returncode == 0, f"hook errored: {r.stderr}"
+    assert z.read_text() == before, "hook formatted on a non-edit tool"
+
+
+def test_missing_file_does_not_error(lua: str, workdir: Path) -> None:
     """A deleted or never-written target must fail open, not raise."""
-    r = _run_hook(lua, repo, "text_replace", '{"path": "src/gone.zig"}')
+    r = _run_hook(lua, workdir, "text_replace", '{"path": "src/gone.zig"}')
     assert r.returncode == 0, f"hook errored on a missing file: {r.stderr}"

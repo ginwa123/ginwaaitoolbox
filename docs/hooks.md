@@ -102,31 +102,19 @@ POSIX uses `'...'`, `cmd.exe` uses `"..."` with embedded `"` doubled.
 Every hook run is synchronous on the tool-dispatch path, so cap anything
 slow with `timeout 30s sh -c '...'` on POSIX.
 
-## Format-on-edit, without the churn
+## Format-on-edit
 
 The project hook at `.nalar/hooks/register_hook.lua` uses exactly this to
-format what the agent edits: prettier for Vue/TS, `zig fmt` for Zig.
+format what the agent edits: prettier for Vue/TS, `zig fmt` for Zig, on
+`post_tool_use` for `write_file` / `text_replace`.
 
-The Zig case is not "just run the formatter". `zig fmt` rewrites the whole
-file, not the edited region, and this repo's Zig tree is deliberately not
-fmt-clean (`.github/workflows/ci.yml` says so on purpose, because gating on
-it would turn every PR red on a change nobody made). Running it
-unconditionally turns a small edit into a large diff of unrelated
-reformatting.
-
-So the hook gates on history: it runs `zig fmt` only when the file's
-committed version (`git show HEAD:<file>`) was already `zig fmt --check`-clean.
-Then anything the formatter still changes is either what this edit
-introduced or what the formatter already wanted to change — churn cannot
-leak into legacy hand-style. Untracked (new) files count as clean, since
-there is no history to disturb.
+`zig fmt` rewrites the whole file, not just the edited region, so a file
+that was not already fmt-clean gets swept canonical across its whole
+contents the first time the agent touches it. That is intended — it is
+what "this file is formatted" means — but be aware it makes the diff
+larger than the edit that caused it. Only files the agent actually edited
+are affected; nothing else in the tree is rewritten.
 
 If you copy this pattern, note that `zig fmt` leaves a file that does not
 parse byte-for-byte unchanged (it exits non-zero without writing), so a
 mid-edit file is never corrupted.
-
-## Debugging
-
-Hook problems appear in the nalar log prefixed with `[hooks]`, e.g.
-`[hooks] /home/you/.config/nalar/hooks/register_hook.lua load failed:
-...: <name> expected near ...`.
