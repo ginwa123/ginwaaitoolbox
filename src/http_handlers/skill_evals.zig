@@ -277,7 +277,7 @@ fn applyUseCase(
     // The hash re-check. `base_content_hash` is the body the eval judged; if the
     // file on disk no longer hashes to it, the verdict is about a body that is
     // gone.
-    const current = readCurrentSkillHash(allocator, io, di, row.skill_name) catch null;
+    const current = readCurrentSkillHash(allocator, io, di, row.skill_name, row.session_id) catch null;
     if (current) |hash| {
         defer allocator.free(hash);
         if (row.base_content_hash.len > 0 and !std.mem.eql(u8, hash, row.base_content_hash)) {
@@ -316,14 +316,23 @@ fn emitApplied(
 /// Hash the skill body as it is on disk right now, or null when it cannot be
 /// read. Local scope first, then global — the same order `use_skill` resolves
 /// with, so we compare against the file the agent would actually get.
+///
+/// `session_id` supplies the repo root. The server process's cwd is NOT the
+/// session's repo (it is usually a worktree), so hashing the local tier
+/// against it re-hashes the wrong file — or nothing at all — and a live verdict
+/// gets refused as stale.
 fn readCurrentSkillHash(
     allocator: std.mem.Allocator,
     io: std.Io,
     di: *nalarcore.ContextIPCTui,
     skill_name: []const u8,
+    session_id: []const u8,
 ) !?[]u8 {
-    const body = nalarcore.skill_mod.parse_skill(allocator, io, skill_name, false, di.environment) orelse
-        nalarcore.skill_mod.parse_skill(allocator, io, skill_name, true, di.environment) orelse
+    const session_repo = try nalarcore.workspace_scope.sessionCwd(allocator, di.db, session_id);
+    defer if (session_repo) |p| allocator.free(p);
+
+    const body = nalarcore.skill_mod.parse_skill(allocator, io, skill_name, session_repo, false, di.environment) orelse
+        nalarcore.skill_mod.parse_skill(allocator, io, skill_name, session_repo, true, di.environment) orelse
         return null;
     defer allocator.free(body);
     var buf: [64]u8 = undefined;
