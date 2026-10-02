@@ -78,8 +78,43 @@ Only an explicit, well-formed table changes behavior.
 See [`examples/hooks/register_hook.lua`](../examples/hooks/register_hook.lua):
 deny `rm -rf` shell commands pre-tool, redact `sk-` secrets post-tool.
 
-## Debugging
+## Running commands from a hook
 
-Hook problems appear in the nalar log prefixed with `[hooks]`, e.g.
-`[hooks] /home/you/.config/nalar/hooks/register_hook.lua load failed:
-...: <name> expected near ...`.
+Hooks commonly shell out (a formatter, a linter). Two platform facts
+constrain how:
+
+**`io.popen` is not available.** The embedded Lua compiles it only under
+`LUA_USE_POSIX` / `LUA_USE_WINDOWS`; without one of those it falls back to
+the ISO C stub, which raises `'popen' not supported` when called. Use
+`os.execute` instead — it returns `true` on success and
+`nil, "exit", code` on a non-zero exit, so the exit code is available:
+
+```lua
+local ok, how, code = os.execute("zig fmt --check " .. q)
+if ok then          -- exit 0
+elseif how == "exit" then return code end
+```
+
+For output you need to read back, redirect to a temp file and use
+`os.tmpname()` / `os.remove()` rather than a pipe. Quote paths per platform:
+POSIX uses `'...'`, `cmd.exe` uses `"..."` with embedded `"` doubled.
+
+Every hook run is synchronous on the tool-dispatch path, so cap anything
+slow with `timeout 30s sh -c '...'` on POSIX.
+
+## Format-on-edit
+
+The project hook at `.nalar/hooks/register_hook.lua` uses exactly this to
+format what the agent edits: prettier for Vue/TS, `zig fmt` for Zig, on
+`post_tool_use` for `write_file` / `text_replace`.
+
+`zig fmt` rewrites the whole file, not just the edited region, so a file
+that was not already fmt-clean gets swept canonical across its whole
+contents the first time the agent touches it. That is intended — it is
+what "this file is formatted" means — but be aware it makes the diff
+larger than the edit that caused it. Only files the agent actually edited
+are affected; nothing else in the tree is rewritten.
+
+If you copy this pattern, note that `zig fmt` leaves a file that does not
+parse byte-for-byte unchanged (it exits non-zero without writing), so a
+mid-edit file is never corrupted.
