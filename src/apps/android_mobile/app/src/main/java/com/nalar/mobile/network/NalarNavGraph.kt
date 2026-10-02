@@ -312,7 +312,7 @@ fun NalarNavGraph(
      *
      * A callback for the same reason as [onCreateTask] — the graph composes, the
      * ViewModel fetches — and it is the graph's job because [CreateTaskHost] is
-     * mounted here, above the `NavHost`, so this is the one place that sees the
+     * mounted here, over the `NavHost`, so this is the one place that sees the
      * form open and the state that answers it.
      */
     onLoadKanbanFormData: (String, String) -> Unit = { _, _ -> },
@@ -647,26 +647,6 @@ fun NalarNavGraph(
             .fillMaxSize()
             .background(NalarBackground),
     ) {
-    // Inside the `Box` rather than beside it, so the sheet is drawn over the
-    // `NavHost` and not behind whatever the current destination paints. It
-    // composes nothing while the flow is idle.
-    CreateTaskHost(
-        controller = createTask,
-        isSubmitting = homeState.creatingTaskInProjectId != null,
-        errorMessage = homeState.taskCreateError,
-        // The board's form opens straight onto the card form (there is no type
-        // picker for a board — see `createTaskStartDecision`), so these three
-        // reads start the moment the reader presses `+` and land while they are
-        // typing the title rather than after they press commit.
-        kanbanData = NewTaskDialogData(
-            columns = homeState.kanbanColumns,
-            profiles = homeState.kanbanProfiles,
-            serverHome = homeState.kanbanServerHome,
-            isLoading = homeState.isLoadingKanbanFormData,
-        ),
-        onRequestKanbanData = onLoadKanbanFormData,
-    )
-
     // The chat bar's `+` chooser, over the graph and over `CreateTaskHost` so
     // the two never stack. It renders nothing while closed, so calling it
     // unconditionally costs one boolean read.
@@ -1096,6 +1076,28 @@ fun NalarNavGraph(
             )
         }
     }
+
+    // AFTER the `NavHost`, not before it: a `Box` draws its later children
+    // on top, and the board's create form is a full-screen overlay in this
+    // composition rather than a window of its own (see `NewTaskDialog`), so
+    // declaring it first left the board painted *over* the form. It composes
+    // nothing while the flow is idle.
+    CreateTaskHost(
+        controller = createTask,
+        isSubmitting = homeState.creatingTaskInProjectId != null,
+        errorMessage = homeState.taskCreateError,
+        // The board's form opens straight onto the card form (there is no type
+        // picker for a board — see `createTaskStartDecision`), so these three
+        // reads start the moment the reader presses `+` and land while they are
+        // typing the title rather than after they press commit.
+        kanbanData = NewTaskDialogData(
+            columns = homeState.kanbanColumns,
+            profiles = homeState.kanbanProfiles,
+            serverHome = homeState.kanbanServerHome,
+            isLoading = homeState.isLoadingKanbanFormData,
+        ),
+        onRequestKanbanData = onLoadKanbanFormData,
+    )
 
         if (visibleDestinations.isEmpty()) {
             NavigationLostScreen(onReturnHome = goBack)
