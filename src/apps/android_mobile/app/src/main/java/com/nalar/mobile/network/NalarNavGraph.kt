@@ -842,13 +842,6 @@ fun NalarNavGraph(
                 onStop = onStopChatRun,
                 onRefreshQueue = onRefreshChatQueue,
                 onUseQueuedMessage = onUseQueuedChatMessage,
-                // The bar's `+`. It opens the project chooser rather than
-                // creating directly, because a chat is a task row and every
-                // task endpoint is nested under a project — see
-                // [NewChatProjectSheet] for why that is a sheet and not an
-                // invented workspace-level endpoint.
-                onNewChat = { newChatSheetOpen = true },
-                isCreatingChat = homeState.creatingTaskInProjectId != null,
                 onSelectModel = onSelectChatModel,
                 onAttachmentPicked = onAttachChatImage,
                 onRemoveAttachment = onRemoveChatAttachment,
@@ -912,6 +905,23 @@ fun NalarNavGraph(
                             openChats(homeState.selectedWorkspaceId.orEmpty())
                             dismissDrawer()
                         },
+                        // The drawer's "New Chat", wired here because the bar
+                        // stopped offering its own. It opens the project
+                        // chooser rather than creating directly, because a chat
+                        // is a task row and every task endpoint is nested under
+                        // a project — see [NewChatProjectSheet] for why that
+                        // is a sheet and not an invented workspace-level
+                        // endpoint.
+                        //
+                        // Dismissed explicitly, like the row above: the sheet is
+                        // a place to go, and leaving this modal drawer open on
+                        // top of the chat is the drawer hiding the page the
+                        // reader is on.
+                        onNewChat = {
+                            newChatSheetOpen = true
+                            dismissDrawer()
+                        },
+                        isCreatingChat = homeState.creatingTaskInProjectId != null,
                     )
                 },
             )

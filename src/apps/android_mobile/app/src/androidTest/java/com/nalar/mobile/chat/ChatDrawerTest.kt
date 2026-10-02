@@ -35,6 +35,11 @@ import org.junit.runner.RunWith
  * returns the reader to the top of the list already open in front of them is a
  * second route to where they are standing, so it is asserted *absent* — a test
  * that only checked the row existed could not have caught its removal.
+ *
+ * The bar carries no `+` either. Starting another chat is the drawer's row, and
+ * the bar's copy was a second answer to the same question that the drawer
+ * already answers — so both halves are asserted here: the button is absent, and
+ * the row that replaced it fires once and lets the drawer go behind it.
  */
 @RunWith(AndroidJUnit4::class)
 class ChatDrawerTest {
@@ -53,6 +58,7 @@ class ChatDrawerTest {
     )
 
     private var pickedChatId: String? = null
+    private var newChatTaps = 0
     // State, not plain fields: the sidebar re-reads these on every
     // recomposition, and a field write would leave the drawer showing the
     // workspace the reader just left, or a section that refused to fold. The
@@ -85,6 +91,16 @@ class ChatDrawerTest {
                             onOpenChat = dismissDrawer,
                             recentsExpanded = recentsExpanded.value,
                             onToggleRecentsSection = { recentsExpanded.value = !recentsExpanded.value },
+                            // The bar no longer offers its own `+`, so this is
+                            // the only way to start a chat from inside one.
+                            // Wired exactly as `NalarNavGraph` wires it: fire
+                            // the request, then let the drawer go, because the
+                            // project chooser is a page and a modal sheet left
+                            // open on top of it hides it.
+                            onNewChat = {
+                                newChatTaps++
+                                dismissDrawer()
+                            },
                         )
                     },
                 )
@@ -165,6 +181,33 @@ class ChatDrawerTest {
         assertEquals("chat-a2", pickedChatId)
         // A chat is a destination, so the sheet must not stay open on top of the
         // transcript the reader just asked for.
+        composeTestRule.onNodeWithTag("sidebar_sheet").assertIsNotDisplayed()
+    }
+
+    @Test
+    fun theTopBarOffersNoNewChatButton() {
+        showChat()
+
+        // A second entry point to a page the drawer already owns. Asserted
+        // *absent*: a test that only checked the drawer row would still pass
+        // with the bar's `+` back in place.
+        composeTestRule.onNodeWithTag("chat_new_chat").assertDoesNotExist()
+    }
+
+    @Test
+    fun theDrawersNewChatRowIsHowAReaderStartsAnotherChat() {
+        showChat()
+        openDrawer()
+
+        composeTestRule.onNodeWithTag("sidebar_new_chat").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("sidebar_new_chat").performClick()
+        composeTestRule.waitForIdle()
+
+        // One tap, one create: the graph opens the project chooser, and a row
+        // that fired twice behind it would leave two chats and no way back.
+        assertEquals(1, newChatTaps)
+        // The chooser is a page, so the drawer must not sit on top of it.
         composeTestRule.onNodeWithTag("sidebar_sheet").assertIsNotDisplayed()
     }
 
