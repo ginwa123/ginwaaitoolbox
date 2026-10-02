@@ -162,11 +162,10 @@ onMounted(() => {
       </button>
     </div>
 
-    <div
-      v-if="sidebarStore.documentsExpanded"
-      class="overflow-y-auto max-h-[30vh] pb-1"
-      data-testid="documents-section-body"
-    >
+    <!-- No `max-h`/`overflow-y` of its own: the sidebar <nav> scrolls the
+         whole panel. A third scroll region capped at 30vh is what made
+         the section feel unreachable. -->
+    <div v-if="sidebarStore.documentsExpanded" class="pb-1" data-testid="documents-section-body">
       <!-- Load failure is shown inline and is DISTINCT from the empty
            state. A failed fetch that rendered "No documents yet" would
            tell the user their documents are gone. -->
