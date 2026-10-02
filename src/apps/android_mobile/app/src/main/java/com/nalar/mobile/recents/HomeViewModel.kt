@@ -71,6 +71,23 @@ data class HomeUiState(
      * contents.
      */
     val chatsTotal: Int = 0,
+    /**
+     * Why the last *later* page failed, or null.
+     *
+     * Its own field, and not [errorMessage], because the two say different
+     * things: that one means the list on screen is stale, this one means the
+     * rows on screen are the true last rows the app has and the thing the
+     * reader just asked for did not happen.
+     *
+     * It exists because of what the screen is. The full-screen list is
+     * opened with the drawer's five-row preview, five rows do not fill a
+     * phone, and a `LazyColumn` with no overflow cannot be scrolled — so a
+     * failed page had exactly one advertised recovery, "Scroll for older
+     * chats", and no way for the reader to take it. `has_more` was
+     * deliberately kept true on failure so a scroll could retry; on a list
+     * that cannot scroll, that is a promise with no gesture attached.
+     */
+    val loadMoreChatsError: String? = null,
     // ── Projects (the sidebar's Projects section) ──────────────────────────
     /**
      * Whether the Recents section is unfolded.
@@ -382,6 +399,16 @@ class HomeViewModel(
     }
 
     fun refresh() {
+        // A refresh is a new question with a new answer, so the *previous*
+        // page's failure stops being true here — cleared before the request,
+        // because whether the refresh itself then fails is a different
+        // complaint and `errorMessage` is where that one belongs. Waiting for
+        // `loadChats` to clear it instead would leave a stale "could not load
+        // older chats" on screen for exactly as long as the network is down,
+        // which is when the reader most needs the screen to be telling them
+        // something current.
+        _uiState.update { it.copy(loadMoreChatsError = null) }
+
         primeWorkspacesFromCache()
         // The workspace the prime above selected needs its own paint, and it
         // must happen NOW — waiting for the workspaces fetch to return first
@@ -575,7 +602,12 @@ class HomeViewModel(
         moreChatsJob?.cancel()
         chatsCursor = null
         _uiState.update {
-            it.copy(isLoadingMoreChats = false, hasMoreChats = false, chatsTotal = 0)
+            it.copy(
+                isLoadingMoreChats = false,
+                hasMoreChats = false,
+                chatsTotal = 0,
+                loadMoreChatsError = null,
+            )
         }
 
         val generation = chatsGeneration
@@ -660,7 +692,7 @@ class HomeViewModel(
         val generation = chatsGeneration
         moreChatsJob?.cancel()
         moreChatsJob = viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingMoreChats = true) }
+            _uiState.update { it.copy(isLoadingMoreChats = true, loadMoreChatsError = null) }
 
             val result = withContext(ioDispatcher) {
                 client.loadChats(
@@ -684,10 +716,19 @@ class HomeViewModel(
 
                 is RecentsResult.Unavailable -> _uiState.update { current ->
                     // Keep the rows we already have and keep `hasMore` true, so
-                    // scrolling again retries the same page. Blanking the list,
-                    // or silently ending it, would both be worse than a page
-                    // that did not arrive.
-                    current.copy(isLoadingMoreChats = false)
+                    // asking again retries the same page. Blanking the list, or
+                    // silently ending it, would both be worse than a page that
+                    // did not arrive.
+                    //
+                    // The message is the part this used to be missing. "Keep
+                    // `hasMore` true" was the whole recovery, and on a list
+                    // that cannot scroll the reader had no way to take it: the
+                    // footer went on promising older chats with nothing behind
+                    // it. The screen now shows this and offers the retry.
+                    current.copy(
+                        isLoadingMoreChats = false,
+                        loadMoreChatsError = result.message,
+                    )
                 }
 
                 is RecentsResult.Loaded -> {
@@ -698,6 +739,7 @@ class HomeViewModel(
                     _uiState.update { current ->
                         current.copy(
                             isLoadingMoreChats = false,
+                            loadMoreChatsError = null,
                             chats = RecentsApi.mergeChatsById(current.chats, page.chats),
                             // A page that added nothing new means the cursor is
                             // not advancing — either the end of the list or a

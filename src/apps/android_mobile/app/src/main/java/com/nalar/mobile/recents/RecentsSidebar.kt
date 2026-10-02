@@ -3,6 +3,7 @@ package com.nalar.mobile.recents
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -760,6 +761,14 @@ private fun AccountFooter(
 internal fun ChatListFooter(
     isLoading: Boolean,
     hasReachedEnd: Boolean,
+    /**
+     * Why the last page failed, or null. A failure is offered as a *control*,
+     * not as a caption: the list this row sits under may be shorter than the
+     * screen and therefore not scrollable at all, so "scroll again" is not a
+     * recovery a reader can take. Tapping this row is.
+     */
+    errorMessage: String? = null,
+    onRetry: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -776,6 +785,19 @@ internal fun ChatListFooter(
                     .testTag("chats_load_more_spinner"),
                 strokeWidth = 2.dp,
                 color = NalarMuted,
+            )
+
+            // Checked before the end marker: a page that failed is not the end
+            // of the list, and saying "No older chats" over a network error is
+            // the one claim a reader cannot undo by trying again.
+            errorMessage != null -> Text(
+                text = "$errorMessage — tap to retry",
+                modifier = Modifier
+                    .clickable(onClick = onRetry)
+                    .testTag("chats_load_more_error"),
+                style = MaterialTheme.typography.labelSmall,
+                color = NalarDim,
+                textAlign = TextAlign.Center,
             )
 
             hasReachedEnd -> Text(

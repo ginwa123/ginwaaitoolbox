@@ -19,19 +19,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
 import com.nalar.mobile.ui.NalarText
-import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** Reserved key for the footer row, which is not a chat. */
 private const val LOAD_MORE_KEY = "__recents_chats_footer__"
@@ -41,14 +35,6 @@ private const val CONTENT_TYPE_SENTINEL = "sentinel"
 private const val CONTENT_TYPE_CHAT = "chat"
 
 private const val CONTENT_TYPE_STATE = "state"
-
-/**
- * How many rows from the end arm the next page. Matches
- * [com.nalar.mobile.projects.ProjectChatsScreen] for the same reason: the fetch
- * should already be in flight by the time the reader reaches the end, rather
- * than starting from a standstill with the list visibly stopped.
- */
-private const val LOAD_MORE_INDEX_THRESHOLD = 2
 
 /**
  * Every chat in one workspace, full-screen, paging on scroll.
@@ -102,6 +88,16 @@ fun RecentsChatsScreen(
      */
     onOpenChat: (String) -> Unit,
     onLoadMore: () -> Unit,
+    /**
+     * Why the last page failed, or null.
+     *
+     * Shown as a tappable row rather than left to the scroll trigger, because
+     * the list this screen opens on is the drawer's five-row preview and five
+     * rows do not fill a phone — so a failed page would otherwise be invisible
+     * and its only advertised recovery, scrolling, would be a gesture the
+     * screen cannot accept.
+     */
+    loadMoreError: String? = null,
     nowEpochMillis: Long = remember { System.currentTimeMillis() },
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -110,35 +106,18 @@ fun RecentsChatsScreen(
     val canPage = recentsChatsCanPage(chats, hasMore, isLoadingMore)
     val listState = rememberLazyListState()
 
-    // One page per approach to the end.
-    //
-    // This latch is deliberately NOT shared with anything else. Two scrollers
-    // paging the same list through one flag would let a scroll here suppress a
-    // fetch somewhere else is waiting for, and vice versa.
-    var loadMoreLatched by remember { mutableStateOf(true) }
-
-    LaunchedEffect(listState, chats.size, canPage) {
-        snapshotFlow {
-            val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            // `canPage` is in the *condition*, not only in the key, so a list
-            // that stops being pageable disarms an already-armed trigger. And
-            // only a real overflow can be scrolled: an unlaid-out list reports
-            // 0/0 and would otherwise arm on the first frame.
-            canPage &&
-                info.totalItemsCount > 0 &&
-                last >= info.totalItemsCount - 1 - LOAD_MORE_INDEX_THRESHOLD
-        }
-            .distinctUntilChanged()
-            .collect { nearBottom ->
-                if (!nearBottom) {
-                    loadMoreLatched = false
-                } else if (!loadMoreLatched) {
-                    loadMoreLatched = true
-                    onLoadMore()
-                }
-            }
-    }
+    // One page per approach to the end — *and* one when the reader cannot
+    // approach the end at all, which is the state this screen opens in: the
+    // drawer hands over five rows, five rows do not fill a phone, and a
+    // `LazyColumn` with no overflow has no scroll offset to change. Shared with
+    // the project screen rather than copied, because the copy of this trigger
+    // is where the bug lived.
+    ChatListLoadMoreTrigger(
+        listState = listState,
+        canPage = canPage,
+        rowCount = chats.size,
+        onLoadMore = onLoadMore,
+    )
 
     Scaffold(
         modifier = modifier.testTag("recents_chats_screen"),
@@ -234,6 +213,10 @@ fun RecentsChatsScreen(
                     // `canPage` is false while the first page is still in
                     // flight, which is why the spinner is checked first.
                     hasReachedEnd = !hasMore,
+                    errorMessage = loadMoreError,
+                    // The same call the trigger makes, so a tap and a scroll
+                    // cannot disagree about what to ask for.
+                    onRetry = onLoadMore,
                 )
             }
         }
