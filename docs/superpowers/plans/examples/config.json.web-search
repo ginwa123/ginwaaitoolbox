@@ -49,7 +49,7 @@
   "tools": [
     "command", "read_file", "write_file", "text_replace", "remove_file",
     "list_directory", "search", "glob",
-    "web_search", "list_search_providers",
+    "web_search", "list_web_search_providers",
     "present_files", "update_plan", "get_plan", "ask_user"
   ],
 
