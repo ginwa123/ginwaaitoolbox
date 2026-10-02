@@ -51,6 +51,19 @@ pub const SessionInfo = struct {
     /// kanban `tasks_list.zig` badge). "" = not a git repo /
     /// detached HEAD — the sidebar omits the badge in that case.
     git_branch: []const u8,
+    /// The project this session belongs to (`workspace_item_tasks.workspace_item_id`,
+    /// "" when it belongs to none). Defaults so the literal sites that predate
+    /// it keep compiling — and because "not in a project" is the honest answer
+    /// for the majority of sessions, not an omission.
+    ///
+    /// Exists because `GET /api/session` scopes its list by workspace_id, which
+    /// the handler resolves down to a set of *task ids* and then throws the
+    /// project away. A client holding that list therefore cannot tell which
+    /// project a session came from, which is the one fact it needs to say "this
+    /// project has work in flight" without a second request per project. The
+    /// join is one indexed seek on `workspace_item_tasks.id` (its PRIMARY KEY)
+    /// per row, so it rides along with a query that already scans the row.
+    workspace_item_id: []const u8 = "",
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -66,6 +79,10 @@ pub const SessionInfo = struct {
         allocator.free(self.last_human_touched_at);
         allocator.free(self.git_worktree_cwd);
         allocator.free(self.git_branch);
+        // Zero-length when the field was left at its default, and
+        // `Allocator.free` short-circuits on len 0 — so a literal that never
+        // set it is not freeing a string constant.
+        allocator.free(self.workspace_item_id);
     }
 };
 
@@ -175,7 +192,14 @@ pub fn getSessionList(
         \\         'Agent'
         \\       ) AS agent,
         \\       COALESCE(s.is_auto_retry_until_stop, '0') AS is_auto_retry_until_stop,
-        \\       COALESCE(s.last_finish_reason, '') AS last_finish_reason
+        \\       COALESCE(s.last_finish_reason, '') AS last_finish_reason,
+        \\       COALESCE(
+        \\         (SELECT t.workspace_item_id
+        \\            FROM workspace_item_tasks t
+        \\           WHERE t.id = sub.session_id
+        \\           LIMIT 1),
+        \\         ''
+        \\       ) AS workspace_item_id
         \\FROM (
         \\  SELECT h.session_id, MAX(h.created_at_nano) AS created_at
         \\    FROM llm_history h
@@ -217,6 +241,9 @@ pub fn getSessionList(
             .last_human_touched_at = try allocator.dupe(u8, ""),
             .git_worktree_cwd = try allocator.dupe(u8, ""),
             .git_branch = try allocator.dupe(u8, ""),
+            // row.values[7] = workspace_item_id. COALESCE'd to "" by the
+            // SELECT, so a session outside any project is "" and never NULL.
+            .workspace_item_id = try allocator.dupe(u8, row.values[7]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -377,7 +404,8 @@ pub fn getSessionListWithCursor(
         \\COALESCE(s.is_auto_retry_until_stop, '0'),
         \\COALESCE(s.last_finish_reason, ''),
         \\CASE WHEN s.last_human_touched_at_nano IS NULL OR s.last_human_touched_at_nano = '' THEN '' ELSE strftime('%Y-%m-%d %H:%M:%S', s.last_human_touched_at_nano / 1000, 'unixepoch') END,
-        \\COALESCE(s.git_worktree_cwd, '')
+        \\COALESCE(s.git_worktree_cwd, ''),
+        \\COALESCE((SELECT t.workspace_item_id FROM workspace_item_tasks t WHERE t.id = s.id LIMIT 1), '')
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -418,6 +446,10 @@ pub fn getSessionListWithCursor(
             // (git -C <effective-cwd>), so the DB layer leaves it empty.
             .git_worktree_cwd = try allocator.dupe(u8, row.values[11]),
             .git_branch = try allocator.dupe(u8, ""),
+            // row.values[12] = workspace_item_id, appended after the git
+            // columns so every existing index in this literal is unchanged.
+            // "" for a session that is in no project.
+            .workspace_item_id = try allocator.dupe(u8, row.values[12]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -481,6 +513,10 @@ pub const SessionInfoJson = struct {
     /// Computed per request in `session_list.zig` (same `git -C`
     /// helper as the kanban task badge).
     git_branch: []const u8 = "",
+    /// The project this session belongs to ("" = not in one). Additive:
+    /// a client that has never heard of it ignores the field, and the web
+    /// (`api/index.ts`) does not read it today.
+    workspace_item_id: []const u8 = "",
 };
 
 /// Build JSON response for a list of sessions with cursor pagination
@@ -518,6 +554,7 @@ pub fn buildSessionListJson(
             // per-request resolved branch ("" = no badge).
             .git_worktree_cwd = sess.git_worktree_cwd,
             .git_branch = sess.git_branch,
+            .workspace_item_id = sess.workspace_item_id,
         });
     }
 
@@ -8579,6 +8616,17 @@ test "getSessionListWithCursor converts unix-ms storage to SQLite datetime on th
     try db.exec(alloc,
         \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
     , &.{});
+    // The session-list SELECT correlated-subqueries this table for
+    // `workspace_item_id`, so a fixture that omits it fails at Prepare
+    // rather than at the assertion. Mirrors Migration 034's columns that
+    // the subquery reads.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL
+        \\)
+    , &.{});
 
     // Insert a session with a known unix-ms stamp.
     // 2026-08-29 10:00:00 UTC = 1788008400 epoch seconds = 1788008400000 ms.
@@ -8632,6 +8680,17 @@ test "getSessionListWithCursor returns empty string for NULL last_human_touched_
     try db.exec(alloc,
         \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
     , &.{});
+    // The session-list SELECT correlated-subqueries this table for
+    // `workspace_item_id`, so a fixture that omits it fails at Prepare
+    // rather than at the assertion. Mirrors Migration 034's columns that
+    // the subquery reads.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL
+        \\)
+    , &.{});
 
     // Insert a session with NO stamp (NULL column).
     try db.exec(alloc,
@@ -8676,6 +8735,17 @@ test "getSessionListWithCursor pages on the sort field's column, not created_at"
     , &.{});
     try db.exec(alloc,
         \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+    // The session-list SELECT correlated-subqueries this table for
+    // `workspace_item_id`, so a fixture that omits it fails at Prepare
+    // rather than at the assertion. Mirrors Migration 034's columns that
+    // the subquery reads.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL
+        \\)
     , &.{});
 
     // `created_at` and `updated_at` are deliberately INVERTED: every row was
@@ -8758,6 +8828,17 @@ test "getSessionListWithCursor keeps the created_at filter when sorting by creat
     try db.exec(alloc,
         \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
     , &.{});
+    // The session-list SELECT correlated-subqueries this table for
+    // `workspace_item_id`, so a fixture that omits it fails at Prepare
+    // rather than at the assertion. Mirrors Migration 034's columns that
+    // the subquery reads.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL
+        \\)
+    , &.{});
 
     try db.exec(alloc,
         \\INSERT INTO sessions (id, name, cwd, created_at, updated_at) VALUES
@@ -8822,6 +8903,17 @@ test "getSessionListWithCursor: workspace_ids bounds sessions AND total (count h
     , &.{});
     try db.exec(alloc,
         \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+    // The session-list SELECT correlated-subqueries this table for
+    // `workspace_item_id`, so a fixture that omits it fails at Prepare
+    // rather than at the assertion. Mirrors Migration 034's columns that
+    // the subquery reads.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL
+        \\)
     , &.{});
     try db.exec(alloc,
         \\INSERT INTO sessions (id, name, cwd) VALUES

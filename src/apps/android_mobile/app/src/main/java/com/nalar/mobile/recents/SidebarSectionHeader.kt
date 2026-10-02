@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -16,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -23,6 +25,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
 import com.nalar.mobile.ui.NalarDim
 import com.nalar.mobile.ui.NalarMuted
@@ -57,6 +60,21 @@ internal fun SidebarSectionHeader(
     onClick: () -> Unit,
     testTag: String,
     modifier: Modifier = Modifier,
+    /**
+     * Whether anything in this section is busy right now.
+     *
+     * Only the Projects header ever passes it. The web mounts a `SessionSlider`
+     * beside the section count for the same reason
+     * (`ProjectsList.vue`, `firstProcessingTaskIdInWorkspace`): the header is
+     * the one row that is on screen when every project row is folded away, so
+     * without it a workspace with work in flight can look completely idle.
+     *
+     * Defaults false so the Recent header — whose own rows carry their own
+     * spinners, and which therefore has nothing extra to say — is unchanged,
+     * and so a caller that forgets it renders honestly rather than claiming
+     * nothing is running.
+     */
+    isRunning: Boolean = false,
 ) {
     Surface(
         onClick = onClick,
@@ -66,7 +84,10 @@ internal fun SidebarSectionHeader(
             .semantics {
                 role = Role.Button
                 heading()
-                contentDescription = "$title. $itemCount $unit in this workspace"
+                contentDescription = buildString {
+                    append("$title. $itemCount $unit in this workspace")
+                    if (isRunning) append(", agent is working")
+                }
                 stateDescription = if (expanded) "Expanded" else "Collapsed"
             },
         shape = RoundedCornerShape(10.dp),
@@ -94,6 +115,19 @@ internal fun SidebarSectionHeader(
                     text = itemCount.toString(),
                     style = MaterialTheme.typography.labelMedium,
                     color = NalarMuted,
+                )
+            }
+            if (isRunning) {
+                CircularProgressIndicator(
+                    // Decorative — the section's own description already says
+                    // it, and announcing it a second time is worse than not
+                    // announcing it.
+                    modifier = Modifier
+                        .clearAndSetSemantics { }
+                        .size(14.dp)
+                        .testTag("${testTag}_running"),
+                    strokeWidth = 2.dp,
+                    color = NalarAccent,
                 )
             }
             Icon(

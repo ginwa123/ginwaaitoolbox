@@ -408,6 +408,11 @@ private fun SidebarBody(
             ?.let { workspaceId -> recentChatsForWorkspace(chats, workspaceId) }
             .orEmpty()
 
+        // Which project rows are busy, resolved once for the whole section
+        // rather than per row — the header asks the same question, and N rows
+        // each re-scanning the loaded chat pages is N answers to one.
+        val runningProjectIds = projects.runningProjectIds(runningSessionIds, visibleChats)
+
         // The preview the drawer renders, and the one thing it does not decide
         // for itself. `HomeViewModel` fetched exactly this many rows, so
         // nothing is being hidden here — the rest of the workspace is on
@@ -548,6 +553,10 @@ private fun SidebarBody(
                     expanded = projects.expanded,
                     onClick = projectActions.onToggleSection,
                     testTag = "projects_section_header",
+                    // Read once per composition of the body rather than per
+                    // row, so N projects do not each re-scan the loaded chat
+                    // pages for the same answer.
+                    isRunning = runningProjectIds.isNotEmpty(),
                 )
             }
 
@@ -601,6 +610,7 @@ private fun SidebarBody(
                         project = project,
                         expanded = expanded,
                         onClick = { projectActions.onToggleItem(project.id) },
+                        isRunning = project.id in runningProjectIds,
                     )
 
                     if (expanded) {

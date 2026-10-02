@@ -43,6 +43,20 @@ data class ChatSummary(
      * updated_at`) rather than to "no label at all".
      */
     val lastHumanTouchedAtEpochMillis: Long = updatedAtEpochMillis,
+    /**
+     * The project this chat belongs to, or null when it is in none.
+     *
+     * Read from `workspace_item_id` on `GET /api/session`. The endpoint
+     * scopes its list by `workspace_id`, which the server resolves down to a
+     * set of *task ids* — so before this field existed the phone could see a
+     * chat was running but not which project it belonged to, and the Projects
+     * section had to load every project's chats to find out.
+     *
+     * Null rather than "" so "the server told us nothing" and "the server said
+     * no project" stay the same honest answer here: both mean this row cannot
+     * light a project spinner, and neither is worth guessing at.
+     */
+    val projectId: String? = null,
 ) {
     val displayTitle: String
         get() = title.trim().ifEmpty { "New Chat" }

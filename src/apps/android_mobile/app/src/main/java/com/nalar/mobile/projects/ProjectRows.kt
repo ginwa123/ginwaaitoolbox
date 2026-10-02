@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.ViewKanban
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -37,6 +38,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.formatRelativeTime
 import com.nalar.mobile.recents.formatRelativeTimeForAccessibility
 import com.nalar.mobile.ui.NalarAccent
@@ -75,6 +77,52 @@ class ProjectsState(
     fun isProjectExpanded(itemId: String): Boolean = itemId in expandedItemIds
 
     fun chatsFor(itemId: String): ProjectChatsPage? = chats[itemId]
+
+    /**
+     * The projects holding at least one of [runningSessionIds]'s sessions.
+     *
+     * The web draws the same indicator from the workspace tree
+     * (`WorkspaceItem.vue`'s `firstProcessingTaskId`, and
+     * `ProjectsList.vue`'s `firstProcessingTaskIdInWorkspace` for the section
+     * header) — one `processingState[task.id]` lookup per task, and a task id
+     * *is* a session id, which is the join this method performs.
+     *
+     * Two sources, because the web has one and the phone does not. The web
+     * loads every project's tasks up front (`is_include_items=true`) so it can
+     * ask about any project without asking again; this section loads a
+     * project's page only when the reader unfolds it, deliberately (see
+     * [ProjectsApi] on why a phone does not pull the whole tree on a metered
+     * connection). So [chats] alone would light a spinner only for a project
+     * the reader has opened — and in the very state the report was taken, every
+     * project row folded.
+     *
+     * [recents] is what closes that. The recents list is the one list the
+     * drawer holds for the whole workspace at all times, and it now carries
+     * each session's own `workspace_item_id` (`ChatSummary.projectId`), so a
+     * collapsed project resolves from data already on screen — no request, no
+     * per-project fan-out.
+     *
+     * A running session this cannot attribute — no project, or one outside the
+     * page the caller passed — still lights nothing. Guessing which project a
+     * run belongs to is how a spinner ends up on the wrong row.
+     */
+    fun runningProjectIds(
+        runningSessionIds: Set<String>,
+        recents: List<ChatSummary> = emptyList(),
+    ): Set<String> {
+        if (runningSessionIds.isEmpty()) return emptySet()
+
+        val fromUnfoldedProjects = chats.filterValues { page ->
+            page.chats.any { chat -> chat.id in runningSessionIds }
+        }.keys
+
+        val fromRecents = recents.asSequence()
+            .filter { chat -> chat.id in runningSessionIds }
+            .mapNotNull { chat -> chat.projectId?.takeIf { it.isNotBlank() } }
+            .toSet()
+
+        return fromUnfoldedProjects + fromRecents
+    }
 
     /**
      * The rows the drawer unrolls under a project — the first
@@ -197,6 +245,14 @@ internal fun ProjectRow(
     expanded: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Whether a chat inside this project has a live worker.
+     *
+     * A parameter rather than something read from the store so the row is
+     * drawable without one — same contract [ProjectChatRow]'s `isRunning`
+     * already has, and the reason a preview and a test can both render a row.
+     */
+    isRunning: Boolean = false,
 ) {
     Surface(
         onClick = onClick,
@@ -205,7 +261,10 @@ internal fun ProjectRow(
             .testTag("project_row_${project.id}")
             .semantics {
                 role = Role.Button
-                contentDescription = "${project.displayName}. ${project.itemType} project"
+                contentDescription = buildString {
+                    append("${project.displayName}. ${project.itemType} project")
+                    if (isRunning) append(", agent is working")
+                }
                 stateDescription = if (expanded) "Expanded" else "Collapsed"
             },
         // The same selected treatment a chat row uses, so "the thing you are
@@ -233,6 +292,22 @@ internal fun ProjectRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            // Ahead of the chevron, and only while something runs: the row's
+            // right-hand edge must not change width as a run starts and stops,
+            // or every reader watches the whole list shift sideways.
+            if (isRunning) {
+                CircularProgressIndicator(
+                    // Decorative — "agent is working" is already in the content
+                    // description, and announcing it twice is worse than not
+                    // announcing it.
+                    modifier = Modifier
+                        .clearAndSetSemantics { }
+                        .size(14.dp)
+                        .testTag("project_running_${project.id}"),
+                    strokeWidth = 2.dp,
+                    color = NalarAccent,
+                )
+            }
             Icon(
                 imageVector = Icons.Filled.ExpandMore,
                 contentDescription = null,

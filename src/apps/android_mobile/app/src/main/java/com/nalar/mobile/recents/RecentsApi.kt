@@ -152,6 +152,11 @@ object RecentsApi {
                         // pretending the human just came back to it.
                         updatedAtEpochMillis = sessionOrderTimestampMillis(session),
                         lastHumanTouchedAtEpochMillis = sessionLabelTimestampMillis(session),
+                        // `stringField` maps an explicit JSON null to "", so
+                        // the blank check is what separates "no project" from
+                        // a project whose id happened to be empty.
+                        projectId = session.stringField("workspace_item_id")
+                            .takeIf { it.isNotBlank() },
                     ),
                 )
             }
