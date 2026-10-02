@@ -385,7 +385,12 @@ object ChatApi {
      */
     private const val MIN_NANO_DIGITS = 13
     private const val MAX_LIMIT = 1000
-    private const val NANOS_PER_MILLI = 1_000_000L
+    /**
+     * Shared rather than private: [ChatViewModel] stamps frame-delivered rows on
+     * the same scale the parser reads the server's `created_at` on, and two
+     * constants for one unit is how they drift apart.
+     */
+    internal const val NANOS_PER_MILLI = 1_000_000L
 }
 
 /**
