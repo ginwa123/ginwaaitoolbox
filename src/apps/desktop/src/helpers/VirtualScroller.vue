@@ -709,7 +709,31 @@ const recordTailContentBottom = (
   lastIndex: number,
 ): void => {
   if (props.maxTailGap <= 0) return
-  if (firstIndex < 0 || lastIndex < props.items.length - 1) return
+  if (firstIndex < 0 || lastIndex < props.items.length - 1) {
+    // This pass did not see the tail, so whatever bottom we recorded earlier
+    // describes a DIFFERENT window — and, if the list has grown since, a
+    // different list. The tail cap is `min(modelTotal, recorded + maxTailGap)`,
+    // so a stale record silently clamps the sizer far below the real content:
+    // with 43 items, a buffer of 30, and a record from when the list was 20
+    // items long, the cap held the sizer at 4196px against a correct 8542px
+    // model. The reader then sees phantom scroll range that no content backs.
+    //
+    // Clearing it is also what makes the cap dither-free. The latch's
+    // hysteresis exists because a clamp-driven scrollTop write can move the
+    // window off the tail and back, re-clamping each time. With the record
+    // cleared, the cap switches OFF the moment the window leaves the tail, so
+    // there is no clamp to fight — and when the window returns, the value
+    // written is one this pass actually measured, never one the clamp itself
+    // produced. The cap can then only ever clamp to a real bottom.
+    tailContentBottom.value = 0
+    return
+  }
+  // NOTE: `childrenSum <= 0` deliberately keeps the previous value rather than
+  // clearing it. A pass with no layout (container not yet painted, `v-if`
+  // hidden) is not evidence that the tail moved, and fail-open here keeps the
+  // cap protecting the reader from a phantom void while there is no
+  // measurement to replace it with. A pass that DOES see rows and does not
+  // reach the tail is different evidence — that is the case cleared above.
   if (childrenSum <= 0) return
   const bottom = (accumulatedHeights.value[firstIndex] ?? 0) + childrenSum
   if (bottom <= 0) return
@@ -812,6 +836,35 @@ watch(
 // scroll (sizer 40383 px vs content bottom ~37095 px in the report).
 const HYSTERESIS_PX = 50
 
+// How close to the bottom counts as "at the bottom" when `measureItems`
+// decides which target the anchor compensation writes to (see `wasAtBottom`
+// in that function). It is deliberately the SAME number as ChatView's
+// `BOTTOM_THRESHOLD`, and it is measured with the SAME ruler
+// (`bottomScrollTop`), because the two must never disagree: if the scroller
+// anchored a reader that ChatView believes is at the bottom, the resulting
+// write disarms the stick that was supposed to follow the stream.
+//
+// 10px is tight on purpose. A chat message is 50-100px tall, so a reader
+// reading the last one is far outside this window — the tolerance covers
+// scroll-position rounding, not a deliberate scroll-up.
+const AT_BOTTOM_SLACK_PX = 10
+
+// Where the bottom sat as of the END of the previous pass (or the last
+// `scrollToBottom`), or null before anything has positioned the list.
+//
+// `measureItems` must judge "was the reader at the bottom?" against THIS, not
+// against a live read of `bottomScrollTop()`. A live read answers with the
+// geometry as it is NOW — and when the previous pass grew the model, that is
+// already further down than where it left the reader. Judged live, a reader
+// who has not moved at all reads as "left the bottom", the anchor branch takes
+// over, and the pass strands them. That is the reported bug arriving one pass
+// late, and it is why a single-pass fix looks correct and a multi-pass turn
+// still breaks: a turn is many passes.
+//
+// The distinction the model moving vs the reader moving is the whole point. A
+// reader scrolled UP is below this number, so the test still fails for them.
+let settledBottom: number | null = null
+
 const measureItems = () => {
   if (!containerRef.value) return
   const content = containerRef.value.querySelector('.virtual-scroller-content')
@@ -844,6 +897,23 @@ const measureItems = () => {
   // if the anchor item unmounts between frames, and jsdom-testable.
   const anchorIndex = findStartIndex()
   const prevScrollTop = containerRef.value.scrollTop
+  // ── Was the reader at the bottom BEFORE this pass touched the model? ──────
+  // Read here, not at the compensation site: by then `updateAccumulatedHeights`
+  // has already resized the sizer, so `bottomScrollTop()` would answer with
+  // the POST-pass edge and the question would be circular.
+  //
+  // The answer decides which target the compensation below uses — the anchor
+  // (hold the reader's view still) or the bottom (hold the reader AT the
+  // newest content). Anchoring a bottom reader is what breaks long streams:
+  // their window expands, a batch of rows above the anchor gets measured for
+  // the first time, the prefix delta runs to thousands of px, and the write
+  // drags them that far UP — which ChatView then reads as leaving the bottom,
+  // disarming the stick for every remaining chunk of the response.
+  //
+  // Same ruler ChatView's `isAtBottom` uses, same tolerance as its
+  // `BOTTOM_THRESHOLD` (10px), so the two can never disagree about whether
+  // the reader is at the bottom.
+  const wasAtBottom = prevScrollTop >= (settledBottom ?? bottomScrollTop()) - AT_BOTTOM_SLACK_PX
   const oldAnchorTop = accumulatedHeights.value[anchorIndex] ?? 0
   const pendingMeasurements: AnchorMeasurement[] = []
   const children = content.children
@@ -912,6 +982,8 @@ const measureItems = () => {
       //   compensation below skips them (index >= anchorIndex). This
       //   lets the sizer converge to the real content bottom instead
       //   of parking up to 50 px per item too tall.
+      //
+
       const aboveAnchor = realIndex < anchorIndex
       const admitted =
         prev === undefined ||
@@ -928,7 +1000,12 @@ const measureItems = () => {
   // heights, different rows on screen), and the cap must follow the
   // window, not only the height writes.
   recordTailContentBottom(renderedChildrenSum, firstRenderedIndex, lastRenderedIndex)
-  if (!changed) return
+  if (!changed) {
+    // Even a pass that wrote nothing establishes where the bottom is, and the
+    // NEXT pass has to judge against it (see `settledBottom`).
+    settledBottom = bottomScrollTop()
+    return
+  }
   for (const [key, heightPx, realIndex] of pendingWrites) {
     itemHeights.value.set(key, heightPx)
     // Feed the adaptive estimator so future unmeasured items inherit a
@@ -971,11 +1048,21 @@ const measureItems = () => {
   // Skipped while `isPreservingScroll`: `endPreserve` owns scroll
   // restoration during prepends and sets scrollTop from its own anchor
   // element; compensating here would double-adjust.
+  //
+  // A bottom reader is re-targeted rather than compensated (see
+  // `wasAtBottom` above and `atBottomTarget` on the helper): the write still
+  // happens — it absorbs the model change and keeps them on the newest
+  // content — but it leaves them at the bottom instead of stranding them
+  // `shiftPx` px above it with the auto-stick already disarmed.
   const result = computeAnchorCompensation({
     anchorIndex,
     prevScrollTop,
     oldAnchorTop,
     newAnchorTop,
+    // Read the bottom edge AFTER the rebuild, so the target is the bottom as
+    // it is now. Passing it is the whole point: a bottom reader is re-targeted
+    // instead of compensated around an anchor they never chose.
+    atBottomTarget: wasAtBottom ? bottomScrollTop() : undefined,
   })
   if (result.shiftPx !== 0 && !isPreservingScroll.value) {
     // Mark BEFORE the write: assigning .scrollTop fires a native scroll
@@ -1004,6 +1091,8 @@ const measureItems = () => {
             prevScrollTop,
             newScrollTop: result.newScrollTop,
             shiftPx: result.shiftPx,
+            target: result.target,
+            wasAtBottom,
             pendingMeasurements,
             pendingWritesLen: pendingWrites.length,
           },
@@ -1016,6 +1105,10 @@ const measureItems = () => {
     scrollTop.value = result.newScrollTop
     lastScrollTop.value = result.newScrollTop
   }
+  // Re-read rather than reusing the target: the branch above may not have run
+  // (shiftPx 0, or a preserve window), and the tail cap can move the bottom
+  // independently of anything measured here.
+  settledBottom = bottomScrollTop()
 }
 
 // ── Pre-paint measurement on rendered-range change ───────────────────────────
@@ -1318,7 +1411,13 @@ const bottomScrollTop = (): number => {
 
 const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
   if (!containerRef.value) return
-  containerRef.value.scrollTo({ top: bottomScrollTop(), behavior })
+  const target = bottomScrollTop()
+  containerRef.value.scrollTo({ top: target, behavior })
+  // An explicit jump to the bottom is the strongest possible statement that the
+  // reader is following the tail, and the next measure pass has to honour it
+  // (see `settledBottom`). This is the gesture behind the jump-to-bottom
+  // arrow, and it is the exact moment the reported bug used to be armed.
+  settledBottom = target
 }
 const scrollToPosition = (scrollTop: number, behavior: ScrollBehavior = 'auto') => {
   if (!containerRef.value) return

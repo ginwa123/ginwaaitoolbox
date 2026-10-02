@@ -95,6 +95,30 @@ export interface AnchorCompensationInput {
    * refreshed).
    */
   newAnchorTop: geometry_px
+  /**
+   * The bottom edge AFTER the pass (`bottomScrollTop()`), passed only when
+   * the reader was AT THE BOTTOM before the pass mutated the model. Omit it
+   * and the anchor math runs.
+   *
+   * The anchor exists to hold still whatever the reader is looking at. A
+   * reader sitting at the bottom is not anchored to anything — they are
+   * reading the newest content, and the newest content is exactly what this
+   * pass just resized. Anchoring them instead preserves a position they never
+   * asked for, and that is what breaks the auto-stick: a long chat whose
+   * window expands on the first long chunk measures a batch of rows above the
+   * anchor, the prefix delta runs to thousands of pixels, and the write drags
+   * the reader that far UP from the bottom. ChatView then reads a huge upward
+   * move as "the user left the bottom" (the write is flagged programmatic, so
+   * it does not even count as a gesture — `retainedThroughGrowth` cannot
+   * recover it either, its cap is a strict `< 100` against a gap of ~15,900),
+   * the stick disarms, and every later chunk of the long response lands
+   * off-screen. The reader is left watching a gap grow.
+   *
+   * Targeting the bottom instead of the anchor keeps the reader where they
+   * were, absorbs the same model change, and leaves the resulting scroll
+   * event with `deltaTop ≈ 0` — so `isAtBottom` survives the pass.
+   */
+  atBottomTarget?: geometry_px
 }
 
 export interface AnchorCompensationResult {
@@ -107,6 +131,13 @@ export interface AnchorCompensationResult {
   newScrollTop: geometry_px
   /** True when the clamp at 0 bit (residual jump is unavoidable). */
   clamped: boolean
+  /**
+   * Which rule produced `newScrollTop`. `'bottom'` means the reader was at the
+   * bottom and the pass targeted the bottom edge instead of the anchor; the
+   * `shiftPx` reported alongside it is the model delta that was absorbed, not
+   * a move the reader can observe.
+   */
+  target: 'anchor' | 'bottom'
 }
 
 /**
@@ -126,11 +157,15 @@ export interface AnchorCompensationResult {
  *     flags the residual-jump case.
  *   - Negative / non-finite anchorIndex (empty or unmounted list) is
  *     a no-op.
+ *   - A reader who was at the bottom is NOT anchored: they get the bottom
+ *     edge instead (see `atBottomTarget`). The anchor's contract is to hold
+ *     the reader's view still, and at the bottom there is no view to hold —
+ *     the content they are reading is what this pass just resized.
  */
 export function computeAnchorCompensation(
   input: AnchorCompensationInput,
 ): AnchorCompensationResult {
-  const { anchorIndex, prevScrollTop, oldAnchorTop, newAnchorTop } = input
+  const { anchorIndex, prevScrollTop, oldAnchorTop, newAnchorTop, atBottomTarget } = input
 
   if (
     !Number.isFinite(anchorIndex) ||
@@ -138,12 +173,25 @@ export function computeAnchorCompensation(
     !Number.isFinite(oldAnchorTop) ||
     !Number.isFinite(newAnchorTop)
   ) {
-    return { shiftPx: 0, newScrollTop: prevScrollTop, clamped: false }
+    return { shiftPx: 0, newScrollTop: prevScrollTop, clamped: false, target: 'anchor' }
   }
 
   const shiftPx = newAnchorTop - oldAnchorTop
   if (shiftPx === 0) {
-    return { shiftPx: 0, newScrollTop: prevScrollTop, clamped: false }
+    return { shiftPx: 0, newScrollTop: prevScrollTop, clamped: false, target: 'anchor' }
+  }
+
+  // A reader at the bottom is re-targeted to the bottom edge rather than
+  // compensated around the anchor — see `atBottomTarget` on the input type for
+  // the failure this prevents. Ordered AFTER the `shiftPx === 0` early return
+  // so a pass that changed nothing above the anchor still writes nothing.
+  if (typeof atBottomTarget === 'number' && Number.isFinite(atBottomTarget)) {
+    return {
+      shiftPx,
+      newScrollTop: Math.max(0, atBottomTarget),
+      clamped: false,
+      target: 'bottom',
+    }
   }
 
   const raw = prevScrollTop + shiftPx
@@ -152,5 +200,6 @@ export function computeAnchorCompensation(
     shiftPx,
     newScrollTop: Math.max(0, raw),
     clamped,
+    target: 'anchor',
   }
 }
