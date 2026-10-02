@@ -43,6 +43,14 @@ pub const KeySite = union(enum) {
     header: usize,
     /// The URL's query string carries `{key}`.
     url_query: void,
+    /// The template has no `{key}` — a provider that needs no credential.
+    ///
+    /// The parser tolerates this because a self-hosted SearxNG genuinely
+    /// has none, but it does not mean "fine": whether that is acceptable
+    /// depends on whether the CONFIG entry declares a key, which only
+    /// `web_search_request.validateKeySite` knows. The alternative —
+    /// erroring here — would make a no-auth provider unconfigurable.
+    none: void,
 };
 
 /// A parsed, not-yet-substituted request.
@@ -86,8 +94,6 @@ pub const ParseError = error{
     InvalidUrl,
     /// The host is loopback / link-local / private / unspecified.
     NonPublicHost,
-    /// `{key}` appeared nowhere.
-    MissingKeyPlaceholder,
     /// `{key}` appeared more than once, so the intent is ambiguous.
     DuplicateKeyPlaceholder,
 };
@@ -444,12 +450,15 @@ pub fn parse(
         key_in_query = true;
     }
 
+    // No `{key}` is NOT a parse error — see `KeySite.none`. Whether it is
+    // acceptable is a policy question about the config entry, and that
+    // check lives in `web_search_request.validateKeySite`.
     const key_site: KeySite = if (key_header_index) |idx|
         .{ .header = idx }
     else if (key_in_query)
         .url_query
     else
-        return error.MissingKeyPlaceholder;
+        .none;
 
     // `toOwnedSlice`, NOT `headers.items`. The list's backing storage is
     // `capacity` long while `.items` is `len` long, and a caller that
@@ -501,6 +510,9 @@ const Expect = struct {
     want_err: ?ParseError = null,
     want_headers: usize = 0,
     want_url_contains: ?[]const u8 = null,
+    /// Success row whose template carries no placeholder — valid only for a
+    /// provider that needs no credential.
+    want_no_key_site: bool = false,
 };
 
 const parse_cases = [_]Expect{
@@ -513,7 +525,7 @@ const parse_cases = [_]Expect{
     .{ .name = "row 7: -G --data-urlencode folds into the query", .input = "curl -G \"https://api.search.brave.com/res/v1/web/search\" --data-urlencode \"q=PLACEHOLDER\" -H \"X-Subscription-Token: {key}\"", .want_headers = 1, .want_url_contains = "api.search.brave.com" },
     .{ .name = "row 8: {key} in a header value", .input = "https://e.com?q=X -H \"X-Api-Key: {key}\"", .want_headers = 1 },
     .{ .name = "row 9: {key} in the URL query", .input = "https://e.com?api_key={key}", .want_headers = 0 },
-    .{ .name = "row 10: no {key} anywhere", .input = "https://e.com?q=X -H \"Accept: application/json\"", .want_err = error.MissingKeyPlaceholder },
+    .{ .name = "row 10: no {key} anywhere is KeySite.none, not an error", .input = "https://e.com?q=X -H \"Accept: application/json\"", .want_headers = 1, .want_no_key_site = true },
     .{ .name = "row 11: two {key} occurrences", .input = "https://e.com?q={key} -H \"X-Api-Key: {key}\"", .want_err = error.DuplicateKeyPlaceholder },
     .{ .name = "row 12: wget is rejected", .input = "wget https://e.com?q=X -H \"a: {key}\"", .want_err = error.UnsupportedCommand },
     .{ .name = "row 13: sh -c is rejected", .input = "sh -c \"curl https://e.com?q=X\"", .want_err = error.UnsupportedCommand },
@@ -559,12 +571,19 @@ test "web_search_curl: parse matrix" {
             std.debug.print("FAIL {s}: unexpected {s}\n", .{ c.name, @errorName(err) });
             return err;
         };
-        // A success row that does not carry the placeholder is a broken
-        // test row, not a broken parser — assert the fixture, not the code.
-        testing.expect(std.mem.indexOf(u8, c.input, key_placeholder) != null) catch |err| {
-            std.debug.print("BAD ROW {s}: success fixture has no key placeholder\n", .{c.name});
+        // A success row must either carry the placeholder or declare that it
+        // is a no-credential fixture. Anything else is a broken test row.
+        const has_placeholder = std.mem.indexOf(u8, c.input, key_placeholder) != null;
+        testing.expect(has_placeholder or c.want_no_key_site) catch |err| {
+            std.debug.print("BAD ROW {s}: success fixture has no key placeholder and did not declare one\n", .{c.name});
             return err;
         };
+        if (c.want_no_key_site) {
+            testing.expect(ok.parsed.key_site == .none) catch |err| {
+                std.debug.print("BAD ROW {s}: want_no_key_site but a site was found\n", .{c.name});
+                return err;
+            };
+        }
         testing.expectEqual(c.want_headers, ok.parsed.headers.len) catch |err| {
             std.debug.print("FAIL {s}: header count\n", .{c.name});
             return err;

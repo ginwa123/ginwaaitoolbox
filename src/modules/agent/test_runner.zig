@@ -29,6 +29,11 @@ test {
     // reaches its tests only by accident.
     _ = @import("tools/web_search_curl.zig");
 
+    // web_search_request: host pinning + `{key}` substitution. The only
+    // module in the feature that ever sees a credential, so its tests
+    // matter more than most — registered for the same reason.
+    _ = @import("tools/web_search_request.zig");
+
     // tools/indexing_semantic_search.zig is NOT registered. Its `search` is
     // still a `!void` placeholder, and the suite that asserted its return
     // value could never have compiled — see the note on its inline block.
