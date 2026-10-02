@@ -515,6 +515,102 @@ pub fn successEnvelope(alloc: std.mem.Allocator, provider: []const u8, status: u
     return j.finish();
 }
 
+/// Perform the search and return the JSON envelope to hand back to the model.
+///
+/// The order below IS the security boundary, and it is deliberate:
+///
+///   1. `validatePinnedUrl` — is the host the USER configured safe to
+///      credential at all? Checked on every call, not only at save time, so
+///      a hand-edited config cannot smuggle one in.
+///   2. `curlmod.parse`      — no key is in scope yet.
+///   3. `validateKeySite`   — does the template match this entry?
+///   4. `hostMatches`       — THE PIN. Nothing below runs for an unpinned
+///      host, and nothing above it has touched the credential.
+///   5. `substituteKey`     — only NOW does the key enter the request.
+///   6. GET, scrub, classify, envelope.
+/// No `io` parameter: `kabelweb`'s `Client.init` takes only an allocator and
+/// `perform` takes the request + options, so nothing here needs a handle.
+/// `generate_image` carries one because it writes files to disk; this does
+/// not, so it does not pretend to.
+pub fn executeWebSearch(
+    allocator: std.mem.Allocator,
+    resolved: Resolved,
+    curl_text: []const u8,
+) ![]u8 {
+    reqmod.validatePinnedUrl(resolved.entry.url) catch {
+        return unsafePinnedEnvelope(allocator, resolved);
+    };
+
+    var parsed = curlmod.parse(allocator, curl_text) catch |err| {
+        return invalidCurlEnvelope(allocator, resolved, err);
+    };
+    defer parsed.deinit(allocator);
+
+    reqmod.validateKeySite(parsed.parsed, resolved.entry.key != null) catch |err| {
+        return keySiteEnvelope(allocator, resolved, @errorName(err));
+    };
+
+    if (!reqmod.hostMatches(parsed.parsed.url_base, resolved.entry.url)) {
+        return hostMismatchEnvelope(allocator, resolved, parsed.parsed.hostOf());
+    }
+
+    const built = try reqmod.substituteKey(allocator, parsed.parsed, resolved.entry.key);
+    defer built.deinit();
+
+    var client = http_client.Client.init(allocator);
+    defer client.deinit();
+
+    var wire: std.ArrayList(http_client.Header) = .empty;
+    defer wire.deinit(allocator);
+    for (built.headers) |h| {
+        try wire.append(allocator, .{ .name = h.name, .value = h.value });
+    }
+
+    const req = http_client.Request{
+        .method = .GET,
+        .url = built.url,
+        .headers = wire.items,
+        .body = "",
+    };
+    const options = http_client.Options{
+        .timeout_ms = REQUEST_TIMEOUT_MS,
+        .connect_timeout_ms = CONNECT_TIMEOUT_MS,
+        .follow_redirects = false,
+        .verify_ssl = true,
+    };
+
+    var response = client.perform(req, options) catch {
+        return transportEnvelope(allocator, resolved);
+    };
+    defer response.deinit(allocator);
+
+    // Size cap BEFORE parsing — a runaway response must not fill the model's
+    // context (the same order `generate_image.zig` uses).
+    if (response.body.len > MAX_RESPONSE_BYTES) {
+        var j = JsonBuf.init(allocator);
+        errdefer j.buf.deinit(allocator);
+        try j.beginObject();
+        try j.key("error");
+        try j.str("The search provider returned a response larger than the 1 MiB cap.");
+        try j.key("provider");
+        try j.str(resolved.provider);
+        try j.key("response_too_large");
+        try j.boolean(true);
+        return j.finish();
+    }
+
+    // D13a: scrub BEFORE the body is allowed anywhere near an envelope.
+    const scrubbed = try scrubKey(allocator, response.body, resolved.entry.key);
+    defer allocator.free(scrubbed);
+
+    return switch (classify(response.status_code, scrubbed)) {
+        .ok => successEnvelope(allocator, resolved.provider, response.status_code, scrubbed),
+        .quota_exhausted => quotaEnvelope(allocator, resolved, response.status_code),
+        .bad_credential => badCredentialEnvelope(allocator, resolved, response.status_code),
+        .provider_error => providerErrorEnvelope(allocator, resolved, response.status_code),
+    };
+}
+
 // ─────────────────────────── tool definitions (Task 5) ─────────────────────
 
 pub const web_search_tool_system_prompt =
@@ -695,6 +791,31 @@ fn collectAll(alloc: std.mem.Allocator, providers: *const Providers) ![]Provider
 }
 
 // ─────────────────────────────── tests ────────────────────────────────────
+
+// The envelope rewrite that introduced `JsonBuf` deleted `executeWebSearch`
+// along with everything between its markers, and NOTHING failed for several
+// minutes because every test exercised a pure helper. This pins the entry
+// point's existence and its use of each branch so a future edit that drops
+// it has to fail loudly.
+test "web_search: executeWebSearch is the single entry point and uses every branch" {
+    const src = @embedFile("web_search.zig");
+    const required = [_][]const u8{
+        "pub fn executeWebSearch",
+        "unsafePinnedEnvelope(allocator, resolved)",
+        "invalidCurlEnvelope(allocator, resolved, err)",
+        "keySiteEnvelope(allocator, resolved, @errorName(err))",
+        "hostMismatchEnvelope(allocator, resolved, parsed.parsed.hostOf())",
+        "reqmod.substituteKey",
+        "MAX_RESPONSE_BYTES",
+        "scrubKey(allocator, response.body, resolved.entry.key)",
+    };
+    for (required) |needle| {
+        testing.expect(std.mem.indexOf(u8, src, needle) != null) catch |err| {
+            std.debug.print("executeWebSearch lost its use of: {s}\n", .{needle});
+            return err;
+        };
+    }
+}
 
 const testing = std.testing;
 
