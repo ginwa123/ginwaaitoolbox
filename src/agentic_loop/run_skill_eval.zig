@@ -461,8 +461,13 @@ pub fn runEval(
 
         // Current body: local scope first, then global — the same order
         // `use_skill` resolves with, so we judge the file the agent would get.
-        const body_opt = nalarcore.skill_mod.parse_skill(allocator, io, use.skill_name, false, args.environment) orelse
-            nalarcore.skill_mod.parse_skill(allocator, io, use.skill_name, true, args.environment);
+        // `args.cwd` is the SESSION's repo, not the server process's: resolving
+        // against the process cwd reports every project-local skill as
+        // unreadable whenever the server was started somewhere else, and the
+        // verdict is then recorded as needs_human about a file that was on disk
+        // the whole time.
+        const body_opt = nalarcore.skill_mod.parse_skill(allocator, io, use.skill_name, args.cwd, false, args.environment) orelse
+            nalarcore.skill_mod.parse_skill(allocator, io, use.skill_name, args.cwd, true, args.environment);
 
         if (body_opt == null) {
             // The skill is gone from disk, or unreadable. That is a finding in

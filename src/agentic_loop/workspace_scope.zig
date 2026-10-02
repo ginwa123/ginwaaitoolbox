@@ -131,7 +131,11 @@ pub fn freeSessionIds(allocator: std.mem.Allocator, ids: [][]u8) void {
     allocator.free(ids);
 }
 
-fn sessionCwd(
+/// The `cwd` recorded on a session, or null when the row is gone or the column
+/// is empty. This is the session's repo — NOT the server process's cwd, which
+/// is routinely a worktree. Anything that resolves a project-local path for a
+/// session (skills, files) must use this instead of `std.Io.Dir.cwd()`.
+pub fn sessionCwd(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,

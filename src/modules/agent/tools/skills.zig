@@ -340,13 +340,31 @@ pub fn load_skills_from_path(allocator: std.mem.Allocator, io: std.Io, path: []c
 /// If is_global is false (default), both local (.nalar/skills/) and global paths
 /// are searched, local first.
 /// environment is required when is_global is true (or when global fallback is desired).
+///
+/// `cwd` is the SESSION's working directory — the repo whose `.nalar/skills/`
+/// should win the local lookup. It is a separate argument because the process
+/// cwd is a different root: the server is routinely started from a worktree or
+/// from `~`, while the session runs in the user's checkout. Resolving local
+/// skills against the process cwd therefore silently reads the WRONG repo, and
+/// every project-local skill comes back not-found. `use_skill` already gets
+/// this right (skill_tools.zig passes the session cwd to
+/// `get_local_skills_path_for_dir`), so the two must agree — otherwise the
+/// agent is offered skills it can never read back. Pass null only when there
+/// is no session context; then the process cwd is used, as before.
 /// Returns allocated string with skill content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, is_global: bool, environment: ?*const std.process.Environ.Map) ?[]const u8 {
+pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, cwd: ?[]const u8, is_global: bool, environment: ?*const std.process.Environ.Map) ?[]const u8 {
     // When is_global is false, try local path first (.nalar/skills/)
     if (!is_global) {
-        if (parse_skill_from_path(allocator, io, skill_name)) |content| {
-            return content;
+        const local_dir: ?[]const u8 = if (cwd) |dir|
+            get_local_skills_path_for_dir(allocator, dir)
+        else
+            get_skills_dir_path(allocator, io);
+        defer if (local_dir) |p| allocator.free(p);
+        if (local_dir) |dir| {
+            if (parse_skill_from_path_at(allocator, io, skill_name, dir)) |content| {
+                return content;
+            }
         }
     }
 
@@ -368,33 +386,6 @@ pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const
 /// Caller owns the returned memory and must free it with allocator.free()
 fn parse_skill_from_path_at(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, dir_path: []const u8) ?[]const u8 {
     const files = list_skill_files_in_dir(allocator, io, dir_path) orelse return null;
-    defer free_skill_files(allocator, files);
-
-    for (files) |file_path| {
-        const content = load_skills_from_path(allocator, io, file_path);
-        if (content.len == 0) {
-            allocator.free(content);
-            continue;
-        }
-
-        if (parseYamlFrontmatter(allocator, content)) |parsed| {
-            defer freeParsedFrontmatter(allocator, parsed);
-            if (std.mem.eql(u8, parsed.name, skill_name)) {
-                // Return the full content (including frontmatter)
-                return content;
-            }
-        }
-        allocator.free(content);
-    }
-
-    return null;
-}
-
-/// Parse a specific skill from the local skills directory (.nalar/skills/)
-/// Returns allocated string with skill content, or null if not found
-/// Caller owns the returned memory and must free it with allocator.free()
-fn parse_skill_from_path(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8) ?[]const u8 {
-    const files = list_skill_files(allocator, io) orelse return null;
     defer free_skill_files(allocator, files);
 
     for (files) |file_path| {
@@ -613,3 +604,116 @@ pub fn list_skills_from_dir_path(allocator: std.mem.Allocator, io: std.Io, dir_p
     return skills_list.toOwnedSlice(allocator) catch &[_]SkillInfo{};
 }
 
+
+
+// ---------------------------------------------------------------------------
+// The project-local tier must resolve against the CWD THE CALLER GIVES, not
+// the process cwd. `use_skill` resolves against the session cwd; when the eval
+// resolved against the process cwd instead, every project-local skill came back
+// "the skill body could not be read" and was recorded as needs_human about a
+// file that was on disk the whole time.
+// ---------------------------------------------------------------------------
+
+const scope_test_body =
+    \\---
+    \\name: local-scope-probe
+    \\description: "Project-local skill used only by the parse_skill scope test."
+    \\---
+    \\# Probe
+    \\
+    \\Body text.
+    \\
+;
+
+test "parse_skill resolves a project-local skill against the GIVEN cwd, not the process cwd" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const root = "/tmp/nalar-parse-skill-scope-test";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    // The repo the session is in. The test binary's cwd has no .nalar/skills at
+    // all, so a process-cwd lookup cannot accidentally satisfy the assertion.
+    const session_repo = try std.fs.path.join(alloc, &.{ root, "repo" });
+    defer alloc.free(session_repo);
+    const skill_dir = try std.fs.path.join(alloc, &.{ session_repo, ".nalar", "skills", "local-scope-probe" });
+    defer alloc.free(skill_dir);
+    try std.Io.Dir.cwd().createDirPath(io, skill_dir);
+    const skill_file = try std.fs.path.join(alloc, &.{ skill_dir, SKILL_FILE_NAME });
+    defer alloc.free(skill_file);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = skill_file, .data = scope_test_body });
+
+    // A DIFFERENT repo that has no skill of that name. Passing it must miss —
+    // otherwise the argument is being ignored.
+    const other_repo = try std.fs.path.join(alloc, &.{ root, "other-repo" });
+    defer alloc.free(other_repo);
+    const other_dir = try std.fs.path.join(alloc, &.{ other_repo, ".nalar", "skills", "unrelated" });
+    defer alloc.free(other_dir);
+    try std.Io.Dir.cwd().createDirPath(io, other_dir);
+
+    // Point the global tier at an empty root so it cannot answer either.
+    const xdg = try std.fs.path.join(alloc, &.{ root, "xdg" });
+    defer alloc.free(xdg);
+    const global_dir = try std.fs.path.join(alloc, &.{ xdg, "nalar", "skills" });
+    defer alloc.free(global_dir);
+    try std.Io.Dir.cwd().createDirPath(io, global_dir);
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("XDG_CONFIG_HOME", xdg);
+
+    // The regression: `cwd` = the session repo finds it, which the old
+    // process-cwd implementation could not do.
+    const found = parse_skill(alloc, io, "local-scope-probe", session_repo, false, &env);
+    try std.testing.expect(found != null);
+    defer alloc.free(found.?);
+    try std.testing.expect(std.mem.indexOf(u8, found.?, "# Probe") != null);
+
+    try std.testing.expect(parse_skill(alloc, io, "local-scope-probe", other_repo, false, &env) == null);
+    // Global-only ignores the repo root and this skill is not in it.
+    try std.testing.expect(parse_skill(alloc, io, "local-scope-probe", session_repo, true, &env) == null);
+    // Null cwd keeps the old process-cwd behaviour, which misses here.
+    try std.testing.expect(parse_skill(alloc, io, "local-scope-probe", null, false, &env) == null);
+}
+
+test "parse_skill prefers the session repo over the global tier" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const root = "/tmp/nalar-parse-skill-shadow-test";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    const seed = struct {
+        fn write(a: std.mem.Allocator, i: std.Io, skill_dir: []const u8, marker: []const u8) !void {
+            try std.Io.Dir.cwd().createDirPath(i, skill_dir);
+            const file = try std.fs.path.join(a, &.{ skill_dir, SKILL_FILE_NAME });
+            defer a.free(file);
+            const body = try std.fmt.allocPrint(a, "---\nname: shadow-probe\ndescription: d\n---\n{s}\n", .{marker});
+            defer a.free(body);
+            try std.Io.Dir.cwd().writeFile(i, .{ .sub_path = file, .data = body });
+        }
+    }.write;
+
+    const repo = try std.fs.path.join(alloc, &.{ root, "repo" });
+    defer alloc.free(repo);
+    const local_dir = try std.fs.path.join(alloc, &.{ repo, ".nalar", "skills", "shadow-probe" });
+    defer alloc.free(local_dir);
+    try seed(alloc, io, local_dir, "LOCAL-WINS");
+
+    const xdg = try std.fs.path.join(alloc, &.{ root, "xdg" });
+    defer alloc.free(xdg);
+    const global_dir = try std.fs.path.join(alloc, &.{ xdg, "nalar", "skills", "shadow-probe" });
+    defer alloc.free(global_dir);
+    try seed(alloc, io, global_dir, "GLOBAL-LOSES");
+
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    try env.put("XDG_CONFIG_HOME", xdg);
+
+    const found = parse_skill(alloc, io, "shadow-probe", repo, false, &env);
+    try std.testing.expect(found != null);
+    defer alloc.free(found.?);
+    try std.testing.expect(std.mem.indexOf(u8, found.?, "LOCAL-WINS") != null);
+}
