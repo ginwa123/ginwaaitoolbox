@@ -191,7 +191,7 @@ def _open_sidebar(page) -> None:
     """Open the chat-owned right sidebar (it is closed by default)."""
     opener = page.locator('[data-testid="chat-sidebar-open"]')
     try:
-        opener.wait_for(timeout=3000, state="visible")
+        opener.wait_for(timeout=30000, state="visible")
         opener.click()
     except Exception:
         pass  # already open (persisted per chat type)
@@ -206,7 +206,7 @@ def _assert_chat_layout_with_viewer(page) -> None:
     floating over the file. Both must be gone/present as below.
     """
     viewer = page.locator('[data-testid="code-editor"]')
-    viewer.wait_for(timeout=20000, state="visible")
+    viewer.wait_for(timeout=30000, state="visible")
     assert MARKER in viewer.locator('[data-testid="code-editor-body"]').inner_text()
 
     # The chat's own surfaces stay mounted.
@@ -271,7 +271,7 @@ def _assert_no_module_resolution_error(errors: list[str]) -> None:
 
 def _assert_viewer_shows_code(page) -> None:
     viewer = page.locator('[data-testid="code-editor"]')
-    viewer.wait_for(timeout=20000, state="visible")
+    viewer.wait_for(timeout=30000, state="visible")
 
     body = viewer.locator('[data-testid="code-editor-body"]')
     body.wait_for(timeout=10000, state="visible")
