@@ -65,6 +65,12 @@ const ResultJson = struct {
     /// Whether the intrinsic half came from the shared fact cache rather than
     /// being computed for this session.
     shared_fact: bool,
+    /// The skill body the verdict was computed against, verbatim, and the text
+    /// the verdict would write over it. Together they are the before/after a
+    /// human needs to judge a proposal. Both empty on a Tier-0-only run, which
+    /// is why they are nullable-in-spirit rather than required.
+    content_at_use: []const u8,
+    proposed_diff: []const u8,
     applied: bool,
     apply_action: []const u8,
 };
@@ -142,6 +148,8 @@ fn runsUseCase(
             .rationale = r.rationale,
             .missing_paths = r.missing_paths_json,
             .shared_fact = r.intrinsic_fact_id.len > 0,
+            .content_at_use = r.content_at_use,
+            .proposed_diff = r.proposed_diff,
             .applied = r.applied,
             .apply_action = r.apply_action,
         }) catch return error.Internal;
@@ -202,6 +210,7 @@ fn readResultById(
         \\       COALESCE(r.rationale, ''),
         \\       COALESCE(f.missing_paths_json, ''), COALESCE(r.intrinsic_fact_id, ''),
         \\       COALESCE(r.base_content_hash, ''),
+        \\       COALESCE(r.content_at_use, ''), COALESCE(r.proposed_diff, ''),
         \\       r.applied_at IS NOT NULL, COALESCE(r.apply_action, '')
         \\  FROM skill_eval_results r
         \\  LEFT JOIN skill_eval_facts f ON f.id = r.intrinsic_fact_id
@@ -225,8 +234,10 @@ fn readResultById(
         .missing_paths_json = try allocator.dupe(u8, row.values[10]),
         .intrinsic_fact_id = try allocator.dupe(u8, row.values[11]),
         .base_content_hash = try allocator.dupe(u8, row.values[12]),
-        .applied = std.mem.eql(u8, row.values[13], "1"),
-        .apply_action = try allocator.dupe(u8, row.values[14]),
+        .content_at_use = try allocator.dupe(u8, row.values[13]),
+        .proposed_diff = try allocator.dupe(u8, row.values[14]),
+        .applied = std.mem.eql(u8, row.values[15], "1"),
+        .apply_action = try allocator.dupe(u8, row.values[16]),
     };
 }
 

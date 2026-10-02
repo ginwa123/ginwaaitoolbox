@@ -994,6 +994,17 @@ pub const JudgeValues = struct {
     /// `done` when a validated report landed, `needs_human` when it did not.
     status: []const u8 = "done",
     rationale: []const u8 = "",
+    /// The text this verdict would write into the skill -- the judge's
+    /// `proposed_content`, stored verbatim. The prompt REQUIRES it for
+    /// `update`/`rewrite` and `validateReport` refuses a report without it, so
+    /// by the time this struct is built the value is already mandatory
+    /// evidence. Storing it is what turns a verdict a human cannot act on
+    /// ("18 paths no longer exist") into one they can act on ("here is the
+    /// text, here is the body it replaces").
+    ///
+    /// Empty on the refusal paths, and empty for verdicts that change nothing
+    /// (`keep`, `merge`, `delete`), where there is no after.
+    proposed_diff: []const u8 = "",
 };
 
 /// Write the judge tier's half onto one result row.
@@ -1036,7 +1047,8 @@ pub fn updateJudgeResult(
         \\       verdict = COALESCE(NULLIF(?, ''), 'needs_human'),
         \\       status = COALESCE(NULLIF(?, ''), 'needs_human'),
         \\       rationale = COALESCE(NULLIF(?, ''), ''),
-        \\       sub_session_id = COALESCE(NULLIF(?, ''), '')
+        \\       sub_session_id = COALESCE(NULLIF(?, ''), ''),
+        \\       proposed_diff = COALESCE(NULLIF(?, ''), '')
         \\ WHERE id = ? AND applied_at IS NULL
     , &.{
         relevance,
@@ -1047,6 +1059,7 @@ pub fn updateJudgeResult(
         values.status,
         values.rationale,
         values.sub_session_id,
+        values.proposed_diff,
         result_id,
     });
     return db.changes() > 0;
@@ -1868,6 +1881,14 @@ pub const ResultRow = struct {
     /// re-checks it: if the file changed since the eval, the proposal describes
     /// a body that is gone.
     base_content_hash: []u8,
+    /// That same body, verbatim. A hash can only ANSWER "is this still the
+    /// body I judged?" -- it cannot show a human what the body was. Without
+    /// this column the eval can refuse a verdict as stale and cannot explain
+    /// why, which is the one thing the person clicking Apply needs.
+    content_at_use: []u8,
+    /// The text this verdict would write, empty when there is none. Pairs with
+    /// `content_at_use` to form a before/after.
+    proposed_diff: []u8,
     applied: bool,
     apply_action: []u8,
 
@@ -1882,6 +1903,8 @@ pub const ResultRow = struct {
         allocator.free(self.missing_paths_json);
         allocator.free(self.intrinsic_fact_id);
         allocator.free(self.base_content_hash);
+        allocator.free(self.content_at_use);
+        allocator.free(self.proposed_diff);
         allocator.free(self.apply_action);
     }
 };
@@ -1897,6 +1920,7 @@ pub fn listResults(
         \\       COALESCE(r.rationale, ''),
         \\       COALESCE(f.missing_paths_json, ''), COALESCE(r.intrinsic_fact_id, ''),
         \\       COALESCE(r.base_content_hash, ''),
+        \\       COALESCE(r.content_at_use, ''), COALESCE(r.proposed_diff, ''),
         \\       r.applied_at IS NOT NULL, COALESCE(r.apply_action, '')
         \\  FROM skill_eval_results r
         \\  LEFT JOIN skill_eval_facts f ON f.id = r.intrinsic_fact_id
@@ -1927,8 +1951,10 @@ pub fn listResults(
             .missing_paths_json = try allocator.dupe(u8, row.values[10]),
             .intrinsic_fact_id = try allocator.dupe(u8, row.values[11]),
             .base_content_hash = try allocator.dupe(u8, row.values[12]),
-            .applied = std.mem.eql(u8, row.values[13], "1"),
-            .apply_action = try allocator.dupe(u8, row.values[14]),
+            .content_at_use = try allocator.dupe(u8, row.values[13]),
+            .proposed_diff = try allocator.dupe(u8, row.values[14]),
+            .applied = std.mem.eql(u8, row.values[15], "1"),
+            .apply_action = try allocator.dupe(u8, row.values[16]),
         });
     }
     return try out.toOwnedSlice(allocator);
@@ -2244,4 +2270,96 @@ test "sessionTaskContext is empty, not an error, for a session with no user turn
     const no_id = try sessionTaskContext(alloc, &ctx.db, "", 4000);
     defer alloc.free(no_id);
     try testing.expectEqualStrings("", no_id);
+}
+
+test "updateJudgeResult persists the proposal the judge was made to produce" {
+    // The judge prompt REQUIRES proposed_content for update/rewrite and
+    // validateReport refuses a report without it. The value then reached this
+    // function and was dropped: the SET list named every other column the
+    // judge produced, so a verdict always landed with an empty proposed_diff
+    // and there was no "after" for a human to look at.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seedResultRow(alloc, &ctx.db, "rj_p1", "update");
+
+    const proposal =
+        \\---
+        \\name: real-skill
+        \\description: corrected
+        \\---
+        \\Read src/agentic_loop/skill_evals_drift.zig instead.
+    ;
+    try testing.expect(try updateJudgeResult(alloc, &ctx.db, "rj_p1", .{
+        .verdict = .update,
+        .relevance = 2,
+        .used = 1,
+        .helpfulness = 3,
+        .confidence = 0.7,
+        .sub_session_id = "subagent_9_judge",
+        .status = "done",
+        .rationale = "judge: one referenced path moved",
+        .proposed_diff = proposal,
+    }));
+
+    var q = try ctx.db.query(alloc, "SELECT COALESCE(proposed_diff, '') FROM skill_eval_results WHERE id = 'rj_p1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings(proposal, row.values[0]);
+}
+
+test "a judge verdict that changes nothing stores no proposal" {
+    // `keep` / `merge` / `delete` have no after, so the column must stay empty
+    // rather than being filled with the body again.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seedResultRow(alloc, &ctx.db, "rj_p2", "keep");
+
+    try testing.expect(try updateJudgeResult(alloc, &ctx.db, "rj_p2", .{
+        .verdict = .keep,
+        .sub_session_id = "subagent_10_judge",
+        .status = "done",
+        .rationale = "judge: exactly right",
+    }));
+
+    var q = try ctx.db.query(alloc, "SELECT COALESCE(proposed_diff, '') FROM skill_eval_results WHERE id = 'rj_p2'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+test "listResults carries the before body and the proposal" {
+    // Without these two in ResultRow the read path cannot surface them, so the
+    // write would be invisible everywhere except a raw SQL query.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_runs (id, session_id, trigger, status)
+        \\VALUES ('run_ba', 'sess_ba', 'manual', 'done')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_results
+        \\    (id, run_id, skill_key, skill_name, status, verdict,
+        \\     base_content_hash, content_at_use, proposed_diff)
+        \\VALUES
+        \\    ('res_ba', 'run_ba', 'global:foo', 'foo', 'done', 'update',
+        \\     'abc123', 'THE-BEFORE-BODY', 'THE-AFTER-BODY')
+    , &.{});
+
+    const rows = try listResults(alloc, &ctx.db, "run_ba");
+    defer freeResultRows(alloc, rows);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("THE-BEFORE-BODY", rows[0].content_at_use);
+    try testing.expectEqualStrings("THE-AFTER-BODY", rows[0].proposed_diff);
+    // The shift of the two pre-existing trailing columns must not have broken
+    // the mapping -- `applied` and `apply_action` sit AFTER the new pair.
+    try testing.expectEqual(false, rows[0].applied);
+    try testing.expectEqualStrings("", rows[0].apply_action);
 }
