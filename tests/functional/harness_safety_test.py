@@ -144,7 +144,14 @@ def test_allowlist_prefix_spelled_differently_still_matches(
     because neither printed string was the one compared.
     """
     real_root = Path(tempfile.gettempdir()).resolve()
-    real_dir = Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
+    # Resolve mkdtemp's result too. On macOS `tempfile.gettempdir()` returns the
+    # unresolved `/var/folders/...` while `.resolve()` gives `/private/var/...`
+    # (that is the whole point of the test's `/var` symlink), so comparing the
+    # raw mkdtemp path against the resolved root fails there — which is what
+    # made this fail on macOS while passing on Linux. Both sides of every
+    # comparison below must be in the same canonical form, exactly as
+    # `is_safe_tmp` does.
+    real_dir = Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR)).resolve()
     try:
         # The precondition that gives this test teeth: a RAW startswith
         # FAILS here, so only canonicalisation of both sides can rescue
