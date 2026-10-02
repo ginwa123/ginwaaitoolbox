@@ -551,6 +551,16 @@ jobs:
         # commit does not fail this job while a changed route does.
         run: python src/apps/android_mobile/tools/navgraph/build.py --check
 
+      - name: Install the navgraph test dependency
+        # `actions/setup-python` gives an interpreter, not a test framework, and
+        # this job previously had no Python at all. The navgraph test is the
+        # only Python the android build runs, so it installs the android suite's
+        # requirements file rather than a bespoke one — that file already
+        # documents itself as "the only Python dependency is the test framework
+        # itself", and pytest is what it pins. A cold `pip install` of one
+        # package; no venv, because nothing else in this job needs one.
+        run: python -m pip install -q -r tests/functional_android/requirements.txt
+
       - name: Navgraph contract tests
         # No emulator and no backend: what is under test is Python reading
         # Kotlin, and the page is a static artifact. Here rather than in the
