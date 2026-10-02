@@ -457,6 +457,70 @@ test "every tool alias points at a real registry entry" {
     }
 }
 
+// The registry is maintained as THREE independent arrays in this file:
+// `equips()` (what the LLM is shown), `UNIFIED_TOOL_REGISTRY()` (what the
+// dispatcher can actually run), and `DEFAULT_AGENT_TOOLS` (what a fresh
+// agent is seeded with). They are hand-written, not derived, so they drift.
+//
+// The failure this test exists to catch is the dangerous direction: a name
+// in `equips()` that is missing from the registry. The model is shown a
+// tool, calls it, `handle_tool`'s registry scan misses, `isMCPTool` misses,
+// and the call dies as `error.UnknownTool` — with the placeholder never
+// replaced, which renders in the UI exactly like a hung tool. Nothing else
+// in the tree cross-checks the two lists.
+test "every advertised tool is dispatchable" {
+    const alloc = std.testing.allocator;
+    const advertised = equips(alloc);
+    defer alloc.free(advertised);
+
+    for (advertised) |tool| {
+        if (!isKnownToolName(tool.function.name)) {
+            std.debug.print(
+                "!! '{s}' is advertised to the model but has no UNIFIED_TOOL_REGISTRY " ++
+                    "entry — the call would fail with UnknownTool at dispatch time.\n",
+                .{tool.function.name},
+            );
+            return error.AdvertisedToolNotDispatchable;
+        }
+    }
+}
+
+test "registry names are unique" {
+    const reg = UNIFIED_TOOL_REGISTRY();
+    for (reg, 0..) |entry, i| {
+        for (reg[i + 1 ..]) |other| {
+            if (std.mem.eql(u8, entry.name, other.name)) {
+                std.debug.print("!! '{s}' appears twice in UNIFIED_TOOL_REGISTRY\n", .{entry.name});
+                return error.DuplicateRegistryName;
+            }
+        }
+    }
+}
+
+test "every default-seeded tool is a known registry name" {
+    for (DEFAULT_AGENT_TOOLS) |name| {
+        if (!isKnownToolName(name)) {
+            std.debug.print("!! DEFAULT_AGENT_TOOLS names '{s}', which the dispatcher cannot run\n", .{name});
+            return error.DefaultToolNotDispatchable;
+        }
+    }
+}
+
+test "registry entries and their advertised definitions agree on the wire name" {
+    // `ToolInfo.name` is what the dispatcher matches on; `tool_def.function.name`
+    // is what the model reads. If they diverge the model calls a name that
+    // lands on a different tool's exec fn.
+    for (UNIFIED_TOOL_REGISTRY()) |entry| {
+        if (!std.mem.eql(u8, entry.name, entry.tool_def.function.name)) {
+            std.debug.print(
+                "!! registry key '{s}' dispatches to the schema named '{s}'\n",
+                .{ entry.name, entry.tool_def.function.name },
+            );
+            return error.RegistryKeySchemaNameMismatch;
+        }
+    }
+}
+
 test "shell aliases from the pre-2026-09-04 merge resolve to command" {
     for ([_][]const u8{ "bash", "pwsh", "run_command" }) |stale| {
         try std.testing.expectEqualStrings("command", resolveToolAlias(stale).?);

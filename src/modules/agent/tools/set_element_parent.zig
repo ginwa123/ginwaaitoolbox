@@ -12,6 +12,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const design_model = nalarcore.ai_mod.design_model;
 const helpers = @import("helpers");
+const design_ids = @import("design_ids.zig");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Input structure for `set_element_parent` tool.
@@ -68,44 +69,11 @@ pub const set_element_parent_tool = AgentTool{
     },
 };
 
-/// Generate an error JSON object (replaces the old per-tool XML escape +
-/// error envelope helpers).
-/// Generate an error JSON object `{"error":...}` for the tool dispatcher.
-pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    const clean = try sanitizeControlChars(allocator, error_msg);
-    defer allocator.free(clean);
-    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
-}
+pub const errorJSON = helpers.tool_json.errorJSON;
 
-/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees it.
-pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
-    defer allocator.free(error_msg);
-    return try errorJSON(allocator, error_msg);
-}
+pub const errorJSONOwned = helpers.tool_json.errorJSONOwned;
 
-/// Validate `element_id` is non-empty and has the right `elem_` prefix.
-/// Returns null when shape is correct, or an error JSON object on mismatch.
-fn validateElementIdShape(allocator: std.mem.Allocator, element_id: []const u8) !?[]u8 {
-    if (element_id.len == 0) {
-        return try errorJSON(allocator, "element_id is required (find it in the `id` field of an element object in a previous set_design_page response)");
-    }
-    if (std.mem.startsWith(u8, element_id, "page_")) {
-        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
-            \\element_id '{s}' looks like a PAGE id (starts with 'page_'). Pass the ELEMENT id instead — find it in the `id` field of an element object in a `set_design_page` response.
-        , .{element_id}));
-    }
-    if (std.mem.startsWith(u8, element_id, "item_")) {
-        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
-            \\element_id '{s}' looks like an ITEM id (starts with 'item_'). Pass the ELEMENT id instead — find it in the `id` field of an element object in a `set_design_page` response.
-        , .{element_id}));
-    }
-    if (!std.mem.startsWith(u8, element_id, "elem_")) {
-        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
-            \\element_id '{s}' has an unrecognized prefix (expected 'elem_'). set_element_parent expects an element id from a previous set_design_page response, not a free-form string.
-        , .{element_id}));
-    }
-    return null;
-}
+const validateElementIdShape = design_ids.validateElementIdShape;
 
 /// Execute the `set_element_parent` tool. Returns a JSON string for
 /// the LLM.
@@ -120,7 +88,7 @@ pub fn executeSetElementParentToString(
     input: SetElementParentInput,
 ) ![]u8 {
     // 0. Input validation (shape only — DB validation runs after).
-    if (try validateElementIdShape(allocator, input.element_id)) |e| return e;
+    if (try validateElementIdShape(allocator, input.element_id, "set_element_parent")) |e| return e;
 
     // 1. Delegate to design_model.setElementParent. The model layer
     //    handles parent existence, type check, cycle detection, and

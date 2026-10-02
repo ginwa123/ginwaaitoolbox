@@ -99,24 +99,9 @@ pub const set_design_page_tool = AgentTool{
     },
 };
 
-/// Generate an error JSON object (replaces the old per-tool XML escape +
-/// error envelope helpers).
-/// Generate an error JSON object `{"error":...}` so the exec wrapper can
-/// detect it via the top-level `error` key and surface the structured
-/// error to the LLM as `success=false`.
-pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    const clean = try sanitizeControlChars(allocator, error_msg);
-    defer allocator.free(clean);
-    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
-}
+pub const errorJSON = helpers.tool_json.errorJSON;
 
-/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees it
-/// on return. Used to avoid leaks when the caller's message is an
-/// `allocPrint` result (can't `defer` across a `return`).
-pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
-    defer allocator.free(error_msg);
-    return try errorJSON(allocator, error_msg);
-}
+pub const errorJSONOwned = helpers.tool_json.errorJSONOwned;
 
 /// Detect the two known LLM id-confusion mistakes (task_id or column_id
 /// passed where item_id was expected). Returns null when the shape

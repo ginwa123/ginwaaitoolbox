@@ -2809,6 +2809,26 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     b.step("test:helpers:test_path", "Run test_path helper tests")
         .dependOn(&run_test_path_tests.step);
 
+    // Third member of the same "helpers is a standalone PACKAGE" family:
+    // `tool_json.zig` holds the single `{"error": ...}` envelope that the
+    // agent tools return, and its tests are what pin the wire shape and the
+    // ownership rule for `errorJSONOwned`. Same reasoning as the two above —
+    // a relative import from `src/root.zig` is rejected, so it needs its
+    // own test root. It imports only `std` and the sibling `xml_escape.zig`,
+    // which is why it builds standalone with no package deps.
+    const tool_json_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/helpers/tool_json.zig"),
+            .target = test_target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_tool_json_tests = b.addRunArtifact(tool_json_tests);
+    test_step.dependOn(&run_tool_json_tests.step);
+    b.step("test:helpers:tool_json", "Run tool_json helper tests")
+        .dependOn(&run_tool_json_tests.step);
+
     // kabelweb's own suites (server + client) run in the kabelweb
     // repo's CI (github.com/ginwa123/kabelweb), not here — it's an
     // external URL dependency, and a consumer build never runs a

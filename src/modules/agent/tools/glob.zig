@@ -30,29 +30,11 @@ pub const GitignoreEntry = struct {
     pattern: []const u8,
 };
 
-const Gitignore = struct {
-    entries: []GitignoreEntry,
-    cwd: []const u8,
-
-    fn deinit(self: *Gitignore, allocator: std.mem.Allocator) void {
-        for (self.entries) |e| allocator.free(e.pattern);
-        allocator.free(self.entries);
-        allocator.free(self.cwd);
-    }
-};
-
-/// Check if pattern starts with ! (gitignore negation)
-fn isGitignoreNegation(pattern: []const u8) bool {
-    return pattern.len > 0 and pattern[0] == '!';
-}
-
-/// Get content after gitignore negation prefix
-fn getGitignoreNegationContent(pattern: []const u8) []const u8 {
-    std.debug.assert(isGitignoreNegation(pattern));
-    return pattern[1..];
-}
-
-/// Parse a single .gitignore line into a GitignoreEntry
+/// Parse a single `.gitignore` line into a `GitignoreEntry`.
+///
+/// Used by `GitignoreContext.loadGitignoreForDir`; the `Gitignore` struct and
+/// its `loadGitignore`/`isIgnoredByGitignore` helpers that used to sit beside
+/// it had no callers and were removed.
 pub fn parseGitignoreLine(line: []const u8) ?GitignoreEntry {
     const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
     if (trimmed.len == 0 or trimmed[0] == '#') return null;
@@ -91,77 +73,6 @@ pub fn parseGitignoreLine(line: []const u8) ?GitignoreEntry {
     };
 }
 
-/// Load and parse a .gitignore file from a directory
-fn loadGitignore(allocator: std.mem.Allocator, dir_path: []const u8) !?Gitignore {
-    const gitignore_path = std.fs.path.join(allocator, &.{ dir_path, ".gitignore" }) catch return error.OutOfMemory;
-    defer allocator.free(gitignore_path);
-
-    // `std.fs.openFileAbsolute` was removed in Zig 0.16. Use the cross-platform
-    // `helpers.readFile` (libc `fopen`/`fread`) which works on Linux,
-    // macOS, and Windows via UCRT without an `io: std.Io` runtime.
-    const content = helpers.readFile(allocator, gitignore_path) catch return null;
-    defer allocator.free(content);
-
-    var entries = std.ArrayList(GitignoreEntry).empty;
-    errdefer entries.deinit(allocator);
-
-    var line_start: usize = 0;
-    while (line_start < content.len) {
-        const line_end = std.mem.indexOfScalarPos(u8, content, line_start, '\n') orelse content.len;
-        const line = content[line_start..line_end];
-
-        if (parseGitignoreLine(line)) |entry| {
-            entries.append(allocator, entry) catch continue;
-        }
-
-        line_start = line_end + 1;
-    }
-
-    if (entries.items.len == 0) return null;
-
-    const cwd = try allocator.dupe(u8, dir_path);
-    return Gitignore{
-        .entries = try entries.toOwnedSlice(allocator),
-        .cwd = cwd,
-    };
-}
-
-/// Check if a path is ignored by gitignore rules
-fn isIgnoredByGitignore(gitignore: *const Gitignore, path: []const u8, is_dir: bool) bool {
-    // Get path relative to gitignore cwd
-    const rel_path = if (std.mem.startsWith(u8, path, gitignore.cwd)) {
-        const rest = path[gitignore.cwd.len..];
-        if (rest.len > 0 and rest[0] == '/') rest[1..] else rest;
-    } else path;
-
-    for (gitignore.entries) |entry| {
-        // Directory-only patterns don't match files
-        if (entry.directory_only and !is_dir) continue;
-
-        // Anchor to root: pattern only matches at root level
-        const effective_pattern = if (entry.anchor_to_root) entry.pattern else entry.pattern;
-
-        if (matchGitignorePattern(effective_pattern, rel_path, is_dir)) {
-            // Negated entries (whitelist) return false (not ignored)
-            // Regular entries return true (ignored)
-            return !entry.negated;
-        }
-    }
-
-    return false;
-}
-
-/// Match a single gitignore pattern against a relative path
-fn matchGitignorePattern(pattern: []const u8, rel_path: []const u8) bool {
-    // Get basename for patterns that don't contain /
-    const basename = std.fs.path.basename(rel_path);
-
-    // Check both full path and basename
-    return gitignoreGlobMatch(pattern, basename, false) or
-        gitignoreGlobMatch(pattern, rel_path, false);
-}
-
-/// Gitignore glob matching (supports *, **, ?, [abc])
 pub fn gitignoreGlobMatch(glob: []const u8, text: []const u8, nocase: bool) bool {
     var gi: usize = 0;
     var ti: usize = 0;

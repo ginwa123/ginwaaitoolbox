@@ -33,7 +33,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const helpers = @import("helpers");
-const schemas = @import("schemas.zig");
 
 const sanitizeControlChars = helpers.sanitize_control_chars;
 

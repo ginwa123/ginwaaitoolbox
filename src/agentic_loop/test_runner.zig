@@ -31,6 +31,11 @@ test {
     _ = @import("sse_on_event_send_session.zig"); // task_1786507100896 — behavioural tests for wire-format event_type_name mapping
     _ = @import("parsing.zig");
     _ = @import("workflow.zig");
+    // Registry consistency: the alias-integrity and seed-derivation tests
+    // that already lived here were only reachable by accident (via
+    // workflow.zig). Listed explicitly so the "advertised tools are
+    // dispatchable" guard cannot be lost by an import reshuffle.
+    _ = @import("tools_equipped.zig");
     _ = @import("save_agent.zig"); // Phase 1 — save_agent module imports smoke test (was save_agent_test.zig)
     _ = @import("on_event_sent.zig"); // Phase 2 — inlined 7 tests from on_event_sent_sanitize_test.zig
     _ = @import("on_event_sent_design.zig"); // Phase 2 — inlined 5 tests from on_event_sent_design_test.zig
