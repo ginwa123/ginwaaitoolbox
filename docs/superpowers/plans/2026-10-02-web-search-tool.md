@@ -1,17 +1,19 @@
-# `web_search` + `list_web_search_providers` Agent Tools (rev 6)
+# `web_search` + `list_web_search_providers` Agent Tools (rev 7)
 
-> **Rev 6 (2026-10-02).** All six reviewer questions are **closed** and recorded under *Decisions taken by the reviewer*: exact host pinning, default-on, the name `list_web_search_providers`, optional `description`, `{key}` allowed in a URL query, and agent-driven fallback. **No open questions remain.** Rev 5's `list_search_providers` is renamed throughout.
+> **Rev 7 (2026-10-02).** Two reviewer changes:
+> 1. **The provider's response is passed through UNTYPED (D13).** > *"result every provider can be different so no need type just any json value"* — correct, and it removes the last place a new provider could need a code change. There is no `SearchResult` struct and no response parser. *Our* envelope stays typed; the provider's payload is opaque.
+> 2. **Passthrough needed a new guard: D13a, scrub the key out of the response.** Some providers echo request detail in error bodies, and when `{key}` sits in a URL query the whole URL comes back in the payload. Without this, untyped passthrough would create a leak the typed design did not have.
 >
-> **Rev 5 (2026-10-02).**
+> Also adds a **73-row TDD matrix**, table-driven per module, written before the code it covers.
 
+> **Rev 6 (2026-10-02).** Reviewer questions 1–6 **closed** and recorded under *Decisions taken by the reviewer*: exact host pinning, default-on, the name `list_web_search_providers`, optional `description`, `{key}` allowed in a URL query, and agent-driven fallback. **No open questions remain.** Rev 5's `list_search_providers` is renamed throughout.
+>
 > **Rev 5 (2026-10-02).** Three reviewer changes, all of which **delete** code:
 > 1. **A second tool, `list_web_search_providers`,** so the model discovers providers on demand instead of being told about them up front. This replaces rev 4's `## Web Search Providers` prompt section entirely — no `buildMessages` change at all, and the prompt cost stops scaling with the number of providers.
 > 2. **A per-provider `description`** (the reviewer's suggestion). The `curl` says *how to call it*; the description says *when to use it*. Both are kept because they buy different things.
 > 3. **The model writes the curl — decided, not open.** Rev 4's Open Question 1c is closed.
 >
 > Rev 5 follows the repo's own discovery pattern: `search_skills` is in `equips()` (`tools_equipped.zig:94`), the registry (`:216`) **and** `DEFAULT_AGENT_TOOLS` (`:367`), and its job is exactly this — tell the model what exists without spelling it out.
-
-> **Rev 4 (2026-10-02).**
 
 > **Rev 4 (2026-10-02).** Answers the question rev 3 left open: **"if config is only `{url, key}`, how does the model know the API?"** It cannot — rev 3 had a real hole and hand-waved it as a follow-up. Rev 4 restores a **curl template in config** (it was in rev 2 and I wrongly dropped it), and adds the piece that makes it work: **the backend injects each provider's template into the model's system prompt**, so the model is handed a ready-to-edit request instead of guessing the header name and query parameter.
 >
@@ -294,8 +296,30 @@ The cost of that choice is ~250 characters of tool output per search and the occ
 
 *The static `.description` must NOT list providers, URLs, or hint at keys.* The schema ships to every provider's LLM on every request, and the per-provider detail is what `list_web_search_providers` is for.
 
-**D13 — Structured results, mirroring the provider's response.**
-`position`, `title`, `url`, `site_name`, `snippet`, `total_results`. `url` and `title` are required; `site_name` and `snippet` are optional, so a provider with a different shape degrades to fewer fields instead of failing to parse. Snippets are truncated against a cap (the `SUMMARY_MAX` pattern, `progressive_catalog.zig:820`) so a long result page cannot flood the context. The same cap applies to a provider's `description`, which reaches the model on every `list_web_search_providers` call.
+**D13 — The provider's response is passed through UNTYPED. DECIDED (reviewer).**
+> *"result every provider can be different so no need type just any json value"*
+
+There is **no `SearchResult` struct and no response-shape parser.** The backend validates that the body is JSON, checks the size cap, and hands it through as a `std.json.Value`:
+
+```json
+{ "provider": "tinyfish", "status": 200, "response": { "…whatever TinyFish returned…" } }
+```
+
+**The distinction that matters: *our* envelope is typed, the *provider's* payload is not.** `provider`, `status`, `response`, `error`, `exhausted`, `other_providers` are ours and are stable. Everything under `response` belongs to the provider and is opaque.
+
+*Why (this is the whole premise):* a typed parser means **a code change per provider**. TinyFish returns `{results:[{position,site_name,snippet,title,url}]}`; Brave returns `{web:{results:[{title,url,description,…}]}}`; Serper returns `{organic:[…]}`; a self-hosted SearxNG returns `[…]` as a bare array. Normalising four of those is guesswork about the fourth, and a wrong guess **silently drops fields the model needed**. Passthrough cannot be wrong about a shape it never claims to know.
+
+*Rejected:* a typed `SearchResult` with optional fields (rev 5's design). It degrades "to fewer fields" in the happy path, but it also *silently discards* anything not in the struct — which is the worse failure.
+*Rejected:* per-provider response adapters registered in config. That is a code change again, which is the thing we removed in rev 3.
+*Consequence, stated plainly:* the **frontend renderer cannot assume a shape**. It gets a generic JSON view with a couple of very common conveniences (see the File Map row) — that is presentation, not a data contract, and a provider with an unfamiliar shape degrades to formatted JSON rather than to an error.
+
+**Two caps still apply**, because passthrough does not exempt us from them:
+- **Response size** — `MAX_RESPONSE_BYTES` (1 MiB), checked before parsing, exactly as `generate_image.zig:619-628` does.
+- **`description` length** — the cap from the D13 limit, since it reaches the model on every `list_web_search_providers` call.
+
+**D13a — Scrub the key out of the response before it reaches the model.** Passthrough introduces a leak the typed design did not have: some providers **echo request details in error bodies**, and when `{key}` sits in a URL query (D4) the whole URL can come back in the payload. So the response body is scanned for the key substring and, if present, replaced with `«redacted»` before it enters the envelope.
+
+This is `std.mem.indexOf` over the body — a few lines, no parsing needed. It is the one piece of inspection passthrough still requires, and the test for it is in the matrix below.
 
 **D14 — TWO TOOLS: `list_web_search_providers` (discovery) and `web_search` (action).**
 This is the reviewer's change, and it deletes rev 4's entire prompt-injection design.
@@ -395,10 +419,23 @@ X-TF-Request-Origin: api
 
 ### Envelopes
 
-Success:
+Success — `response` is the provider's JSON, **verbatim and untyped** (D13):
 ```json
-{ "provider": "tinyfish", "total_results": 10,
-  "results": [ { "position": 1, "title": "…", "url": "…", "site_name": "…", "snippet": "…" } ] }
+{ "provider": "tinyfish", "status": 200,
+  "response": { "query": "…", "total_results": 10,
+                "results": [ { "position": 1, "title": "…", "url": "…", "site_name": "…", "snippet": "…" } ] } }
+```
+
+Brave-shaped, passing through with no code change:
+```json
+{ "provider": "brave", "status": 200,
+  "response": { "web": { "results": [ { "title": "…", "url": "…", "description": "…" } ] } } }
+```
+
+A provider that echoes the credential back has it replaced with `«redacted»` (D13a):
+```json
+{ "provider": "serper", "status": 400,
+  "response": { "error": "invalid api_key «redacted»" } }
 ```
 
 Not configured:
@@ -444,7 +481,7 @@ Bad key (not exhaustion, D9):
 |---|---|---|
 | **New** | `src/modules/agent/tools/web_search_curl.zig` | The GET-only curl parser (D5, D6). Quote-aware tokenizer; optional leading `curl`; URL + `-H` extraction; locates `{key}` (header value **or** URL query); rejects CR/LF, non-GET flags, subcommands. **Pure — no I/O, no HTTP, and it never touches a key.** |
 | **New** | `src/agentic_loop/web_search_config.zig` | Per-session provider resolution (D15), mirroring `skill_evals_config.zig:41-56`. One `resolve(allocator, db, session_id)` used by **both** exec adapters, so `list_web_search_providers` and `web_search` can never disagree. |
-| **Rewrite** | `src/modules/agent/tools/web_search.zig` | `SearchProviderEntry`, host comparison (D3), `{key}` substitution, `execute_web_search`, `parseSearchResponse`, snippet truncation, `toJSONError`, **and `list_web_search_providers_tool`** (D14) — both tools live here, as `document.zig` holds both document tools. Removes the `bash.zig` import. |
+| **Rewrite** | `src/modules/agent/tools/web_search.zig` | `SearchProviderEntry`, host comparison (D3), `{key}` substitution, `execute_web_search`, **untyped passthrough + key scrubbing** (D13/D13a, no response parser), `toJSONError`, **and `list_web_search_providers_tool`** (D14) — both tools live here, as `document.zig` holds both document tools. Removes the `bash.zig` import. |
 | **Edit** | `src/modules/agent/tools/schemas.zig` | **Delete** `WebSearchInput` / `WebSearchResult` (`:100-117`). |
 | **Rewrite** | `src/agentic_loop/tools_exec_web_search.zig` | Parse `{provider, curl}`; read **`web_search_config.resolve(ctx.allocator, ctx.db, ctx.session_id)`**; call `execute_web_search`; re-wrap `error` payloads as `success=false` per `tools_exec_generate_image.zig:80-103`. |
 | **New** | `src/agentic_loop/tools_exec_list_web_search_providers.zig` | Trivial: resolve config, render the provider list, `wrapToolOutput`. Exists so the two tools can be equipped independently, like `tools_exec_document.zig` holds the document pair. |
@@ -464,6 +501,138 @@ Bad key (not exhaustion, D9):
 | **New** | `docs/superpowers/plans/examples/config.json.web-search` | The full `config.json` with the `web_search` block in place alongside the real existing keys — the file a reviewer can read to check the shape. |
 | **Edit** | `docs/superpowers/plans/2026-08-06-show-preview-local-file.md` | `:110` cites `web_search` as URL-fetch coverage — now false (D1). |
 
+## Test Matrix (TDD — write these first)
+
+Every row is a `test` in the module named, written **before** the implementation it covers. Rows are table-driven where the module is a pure function:
+
+```zig
+const Case = struct {
+    name: []const u8,
+    input: []const u8,
+    want_err: ?[]const u8 = null,   // substring the error message must contain
+    want_host: []const u8 = "",     // for parser rows that succeed
+};
+const cases = [_]Case{ .{ .name = "...", .input = "...", .want_err = "unexpected flag" }, … };
+for (cases) |c| {
+    // std.testing.refAllDecls / expectError / expectEqualStrings per `c`
+}
+```
+
+**`web_search_curl.zig` — parser (28 rows)**
+
+| # | Input / condition | Expect |
+|---|---|---|
+| 1 | The task's TinyFish fragment, double quotes | parsed; `X-API-Key` located; `{key}` position found |
+| 2 | Same with a leading `curl` token | identical result to #1 |
+| 3 | Single-quoted variant | identical result to #1 |
+| 4 | Backslash line continuations | identical result to #1 |
+| 5 | `-H "a: b" -H "c: d"` — two headers | both in order |
+| 6 | `--header "a: b"` long form | same as `-H` |
+| 7 | Brave style `-G "https://…/search" --data-urlencode "q=x"` | `q=x` folded into the query |
+| 8 | `{key}` in a **header value** | located |
+| 9 | `{key}` in the **URL query** | located |
+| 10 | No `{key}` anywhere | error `"must contain {key}"` |
+| 11 | Two `{key}` occurrences | error `"exactly one"` |
+| 12 | `wget https://… ` leading | error naming the subcommand |
+| 13 | `sh -c "curl …"` leading | error naming the subcommand |
+| 14 | Header value containing `\r\n` | error |
+| 15 | Header **name** containing `\r\n` | error |
+| 16 | Header with no `:` | error |
+| 17 | `-o out.html` | error naming `-o` |
+| 18 | `-X POST` | error naming `-X` |
+| 19 | `-d @secrets.txt` | error naming `-d` |
+| 20 | `--upload-file x` | error naming the flag |
+| 21 | Empty string | error |
+| 22 | Flags but no URL | error |
+| 23 | Two URLs in one string | error (ambiguous) |
+| 24 | Unterminated quote | error |
+| 25 | `http://` scheme | error — https required |
+| 26 | `file://` scheme | error |
+| 27 | `169.254.169.254` host | error — link-local |
+| 28 | `127.0.0.1`, `10.0.0.1`, `192.168.1.1`, `[::1]` | error each — private / loopback |
+
+**Host pinning (10 rows)**
+
+| # | Request host vs pinned host | Expect |
+|---|---|---|
+| 29 | `api.search.tinyfish.ai` vs `api.search.tinyfish.ai` | match |
+| 30 | `API.SEARCH.TINYFISH.AI` vs lowercase pin | match (case-insensitive) |
+| 31 | `evil.api.search.tinyfish.ai` vs pin | **mismatch** — exact, not suffix |
+| 32 | `api.search.tinyfish.ai.evil.com` vs pin | **mismatch** |
+| 33 | `attacker.example.com` vs pin | **mismatch** + `host_mismatch` envelope |
+| 34 | pin `host`, request `host:443` | match |
+| 35 | pin `host:443`, request `host:8443` | **mismatch** — port compared explicitly |
+| 36 | `https://user:pass@host/` userinfo in URL | rejected or stripped — **pick one and assert it** |
+| 37 | `host.` (trailing dot) vs `host` | **pick one and assert it** |
+| 38 | pinned `url` itself is `http://` or private | rejected at PUT **and** at execute |
+
+**Response passthrough (9 rows)**
+
+| # | Body | Expect |
+|---|---|---|
+| 39 | The task's TinyFish sample | returned verbatim under `response`; re-serialising round-trips |
+| 40 | Brave-shaped `{web:{results:[…]}}` | verbatim, **no code change** |
+| 41 | Serper-shaped `{organic:[…]}` | verbatim |
+| 42 | SearxNG bare array `[{…}]` | verbatim |
+| 43 | Nested / unusual keys (`a.b[0].c`) | verbatim |
+| 44 | Body is **not** JSON (an HTML error page) | error `"not JSON"` — never passed through raw |
+| 45 | Body is a bare JSON scalar `"hi"` | error |
+| 46 | Empty body | error |
+| 47 | Body > `MAX_RESPONSE_BYTES` | error naming the cap (checked **before** parse) |
+| 48 | Body containing the key (provider echoes it) | key replaced with `«redacted»` — **D13a** |
+
+**Envelopes (9 rows, literal-JSON assertions)**
+
+| # | Condition | Assert the exact JSON |
+|---|---|---|
+| 49 | success | `{provider, status, response}` — no `error`, no `total_results` (that was typed away) |
+| 50 | no providers configured | `configured: false` |
+| 51 | unknown provider name | `unknown_provider: true` + `available: [...]` |
+| 52 | host mismatch | `host_mismatch: true` + `pinned_host` + `requested_host` |
+| 53 | invalid curl | `invalid_curl: true` + the offending flag named |
+| 54 | HTTP 429 | `exhausted: true` + `other_providers` (names + urls only) |
+| 55 | HTTP 401 with no quota wording | **not** `exhausted`; "check the credential" |
+| 56 | HTTP 401 **with** quota wording | `exhausted: true` |
+| 57 | HTTP 500 | ordinary error, provider's own message retained |
+
+**Config resolution (6 rows)**
+
+| # | Condition | Expect |
+|---|---|---|
+| 58 | auth mode, session with saved config | providers resolve |
+| 59 | file mode | `null` — caller falls back to the singleton |
+| 60 | session with no owner | `null` |
+| 61 | malformed `users.config_json` | `null`, **not** an error |
+| 62 | entry with `enabled: false` | absent from every list |
+| 63 | entry with blank `url` / `key` / `curl`, or an unparseable curl | skipped; `warn` names the **provider only** — never the curl, never the key |
+
+**Key hygiene (3 rows — the ones that must never be deleted)**
+
+| # | Assert |
+|---|---|
+| 64 | Running every path above with `key = "SENTINEL_SECRET_DO_NOT_LEAK"` — the sentinel appears in **no** envelope and **no** `std.log` output |
+| 65 | Source-contract: no `allocPrint` in `web_search.zig` takes the key as an argument |
+| 66 | `list_web_search_providers` output contains `{key}` and **not** the key value |
+
+**Registry (2 rows)**
+
+| # | Assert |
+|---|---|
+| 67 | Every name in `equips()` resolves to a registry entry — **verified negative** by re-commenting `:306` and watching it fail |
+| 68 | `web_search` and `list_web_search_providers` appear in `equips()`, the registry **and** `DEFAULT_AGENT_TOOLS` |
+
+**Frontend (5 rows, vitest)**
+
+| # | Assert |
+|---|---|
+| 69 | The results renderer shows the `results`-array convention when present |
+| 70 | …and falls back to formatted JSON for an unfamiliar shape — **no throw** |
+| 71 | A provider badge shows `provider` from the envelope |
+| 72 | The Settings key field is masked and submitting the mask does not blank the stored key |
+| 73 | An unparseable pasted curl surfaces the backend's message, not a generic failure |
+
+**What no test can prove here**, stated rather than implied: real quota exhaustion needs a real exhausted account, and a real live search needs a real key. Rows 54/56 use a recorded 429 body; the live path is the human verification gate.
+
 ## Tasks
 
 - [ ] **Task 1 — Config types.**
@@ -479,13 +648,13 @@ Bad key (not exhaustion, D9):
 
 - [ ] **Task 3 — Host pinning + `{key}` substitution (D3, D4).**
   `parseHost(url)` for both the request URL and the pinned config URL; exact host comparison — case-insensitive, **port compared explicitly**, and tested for both `host` vs `host:443` (match) and `host` vs `host:8443` (**mismatch**); `requirePublicHttpsUrl(config.url)` rejecting non-`https` and loopback/link-local/private ranges. Substitution writes the key into exactly one located position. The exported entry point takes the parsed request and the pinned entry and returns a `Refused` union rather than a partially-built request, so a caller cannot accidentally proceed after a mismatch.
-  Verify: `zig build test --summary all`; a test that asserts the refusal path returns **before** any key substitution by passing a sentinel key and asserting it appears nowhere in the refusal output.
+  Verify: `zig build test --summary all`. **Matrix rows 29–38**, including 31/32 (suffix must NOT match) and 35 (`host:8443` vs pin `host:443`).
   Commit: `feat(web-search): host pinning and {key} substitution`
 
-- [ ] **Task 4 — `execute_web_search` + envelopes (D8, D9, D13).**
+- [ ] **Task 4 — `execute_web_search`, untyped passthrough + envelopes (D8, D9, D13, D13a).**
   Resolve provider → pin check → substitute → send via the `kabelweb` client using the `generate_image.zig` step order → classify (D9) → build the envelope. All five envelopes from the Wire Contract section. `MAX_RESPONSE_BYTES` 1 MiB. Snippet truncation per D13. `other_providers` assembled from enabled entries other than the one used, **names and URLs only**.
   **Key hygiene (D7):** no `allocPrint` in this module may take the key. Source-contract test greps for it and fails.
-  Verify: `zig build test --summary all`; the sentinel test (`key = "SENTINEL_SECRET_DO_NOT_LEAK"`) over every path, including all error branches.
+  Verify: `zig build test --summary all`. **Matrix rows 39–57** (passthrough + envelopes) and **64–65** (sentinel, source contract).
   Commit: `feat(web-search): execute_web_search and structured envelopes`
 
 - [ ] **Task 5 — Rewrite the tool module + schemas.**
@@ -501,23 +670,23 @@ Bad key (not exhaustion, D9):
 
 - [ ] **Task 6b — `list_web_search_providers` (D14).**
   `list_web_search_providers_tool` in `web_search.zig` — **no parameters**, `type: "object"`, `properties: &.{}`. `execute_list_web_search_providers(allocator, providers)` renders `{providers:[{name, url, description, curl}]}` from the resolved config, skipping entries with a blank `url`/`key`/`curl` and all `enabled: false` ones, `warn`-ing a provider name (never a curl, never a key) when its template fails to parse. `description` truncated to the D13 cap. Add `tools_exec_list_web_search_providers.zig` and the `tools.zig` re-export.
-  **Tests:** (a) the output contains `{key}` and not the key value; (b) a disabled provider is absent; (c) an unparseable template is skipped with a name-only warning and the rest still list; (d) an empty config returns `{"providers":[]}`, not an error.
+  Verify: `zig build test --summary all`. **Matrix rows 62, 63, 66.**
   Verify: `zig build test --summary all`.
   Commit: `feat(web-search): list_web_search_providers discovery tool`
 
 - [ ] **Task 7 — Exec adapter + registry + config handlers.**
   Rewrite `tools_exec_web_search.zig` to read **`web_search_config.resolve(ctx.allocator, ctx.db, ctx.session_id)`, not `ctx.config`** (D15); uncomment and rewrite `tools_equipped.zig:306`; add **both** tool names to the registry, `equips()` (`:78`) and `DEFAULT_AGENT_TOOLS` (`:331`) per D10. **Add two guard tests:** every name in `equips()` resolves to a registry entry (the gap that made this tool invisible), and `web_search` and `list_web_search_providers` appear in all three lists together. Wire `web_search` into **both** `nalar_config_get.zig` branches (`:59-81`, `:143-174`) with masking, and add `applyWebSearchInput` beside `applyToolsInput` (`nalar_config_put.zig:192`).
-  Verify: `zig build test --summary all`; the guard test **fails** when `:306` is temporarily re-commented — prove it, because a guard that cannot fail is not a guard.
+  Verify: `zig build test --summary all`. **Matrix rows 67–68.** The guard must **fail** when `:306` is temporarily re-commented — prove it, because a guard that cannot fail is not a guard.
   Commit: `feat(web-search): register the tool, parity guard test, and config handlers`
 
 - [ ] **Task 8 — Settings section (D11).**
   `WebSearchSection.vue` — rows of name / URL / masked key / enabled toggle; key input is `type="password"` and a masked value round-trips without blanking the stored key. `NalarConfig.web_search` in `api/index.ts`. Mounted beside `McpServersSection` (`NalarSettings.vue:876`).
-  Verify: `(cd src/apps/desktop && pnpm run build)` clean; a vitest spec asserting (a) submitting the mask does not blank the key and (b) a `http://` URL surfaces the backend's rejection message rather than a generic failure.
+  Verify: `(cd src/apps/desktop && pnpm run build)` clean. **Matrix rows 72–73.**
   Commit: `feat(web-search): Settings → Web Search providers`
 
 - [ ] **Task 9 — Tool output rendering + Android card.**
   `parseWebSearch` + `ParsedWebSearch`, `WebSearch.vue`, the `renderResponse.ts:212-220` decision, Android `ToolCardModel.kt:565-572` + its test case.
-  Verify: `pnpm test:unit` in `src/apps/desktop`; the Android unit-test task.
+  Verify: `pnpm test:unit` in `src/apps/desktop`; the Android unit-test task. **Matrix rows 69–71.**
   Commit: `feat(web-search): render results in the desktop + Android tool card`
 
 - [ ] **Task 10 — Functional test.**
@@ -554,7 +723,7 @@ Bad key (not exhaustion, D9):
 
 - **Automatic provider fallback inside one tool call.** D8 explains why the model does it instead.
 - **POST-based search APIs.** D6 is GET-only. POST would mean templating a request body too.
-- **Response-shape adapters per provider.** The parser is generic; the response parser assumes the common `{results: [{title, url, snippet, site_name}]}` shape. A different shape parses but yields empty results.
+- **Per-provider response normalisation.** Deliberately never built (D13). The backend passes the provider's JSON through untyped; rendering is generic. If a user later wants Brave results rendered like TinyFish ones, that is a **frontend** convenience, not a backend schema — and it belongs in the generic renderer, not in a Zig struct.
 - **A per-provider count cap on the prompt block.** D14 notes the token cost; capping the rendered list is the escape hatch if someone configures ten providers, but it is not built now.
 - **Keychain / OS secret storage.** D11 masks on the wire; the key is still plaintext at rest, exactly like LLM keys today.
 - **Widening D11 to LLM profile keys.** Deliberately separate.
@@ -566,7 +735,7 @@ Bad key (not exhaustion, D9):
 
 ## Decisions taken by the reviewer (2026-10-02)
 
-All six review questions are **closed**. Recorded here so an implementer does not re-open them.
+All seven review questions are **closed**. Recorded here so an implementer does not re-open them.
 
 | # | Question | Decision |
 |---|---|---|
@@ -576,6 +745,7 @@ All six review questions are **closed**. Recorded here so an implementer does no
 | 4 | Is `description` required? | **Optional.** A provider with only `{url, key, curl}` works; the description is an upgrade. |
 | 5 | May `{key}` appear in a URL query? | **Yes** (D4). Required by SerpApi (`?api_key=`) and Google CSE (`?key=`). Documented as landing in provider-side logs. |
 | 6 | Who retries when the free quota runs out? | **The agent** (D8). The backend reports `exhausted` + `other_providers`; the agent re-issues on another provider. Discovery makes the extra turn nearly free. |
+| 7 | Should the result be typed per provider? | **No — pass the provider's JSON through untyped** (D13). No `SearchResult` struct, no response parser. Ours is typed; theirs is opaque. |
 
 ### Still worth a reviewer's eye (not blocking)
 
@@ -588,6 +758,7 @@ All six review questions are **closed**. Recorded here so an implementer does no
 | Risk | Severity | Mitigation |
 |---|---|---|
 | **`ctx.config.web_search` is empty in `--auth` mode** — the singleton never sees what the user saved, so the tool reports "not configured" while Settings looks correct | **Critical** | **D15.** `web_search_config.resolve(allocator, db, session_id)` mirroring `skill_evals_config.zig:41-56`; used by **both** exec adapters. This trap already shipped once in this codebase |
+| **A provider echoes the credential back** in an error body, or returns the full request URL (which contains the key when `{key}` is in a query) — passthrough would hand it to the model | High | **D13a.** Scan the response body for the key substring and replace with `«redacted»` before it enters the envelope. Matrix row 48 |
 | **The model guesses the API** because nothing told it the header name / query param — the exact hole the reviewer caught | High | **D14.** `list_web_search_providers` returns each provider's `curl` template. Templates carry `{key}`, so the listing is inert and safe to expose |
 | **`list_web_search_providers` is equipped but `web_search` is not** (or vice versa) — the model gets a listing it cannot use, or must search without ever listing | Medium | Both names ship in `DEFAULT_AGENT_TOOLS`, `equips()` and the registry together; a test asserts all three lists agree (the "equipped together" gate) |
 | **`description` is unbounded**, so a user pasting a whole docs page inflates every listing | Low | Cap it (D13) and show a counter in the Settings textarea |
