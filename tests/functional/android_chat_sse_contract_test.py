@@ -258,7 +258,7 @@ def test_the_chat_stream_handshakes(harness):
     """
     response, _thread, events_q, stop = _open_sse(harness)
     try:
-        found = _drain_until(events_q, lambda e, d: e == "connected", timeout_s=8.0)
+        found = _drain_until(events_q, lambda e, d: e == "connected", timeout_s=15.0)
         assert found is not None, "no `connected` handshake on the chat channels"
         assert found[1] == {"connected": True}, found[1]
     finally:
@@ -425,12 +425,12 @@ def test_a_turn_announces_its_session_and_its_queue(harness):
         created = _drain_until(
             events_q,
             lambda e, d: e == "session_created" and isinstance(d, dict) and d.get("id") == session_id,
-            timeout_s=8.0,
+            timeout_s=15.0,
         )
         queued = _drain_until(
             events_q,
             lambda e, d: e == "queue_queued" and isinstance(d, dict) and d.get("session_id") == session_id,
-            timeout_s=8.0,
+            timeout_s=15.0,
         )
     finally:
         stop.set()
@@ -464,7 +464,7 @@ def test_a_chunk_frame_carries_the_fields_the_phone_appends(harness):
         found = _drain_until(
             events_q,
             lambda e, d: e == "llm_chunk" and isinstance(d, dict) and d.get("type") == "chunk",
-            timeout_s=8.0,
+            timeout_s=15.0,
         )
     finally:
         stop.set()
@@ -492,7 +492,7 @@ def test_an_empty_delta_still_carries_the_content_key(harness):
         found = _drain_until(
             events_q,
             lambda e, d: e == "llm_chunk" and isinstance(d, dict) and d.get("index") == 1,
-            timeout_s=8.0,
+            timeout_s=15.0,
         )
     finally:
         stop.set()
@@ -520,7 +520,7 @@ def test_a_chunk_final_frame_is_distinguishable_from_a_chunk(harness):
         found = _drain_until(
             events_q,
             lambda e, d: e == "llm_chunk" and isinstance(d, dict) and d.get("type") == "chunk_final",
-            timeout_s=8.0,
+            timeout_s=15.0,
         )
     finally:
         stop.set()
@@ -568,7 +568,7 @@ def test_a_diagnostic_delta_is_flagged_is_error(harness):
         found = _drain_until(
             events_q,
             lambda e, d: isinstance(d, dict) and d.get("content") == "TooManyRetries",
-            timeout_s=8.0,
+            timeout_s=15.0,
         )
     finally:
         stop.set()

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -85,6 +86,29 @@ def _profile_body(name: str, model: str) -> dict:
 
 
 def _config_file(home: Path) -> Path:
+    """Where ``getDefaultConfigDir`` (Config.zig) actually writes config.json.
+
+    Mirrors that function's platform switch:
+
+      * macOS   — ``~/Library/Application Support/nalar``. ``XDG_CONFIG_HOME``
+        is NOT consulted on this branch, so the harness's
+        ``<home>/.config`` shadow is irrelevant.
+      * Windows — ``%APPDATA%/nalar``, which the harness points at
+        ``<home>/AppData/Roaming``.
+      * else    — ``$XDG_CONFIG_HOME/nalar`` else ``$HOME/.config/nalar``; the
+        harness points ``XDG_CONFIG_HOME`` at ``<home>/.config``.
+
+    Derived from ``home`` alone rather than ``os.environ``: the harness only
+    shadows the CHILD env on Linux/mac, and GitHub's runners export a real
+    ``XDG_CONFIG_HOME`` that has nothing to do with the tempdir.
+
+    Hardcoding ``<home>/.config`` made this pass on Linux and fail on macOS,
+    where the assertion then read a path the server never wrote.
+    """
+    if sys.platform == "darwin":
+        return Path(home) / "Library" / "Application Support" / "nalar" / "config.json"
+    if os.name == "nt":
+        return Path(home) / "AppData" / "Roaming" / "nalar" / "config.json"
     return Path(home) / ".config" / "nalar" / "config.json"
 
 

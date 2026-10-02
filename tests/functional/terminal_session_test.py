@@ -213,11 +213,21 @@ def test_unknown_session_is_404(harness: FunctionalHarness) -> None:
 
 
 def test_input_after_exit_is_410(harness: FunctionalHarness) -> None:
-    """/bin/true exits immediately: output reports exited + code 0,
-    and further input is 410 (not 500)."""
-    created = _create(harness, cwd=harness.temp_dir, shell="/bin/true")
+    """A shell that exits cleanly reports exited + code 0, and further input
+    is 410 (not 500).
+
+    Uses the default /bin/sh and asks it to exit rather than spawning
+    /bin/true as the "shell". /bin/true is not a shell and the PTY exec of it
+    exits 127 on the macOS runners (every _exit(127) path in childMain is a
+    chdir/exec failure), so the exit code this test asserts on was never
+    produced by /bin/true there. /bin/sh is what every other test in this file
+    already spawns successfully on all three platforms, and `exit` gives the
+    same deterministic exit-0 the assertion needs.
+    """
+    created = _create(harness, cwd=harness.temp_dir)
     session_id = created["id"]
     try:
+        _input(harness, session_id, "exit\n")
         deadline = time.time() + 15.0
         last: dict[str, Any] = {}
         while time.time() < deadline:

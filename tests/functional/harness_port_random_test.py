@@ -169,17 +169,29 @@ def test_find_free_port_random_distribution_is_uniform() -> None:
     CI test), just that picks aren't all bunched in one quarter of the
     range. A regression here would mean random.randint() semantics
     drifted, which we'd want to know about immediately.
+
+    The RNG is seeded (and restored) so the assertion is deterministic.
+    Unseeded, this was a ~1-in-140 flake per CI run: 50 picks, p=0.25 gives
+    mean 12.5 and sd 3.06, so the old `5 <= in_q1` bound is a 2.8-sigma
+    event — P(under 5) ~= 0.0035 per quarter, ~0.7% for the pair. That is
+    not "very permissive" as the comment claimed, and it red-lined a real
+    Linux shard on `main`. Seeding keeps every one of the assertions below
+    exactly as strict while removing the coin flip; a genuine
+    "all picks in one bucket" regression still fails loudly.
     """
     span = RANDOM_PORT_END - RANDOM_PORT_START
     quarter = span // 4
-    picks = [
-        find_free_port_random()
-        for _ in range(50)  # 50 picks across 4 quarters → expected ~12/quarter
-    ]
+    saved_state = random.getstate()
+    try:
+        random.seed(20261002)
+        picks = [
+            find_free_port_random()
+            for _ in range(50)  # 50 picks across 4 quarters → expected ~12/quarter
+        ]
+    finally:
+        random.setstate(saved_state)
     in_q1 = sum(1 for p in picks if p < RANDOM_PORT_START + quarter)
     in_q4 = sum(1 for p in picks if p >= RANDOM_PORT_START + 3 * quarter)
-    # Loose bounds: between 5 and 35 each quarter. Very permissive —
-    # just catches "all picks in one bucket" regressions.
     assert 5 <= in_q1 <= 35, (
         f"unexpected distribution: Q1={in_q1}/50 picks fell in the "
         f"first quarter of [{RANDOM_PORT_START}, {RANDOM_PORT_END}]"

@@ -247,6 +247,13 @@ def _wait_parked_at_bottom(page, *, what: str) -> dict:
     bottom can be true of a scroller that has not yet been told it is at the
     bottom — that is the state every follow gate reads, and the state the
     pre-fix code leaves behind.
+
+    30s, not 15s: this wait straddles an SSE echo plus a remeasure, and the
+    15s bound was the tightest `wait_for_function` in the suite (30000 is
+    what the other 40 use). It held everywhere except the slower macOS
+    runners, where it expired mid-settle — a bound problem, not a behaviour
+    difference, since the same test passes consistently on Linux. The
+    assertions below are unchanged: if the stick never arms, this still fails.
     """
     page.wait_for_function(
         "() => {"
@@ -257,7 +264,7 @@ def _wait_parked_at_bottom(page, *, what: str) -> dict:
         + str(BOTTOM_TOL_PX)
         + ";"
         "}",
-        timeout=15000,
+        timeout=30000,
     )
     page.wait_for_timeout(400)
     g = _geom(page)

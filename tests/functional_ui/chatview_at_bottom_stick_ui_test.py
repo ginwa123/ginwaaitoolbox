@@ -356,6 +356,54 @@ def _release_overshoot(page) -> dict:
 # ─── The edge-case matrix ────────────────────────────────────────────────────
 
 
+#: Wait until the scroller stops moving before sampling it.
+#:
+#: The chunk tests used a fixed 450ms sleep and then sampled. On a loaded
+#: runner the measure + auto-stick cycle has not finished in 450ms, so the
+#: sample catches the reader mid-settle and reports "the stick died again
+#: mid-stream" — a flake that hits Linux and macOS alike (it failed on both
+#: here and on `main`). Waiting for the scroller to actually come to rest is
+#: what the test actually means by "after the chunk", and it does NOT wait
+#: for the condition under assertion: it stops on motion ceasing, so a stick
+#: that has genuinely disarmed still settles and still fails.
+_SETTLE_JS = r"""
+() => new Promise((resolve) => {
+  const el = (() => {
+    const wrap = document.querySelector('.messages-scroll-hide-native');
+    return wrap ? wrap.querySelector('.virtual-scroller') : null;
+  })();
+  if (!el) { resolve({ok: false}); return; }
+  const deadline = performance.now() + 8000;
+  let lastTop = el.scrollTop;
+  let lastH = el.scrollHeight;
+  let stable = 0;
+  const tick = () => {
+    const t = el.scrollTop;
+    const hh = el.scrollHeight;
+    if (t === lastTop && hh === lastH) {
+      stable += 1;
+    } else {
+      stable = 0;
+      lastTop = t;
+      lastH = hh;
+    }
+    if (stable >= 4) { resolve({ok: true, scrollTop: lastTop, scrollHeight: lastH}); return; }
+    if (performance.now() > deadline) {
+      resolve({ok: false, scrollTop: lastTop, scrollHeight: lastH});
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+})
+"""
+
+
+def _settle(page) -> dict:
+    """Block until the chat scroller stops moving, then return its position."""
+    return page.evaluate(_SETTLE_JS)
+
+
 def test_the_stick_survives_a_sizer_that_overshoots_the_content(
     ui_harness: UIHarness, page
 ) -> None:
@@ -409,7 +457,7 @@ def test_the_stick_survives_a_sizer_that_overshoots_the_content(
 
         # The next auto-stick: a chunk. Pre-fix this is where the stick dies.
         _emit_chunk(h, session_id, "The chunk that arrives while the model overshoots. " * 3)
-        page.wait_for_timeout(900)
+        _settle(page)
         after = _geom(page)
         print(f"[at-bottom] after the first chunk : {after}")
 
@@ -427,7 +475,7 @@ def test_the_stick_survives_a_sizer_that_overshoots_the_content(
             _emit_chunk(
                 h, session_id, f"Follow-up {k}: " + "more words for the tail row. " * 3
             )
-            page.wait_for_timeout(450)
+            _settle(page)
         final = _geom(page)
         print(f"[at-bottom] after the rest of the stream : {final}")
         assert not final["arrow"], f"the stick died again mid-stream: {final}"
