@@ -1772,3 +1772,219 @@ test "parseSearchMaxDepth: defaults, clamps 1..16, rejects garbage" {
     try testing.expectEqual(@as(usize, 16), SystemFolder.parseSearchMaxDepth("99"));
     try testing.expectEqual(@as(usize, 8), SystemFolder.parseSearchMaxDepth("abc"));
 }
+
+// ─── Windows path-shape tests (UNC, drive roots, mixed separators) ────────
+//
+// The block above covers `USERPROFILE` and a plain backslash subdir. These
+// close the remaining shapes a Windows host can hand the picker:
+//
+//   * UNC (`\\server\share\...`) — what a domain machine with a
+//     redirected profile reports as its home. `resolvePath` has explicit
+//     UNC branches with no coverage at all.
+//   * drive roots (`C:\`) — `getParentPath` must return null there, not
+//     `C:` or "".
+//   * mixed separators (`C:/Users/ginwa/Documents`) — the stdlib accepts
+//     both, so the endpoint must too.
+//
+// Every one of these is a STRING operation with no `std.fs.path`
+// dependence, so the same assertion holds on a Linux runner and on
+// windows-2022 in CI. Where the two genuinely disagree (the trailing
+// forward slash below) the test asserts BOTH outcomes instead of
+// skipping — see the comment on that test.
+
+// resolvePath: UNC in both spellings passes through untouched.
+test "resolvePath: UNC backslash path returns unchanged (Windows)" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "\\\\fileserver\\share\\ginwa");
+    const resolved = try SystemFolder.resolvePath(allocator, "\\\\fileserver\\share\\ginwa\\Documents", &env);
+    defer allocator.free(resolved);
+    try testing.expectEqualStrings("\\\\fileserver\\share\\ginwa\\Documents", resolved);
+}
+
+test "resolvePath: UNC forward-slash path returns unchanged (Windows)" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "\\\\fileserver\\share\\ginwa");
+    const resolved = try SystemFolder.resolvePath(allocator, "//fileserver/share/ginwa/Documents", &env);
+    defer allocator.free(resolved);
+    try testing.expectEqualStrings("//fileserver/share/ginwa/Documents", resolved);
+}
+
+test "resolvePath: drive-relative C:file is returned unchanged, NOT treated as absolute" {
+    // `C:notes.txt` is drive-RELATIVE on Windows: `std.fs.path.isAbsolute`
+    // is false for it, so the handler's gate rejects it with 400 "path
+    // must be absolute". What matters here is that `resolvePath` does not
+    // silently "helpfully" expand it — expansion would open the wrong
+    // file. Mirrors the drive-relative read case in
+    // tests/functional/system_folder_path_validation_test.py.
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const resolved = try SystemFolder.resolvePath(allocator, "C:notes.txt", &env);
+    defer allocator.free(resolved);
+    try testing.expectEqualStrings("C:notes.txt", resolved);
+}
+
+// getHomeDirectory: a UNC USERPROFILE is a valid home.
+test "getHomeDirectory: UNC USERPROFILE is accepted verbatim (Windows)" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "\\\\fileserver\\share\\ginwa");
+    const home = try SystemFolder.getHomeDirectory(allocator, &env);
+    defer allocator.free(home);
+    try testing.expectEqualStrings("\\\\fileserver\\share\\ginwa", home);
+}
+
+// getRelativePathFromHome: UNC + forward-slash spellings.
+test "getRelativePathFromHome: UNC home subdir returns /Documents" {
+    const allocator = testing.allocator;
+    const rel = try SystemFolder.getRelativePathFromHome(
+        allocator,
+        "\\\\fileserver\\share\\ginwa\\Documents",
+        "\\\\fileserver\\share\\ginwa",
+    );
+    defer allocator.free(rel);
+    try testing.expectEqualStrings("/Documents", rel);
+}
+
+test "getRelativePathFromHome: forward-slash Windows home and path agree" {
+    const allocator = testing.allocator;
+    const rel = try SystemFolder.getRelativePathFromHome(
+        allocator,
+        "C:/Users/ginwa/Documents",
+        "C:/Users/ginwa",
+    );
+    defer allocator.free(rel);
+    try testing.expectEqualStrings("/Documents", rel);
+}
+
+test "getRelativePathFromHome: a path on another drive is returned unchanged" {
+    // Not under home, so the wire `path` field is the absolute path —
+    // the frontend navigates by `entries[].path`, never by this field, so
+    // returning it verbatim (rather than a wrong "/...") is the contract.
+    const allocator = testing.allocator;
+    const rel = try SystemFolder.getRelativePathFromHome(
+        allocator,
+        "D:\\Data\\notes",
+        "C:\\Users\\ginwa",
+    );
+    defer allocator.free(rel);
+    try testing.expectEqualStrings("D:\\Data\\notes", rel);
+}
+
+test "getRelativePathFromHome: sibling sharing the home prefix is a subpath" {
+    // `C:\Users\ginwa2` starts with `C:\Users\ginwa`, but it is NOT under
+    // home. Same trade-off as the POSIX case documented above (a
+    // separator check would be stricter); pinned so the behaviour is a
+    // decision rather than an accident.
+    const allocator = testing.allocator;
+    const rel = try SystemFolder.getRelativePathFromHome(
+        allocator,
+        "C:\\Users\\ginwa2",
+        "C:\\Users\\ginwa",
+    );
+    defer allocator.free(rel);
+    try testing.expectEqualStrings("/2", rel);
+}
+
+// getParentPath: drive roots have no parent.
+test "getParentPath: Windows drive root returns null" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const result = try SystemFolder.getParentPath(allocator, "C:\\", &env);
+    try testing.expect(result == null);
+}
+
+test "getParentPath: a child of the drive root returns C:\\" {
+    // Above home, so the `dir == home` short-circuit does not apply.
+    // Both paths agree on the answer: Windows `dirname` returns `c:\`,
+    // and the POSIX-side manual split returns the same three bytes.
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const parent = try SystemFolder.getParentPath(allocator, "C:\\Users", &env);
+    if (parent) |p| {
+        defer allocator.free(p);
+        try testing.expectEqualStrings("C:\\", p);
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "getParentPath: mixed separators resolve the parent" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const parent = try SystemFolder.getParentPath(allocator, "C:/Users/ginwa/Documents", &env);
+    if (parent) |p| {
+        defer allocator.free(p);
+        try testing.expectEqualStrings("C:/Users/ginwa", p);
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "getParentPath: UNC dir outside home returns the share" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    // Home on drive C:, the directory being listed on a network share —
+    // a client can ask for any absolute path, not only one under home.
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const parent = try SystemFolder.getParentPath(allocator, "\\\\fileserver\\share\\doc", &env);
+    if (parent) |p| {
+        defer allocator.free(p);
+        // Windows `dirname` keeps the trailing separator
+        // (`\\server\share\`); the POSIX-side manual split drops it. Both
+        // name the same directory, so compare the directory.
+        try testing.expectEqualStrings("\\\\fileserver\\share", std.mem.trimEnd(u8, p, "\\/"));
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "getParentPath: UNC subdir under a UNC home returns the intermediate parent" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "\\\\fileserver\\share\\ginwa");
+    const parent = try SystemFolder.getParentPath(allocator, "\\\\fileserver\\share\\ginwa\\Documents\\2026", &env);
+    if (parent) |p| {
+        defer allocator.free(p);
+        try testing.expectEqualStrings("\\\\fileserver\\share\\ginwa\\Documents", p);
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "getParentPath: a trailing forward slash is only normalized on Windows" {
+    // `C:/Users/ginwa/` is another spelling of home. Normalizing it so it
+    // compares equal to `C:\Users\ginwa` is gated on
+    // `builtin.os.tag == .windows` — so the OUTCOME differs by platform
+    // and the test asserts both instead of skipping one. Windows CI is
+    // the cell that runs the Windows branch of this pair.
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const result = try SystemFolder.getParentPath(allocator, "C:/Users/ginwa/", &env);
+    if (builtin.os.tag == .windows) {
+        try testing.expect(result == null);
+    } else {
+        // The POSIX branch has no trailing-`/` normalization, so it falls
+        // through to `dirname`, which strips the slash and cuts at the
+        // previous one -> `C:/Users`.
+        const p = result orelse return error.TestExpectedResult;
+        defer allocator.free(p);
+        try testing.expectEqualStrings("C:/Users", p);
+    }
+}
