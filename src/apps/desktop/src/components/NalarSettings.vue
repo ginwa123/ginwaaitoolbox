@@ -22,9 +22,18 @@ import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 // Plan 2026-09-04-subagents-per-profile: SubAgentsSection.vue is no longer
 // mounted here (no global list). The file is kept for now — see note below.
 import McpServersSection from './nalar/McpServersSection.vue'
+import WebSearchSection from './nalar/WebSearchSection.vue'
 import ToolsSection from './nalar/ToolsSection.vue'
 import SkillEvalsSection, { type SkillEvalsSettings } from './nalar/SkillEvalsSection.vue'
 import { parseMcpServers, serializeMcpServers } from './nalar/mcpServers'
+import {
+  createWebSearchProviderRow,
+  parseWebSearchProviders,
+  serializeWebSearchProviders,
+  validateWebSearchRows,
+  webSearchRowErrorsFromMessage,
+  type WebSearchProviderRow,
+} from './nalar/webSearchProviders'
 // plan 2026-07-07-compaction-inline: CompactionSection.vue is removed
 // (compaction settings live in the Defaults tab + Edit-profile modal now).
 // No import here.
@@ -151,6 +160,13 @@ const activeProfile = ref<string | null>(null)
 // Plan 2026-09-04-subagents-per-profile: no global list — per-profile
 // `profilesList[].sub_agents` is the only editor.
 const mcpServersList = ref<McpServer[]>([])
+// Web search providers (`web_search` in config.json). Edited as rows
+// rather than as the raw map — see components/nalar/webSearchProviders.ts.
+// `webSearchErrors` is keyed by row id and holds whatever the last save
+// (or the pre-flight check) said about THAT row; the section renders it
+// verbatim instead of collapsing it into a generic failure.
+const webSearchRows = ref<WebSearchProviderRow[]>([])
+const webSearchErrors = ref<Record<string, string>>({})
 // Default tool checklist (Tools tab). `null` = config.json has no
 // `tools` key → the built-in defaults render and nothing is written
 // back until the user changes a checkbox.
@@ -209,6 +225,12 @@ function syncFromConfig() {
   // Plan 2026-09-04-subagents-per-profile: top-level `sub_agents` is
   // always null from the backend — intentionally NOT hydrated anywhere.
   mcpServersList.value = parseMcpServers(c.mcp_servers)
+  // Web search providers hydrate with whatever `key` the backend sent,
+  // which may be a MASK rather than the secret. It is kept verbatim so
+  // a save that does not touch the key field cannot blank the stored
+  // credential — see webSearchProviders.ts.
+  webSearchRows.value = parseWebSearchProviders(c.web_search)
+  webSearchErrors.value = {}
   // Tools checklist — `null`/absent stays null (built-in defaults);
   // an array hydrates the checklist as an explicit selection.
   toolsList.value = c.tools ?? null
@@ -256,6 +278,7 @@ function syncToConfig() {
   // defaults are no longer sent — profiles + operational settings only.
   const profiles = profilesToRecord(profilesList.value)
   const mcpServers = serializeMcpServers(mcpServersList.value)
+  const webSearch = serializeWebSearchProviders(webSearchRows.value)
   config.value = {
     ...c,
     // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
@@ -296,6 +319,10 @@ function syncToConfig() {
     // Plan 2026-09-04-subagents-per-profile: never send top-level
     // `sub_agents` — per-profile lists ride inside `profiles` above.
     ...(mcpServers ? { mcp_servers: mcpServers } : {}),
+    // Same guard for `web_search`: no providers means the key is left
+    // exactly as loaded, so the backend sees "no change" instead of an
+    // empty map that would wipe the user's providers.
+    ...(webSearch ? { web_search: webSearch } : {}),
     // Tools checklist follows the mcp_servers guard: while nothing
     // was chosen (`null`) the key is left exactly as loaded so the
     // backend sees "no change"; a chosen list — including `[]` — is
@@ -325,7 +352,15 @@ watch(
 // Whenever any section ref mutates, push back to the central config
 // (which keeps the composable's dirty counter in sync).
 watch(
-  [profilesList, activeProfile, mcpServersList, generalSettings, toolsList, skillEvalsSettings],
+  [
+    profilesList,
+    activeProfile,
+    mcpServersList,
+    webSearchRows,
+    generalSettings,
+    toolsList,
+    skillEvalsSettings,
+  ],
   () => {
     if (loaded.value) syncToConfig()
   },
@@ -642,6 +677,21 @@ function handleToolsChange(list: string[]) {
   syncToConfig()
 }
 
+// ─── Web search providers ─────────────────────────────────────────────────
+// The section edits rows in place; every mutation clears the row errors,
+// because an error describes the row as it was when the save failed and
+// would otherwise outlive the edit that fixed it.
+function updateWebSearchRows(rows: WebSearchProviderRow[]) {
+  webSearchRows.value = rows
+  webSearchErrors.value = {}
+  syncToConfig()
+}
+
+function addWebSearchRow() {
+  webSearchRows.value = [...webSearchRows.value, createWebSearchProviderRow()]
+  syncToConfig()
+}
+
 // ─── Set active (instant — no dirty pill, immediate save) ───────────────
 const isSettingActive = ref(false)
 async function setActiveProfile(name: string) {
@@ -702,8 +752,20 @@ async function handleSave() {
   // Capture the OFF→ON transition BEFORE save (prevWebLaunch tracks the
   // last persisted flag; generalSettings holds the pending edit).
   const autoOpen = generalSettings.value.web_launch_enabled && !prevWebLaunch.value
+  // Pre-flight the web search rows against the rules the backend
+  // enforces. A provider the backend would refuse would otherwise be
+  // written to disk and then silently dropped by the runtime's parser —
+  // the agent would report "no providers configured" while the user has
+  // one on screen. Blocking here names the row instead.
+  const rowErrors = validateWebSearchRows(webSearchRows.value)
+  if (Object.keys(rowErrors).length > 0) {
+    webSearchErrors.value = rowErrors
+    emit('notification', 'Fix the highlighted web search providers before saving', 'error')
+    return
+  }
   try {
     await save()
+    webSearchErrors.value = {}
     prevWebLaunch.value = generalSettings.value.web_launch_enabled
     await refreshWebStatus()
     emit('notification', 'Settings saved', 'success')
@@ -713,11 +775,15 @@ async function handleSave() {
     // the reliable path if it is ever blocked.
     if (autoOpen && webUrl.value) openWeb()
   } catch (err) {
-    emit(
-      'notification',
-      `Save failed: ${err instanceof Error ? err.message : String(err)}`,
-      'error',
-    )
+    const message = err instanceof Error ? err.message : String(err)
+    // Pin the message onto the row it names. The toast still fires — the
+    // user may be on another tab — but a provider the backend rejected
+    // must never reach the user as a generic "Save failed".
+    webSearchErrors.value = {
+      ...webSearchErrors.value,
+      ...webSearchRowErrorsFromMessage(message, webSearchRows.value),
+    }
+    emit('notification', `Save failed: ${message}`, 'error')
   }
 }
 
@@ -881,6 +947,25 @@ const isLoading = computed(() => !loaded.value)
           @toggle="toggleMcpServer"
           @add="startAddMcpServer"
         />
+        <!-- Web search providers share the MCP tab: both answer "where
+             does the agent reach outside this machine". Its own `v-if`
+             (not a bare element) so the `v-else-if` chain below still
+             reads as one chain. -->
+        <div
+          v-if="activeTab === 'mcp'"
+          class="mt-6 pt-6"
+          style="border-top: 1px solid var(--color-border)"
+        >
+          <h3 class="text-body font-semibold mb-1" style="color: var(--semantic-text)">
+            Web search providers
+          </h3>
+          <WebSearchSection
+            :model-value="webSearchRows"
+            :errors="webSearchErrors"
+            @update:model-value="updateWebSearchRows"
+            @add="addWebSearchRow"
+          />
+        </div>
         <ToolsSection
           v-else-if="activeTab === 'tools'"
           :model-value="toolsList"

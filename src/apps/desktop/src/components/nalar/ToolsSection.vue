@@ -34,6 +34,12 @@ const BUILTIN_DEFAULT_TOOLS: readonly string[] = [
   'list_directory',
   'search',
   'glob',
+  // Web search. Both halves ship default-on: `list_web_search_providers`
+  // is how the agent discovers what the user configured, and it answers
+  // with an explicit "none configured" envelope rather than failing —
+  // so enabling them costs nothing until a `web_search` provider exists.
+  'web_search',
+  'list_web_search_providers',
   'update_plan',
   'get_plan',
   'ask_user',
@@ -89,6 +95,8 @@ const GROUP_BY_TOOL: Record<string, string> = {
   list_directory: 'Files & shell',
   glob: 'Search',
   search: 'Search',
+  web_search: 'Search',
+  list_web_search_providers: 'Search',
   update_plan: 'Planning',
   get_plan: 'Planning',
   save_memory: 'Memory & sessions',
