@@ -145,14 +145,20 @@ fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) vo
 
 /// Get the local skills directory path (.nalar/skills/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
+///
+/// The cwd comes from `helpers.getcwd`, NOT `std.Io.Dir.cwd().realPath(io, ..)`:
+/// Zig 0.16 resolves a Dir with `readlink("/proc/self/fd/{fd}")`, and for
+/// `Dir.cwd()` that fd is the `AT_FDCWD` sentinel (-100), so Linux answers
+/// ENOENT and the call ALWAYS fails with `error.FileNotFound`. It works on
+/// macOS (`fcntl(F_GETPATH)`) and fails only on Linux, which is the worst
+/// possible split. With it, every project-local skill resolved to null.
 pub fn get_skills_dir_path(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
-    // Get current working directory
+    _ = io;
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch {
+    const cwd = helpers.getcwd(&cwd_buf) orelse {
         std.log.debug("Could not get current working directory", .{});
         return null;
     };
-    const cwd = cwd_buf[0..cwd_len];
 
     // Build path: <cwd>/.nalar/skills/ — see joinPath for why we don't
     // use std.fs.path.join (it produces `\` separators on Windows).
@@ -495,13 +501,17 @@ pub fn get_global_skills_path_from_env(allocator: std.mem.Allocator, environment
 
 /// Get local skills path (.nalar/skills/) using io
 /// Returns allocated string that caller must free, or null if cwd unavailable
+///
+/// `helpers.getcwd`, not `realPath` — see `get_skills_dir_path` for why
+/// `std.Io.Dir.cwd().realPath` is dead on Linux. The `io` parameter is kept so
+/// the signature stays parallel with the rest of this file's io-taking helpers.
 pub fn get_local_skills_path_from_io(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
-    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch |err| {
-        std.log.debug("Could not get current working directory: {s}", .{@errorName(err)});
+    _ = io;
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = helpers.getcwd(&cwd_buf) orelse {
+        std.log.debug("Could not get current working directory", .{});
         return null;
     };
-    const cwd = cwd_buf[0..cwd_len];
 
     return joinPath(allocator, cwd, LOCAL_SKILLS_DIR) catch null;
 }
@@ -716,4 +726,33 @@ test "parse_skill prefers the session repo over the global tier" {
     try std.testing.expect(found != null);
     defer alloc.free(found.?);
     try std.testing.expect(std.mem.indexOf(u8, found.?, "LOCAL-WINS") != null);
+}
+
+
+test "the process-cwd resolvers return a path (realPath is dead on Linux)" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Both of these used `std.Io.Dir.cwd().realPath(io, ..)`, which on Linux
+    // resolves AT_FDCWD via readlink("/proc/self/fd/-100") and always returns
+    // error.FileNotFound. The callers treat null as "no project-local skills",
+    // so the whole local tier vanished with no error anywhere.
+    const from_io = get_skills_dir_path(alloc, io);
+    try std.testing.expect(from_io != null);
+    defer alloc.free(from_io.?);
+
+    const local_from_io = get_local_skills_path_from_io(alloc, io);
+    try std.testing.expect(local_from_io != null);
+    defer alloc.free(local_from_io.?);
+
+    // Both must agree with the libc-backed sibling that never had the bug.
+    const libc = get_local_skills_path(alloc);
+    try std.testing.expect(libc != null);
+    defer alloc.free(libc.?);
+
+    try std.testing.expectEqualStrings(libc.?, from_io.?);
+    try std.testing.expectEqualStrings(libc.?, local_from_io.?);
+
+    // And the shape is <cwd>/.nalar/skills, not something realPath-shaped.
+    try std.testing.expect(std.mem.endsWith(u8, from_io.?, "/.nalar/skills"));
 }
