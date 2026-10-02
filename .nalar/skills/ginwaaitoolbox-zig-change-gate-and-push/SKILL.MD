@@ -2,11 +2,6 @@
 name: ginwaaitoolbox-zig-change-gate-and-push
 description: "How to make a Zig change in the ginwaaitoolbox repo, prove it green, and commit+push it without tripping zig fmt, the GIT_DIR pre-push trap, or the noisy zig build test summary. Use for any src/**/*.zig edit here."
 ---
----
-name: ginwaaitoolbox-zig-change-gate-and-push
-description: How to make a Zig change in the ginwaaitoolbox repo, prove it green, and commit+push it without tripping zig fmt, the GIT_DIR pre-push trap, or the noisy zig build test summary. Use for any src/**/*.zig edit here.
-is_global: false
----
 # Zig change → gate → commit → push in ginwaaitoolbox
 
 ## When to Use
