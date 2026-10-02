@@ -23,6 +23,12 @@ test {
     // Bash tool cross-platform tests
     _ = @import("tools/bash.zig");
 
+    // web_search_curl: the GET-only example_curl parser. Registered here
+    // because nothing else in the reachable test graph imports it yet —
+    // `web_search.zig` is the only consumer, and `tools_equipped.zig`
+    // reaches its tests only by accident.
+    _ = @import("tools/web_search_curl.zig");
+
     // tools/indexing_semantic_search.zig is NOT registered. Its `search` is
     // still a `!void` placeholder, and the suite that asserted its return
     // value could never have compiled — see the note on its inline block.
