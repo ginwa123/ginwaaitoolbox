@@ -606,6 +606,27 @@ pub const SystemFolder = struct {
         return out.toOwnedSlice(allocator);
     }
 
+    /// Do two spellings of a path name the same directory?
+    ///
+    /// On Windows `/` and `\` are the same separator and the filesystem
+    /// compares path bytes case-insensitively, so `C:/Users/ginwa/` and
+    /// `C:\Users\ginwa` are one directory. Byte comparison would let a
+    /// second spelling slip past the "do not go above home" guard and
+    /// hand back a parent that is above home.
+    ///
+    /// POSIX keeps `/` and `\` meaningful inside a filename, so there this
+    /// is exactly `std.mem.eql` and nothing else.
+    fn eqlSameDir(a: []const u8, b: []const u8) bool {
+        if (builtin.os.tag != .windows) return std.mem.eql(u8, a, b);
+        if (a.len != b.len) return false;
+        for (a, b) |ca, cb| {
+            const fa = std.ascii.toLower(if (ca == '/') '\\' else ca);
+            const fb = std.ascii.toLower(if (cb == '/') '\\' else cb);
+            if (fa != fb) return false;
+        }
+        return true;
+    }
+
     /// Get parent directory path
     pub fn getParentPath(allocator: std.mem.Allocator, dir_path: []const u8, environment: ?*const std.process.Environ.Map) SystemFolderError!?[]u8 {
         const home = try getHomeDirectory(allocator, environment);
@@ -613,7 +634,10 @@ pub const SystemFolder = struct {
 
         // Don't go above home. Compare normalized forms so
         // `C:\Users\ginwa\` (trailing separator) still matches home
-        // `C:\Users\ginwa` on Windows.
+        // `C:\Users\ginwa` on Windows, and so a home the frontend spelled
+        // with `/` (or a different case) is recognised as home too —
+        // otherwise `getParentPath` returns `C:/Users`, a directory above
+        // home, and the guard silently does nothing.
         // Cross-platform rule (keeps POSIX tests green):
         // - trailing `\` is always stripped (Windows paths can appear in
         //   synthetic env maps on any OS; a POSIX filename ending in `\`
@@ -640,7 +664,7 @@ pub const SystemFolder = struct {
         // for dir; for home the `len > 1` backslash branch handles it.
         // Edge: home `\` alone (Windows root) normalizes to "" like POSIX.
         const norm_home_adj = if (home.len == 1 and home[0] == '\\') home[0..0] else norm_home;
-        if (std.mem.eql(u8, norm_dir, norm_home_adj)) {
+        if (eqlSameDir(norm_dir, norm_home_adj)) {
             return null;
         }
         // POSIX dirname handles `/`-separated paths (including a trailing
@@ -1972,12 +1996,22 @@ test "getParentPath: a trailing forward slash is only normalized on Windows" {
     // `builtin.os.tag == .windows` — so the OUTCOME differs by platform
     // and the test asserts both instead of skipping one. Windows CI is
     // the cell that runs the Windows branch of this pair.
+    //
+    // This is the assertion that caught the `backend (Windows X64) / build`
+    // failure: the guard compared raw bytes, `C:/Users/ginwa/` did not match
+    // `C:\Users\ginwa`, and Windows `dirname` then returned `C:/Users` — a
+    // directory ABOVE home. `eqlSameDir` folds the separators so the guard
+    // recognises the spelling.
     const allocator = testing.allocator;
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("USERPROFILE", "C:\\Users\\ginwa");
     const result = try SystemFolder.getParentPath(allocator, "C:/Users/ginwa/", &env);
     if (builtin.os.tag == .windows) {
+        // Free before asserting: an assertion that fails while a returned
+        // buffer is still alive ALSO reports a leak, and the leak trace
+        // buries the actual failure in the CI log.
+        defer if (result) |p| allocator.free(p);
         try testing.expect(result == null);
     } else {
         // The POSIX branch has no trailing-`/` normalization, so it falls
@@ -1986,5 +2020,49 @@ test "getParentPath: a trailing forward slash is only normalized on Windows" {
         const p = result orelse return error.TestExpectedResult;
         defer allocator.free(p);
         try testing.expectEqualStrings("C:/Users", p);
+    }
+}
+
+test "getParentPath: a differently-cased spelling of home still returns null" {
+    // Windows compares path bytes case-insensitively, so `c:\USERS\Ginwa`
+    // is home. Only `eqlSameDir` knows that; POSIX must not fold case, so
+    // the OUTCOME differs by platform and both branches are asserted.
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const result = try SystemFolder.getParentPath(allocator, "c:\\USERS\\Ginwa", &env);
+    if (builtin.os.tag == .windows) {
+        defer if (result) |p| allocator.free(p);
+        try testing.expect(result == null);
+    } else {
+        // `std.fs.path.dirname` finds no `/`, so the manual
+        // Windows-separator split cuts at the last `\`.
+        const p = result orelse return error.TestExpectedResult;
+        defer allocator.free(p);
+        try testing.expectEqualStrings("c:\\USERS", p);
+    }
+}
+
+test "getParentPath: a lower-case forward-slash spelling of home still returns null" {
+    // The exact shape a frontend builds: `${dir}/${name}` produces
+    // `c:/users/ginwa/` where home is `C:\Users\ginwa` — different separator
+    // AND different case, with a trailing slash. All three folds have to
+    // line up or the guard lets the caller walk above home.
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const result = try SystemFolder.getParentPath(allocator, "c:/users/ginwa/", &env);
+    if (builtin.os.tag == .windows) {
+        defer if (result) |p| allocator.free(p);
+        try testing.expect(result == null);
+    } else {
+        // Trailing `/` is not stripped on POSIX, so `dirname` eats it and
+        // cuts at the previous one -> `c:/users`. That is the escape the
+        // Windows branch refuses, and the reason the fold is Windows-only.
+        const p = result orelse return error.TestExpectedResult;
+        defer allocator.free(p);
+        try testing.expectEqualStrings("c:/users", p);
     }
 }

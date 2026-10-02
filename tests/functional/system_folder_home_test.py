@@ -116,6 +116,42 @@ def test_explicit_home_path_matches_the_implicit_listing(harness: FunctionalHarn
     assert harness.health()
 
 
+def test_home_spelled_with_forward_slashes_has_no_parent_above_it(
+    harness: FunctionalHarness,
+) -> None:
+    """The "do not go above home" guard, on the wire.
+
+    `getParentPath` compares the requested path against home so it can
+    refuse to hand out a parent that sits ABOVE home. It used to compare
+    raw bytes, so a second spelling of the same directory missed the
+    match: on Windows the frontend builds `C:/Users/ginwa` by string
+    concatenation while home is `C:\\Users\\ginwa`, and the guard then
+    returned `C:/` -- one level too high. The picker renders that value as
+    its "up" target. This is the same defect the Zig unit test
+    ``getParentPath: a trailing forward slash is only normalized on
+    Windows`` failed on in the `backend (Windows X64)` cell; the Zig test
+    cannot see the JSON, and this one cannot see the string logic, so
+    both are needed.
+
+    ``Path.as_posix()`` is the identity on Linux -- so the assertion is
+    vacuous there and only the Windows cell can fail it -- and yields
+    ``C:/...`` on Windows. That keeps the file platform-gate-free, which
+    is the whole point of this file.
+    """
+    home = harness.temp_dir
+    spelled = home.as_posix()
+
+    body = _list(harness, spelled)
+
+    assert body["home"] == str(home)
+    assert body["absolute"] == spelled, "the server echoes the path it was given"
+    assert "parent" not in body, (
+        f"home has no parent above it; a parent for {spelled!r} means the "
+        f"guard failed to match it against home {str(home)!r}"
+    )
+    assert harness.health()
+
+
 def test_listing_a_subdirectory_navigates_by_entry_path(
     harness: FunctionalHarness, probe_root: Path
 ) -> None:
