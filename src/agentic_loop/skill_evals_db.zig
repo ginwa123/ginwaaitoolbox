@@ -1867,6 +1867,12 @@ pub fn freeRunRows(allocator: std.mem.Allocator, rows: []RunRow) void {
 pub const ResultRow = struct {
     id: []u8,
     run_id: []u8,
+    /// The session the eval ran in. Apply re-checks `base_content_hash` by
+    /// hashing the body on disk, and a project-local skill lives under the
+    /// SESSION's repo -- not the server process's cwd. Without this column on
+    /// the row the guard re-hashes the wrong file and refuses a live verdict as
+    /// stale, so the id has to travel with the row, not just with the run.
+    session_id: []u8,
     skill_key: []u8,
     skill_name: []u8,
     status: []u8,
@@ -1895,6 +1901,7 @@ pub const ResultRow = struct {
     pub fn deinit(self: ResultRow, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.run_id);
+        allocator.free(self.session_id);
         allocator.free(self.skill_key);
         allocator.free(self.skill_name);
         allocator.free(self.status);
@@ -1909,22 +1916,30 @@ pub const ResultRow = struct {
     }
 };
 
+/// The projection both result reads share, concatenated (never retyped) into
+/// the two queries below so the column list and `mapResultRow`'s indices cannot
+/// drift apart. A second hand-maintained copy of this list is how the apply path
+/// came to ask `ResultRow` for a `session_id` the struct never had.
+const result_projection =
+    \\SELECT r.id, r.run_id, COALESCE(r.session_id, ''),
+    \\       r.skill_key, r.skill_name, r.status, r.verdict,
+    \\       COALESCE(f.freshness, 0), COALESCE(f.accuracy, 0), COALESCE(f.duplication, 0),
+    \\       COALESCE(r.rationale, ''),
+    \\       COALESCE(f.missing_paths_json, ''), COALESCE(r.intrinsic_fact_id, ''),
+    \\       COALESCE(r.base_content_hash, ''),
+    \\       COALESCE(r.content_at_use, ''), COALESCE(r.proposed_diff, ''),
+    \\       r.applied_at IS NOT NULL, COALESCE(r.apply_action, '')
+    \\  FROM skill_eval_results r
+    \\  LEFT JOIN skill_eval_facts f ON f.id = r.intrinsic_fact_id
+    \\                              AND f.verdict_intrinsic != 'computing'
+;
+
 pub fn listResults(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     run_id: []const u8,
 ) ![]ResultRow {
-    var q = try db.query(allocator,
-        \\SELECT r.id, r.run_id, r.skill_key, r.skill_name, r.status, r.verdict,
-        \\       COALESCE(f.freshness, 0), COALESCE(f.accuracy, 0), COALESCE(f.duplication, 0),
-        \\       COALESCE(r.rationale, ''),
-        \\       COALESCE(f.missing_paths_json, ''), COALESCE(r.intrinsic_fact_id, ''),
-        \\       COALESCE(r.base_content_hash, ''),
-        \\       COALESCE(r.content_at_use, ''), COALESCE(r.proposed_diff, ''),
-        \\       r.applied_at IS NOT NULL, COALESCE(r.apply_action, '')
-        \\  FROM skill_eval_results r
-        \\  LEFT JOIN skill_eval_facts f ON f.id = r.intrinsic_fact_id
-        \\                              AND f.verdict_intrinsic != 'computing'
+    var q = try db.query(allocator, result_projection ++
         \\ WHERE r.run_id = ?
         \\ ORDER BY r.skill_name ASC, r.id ASC
     , &.{run_id});
@@ -1937,27 +1952,52 @@ pub fn listResults(
     }
     while (try q.next()) |row| {
         defer row.deinit(allocator);
-        try out.append(allocator, .{
-            .id = try allocator.dupe(u8, row.values[0]),
-            .run_id = try allocator.dupe(u8, row.values[1]),
-            .skill_key = try allocator.dupe(u8, row.values[2]),
-            .skill_name = try allocator.dupe(u8, row.values[3]),
-            .status = try allocator.dupe(u8, row.values[4]),
-            .verdict = try allocator.dupe(u8, row.values[5]),
-            .freshness = parseScore(row.values[6]),
-            .accuracy = parseScore(row.values[7]),
-            .duplication = parseScore(row.values[8]),
-            .rationale = try allocator.dupe(u8, row.values[9]),
-            .missing_paths_json = try allocator.dupe(u8, row.values[10]),
-            .intrinsic_fact_id = try allocator.dupe(u8, row.values[11]),
-            .base_content_hash = try allocator.dupe(u8, row.values[12]),
-            .content_at_use = try allocator.dupe(u8, row.values[13]),
-            .proposed_diff = try allocator.dupe(u8, row.values[14]),
-            .applied = std.mem.eql(u8, row.values[15], "1"),
-            .apply_action = try allocator.dupe(u8, row.values[16]),
-        });
+        try out.append(allocator, try mapResultRow(allocator, row));
     }
     return try out.toOwnedSlice(allocator);
+}
+
+/// One result by id, or null when there is no such id. The apply path needs
+/// it, and needs the row's own `session_id`: the body it re-hashes lives in the
+/// session's repo, not wherever the server process was started.
+pub fn readResultById(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    result_id: []const u8,
+) !?ResultRow {
+    var q = try db.query(allocator, result_projection ++
+        \\ WHERE r.id = ?
+    , &.{result_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return null;
+    defer row.deinit(allocator);
+    return try mapResultRow(allocator, row);
+}
+
+/// `values[N]` onto the field `result_projection` puts in column N. Read the
+/// two together: a column added to one and not the other mis-maps silently --
+/// every value is a string, so nothing about the call site would complain.
+fn mapResultRow(allocator: std.mem.Allocator, row: sqlite.SqliteBackend.Row) !ResultRow {
+    return .{
+        .id = try allocator.dupe(u8, row.values[0]),
+        .run_id = try allocator.dupe(u8, row.values[1]),
+        .session_id = try allocator.dupe(u8, row.values[2]),
+        .skill_key = try allocator.dupe(u8, row.values[3]),
+        .skill_name = try allocator.dupe(u8, row.values[4]),
+        .status = try allocator.dupe(u8, row.values[5]),
+        .verdict = try allocator.dupe(u8, row.values[6]),
+        .freshness = parseScore(row.values[7]),
+        .accuracy = parseScore(row.values[8]),
+        .duplication = parseScore(row.values[9]),
+        .rationale = try allocator.dupe(u8, row.values[10]),
+        .missing_paths_json = try allocator.dupe(u8, row.values[11]),
+        .intrinsic_fact_id = try allocator.dupe(u8, row.values[12]),
+        .base_content_hash = try allocator.dupe(u8, row.values[13]),
+        .content_at_use = try allocator.dupe(u8, row.values[14]),
+        .proposed_diff = try allocator.dupe(u8, row.values[15]),
+        .applied = std.mem.eql(u8, row.values[16], "1"),
+        .apply_action = try allocator.dupe(u8, row.values[17]),
+    };
 }
 
 pub fn freeResultRows(allocator: std.mem.Allocator, rows: []ResultRow) void {
@@ -2362,4 +2402,93 @@ test "listResults carries the before body and the proposal" {
     // the mapping -- `applied` and `apply_action` sit AFTER the new pair.
     try testing.expectEqual(false, rows[0].applied);
     try testing.expectEqualStrings("", rows[0].apply_action);
+}
+
+test "readResultById carries the session_id the apply guard resolves the repo from" {
+    // Apply re-hashes the body against the SESSION's repo
+    // (`readCurrentSkillHash` -> `workspace_scope.sessionCwd`), so a read that
+    // dropped the id re-hashed the server's own cwd and refused a live verdict
+    // as stale. That missing field is what #775's build break was pointing at.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_runs (id, session_id, trigger, status)
+        \\VALUES ('run_sid', 'sess_sid', 'manual', 'done')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_results
+        \\    (id, run_id, skill_key, skill_name, session_id, status, verdict, base_content_hash)
+        \\VALUES
+        \\    ('res_sid', 'run_sid', 'local:bar', 'bar', 'sess_sid', 'done', 'update', 'HASH-1')
+    , &.{});
+
+    const row = (try readResultById(alloc, &ctx.db, "res_sid")).?;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("sess_sid", row.session_id);
+    try testing.expectEqualStrings("HASH-1", row.base_content_hash);
+
+    // The same row through the list read, so the shared projection is proven on
+    // both of its callers.
+    const rows = try listResults(alloc, &ctx.db, "run_sid");
+    defer freeResultRows(alloc, rows);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("sess_sid", rows[0].session_id);
+
+    // An id nobody stored is null, not an empty row the apply path would go on
+    // to hash against.
+    try testing.expect((try readResultById(alloc, &ctx.db, "no_such_result")) == null);
+}
+
+test "every projected column lands on its own ResultRow field" {
+    // `result_projection` is mapped by index. One assertion per column, each
+    // carrying a value no other column holds, so an off-by-one fails here
+    // instead of quietly filing a verdict's body hash under the wrong field.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_runs (id, session_id, trigger, status)
+        \\VALUES ('run_idx', 'RUN-SESS', 'manual', 'done')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_facts
+        \\    (id, skill_key, content_hash, context_key, verdict_intrinsic, freshness, accuracy, duplication, missing_paths_json)
+        \\VALUES ('f_idx', 'local:bar', 'HASH-FACT', '/cwd@abc', 'update', 1, 2, 3, '["src/gone.zig"]')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_results
+        \\    (id, run_id, skill_key, skill_name, session_id, status, verdict, rationale,
+        \\     intrinsic_fact_id, base_content_hash, content_at_use, proposed_diff,
+        \\     applied_at, apply_action)
+        \\VALUES
+        \\    ('res_idx', 'RUN-ID', 'KEY-2', 'NAME-3', 'SESS-4', 'STATUS-5', 'VERDICT-6',
+        \\     'RATIONALE-9', 'f_idx', 'HASH-13', 'BEFORE-14', 'AFTER-15',
+        \\     CURRENT_TIMESTAMP, 'ACTION-17')
+    , &.{});
+
+    const rows = try listResults(alloc, &ctx.db, "RUN-ID");
+    defer freeResultRows(alloc, rows);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    const r = rows[0];
+    try testing.expectEqualStrings("res_idx", r.id); // 0
+    try testing.expectEqualStrings("RUN-ID", r.run_id); // 1
+    try testing.expectEqualStrings("SESS-4", r.session_id); // 2
+    try testing.expectEqualStrings("KEY-2", r.skill_key); // 3
+    try testing.expectEqualStrings("NAME-3", r.skill_name); // 4
+    try testing.expectEqualStrings("STATUS-5", r.status); // 5
+    try testing.expectEqualStrings("VERDICT-6", r.verdict); // 6
+    try testing.expectEqual(@as(u8, 1), r.freshness); // 7, through the LEFT JOIN
+    try testing.expectEqual(@as(u8, 2), r.accuracy); // 8
+    try testing.expectEqual(@as(u8, 3), r.duplication); // 9
+    try testing.expectEqualStrings("RATIONALE-9", r.rationale); // 10
+    try testing.expectEqualStrings("[\"src/gone.zig\"]", r.missing_paths_json); // 11
+    try testing.expectEqualStrings("f_idx", r.intrinsic_fact_id); // 12
+    try testing.expectEqualStrings("HASH-13", r.base_content_hash); // 13
+    try testing.expectEqualStrings("BEFORE-14", r.content_at_use); // 14
+    try testing.expectEqualStrings("AFTER-15", r.proposed_diff); // 15
+    try testing.expectEqual(true, r.applied); // 16
+    try testing.expectEqualStrings("ACTION-17", r.apply_action); // 17
 }

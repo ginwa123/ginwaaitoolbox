@@ -197,50 +197,6 @@ const ApplyJson = struct {
     message: []const u8,
 };
 
-/// Read one result row by id, or null. Used by the apply path, which needs the
-/// row's verdict and base hash before it can decide anything.
-fn readResultById(
-    allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
-    result_id: []const u8,
-) !?skill_evals_db.ResultRow {
-    var q = try db.query(allocator,
-        \\SELECT r.id, r.run_id, r.skill_key, r.skill_name, r.status, r.verdict,
-        \\       COALESCE(f.freshness, 0), COALESCE(f.accuracy, 0), COALESCE(f.duplication, 0),
-        \\       COALESCE(r.rationale, ''),
-        \\       COALESCE(f.missing_paths_json, ''), COALESCE(r.intrinsic_fact_id, ''),
-        \\       COALESCE(r.base_content_hash, ''),
-        \\       COALESCE(r.content_at_use, ''), COALESCE(r.proposed_diff, ''),
-        \\       r.applied_at IS NOT NULL, COALESCE(r.apply_action, '')
-        \\  FROM skill_eval_results r
-        \\  LEFT JOIN skill_eval_facts f ON f.id = r.intrinsic_fact_id
-        \\                              AND f.verdict_intrinsic != 'computing'
-        \\ WHERE r.id = ?
-    , &.{result_id});
-    defer q.deinit();
-    const row = (try q.next()) orelse return null;
-    defer row.deinit(allocator);
-    return skill_evals_db.ResultRow{
-        .id = try allocator.dupe(u8, row.values[0]),
-        .run_id = try allocator.dupe(u8, row.values[1]),
-        .skill_key = try allocator.dupe(u8, row.values[2]),
-        .skill_name = try allocator.dupe(u8, row.values[3]),
-        .status = try allocator.dupe(u8, row.values[4]),
-        .verdict = try allocator.dupe(u8, row.values[5]),
-        .freshness = std.fmt.parseInt(u8, row.values[6], 10) catch 0,
-        .accuracy = std.fmt.parseInt(u8, row.values[7], 10) catch 0,
-        .duplication = std.fmt.parseInt(u8, row.values[8], 10) catch 0,
-        .rationale = try allocator.dupe(u8, row.values[9]),
-        .missing_paths_json = try allocator.dupe(u8, row.values[10]),
-        .intrinsic_fact_id = try allocator.dupe(u8, row.values[11]),
-        .base_content_hash = try allocator.dupe(u8, row.values[12]),
-        .content_at_use = try allocator.dupe(u8, row.values[13]),
-        .proposed_diff = try allocator.dupe(u8, row.values[14]),
-        .applied = std.mem.eql(u8, row.values[15], "1"),
-        .apply_action = try allocator.dupe(u8, row.values[16]),
-    };
-}
-
 /// Apply one verdict.
 ///
 /// The order matters and is the whole design:
@@ -270,7 +226,7 @@ fn applyUseCase(
     const di = nalarcore.getSingleton() catch return error.Internal;
     const db = di.db;
 
-    const row = (readResultById(allocator, db, result_id) catch return error.Internal) orelse
+    const row = (skill_evals_db.readResultById(allocator, db, result_id) catch return error.Internal) orelse
         return error.ResultNotFound;
     defer row.deinit(allocator);
 
