@@ -89,6 +89,47 @@ worse than none, because it is confidently wrong. Three guards:
 webfont would make the page fail exactly where you most want it, so there is a
 test that greps for them.
 
+## Resolving a merge conflict
+
+Both artifacts are committed on purpose. A reviewer has to be able to open
+`navgraph.html` from a branch download without running anything, and `--check`
+treats a *missing* file as stale — so gitignoring them would not remove the
+gate, it would invert it into a permanent red.
+
+That makes a conflict possible whenever two branches both edit
+`NalarNavGraph.kt`. It is not a corrupted page; it is git asking you to
+resolve — and resolve `NalarNavGraph.kt` **before** regenerating. The order is
+not cosmetic. `build.py` is a text matcher, not a compiler, so it renders a
+file that still carries `<<<<<<<` markers without complaint, and `--check`
+then *passes*, because it compares the committed artifacts against a fresh
+render of that same unresolved source. Git stops the commit; nothing here
+does.
+
+Once the Kotlin is settled, two commands resolve both artifacts. Run them from
+the repository root:
+
+```bash
+git checkout --theirs src/apps/android_mobile/navgraph.json \
+                 src/apps/android_mobile/navgraph.html
+python3 src/apps/android_mobile/tools/navgraph/build.py
+```
+
+Take either side, discard both, re-render from the resolved Kotlin.
+`--theirs` is not privileged — it is only whichever side to start from,
+because the generator overwrites the content on the next line. Never
+hand-merge the artifacts either: `build.py` derives them from the source, so
+a spliced-together pair is a page that disagrees with the Kotlin beside it.
+That failure `--check` *does* catch, in 0.1s, via the `.husky/pre-push` gate.
+
+Most conflicts come from one field. **`line`** is recorded for every
+destination, every edge site and every finding, so two branches that insert
+lines above the same anchor conflict even when their *graph* changes merge
+cleanly and the findings come out identical. Those are the cheap ones — the
+artifacts differ only in integers, and regenerating throws the difference
+away. Unlike `gitSha`, `line` is deliberately not masked out of `--check`,
+because the page renders it as a clickable `file:line` link into the source;
+dropping it would silence the guard exactly when the graph really did move.
+
 ## Files
 
 | Path | Role |
