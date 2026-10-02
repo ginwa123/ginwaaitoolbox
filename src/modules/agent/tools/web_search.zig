@@ -420,6 +420,11 @@ pub fn keySiteEnvelope(alloc: std.mem.Allocator, resolved: Resolved, err_name: [
     try j.str(why);
     try j.key("provider");
     try j.str(resolved.provider);
+    // A named flag, so the frontend does not have to classify this by
+    // guessing from prose. Without it the renderer falls through to its
+    // residual `transport` label, which is simply wrong here.
+    try j.key(if (std.mem.eql(u8, err_name, "MissingKeySite")) "missing_key_site" else "unexpected_key_site");
+    try j.boolean(true);
     return j.finish();
 }
 
@@ -1137,4 +1142,42 @@ test "web_search: neither tool's static text leaks a provider or a key" {
     try testing.expect(std.mem.indexOf(u8, web_search_tool.function.description, "brave") == null);
     try testing.expect(std.mem.indexOf(u8, web_search_tool.function.description, "api_key") == null);
     try testing.expect(std.mem.indexOf(u8, list_web_search_providers_tool.function.description, "tinyfish") == null);
+}
+test "web_search: every error envelope carries a named flag" {
+    // The frontend classifies by flag, and a flagless envelope falls
+    // through to its residual `transport` label — which is wrong for
+    // anything that actually reached the provider. `keySiteEnvelope` was
+    // the one that had none.
+    const alloc = testing.allocator;
+    var providers = try providersFor(alloc, tinyfish_providers);
+    defer freeProviders(&providers, alloc);
+    const resolved = try resolveProvider(alloc, &providers, "tinyfish");
+
+    const cases = [_][]const u8{
+        try keySiteEnvelope(alloc, resolved, "MissingKeySite"),
+        try keySiteEnvelope(alloc, resolved, "UnexpectedKeySite"),
+        try hostMismatchEnvelope(alloc, resolved, "attacker.example.com"),
+        try unsafePinnedEnvelope(alloc, resolved),
+        try invalidCurlEnvelope(alloc, resolved, error.UnsupportedFlag),
+        try quotaEnvelope(alloc, resolved, 429),
+        try badCredentialEnvelope(alloc, resolved, 401),
+        try providerErrorEnvelope(alloc, resolved, 500),
+        try transportEnvelope(alloc, resolved),
+        try unknownProviderEnvelope(alloc, &providers, "google"),
+        try notConfiguredEnvelope(alloc),
+    };
+    defer for (cases) |c| alloc.free(c);
+
+    const flags = [_][]const u8{
+        "missing_key_site",     "unexpected_key_site", "host_mismatch",
+        "unsafe_pinned_url",    "invalid_curl",        "exhausted",
+        "http_status",          "http_status",         "provider",
+        "unknown_provider",     "configured",
+    };
+    for (cases, flags) |env, flag| {
+        std.testing.expect(std.mem.indexOf(u8, env, flag) != null) catch |err| {
+            std.debug.print("envelope has no '{s}' flag: {s}\n", .{ flag, env });
+            return err;
+        };
+    }
 }

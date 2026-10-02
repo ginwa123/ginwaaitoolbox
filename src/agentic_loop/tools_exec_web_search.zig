@@ -7,9 +7,15 @@
 //!    `web_search_config.zig` for the full story).
 //! 3. Hand off to `execute_web_search`, which owns the pin check and the
 //!    `{key}` substitution.
-//! 4. Re-wrap the envelope so a payload carrying `error` reaches the model
-//!    as `success=false` with the full JSON still available as `data` —
-//!    the same shape `tools_exec_generate_image` uses.
+//! 4. Re-wrap so a payload carrying `error` reaches the model as
+//!    `success=false`.
+//!
+//!    NOTE: `wrapToolOutput` HARD-CODES `"data": null` on the failure path
+//!    (`tools_wrap_output.zig:60-66`) — it ignores the `data` argument
+//!    entirely. So the full envelope is passed as the ERROR MESSAGE
+//!    instead, which is the only channel that survives to the model. That
+//!    matters: D8's fallback depends on the model reading
+//!    `other_providers`, and with a bare sentence it could not retry.
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
@@ -22,6 +28,8 @@ const config_mod = nalarcore.config;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const wrapToolOutput = tools.wrapToolOutput;
+
+const testing = std.testing;
 
 const Providers = config_mod.LlmConfig.WebSearchProvidersMap;
 
@@ -43,7 +51,8 @@ fn dispatch(
         error.UnknownProvider => {
             const inner = web_search_mod.unknownProviderEnvelope(ctx.allocator, providers, provider_name) catch return err;
             defer ctx.allocator.free(inner);
-            const output = try wrapToolOutput(ctx.allocator, "web_search", tc.function.arguments, false, inner, inner);
+            // The envelope IS the error message — see the note at the top.
+            const output = try wrapToolOutput(ctx.allocator, "web_search", tc.function.arguments, false, inner, "");
             return ToolExecResult{ .output = output, .output_allocated = true };
         },
     };
@@ -66,13 +75,19 @@ fn dispatch(
             if (value == .object) {
                 if (value.object.get("error")) |e| {
                     if (e == .string) {
+                        // `data` is nulled on the failure path, so the
+                        // WHOLE envelope goes into `error`: the model needs
+                        // `other_providers` / `host_mismatch` / `exhausted`
+                        // to act, and a bare sentence leaves it stuck. The
+                        // human-readable sentence stays inside it under
+                        // `error.error`.
                         const output = try wrapToolOutput(
                             ctx.allocator,
                             "web_search",
                             tc.function.arguments,
                             false,
-                            e.string,
                             inner,
+                            "",
                         );
                         return ToolExecResult{ .output = output, .output_allocated = true };
                     }
@@ -125,6 +140,45 @@ pub fn execWebSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         return fail(ctx, tc, msg);
     };
     defer ctx.allocator.free(inner);
-    const output = try wrapToolOutput(ctx.allocator, "web_search", tc.function.arguments, false, inner, inner);
+    const output = try wrapToolOutput(ctx.allocator, "web_search", tc.function.arguments, false, inner, "");
     return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+// ─── the fallback contract (D8) ───────────────────────────────────────────
+
+test "wrapToolOutput discards `data` when success is false — so `error` is the only channel" {
+    // Behavioural, not a source grep. This is the shared helper's actual
+    // contract, and the web_search adapter is written against it.
+    const alloc = testing.allocator;
+    const out = try tools.wrapToolOutput(
+        alloc,
+        "web_search",
+        "{}",
+        false,
+        "{\"error\":\"quota\",\"exhausted\":true}",
+        "{\"never\":\"reaches\"}",
+    );
+    defer alloc.free(out);
+
+    // `data` is nulled regardless of what was passed…
+    try testing.expect(std.mem.indexOf(u8, out, "\"data\":null") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "never") == null);
+    // …so a flag-bearing envelope MUST go through `error`, which is what
+    // the adapter does. D8's fallback depends on it: after a quota error
+    // the model has to be able to read `other_providers` and retry.
+    try testing.expect(std.mem.indexOf(u8, out, "exhausted") != null);
+}
+
+test "wrapToolOutput keeps `data` when success is true" {
+    const alloc = testing.allocator;
+    const out = try tools.wrapToolOutput(
+        alloc,
+        "web_search",
+        "{}",
+        true,
+        null,
+        "{\"provider\":\"tinyfish\"}",
+    );
+    defer alloc.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "\"data\":{\"provider\":\"tinyfish\"}") != null);
 }
