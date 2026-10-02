@@ -385,7 +385,15 @@ def test_right_sidebar_survives_the_code_viewer(prod_harness: FunctionalHarness,
             wait_until="load",
             timeout=30000,
         )
-        page.locator("text=How can I help you?").first.wait_for(timeout=20000, state="visible")
+        # Ready-gate on the chat's messages container, not on the empty-state
+        # greeting. That greeting only renders while a session has no
+        # messages, so it is a sentinel that can simply never appear — which
+        # is why this test intermittently timed out on both Linux and macOS.
+        # The messages container mounts with the chatview in both the empty
+        # and the populated case (an empty session renders the empty state
+        # without a virtual scroller), so it is the state this test needs
+        # before it opens the sidebar.
+        page.wait_for_selector(".messages-scroll-hide-native", timeout=30000)
         _open_sidebar(page)
         page.locator('[data-testid="chat-right-sidebar"]').wait_for(
             timeout=15000, state="visible"
