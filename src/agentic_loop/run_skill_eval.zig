@@ -292,6 +292,10 @@ fn runJudgeTier(
                 .sub_session_id = result.session_id,
                 .status = "done",
                 .rationale = why,
+                // The report survived `validateReport`, which has already
+                // refused every update/rewrite that arrives without this. It
+                // was being dropped here, one line after being made mandatory.
+                .proposed_diff = parsed.report.proposed_content,
             }) catch false;
             judged += 1;
             continue;
@@ -326,20 +330,28 @@ fn insertResult(
     verdict: Verdict,
     intrinsic_fact_id: []const u8,
     base_content_hash: []const u8,
+    /// The exact body `base_content_hash` is the SHA-256 of. Empty when the
+    /// body could not be read, in which case there is no "before" to record.
+    content_at_use: []const u8,
     rationale: []const u8,
 ) !void {
     // Every free-text column is COALESCE-wrapped: `exec` binds an empty slice
     // as SQL NULL, and these columns are NOT NULL (Migration 079's class).
     try db.exec(allocator,
+        // Column order MUST match the bind order below -- SQLite binds
+        // positionally, so a mismatch here writes each value into its
+        // neighbour instead of failing.
         \\INSERT INTO skill_eval_results
         \\    (id, run_id, skill_key, skill_name, session_id, status, verdict,
-        \\     intrinsic_fact_id, base_content_hash, rationale, sub_session_id)
+        \\     intrinsic_fact_id, base_content_hash, rationale, content_at_use,
+        \\     sub_session_id)
         \\VALUES
         \\    (?, ?, COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''),
         \\     COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''),
         \\     COALESCE(NULLIF(?, ''), 'needs_human'),
         \\     COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''),
-        \\     COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''))
+        \\     COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''),
+        \\     COALESCE(NULLIF(?, ''), ''))
     , &.{
         id,
         run_id,
@@ -351,6 +363,7 @@ fn insertResult(
         intrinsic_fact_id,
         base_content_hash,
         rationale,
+        content_at_use,
         // `sub_session_id` belongs to the LLM judge tier (it will name the
         // sub-agent that produced the session-relative half). The transcript
         // anchor for Tier 0 is the LEDGER's loop_index / llm_history_id, which
@@ -472,7 +485,7 @@ pub fn runEval(
         if (body_opt == null) {
             // The skill is gone from disk, or unreadable. That is a finding in
             // itself, and it is honest to say so rather than to invent a body.
-            try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "needs_human", .needs_human, "", "", "the skill body could not be read");
+            try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "needs_human", .needs_human, "", "", "", "the skill body could not be read");
             outcome.needs_human += 1;
             outcome.evaluated += 1;
             continue;
@@ -572,7 +585,7 @@ pub fn runEval(
             try allocator.dupe(u8, "Tier 0 found no problem; the session-relative half is not yet evaluated");
         defer allocator.free(rationale);
 
-        try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "done", verdict, intrinsic_fact_id, body_hash, rationale);
+        try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "done", verdict, intrinsic_fact_id, body_hash, body, rationale);
 
         // Everything the judge needs is in scope right here, so the candidate
         // is captured now rather than re-derived later. `body` is still owned
@@ -1280,4 +1293,106 @@ test "the judge tier is off unless a caller opts in" {
     // `runBatch` refuses a batch whose allowlist is empty or wildcard, so the
     // judge's tools must satisfy the same policy the tool's do.
     try batch.validateJobs(&.{.{ .name = "skill-eval-judge", .instruction = "judge", .tools = args.judge_tools }});
+}
+
+test "a result row stores the exact body its base_content_hash was computed from" {
+    // `content_at_use` existed in the schema from the start and had exactly one
+    // reference in the whole repo: the CREATE TABLE. So the eval could refuse a
+    // verdict as stale (the hash is persisted) and could never show what the
+    // body was. This asserts the two agree, which is what makes the staleness
+    // refusal explicable rather than mysterious.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    const root = try makeTmpRoot(alloc, io, "content-at-use");
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        alloc.free(root);
+    }
+    var env = try makeEnv(alloc, root);
+    defer env.deinit();
+
+    const body =
+        \\---
+        \\name: snapshot-skill
+        \\description: a skill whose body must be recoverable from the result row
+        \\---
+        \\## Procedure
+        \\Read src/agentic_loop/skill_evals_drift.zig
+    ;
+    try seedSkillOnDisk(alloc, io, root, "snapshot-skill", body);
+    try seedLoaded(alloc, &ctx.db, io, "sess_ca", "snapshot-skill");
+
+    const out = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_ca",
+        .cwd = ".",
+        .environment = &env,
+        .enabled = true,
+    });
+    defer out.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), out.evaluated);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COALESCE(content_at_use, ''), COALESCE(base_content_hash, ''), COALESCE(proposed_diff, '') FROM skill_eval_results",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+
+    // The stored body IS the body -- byte for byte, frontmatter included.
+    try testing.expectEqualStrings(body, row.values[0]);
+    try testing.expect(row.values[0].len > 0);
+
+    // And the hash on the row is the SHA-256 of exactly that text, so the guard
+    // can be re-derived from what is stored rather than trusted blind.
+    var hash_buf: [64]u8 = undefined;
+    skill_evals_db.sha256Hex(row.values[0], &hash_buf);
+    try testing.expectEqualStrings(hash_buf[0..], row.values[1]);
+
+    // Tier 0 proposes no text -- that is the judge's job -- so this stays empty
+    // rather than being back-filled with the before body.
+    try testing.expectEqualStrings("", row.values[2]);
+}
+
+test "a result whose body could not be read stores no before" {
+    // The `needs_human` branch has no body, so `content_at_use` must be empty
+    // rather than a placeholder that would look like a snapshot.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    const root = try makeTmpRoot(alloc, io, "content-missing");
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        alloc.free(root);
+    }
+    var env = try makeEnv(alloc, root);
+    defer env.deinit();
+
+    // Ledger says the session read it; nothing was written to disk, so the
+    // body read fails and the row lands on the needs_human branch.
+    try seedLoaded(alloc, &ctx.db, io, "sess_cm", "never-written");
+
+    const out = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_cm",
+        .cwd = ".",
+        .environment = &env,
+        .enabled = true,
+    });
+    defer out.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), out.needs_human);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COALESCE(content_at_use, ''), COALESCE(base_content_hash, '') FROM skill_eval_results",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+    try testing.expectEqualStrings("", row.values[1]);
 }
