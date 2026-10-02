@@ -65,6 +65,8 @@ const PARAMETERS_BRANCHES = [
   '<LoadMemory',
   '<PresentFiles',
   '<GenerateImage',
+  '<WebSearch',
+  '<ListSearchProviders',
   '<McpTool',
 ]
 

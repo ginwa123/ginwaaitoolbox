@@ -676,6 +676,89 @@ class ToolCardModelTest {
         assertEquals("view_tool", body.tools[0].name)
     }
 
+    // ─── web search ─────────────────────────────────────────────────────────
+
+    /**
+     * `web_search` hands the provider's JSON through untyped (D13): TinyFish
+     * says `{results:[…]}`, Brave `{web:{results:[…]}}`, Serper `{organic:[…]}`,
+     * a self-hosted SearxNG a bare `[{…}]`. A typed body would have to name
+     * one of them and silently discard the rest, so the payload is rendered
+     * as the text it is — and the card is still a *known* row, not a
+     * fall-through.
+     */
+    @Test
+    fun `web_search renders the provider payload it was given`() {
+        val model = ToolCard.from(
+            toolRow(
+                "web_search",
+                """{"provider":"brave","status":200,
+                   "response":{"web":{"results":[{"title":"a","url":"https://x","description":"d"}]}}}""",
+                parameters = """{"provider":"brave","curl":"curl 'https://api.search.brave.com?q=x'"}""",
+            ),
+        )
+
+        assertEquals(ToolKind.WebSearch, model.kind)
+        assertEquals("brave", model.primary)
+        val body = model.body as ToolBody.Raw
+        assertTrue(body.text.contains("results"))
+        assertTrue(body.text.contains("https://x"))
+    }
+
+    @Test
+    fun `a running web_search names the provider from its arguments`() {
+        val model = ToolCard.from(
+            toolRow(
+                "web_search",
+                "null",
+                parameters = """{"provider":"tinyfish","curl":"curl 'https://api/x?q=1'"}""",
+            ),
+        )
+
+        assertEquals(ToolKind.WebSearch, model.kind)
+        assertTrue(model.pending)
+        assertEquals("tinyfish", model.primary)
+    }
+
+    /**
+     * A failure envelope carries `data:null` and the reason in `error`, so
+     * there is nothing to draw in the body — and the card must still say why.
+     */
+    @Test
+    fun `a failed web_search reports the envelope error`() {
+        val model = ToolCard.from(
+            toolRow(
+                "web_search",
+                "null",
+                success = false,
+                error = "Search provider 'tinyfish' quota exhausted (HTTP 429).",
+            ),
+        )
+
+        assertEquals(ToolKind.WebSearch, model.kind)
+        assertFalse(model.success)
+        assertEquals(ToolBody.Empty, model.body)
+        assertEquals("Search provider 'tinyfish' quota exhausted (HTTP 429).", model.errorText)
+    }
+
+    @Test
+    fun `list_web_search_providers shows the curl template with its {key} placeholder`() {
+        val model = ToolCard.from(
+            toolRow(
+                "list_web_search_providers",
+                """{"providers":[{"name":"tinyfish","url":"https://api.search.tinyfish.ai",
+                   "description":"TinyFish",
+                   "curl":"curl 'https://api.search.tinyfish.ai/search?q=x&key={key}'"}]}""",
+            ),
+        )
+
+        assertEquals(ToolKind.ListSearchProviders, model.kind)
+        // The listing is inert by construction (D14): the template carries the
+        // literal `{key}`, so a card may show it — and must never show a key.
+        val body = model.body as ToolBody.Raw
+        assertTrue(body.text.contains("{key}"))
+        assertTrue(body.text.contains("tinyfish"))
+    }
+
     // ─── fallbacks ──────────────────────────────────────────────────────────
 
     /**
@@ -751,6 +834,7 @@ class ToolCardModelTest {
             "save_memory", "load_memory", "list_memory", "search_skills",
             "use_skill", "add_skill", "edit_skill", "remove_skill",
             "kanban_move_task", "kanban_list", "present_files", "generate_image",
+            "web_search", "list_web_search_providers",
             "set_git_worktree", "read_workspace_session", "search_tool",
             "view_tool", "use_tool", "mcp_anything", "list_memory",
         )

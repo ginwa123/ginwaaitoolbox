@@ -36,6 +36,17 @@ enum class ToolKind {
     KanbanList,
     PresentFiles,
     GenerateImage,
+    /**
+     * `web_search` and its discovery call.
+     *
+     * No typed body on purpose: the search result is the provider's own JSON,
+     * untyped passthrough (D13), so `ToolBody.Raw` — which pretty-prints
+     * whatever arrived — is the correct rendering, not a fall-through. The
+     * two kinds exist so a card can label the row and take `provider` as its
+     * primary, instead of arriving here as an unknown tool.
+     */
+    WebSearch,
+    ListSearchProviders,
     Worktree,
     SessionReader,
     Progressive,
@@ -570,6 +581,8 @@ object ToolCard {
         toolName == "kanban_list" -> ToolKind.KanbanList
         toolName == "present_files" -> ToolKind.PresentFiles
         toolName == "generate_image" -> ToolKind.GenerateImage
+        toolName == "web_search" -> ToolKind.WebSearch
+        toolName == "list_web_search_providers" -> ToolKind.ListSearchProviders
         toolName == "set_git_worktree" -> ToolKind.Worktree
         toolName == "read_workspace_session" -> ToolKind.SessionReader
         else -> ToolKind.Raw
@@ -977,6 +990,9 @@ object ToolCard {
         ToolKind.KanbanMove -> listOf("task_name", "task_id")
         ToolKind.Worktree -> listOf("path", "branch")
         ToolKind.GenerateImage -> listOf("model", "prompt")
+        // The provider is the only identity a search envelope has, and a
+        // placeholder row carries no result to name it from.
+        ToolKind.WebSearch -> listOf("provider")
         ToolKind.Mcp -> listOf("server", "tool")
         else -> listOf(PATH_KEY)
     }
