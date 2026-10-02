@@ -1,4 +1,13 @@
-# `web_search` Agent Tool — Config-Supplied Templates, Backend-Substituted Key (rev 4)
+# `web_search` + `list_search_providers` Agent Tools (rev 5)
+
+> **Rev 5 (2026-10-02).** Three reviewer changes, all of which **delete** code:
+> 1. **A second tool, `list_search_providers`,** so the model discovers providers on demand instead of being told about them up front. This replaces rev 4's `## Web Search Providers` prompt section entirely — no `buildMessages` change at all, and the prompt cost stops scaling with the number of providers.
+> 2. **A per-provider `description`** (the reviewer's suggestion). The `curl` says *how to call it*; the description says *when to use it*. Both are kept because they buy different things.
+> 3. **The model writes the curl — decided, not open.** Rev 4's Open Question 1c is closed.
+>
+> Rev 5 follows the repo's own discovery pattern: `search_skills` is in `equips()` (`tools_equipped.zig:94`), the registry (`:216`) **and** `DEFAULT_AGENT_TOOLS` (`:367`), and its job is exactly this — tell the model what exists without spelling it out.
+
+> **Rev 4 (2026-10-02).**
 
 > **Rev 4 (2026-10-02).** Answers the question rev 3 left open: **"if config is only `{url, key}`, how does the model know the API?"** It cannot — rev 3 had a real hole and hand-waved it as a follow-up. Rev 4 restores a **curl template in config** (it was in rev 2 and I wrongly dropped it), and adds the piece that makes it work: **the backend injects each provider's template into the model's system prompt**, so the model is handed a ready-to-edit request instead of guessing the header name and query parameter.
 >
@@ -14,13 +23,15 @@
 
 **Architecture:** Five layers, no new table.
 
-1. **Config is a name → `{url, key, curl}` map.** The `curl` is the curl the user copied out of the provider's docs, with `{key}` where the credential goes. This is the only thing that makes "any provider, no code change" true — **the model cannot know that TinyFish wants `X-API-Key` and not `Authorization: Bearer` unless something tells it.**
-2. **The backend injects those templates into the system prompt**, as a `## Web Search Providers` section rendered by `buildMessages` only when the `web_search` tool is equipped. The model receives a copy-paste-ready request per provider and edits the query text.
+1. **Two tools.** `list_search_providers` (read-only, no arguments) tells the model which providers exist; `web_search` performs the search. The model calls the first once, then the second as often as it needs. **This is `search_skills` / `search_tool` / `use_tool` again** — the pattern this repo already uses for discovery.
+2. **Config is a name → `{url, key, curl, description}` map.** The `curl` is what the user copied out of the provider's docs, with `{key}` where the credential goes. The `description` is optional prose: *when to reach for this provider*, its free-tier allowance, its quirks. The curl says **how**; the description says **when**. Both are returned by `list_search_providers`, and **neither ever contains the key** — the template carries `{key}`.
 3. **A minimal GET-only curl parser** turns the model's `curl` argument into a request: the URL, the static headers, and the position of `{key}`.
 4. **The backend substitutes `{key}`** — but only after the request's host has been checked against the pinned `url`. This is the whole security story.
 5. **The model falls back.** When a provider's quota is exhausted the error names the other configured providers, and the model re-issues with a different one.
 
-**The prompt and the tool must read the same config.** Both go through one helper, `web_search_config.resolve(allocator, db, session_id)` — never `ctx.config` directly. See D14; getting this wrong is the exact bug that made Skill Evals silently refuse every call.
+**Nothing about the providers goes into the system prompt.** The prompt carries a single sentence — "call `list_search_providers` to see what is configured" — inside `web_search`'s own `.system_prompt`. That means **no `buildMessages` change**, and the token cost stops scaling with the number of providers.
+
+**Both tools must read the same config.** They go through one helper, `web_search_config.resolve(allocator, db, session_id)` — never `ctx.config` directly. See D15; getting this wrong is the exact bug that made Skill Evals silently refuse every call.
 
 **Tech Stack:** Zig 0.16 (`AgentTool`, `ToolProperty`, `ToolExecContext`, `wrapToolOutput`), `kabelweb` HTTP client, `LlmConfig` JSON config, Vue 3 + vitest, python functional harness.
 
@@ -115,17 +126,17 @@ A name in `equips()` with no registry entry renders in the UI exactly like a hun
 
 | Surface | Location | Required |
 |---|---|---|
-| Tool definition | `src/modules/agent/tools/web_search.zig` | new `web_search_tool` + `.system_prompt` (the static half of D14) |
+| Tool definitions | `src/modules/agent/tools/web_search.zig` | `web_search_tool` (+ `.system_prompt` pointing at the list tool) **and** `list_search_providers_tool` |
 | Registry (dispatch) | `src/agentic_loop/tools_equipped.zig:305-306` | **uncomment + rewrite** |
 | Equipped list (LLM visibility) | `src/agentic_loop/tools_equipped.zig:78` | **add** |
 | Default seed | `src/agentic_loop/tools_equipped.zig:331` | add (D9) |
 | Exec adapter export | `src/agentic_loop/tools.zig:48` | present |
 | Root export | `src/root.zig:958` | present |
-| Settings → Tools group | `ToolsSection.vue:83` `GROUP_BY_TOOL` | `web_search: 'Search'` (group exists `:68`) |
+| Settings → Tools group | `ToolsSection.vue:83` `GROUP_BY_TOOL` | both tools → `'Search'` (group exists `:68`) |
 | Settings → default-on list | `ToolsSection.vue:27` `BUILTIN_DEFAULT_TOOLS` | mirror D9 |
 | Chat inline preview | `src/apps/desktop/src/helpers/renderResponse.ts:212-220` | decide |
 | Tool-output parser | `src/apps/desktop/src/components/tool_outputs/_shared/toolOutputParser.ts` (see `:738`) | `parseWebSearch` |
-| Tool-output component | `src/apps/desktop/src/components/tool_outputs/WebSearch.vue` | new |
+| Tool-output component | `src/apps/desktop/src/components/tool_outputs/WebSearch.vue` + `ListSearchProviders.vue` | new; the list renders provider name, url, description, and the template |
 | Android tool card | `ToolCardModel.kt:565-572` | `ToolKind.WebSearch` + test |
 
 ## Design Decisions (for reviewer)
@@ -134,7 +145,7 @@ A name in `equips()` with no registry entry renders in the UI exactly like a hun
 *Rejected:* renaming it to `web_fetch`. It is unreachable dead code whose entire behaviour is a shell command `command` already runs, and `agent-browser` does not exist on Windows.
 *Cost:* `docs/superpowers/plans/2026-08-06-show-preview-local-file.md:110` cites `web_search` as URL-fetch coverage — correct it in this PR.
 
-**D2 — Config is a flat name → `{url, key, curl}` map.**
+**D2 — Config is a flat name → `{url, key, curl, description}` map.**
 ```jsonc
 "web_search": {
   "tinyfish": {
@@ -155,12 +166,16 @@ A name in `equips()` with no registry entry renders in the UI exactly like a hun
 | map key | The provider name the model passes as `provider`. Free-form; the user picks it. |
 | `url` | **The host pin** (D3). Also what the settings UI shows and what the error message quotes when suggesting an alternative. |
 | `key` | The credential. Never echoed to the model (D7). |
-| `curl` | The request template — copied from the provider's own docs, with `{key}` where the credential goes. Shown to the model verbatim (D13); the model edits it per call. |
+| `curl` | The request template — copied from the provider's own docs, with `{key}` where the credential goes. Returned to the model verbatim (D14); the model edits it per call. Says **how** to call the API. |
+| `description` | Optional prose, the user's own words: when to prefer this provider, its free-tier allowance, its quirks. Says **when** to use it. Truncated to a cap (D13) before it reaches the model. |
 
 *Rejected (rev 3):* dropping `curl` and letting the model invent the request. **This was wrong, and the reviewer caught it.** Given only `{url, key}` the model cannot know the auth header name (`X-API-Key` vs `Authorization: Bearer` vs `X-Subscription-Token`), which parameter carries the query (`query` vs `q`), or which extra headers the provider demands (`X-TF-Request-Origin: api`). It would guess, and a guess fails.
 *Rejected:* an array with a `provider` field. A JSON object is the natural shape for "name → settings" and needs no separate id field.
+*`description` is the reviewer's suggestion and it is kept optional* — a user who pastes nothing but a curl gets a working provider.
+*`key` is optional too* — a self-hosted SearxNG needs no credential. **Omit the field entirely; never write `"key": ""`.** `SqliteBackend.exec` binds an empty slice as SQL `NULL`, and a blank string is exactly the shape that survives JSON round-tripping while meaning "unset". See the worked example at `docs/superpowers/plans/examples/config.json.web-search`.
 *Why `url` **and** `curl` both hold a URL:* they are different things and both are load-bearing. `url` is the **trust boundary** (which host may ever receive the key). `curl` is the **transport template** (what to actually send). Deriving the pin from `curl` would be wrong — the model is about to send a *different* URL, and the pin must describe the approved origin, not the one being requested.
-*Optional per entry:* `"enabled": false` to park an exhausted provider without deleting its key. Mirrors `McpServerConfig.enabled` (`Config.zig:532`).
+*Why both `curl` and `description` (the reviewer's suggestion):* they answer different questions and neither substitutes for the other. The `curl` is **machine-checkable** — the parser validates it at PUT time, and the host pin is checked against it — and it is compact. The `description` is the part a curl cannot carry: *"good for news"*, *"independent index, cross-check a story"*, *"free tier 1000/day"*. Dropping it leaves the model able to call a provider but with no idea whether it should.
+*Optional per entry:* `"enabled": false` to park an exhausted provider without deleting its key. Mirrors `McpServerConfig.enabled` (`Config.zig:532`). A disabled provider is omitted from `list_search_providers` **and** refused by `web_search`, so the two tools can never disagree.
 
 **D3 — HOST PINNING. The request host must equal the pinned `url` host, checked BEFORE `{key}` is substituted. This is the security boundary.**
 *Why it is mandatory, concretely.* Without it, a prompt injection — a web page the agent read, a document in the repo, an MCP tool result — can write:
@@ -177,6 +192,13 @@ With pinning, that same call is refused:
 ```json
 { "error": "web_search refused: curl host 'attacker.example.com' does not match the pinned host 'api.search.tinyfish.ai' for provider 'tinyfish'.",
   "host_mismatch": true, "pinned_host": "api.search.tinyfish.ai", "requested_host": "attacker.example.com" }
+```
+
+Unknown provider (self-correcting — names the real ones, so a model that skipped `list_search_providers` recovers in one turn):
+
+```json
+{ "error": "Unknown search provider 'google'. Call list_search_providers to see what is configured.",
+  "unknown_provider": true, "available": ["tinyfish", "brave"] }
 ```
 
 **and no key is read, substituted, or transmitted.** The refusal happens before the key is touched at all.
@@ -239,76 +261,73 @@ So the exhaustion envelope **names the alternatives**, and the model re-issues:
 *Why:* the mask is ~20 lines, and it means a devtools panel, a shared screenshot, or a `GET` pasted into a bug report cannot leak a search key. Choosing the weaker option only because the stronger one is inconvenient is how the weaker option becomes permanent.
 *Note:* deliberately **beyond** what LLM keys get today. Widening it to them is a separate change.
 
-**D12 — The tool schema is exactly two parameters, and the description carries a worked example.**
+**D12 — `web_search` takes exactly two parameters; `list_search_providers` takes none.**
 ```json
 { "provider": "tinyfish",
-  "curl": "https://api.search.tinyfish.ai?query=latest+FIFA+World+Cup+news+today&location=US&language=en -H \"X-API-Key: {key}\" -H \"X-TF-Request-Origin: api\" -H \"X-TF-API-Source: onboarding\"" }
+  "curl": "https://api.search.tinyfish.ai?query=latest+FIFA+World+Cup+news+today&location=US&language=en -H \"X-API-Key: {key}\" -H \"X-TF-Request-Origin: api\"" }
 ```
 
-The model is good at this but not free: emitting a ~250-character curl on every search costs tokens and will occasionally be malformed. Mitigations, in order of value:
-1. **A worked example in `.description`**, in the `generate_image.zig:109-137` INPUT / BEHAVIOUR / OUTPUT / AUTH style, showing the exact TinyFish shape with `{key}` already placed.
-2. **Errors the model can act on** — "your curl must contain `{key}`", "unexpected flag `-o`", "no `query=` parameter found" — each naming the fix.
-3. **The `.system_prompt`** states that `web_search` is for the open internet, while `search` / `glob` are for this repository, so the model does not waste a search call on local code.
+**The model writes the curl — decided.** The backend does *not* apply a `{query}` placeholder to the stored template, because maximum flexibility is the point: the model varies `location`, `language`, `count`, or any provider-specific parameter without a config change. `list_search_providers` hands it the template, so it copies rather than invents.
 
-*Known follow-up, not in this PR:* the description is a `comptime` literal and cannot list the user's providers. Building the provider list into the system prompt dynamically (`prompts.zig`'s `build_agent_prompt` already assembles config-dependent sections) would let the prompt carry a ready-to-edit template per provider and remove most of the token cost. Worth doing once a second provider is actually configured.
+The cost of that choice is ~250 characters of tool output per search and the occasional malformed call. Both are mitigated by things that cost nothing extra:
+1. **`web_search`'s `.system_prompt` shows the shape** and points at `list_search_providers` (D14).
+2. **Errors name the fix** — "your curl must contain `{key}`", "unexpected flag `-o`", "host does not match the pinned host". Each is something the model can correct in its next turn without a round trip to the human.
+
+*The static `.description` must NOT list providers, URLs, or hint at keys.* The schema ships to every provider's LLM on every request, and the per-provider detail is what `list_search_providers` is for.
 
 **D13 — Structured results, mirroring the provider's response.**
-`position`, `title`, `url`, `site_name`, `snippet`, `total_results`. `url` and `title` are required; `site_name` and `snippet` are optional, so a provider with a different shape degrades to fewer fields instead of failing to parse. Snippets are truncated against a cap (the `SUMMARY_MAX` pattern, `progressive_catalog.zig:820`) so a long result page cannot flood the context.
+`position`, `title`, `url`, `site_name`, `snippet`, `total_results`. `url` and `title` are required; `site_name` and `snippet` are optional, so a provider with a different shape degrades to fewer fields instead of failing to parse. Snippets are truncated against a cap (the `SUMMARY_MAX` pattern, `progressive_catalog.zig:820`) so a long result page cannot flood the context. The same cap applies to a provider's `description`, which reaches the model on every `list_search_providers` call.
 
-**D14 — The backend renders a `## Web Search Providers` section into the system prompt.**
-This is the answer to *"how does the model know the API?"* — the model is handed the answer instead of being asked to guess it.
+**D14 — TWO TOOLS: `list_search_providers` (discovery) and `web_search` (action).**
+This is the reviewer's change, and it deletes rev 4's entire prompt-injection design.
 
-`buildMessages` (`src/agentic_loop/prompts_build_messages_for_agent_prompt.zig:74`) already renders optional, config-dependent sections behind a `hasTool` gate — `:97` gates `GitPrompt` on `command`, `:101` gates Task Planning on `update_plan`. The providers section copies that exactly:
+`list_search_providers` takes **no arguments** and returns:
 
-```zig
-if (hasTool(filtered_tools, "web_search")) {
-    const block = web_search_config.renderPromptSection(
-        allocator, db, session_id,     // per-session — see D15
-    ) catch "";
-    defer allocator.free(block);
-    if (block.len > 0) {
-        try final_system.appendSlice(allocator, "\n\n## Web Search Providers\n\n");
-        try final_system.appendSlice(allocator, block);
-    }
-}
+```json
+{ "providers": [
+    { "name": "tinyfish",
+      "url": "https://api.search.tinyfish.ai",
+      "description": "Fast general web search. Best for news and anything current. Free tier: 1000 requests/day.",
+      "curl": "https://api.search.tinyfish.ai?query=PLACEHOLDER&location=US -H \"X-API-Key: {key}\" -H \"X-TF-Request-Origin: api\"" },
+    { "name": "brave", "url": "…", "description": "…", "curl": "…" }
+] }
 ```
 
-Rendered shape:
+**No `key` field. No masked key. Nothing derived from it.** The `curl` carries the literal `{key}`, so the whole response is inert — it can be logged, rendered, or pasted into a bug report with no exposure. That is the property that makes on-demand discovery safe, and it is the reason `key` and `curl` are separate fields (D2).
+
+The model is pointed at it by **one sentence inside `web_search`'s own `.system_prompt`**:
 
 ```
-## Web Search Providers
-
-You can search the open internet with the `web_search` tool. Use it for
-anything outside this repository — `search` and `glob` are for local files.
-
-Pass `provider` and a `curl` built from the template below: edit only the
-search text and any optional parameters. Keep `{key}` exactly where it is —
-the backend fills it in and you never see the credential.
-
-### tinyfish
-curl: https://api.search.tinyfish.ai?query=REPLACE_WITH_SEARCH_TEXT&location=US&language=en -H "X-API-Key: {key}" -H "X-TF-Request-Origin: api"
-
-### brave
-curl: https://api.search.brave.com/res/v1/web/search?q=REPLACE_WITH_SEARCH_TEXT -H "X-Subscription-Token: {key}" -H "Accept: application/json"
+## Web Search
+`web_search` performs a real web search via a provider the user has configured.
+Providers are not built in — call `list_search_providers` first to see which are
+available, their descriptions, and a ready-to-edit `curl` template for each.
+Build your `curl` from that template: replace the placeholder with your search
+text, keep `{key}` exactly where it is (the backend fills it in and you never
+see the credential), and adjust any other parameter you need.
+Use this for the open internet; `search` and `glob` are for this repository.
 ```
 
-Three properties that matter:
+Three consequences worth stating:
 
-- **The templates carry `{key}`, never the key.** So injecting them into the model's context is safe by construction — the section cannot leak the secret because it does not contain it. This is the whole reason D4 keeps `key` and `curl` in separate fields.
-- **It is gated on `hasTool`,** so a session without `web_search` equipped pays zero tokens, and the section can never describe a provider the tool would refuse.
-- **Disabled providers are omitted**, so the model is never told to use one the tool would skip.
+- **No `buildMessages` change.** Rev 4 added a `## Web Search Providers` section there; rev 5 deletes it. The prompt cost is now one sentence regardless of how many providers exist.
+- **Both tools are default-on and live in `DEFAULT_AGENT_TOOLS` together.** A discovery tool the model cannot call is worse than useless, so `list_search_providers` ships wherever `web_search` does — `equips()` (`:78`), the registry, and `DEFAULT_AGENT_TOOLS` (`:331`). Same as `search_skills`, which is in all three (`:94`, `:216`, `:367`).
+- **Self-correcting on a wrong provider name.** If the model calls `web_search` with `provider: "google"` before listing, the error names the real ones — no discovery call needed to recover.
 
-*Cost, stated honestly:* roughly 120–200 tokens per configured provider, on every iteration of every session that has the tool. With one provider that is negligible; with ten it is not. A per-session cap (render the first N, and note the rest exist) is the escape hatch if someone configures a lot.
-*Rejected (rev 3):* describing the format once in the static `.description` and leaving the model to construct each request. Cheaper, but it means the model guesses the header name on every call — which is the failure the reviewer just caught.
+*Rejected (rev 4):* the prompt section. It works, but its cost scales with provider count on **every iteration of every session**, and it duplicates in the prompt what a tool call can return on demand.
+*Rejected:* making `list_search_providers` progressive (behind `search_tool`/`use_tool`). It must be directly callable — the model needs it on the very first search, and gating it behind two more round trips is the wrong trade.
+*Rejected (this PR):* filtering `list_search_providers` output by the caller's `allowed_tools`. Both tools are equipped together, so a model that can search can list.
+
+**Naming — needs a decision (see Open Questions).** The reviewer proposed `list_web_search`; this plan uses `list_search_providers`. `list_web_search` reads like *"list the results of a web search"*, which is the opposite of what the tool does. `list_search_providers` is unambiguous next to `web_search`. Either name is fine mechanically — this is a one-line change in `tools_equipped.zig`, the tool file, and `ToolsSection.vue`.
 
 **D15 — Resolve the config PER SESSION, never through `ctx.config`.**
-`ToolExecContext.config` (`src/agentic_loop/tools.zig:101`) is the `LlmConfig` **singleton**. In `--auth` mode that singleton never sees what the user saved: the config PUT **returns early** in auth mode — its own comment says *"the global singleton is NOT swapped (config is per-user)"* (`src/http_handlers/nalar_config_put.zig:522-538`, early return at `:535`). `src/agentic_loop/skill_evals_config.zig:6-19` documents this trap in full — it exists because the Skill Evals toggle read the database while the tool read the singleton, so the checkbox looked like it worked and every call refused.
+`ToolExecContext.config` (`src/agentic_loop/tools.zig:101`) is the `LlmConfig` **singleton**. In `--auth` mode that singleton never sees what the user saved: the config PUT **returns early** in auth mode — its own comment says *"the global singleton is NOT swapped (config is per-user)"* (`src/http_handlers/nalar_config_put.zig:522-538`, early return at `:535`). `src/agentic_loop/skill_evals_config.zig:6-19` documents this trap in full — the module exists because the Skill Evals toggle read the database while the tool read the singleton, so the checkbox looked like it worked and every call refused.
 
-So `ctx.config.web_search` would be **empty for every auth-mode user**, and the symptom would be a Settings page that saves correctly and a tool that always says "not configured".
+So `ctx.config.web_search` would be **empty for every auth-mode user**, and the symptom would be a Settings page that saves correctly next to a tool that always says "no providers configured".
 
-The fix is the existing one, copied: a new `src/agentic_loop/web_search_config.zig` exposing `resolve(allocator, db, session_id) ?WebSearchProviders`, using the same shape as `skill_evals_config.resolve` (`:41-56`) — a narrow parse struct with `ignore_unknown_fields`, `user_config_store.loadRaw(allocator, db, owner)`, and `null` for every non-authoritative case so the failure mode stays the pre-existing one.
+The fix is the existing one, copied: a new `src/agentic_loop/web_search_config.zig` exposing `resolve(allocator, db, session_id) ?WebSearchProviders`, shaped like `skill_evals_config.resolve` (`:41-56`) — a narrow parse struct with `ignore_unknown_fields`, `user_config_store.loadRaw(allocator, db, owner)` at `:69`, and `null` for every non-authoritative case so the failure mode stays the pre-existing one.
 
-**Both** the prompt renderer (D14) and the exec adapter call `web_search_config.resolve`. One source, or the prompt describes provider A while the tool dispatches provider B — which is the same class of bug as the Skill Evals trap, one layer over.
+**Both** exec adapters call it. One source, or the model lists provider A and then dispatches to provider B — the same class of bug as the Skill Evals trap, one layer over.
 
 ## Wire Contract
 
@@ -320,7 +339,8 @@ The fix is the existing one, copied: a new `src/agentic_loop/web_search_config.z
     "tinyfish": {
       "url":  "https://api.search.tinyfish.ai",
       "key":  "skkkk",
-      "curl": "https://api.search.tinyfish.ai?query=latest+FIFA+World+Cup+news+today&location=US&language=en -H \"X-API-Key: {key}\" -H \"X-TF-Request-Origin: api\""
+      "curl": "https://api.search.tinyfish.ai?query=PLACEHOLDER&location=US -H \"X-API-Key: {key}\" -H \"X-TF-Request-Origin: api\"",
+      "description": "Fast general web search. Best for news. Free tier: 1000 requests/day."
     },
     "brave": { "url": "https://api.search.brave.com", "key": "sk-...", "enabled": false }
   }
@@ -331,7 +351,14 @@ Absent or empty ⇒ "not configured". An entry that is disabled, or has a blank 
 
 **The prompt section (D14) renders `curl` verbatim with `{key}` intact and never the `key` value.** That is the same string the model must echo back, so the user can see in Settings exactly what the model was told.
 
-### Tool call
+### Tool call — `list_search_providers` (no arguments)
+
+```json
+{}
+```
+→ `{"providers":[{"name":"tinyfish","url":"…","description":"…","curl":"…-H \"X-API-Key: {key}\" …"}]}`
+
+### Tool call — `web_search`
 
 ```json
 { "provider": "tinyfish",
@@ -357,13 +384,20 @@ Success:
 
 Not configured:
 ```json
-{ "error": "web_search is not configured. Add a provider in Settings → Web Search.", "configured": false }
+{ "error": "No search providers are configured. Ask the user to add one in Settings → Web Search.", "configured": false }
 ```
 
 Host mismatch (D3) — **the key is never touched**:
 ```json
 { "error": "web_search refused: curl host 'attacker.example.com' does not match the pinned host 'api.search.tinyfish.ai' for provider 'tinyfish'.",
   "host_mismatch": true, "pinned_host": "api.search.tinyfish.ai", "requested_host": "attacker.example.com" }
+```
+
+Unknown provider (self-correcting — names the real ones, so a model that skipped `list_search_providers` recovers in one turn):
+
+```json
+{ "error": "Unknown search provider 'google'. Call list_search_providers to see what is configured.",
+  "unknown_provider": true, "available": ["tinyfish", "brave"] }
 ```
 
 Malformed `curl` (D5/D6):
@@ -390,10 +424,11 @@ Bad key (not exhaustion, D9):
 | Action | File | Responsibility |
 |---|---|---|
 | **New** | `src/modules/agent/tools/web_search_curl.zig` | The GET-only curl parser (D5, D6). Quote-aware tokenizer; optional leading `curl`; URL + `-H` extraction; locates `{key}` (header value **or** URL query); rejects CR/LF, non-GET flags, subcommands. **Pure — no I/O, no HTTP, and it never touches a key.** |
-| **New** | `src/agentic_loop/web_search_config.zig` | Per-session provider resolution (D15), mirroring `skill_evals_config.zig:41-56`. One `resolve(allocator, db, session_id)` used by **both** the prompt renderer and the exec adapter, plus `renderPromptSection` for D14. |
-| **Rewrite** | `src/modules/agent/tools/web_search.zig` | `SearchProviderEntry`, host comparison (D3), `{key}` substitution, `execute_web_search`, `parseSearchResponse`, snippet truncation, `toJSONError`. Removes the `bash.zig` import. |
+| **New** | `src/agentic_loop/web_search_config.zig` | Per-session provider resolution (D15), mirroring `skill_evals_config.zig:41-56`. One `resolve(allocator, db, session_id)` used by **both** exec adapters, so `list_search_providers` and `web_search` can never disagree. |
+| **Rewrite** | `src/modules/agent/tools/web_search.zig` | `SearchProviderEntry`, host comparison (D3), `{key}` substitution, `execute_web_search`, `parseSearchResponse`, snippet truncation, `toJSONError`, **and `list_search_providers_tool`** (D14) — both tools live here, as `document.zig` holds both document tools. Removes the `bash.zig` import. |
 | **Edit** | `src/modules/agent/tools/schemas.zig` | **Delete** `WebSearchInput` / `WebSearchResult` (`:100-117`). |
-| **Rewrite** | `src/agentic_loop/tools_exec_web_search.zig` | Parse `{provider, curl}`; read `ctx.config.web_search`; call `execute_web_search`; re-wrap `error` payloads as `success=false` per `tools_exec_generate_image.zig:80-103`. |
+| **Rewrite** | `src/agentic_loop/tools_exec_web_search.zig` | Parse `{provider, curl}`; read **`web_search_config.resolve(ctx.allocator, ctx.db, ctx.session_id)`**; call `execute_web_search`; re-wrap `error` payloads as `success=false` per `tools_exec_generate_image.zig:80-103`. |
+| **New** | `src/agentic_loop/tools_exec_list_search_providers.zig` | Trivial: resolve config, render the provider list, `wrapToolOutput`. Exists so the two tools can be equipped independently, like `tools_exec_document.zig` holds the document pair. |
 | **Edit** | `src/agentic_loop/tools_equipped.zig` | `:306` uncomment + repoint; add to `equips()` `:78`; add to `DEFAULT_AGENT_TOOLS` `:331` (D10). |
 | **Edit** | `src/modules/config/Config.zig` | `WebSearchProvidersMap = std.StringHashMap(WebSearchProviderEntry)` beside `McpServerConfig` (`:519`); `web_search: ?std.json.Value = null` beside `tools` (`:466`); owned field + parse + free. |
 | **Edit** | `src/http_handlers/nalar_config_get.zig` | **Both** allowlist branches (`:59-81`, `:143-174`) get `.web_search`, **masked** (D11). |
@@ -407,12 +442,13 @@ Bad key (not exhaustion, D9):
 | **Edit** | `src/apps/desktop/src/helpers/renderResponse.ts` | Decide inline preview at `:212-220` (recommended: bare name — a query plus 10 results is too wide for a chip). |
 | **Edit** | `src/apps/android_mobile/.../chat/ToolCardModel.kt` | `toolName == "web_search" -> ToolKind.WebSearch` at `:565-572` + test case. |
 | **New** | `tests/functional/web_search_config_test.py` | List round-trips through `PUT`/`GET`; keys come back **masked**; a `http://` or private `url` is rejected with a 400. |
+| **New** | `docs/superpowers/plans/examples/config.json.web-search` | The full `config.json` with the `web_search` block in place alongside the real existing keys — the file a reviewer can read to check the shape. |
 | **Edit** | `docs/superpowers/plans/2026-08-06-show-preview-local-file.md` | `:110` cites `web_search` as URL-fetch coverage — now false (D1). |
 
 ## Tasks
 
 - [ ] **Task 1 — Config types.**
-  `WebSearchProviderEntry { url, key, curl, enabled }` and `WebSearchProvidersMap` in `Config.zig`; the `web_search` JSON key on both `LlmConfigJson` and the owned `LlmConfig`; parse + free. Map semantics: absent ⇒ none; an entry with a blank `url`/`key`/`curl` or `enabled: false` is skipped everywhere.
+  `WebSearchProviderEntry { url, key, curl, description, enabled }` and `WebSearchProvidersMap` in `Config.zig`; the `web_search` JSON key on both `LlmConfigJson` and the owned `LlmConfig`; parse + free. Map semantics: absent ⇒ none; an entry with a blank `url`/`key`/`curl` or `enabled: false` is skipped everywhere.
   Verify: `zig build test --summary all` — parse/free round-trip; one enabled + one disabled entry both load; a disabled entry is excluded from `other_providers` **and** from the prompt block.
   Commit: `feat(web-search): WebSearchProviders map on LlmConfig`
 
@@ -438,14 +474,20 @@ Bad key (not exhaustion, D9):
   Verify: `zig build test --summary all`; grep that no file references the deleted `schemas.WebSearchResult`.
   Commit: `refactor(web-search): replace the URL-browser shim with the real search tool`
 
-- [ ] **Task 6 — `web_search_config.zig` + the prompt section (D14, D15).**
-  `resolve(allocator, db, session_id) ?WebSearchProviders` mirroring `skill_evals_config.resolve` (`:41-56`) — narrow parse struct, `ignore_unknown_fields`, `user_config_store.loadRaw`, `null` for every non-authoritative case. Then `renderPromptSection`, gated on `hasTool(filtered_tools, "web_search")` in `buildMessages`, copying the `:97`/`:101` pattern. Renders each enabled provider's `curl` verbatim with `{key}` intact.
-  **Tests:** (a) the rendered block contains `{key}` and **not** the key value; (b) it is empty when the tool is not equipped; (c) it is empty in auth mode for a session with no saved config; (d) a provider whose `curl` fails to parse is skipped with a name-only `warn`, not a crash.
-  Verify: `zig build test --summary all`, plus a manual read of the rendered prompt for a two-provider config.
-  Commit: `feat(web-search): per-session config resolution + provider prompt section`
+- [ ] **Task 6 — `web_search_config.zig`, per-session provider resolution (D15).**
+  `resolve(allocator, db, session_id) ?WebSearchProviders` mirroring `skill_evals_config.resolve` (`:41-56`) — narrow parse struct, `ignore_unknown_fields`, `user_config_store.loadRaw`, `null` for every non-authoritative case so the failure mode stays the pre-existing one. One function, called by **both** exec adapters.
+  **Tests:** (a) an auth-mode session with saved config resolves; (b) file mode returns `null` and the caller falls back to the singleton; (c) a session with no owner returns `null`; (d) a malformed `users.config_json` returns `null` rather than erroring.
+  Verify: `zig build test --summary all`.
+  Commit: `feat(web-search): per-session provider config resolution`
+
+- [ ] **Task 6b — `list_search_providers` (D14).**
+  `list_search_providers_tool` in `web_search.zig` — **no parameters**, `type: "object"`, `properties: &.{}`. `execute_list_search_providers(allocator, providers)` renders `{providers:[{name, url, description, curl}]}` from the resolved config, skipping entries with a blank `url`/`key`/`curl` and all `enabled: false` ones, `warn`-ing a provider name (never a curl, never a key) when its template fails to parse. `description` truncated to the D13 cap. Add `tools_exec_list_search_providers.zig` and the `tools.zig` re-export.
+  **Tests:** (a) the output contains `{key}` and not the key value; (b) a disabled provider is absent; (c) an unparseable template is skipped with a name-only warning and the rest still list; (d) an empty config returns `{"providers":[]}`, not an error.
+  Verify: `zig build test --summary all`.
+  Commit: `feat(web-search): list_search_providers discovery tool`
 
 - [ ] **Task 7 — Exec adapter + registry + config handlers.**
-  Rewrite `tools_exec_web_search.zig` to read **`web_search_config.resolve(ctx.allocator, ctx.db, ctx.session_id)`, not `ctx.config`** (D15); uncomment and rewrite `tools_equipped.zig:306`; add to `equips()` (`:78`) and `DEFAULT_AGENT_TOOLS` (`:331`) per D10. **Add a guard test asserting every name in `equips()` resolves to a registry entry** — the gap that made this tool invisible. Wire `web_search` into **both** `nalar_config_get.zig` branches (`:59-81`, `:143-174`) with masking, and add `applyWebSearchInput` beside `applyToolsInput` (`nalar_config_put.zig:192`).
+  Rewrite `tools_exec_web_search.zig` to read **`web_search_config.resolve(ctx.allocator, ctx.db, ctx.session_id)`, not `ctx.config`** (D15); uncomment and rewrite `tools_equipped.zig:306`; add **both** tool names to the registry, `equips()` (`:78`) and `DEFAULT_AGENT_TOOLS` (`:331`) per D10. **Add two guard tests:** every name in `equips()` resolves to a registry entry (the gap that made this tool invisible), and `web_search` and `list_search_providers` appear in all three lists together. Wire `web_search` into **both** `nalar_config_get.zig` branches (`:59-81`, `:143-174`) with masking, and add `applyWebSearchInput` beside `applyToolsInput` (`nalar_config_put.zig:192`).
   Verify: `zig build test --summary all`; the guard test **fails** when `:306` is temporarily re-commented — prove it, because a guard that cannot fail is not a guard.
   Commit: `feat(web-search): register the tool, parity guard test, and config handlers`
 
@@ -476,9 +518,10 @@ Bad key (not exhaustion, D9):
 | **Host-pin (negative)** | a test calling `execute_web_search` with the TinyFish provider and an `attacker.example.com` curl, sentinel key set | Returns `host_mismatch`; the sentinel appears in **no** output; no request is attempted. This is the gate for the one blocking risk. |
 | Equip parity (negative) | comment out `tools_equipped.zig:306`, re-run | The guard test fails — the bug that made this tool invisible |
 | Key hygiene | the `SENTINEL_SECRET_DO_NOT_LEAK` test | No envelope, on any path, carries the key |
-| **Prompt leak** | assert the rendered `## Web Search Providers` block contains `{key}` and **not** the key value | The section can be injected into the model's context on every iteration; it must be inert by construction |
-| **Prompt/tool agreement** | render the block for a session, then dispatch against the same session | Both read `web_search_config.resolve`; a test that renders from one source and dispatches from another is the D15 trap repeating |
-| **Tool-absent silence** | assert the block is empty when `web_search` is not equipped | `hasTool` gate works; no tokens spent describing an unavailable tool |
+| **Listing leak** | assert `list_search_providers` output contains `{key}` and **not** the key value, for every configured provider | The listing goes into the model's context; it must be inert by construction |
+| **List/search agreement** | list for a session, then `web_search` against the same session with a listed provider | Both read `web_search_config.resolve`; two sources would be the D15 trap repeating |
+| **Disabled is invisible** | a provider with `enabled: false` appears in neither the listing nor `web_search`'s `available` list | The two tools can never disagree about what exists |
+| **Equipped together** | assert both tool names are in `equips()`, the registry, **and** `DEFAULT_AGENT_TOOLS` | A discovery tool the model cannot call is dead weight — the original `web_search` bug, in a new place |
 | Frontend types | `(cd src/apps/desktop && pnpm run build)` | `vue-tsc` clean; no stray emitted `.js` |
 | Frontend unit | `(cd src/apps/desktop && pnpm test:unit)` | `WebSearch.vue`, `parseWebSearch`, `WebSearchSection.vue`, mask round-trip |
 | Android unit | the `ToolCardModelTest` task | The `ToolKind.WebSearch` mapping |
@@ -506,7 +549,9 @@ Bad key (not exhaustion, D9):
 
 1. **D3 — host pinning is mandatory, but is exact-host-match the right rule?** An alternative is prefix/suffix matching (`*.search.tinyfish.ai`) for providers on a wildcard domain. **My recommendation: exact match**, with a clear error — a user who needs a wildcard can widen it deliberately later.
 1b. **D14 — is a ~150-token-per-provider system-prompt section acceptable, every iteration?** With one provider, yes. If you expect users to configure many, we should cap the rendered list. **My recommendation: ship it uncapped and watch.**
-1c. **Should the model still write the `curl` back, or should the backend apply a `{query}` placeholder to the stored template?** The first is maximally flexible (the model can vary `location`, `language`, `count`, or any provider-specific parameter without a config change); the second is cheaper and cannot be malformed. **My recommendation: keep the model's echo**, since flexibility is the point — but this is the single biggest open design question in the plan.
+1c. ~~**Should the model still write the `curl` back, or should the backend apply a `{query}` placeholder to the stored template?**~~ **DECIDED (rev 5): the model writes the curl.** Maximum flexibility — the model varies `location`, `language`, `count`, or any provider-specific parameter without a config change. `list_search_providers` hands it the template so it never has to invent one.
+1d. **`list_search_providers` or `list_web_search`?** The reviewer proposed the latter; this plan uses the former because `list_web_search` reads like *"list the results of a web search"*. **My recommendation: `list_search_providers`.** Mechanically identical either way.
+1e. **Should `description` be required or optional?** **My recommendation: optional.** A user who pastes only a curl gets a working provider; the description is an upgrade, not a gate.
 2. **D10 — default-on or default-off?** Default-on costs a `web_search` schema in every new agent's `tools[]`. **My recommendation: default-on**, consistent with `ask_user` and `search_tool`.
 3. **D12 — is a model-authored curl on every call acceptable?** It costs tokens and the model will occasionally emit a malformed one. The mitigations are a worked example plus actionable errors. Would you rather the backend also accept a simplified `{provider, query}` form that fills in the URL and query param itself? That is strictly less flexible but much cheaper — it needs one extra field per config entry.
 4. **D4 — should a `{key}` in the URL query be allowed at all?** It is required by SerpApi and Google CSE. **My recommendation: allow, and warn in the docs.**
@@ -516,8 +561,10 @@ Bad key (not exhaustion, D9):
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| **`ctx.config.web_search` is empty in `--auth` mode** — the singleton never sees what the user saved, so the tool reports "not configured" while Settings looks correct | **Critical** | **D15.** `web_search_config.resolve(allocator, db, session_id)` mirroring `skill_evals_config.zig:41-56`; used by both the prompt renderer and the exec adapter. This trap already shipped once in this codebase |
-| **The model guesses the API** because nothing told it the header name / query param — the exact hole the reviewer caught | High | **D14.** The backend renders each provider's `curl` template into the prompt, gated on `hasTool`. Templates carry `{key}`, so injecting them is safe |
+| **`ctx.config.web_search` is empty in `--auth` mode** — the singleton never sees what the user saved, so the tool reports "not configured" while Settings looks correct | **Critical** | **D15.** `web_search_config.resolve(allocator, db, session_id)` mirroring `skill_evals_config.zig:41-56`; used by **both** exec adapters. This trap already shipped once in this codebase |
+| **The model guesses the API** because nothing told it the header name / query param — the exact hole the reviewer caught | High | **D14.** `list_search_providers` returns each provider's `curl` template. Templates carry `{key}`, so the listing is inert and safe to expose |
+| **`list_search_providers` is equipped but `web_search` is not** (or vice versa) — the model gets a listing it cannot use, or must search without ever listing | Medium | Both names ship in `DEFAULT_AGENT_TOOLS`, `equips()` and the registry together; a test asserts all three lists agree (the "equipped together" gate) |
+| **`description` is unbounded**, so a user pasting a whole docs page inflates every listing | Low | Cap it (D13) and show a counter in the Settings textarea |
 | **Credential exfiltration** — a prompt injection rewrites the curl to point at an attacker host while keeping `{key}`, and the backend hands over the real key | **Critical** | **D3 host pinning, enforced before the key is read.** A dedicated negative gate runs exactly this attack and asserts no request is attempted and the sentinel never appears |
 | **CR/LF in a parsed header value** smuggles a second header | High | Task 2 rejects CR/LF in every parsed name and value, at parse time |
 | **The key leaks into `llm_history`** | High | D7's sentinel test + a source-contract test forbidding `allocPrint` over the key + a grep review gate on the diff |
