@@ -57,3 +57,33 @@ when the task ends in "commit + push". Pairs with the general
   the `worktree/fix-skipped-tests` branch). Run the whole suite.
 - A stray `zig test --listen=-` compiler holds the build-cache lock and makes every
   later build look hung: `pgrep -af "listen=-"`.
+
+
+## The project hook formats .zig for you (added 2026-10-03)
+
+`.nalar/hooks/register_hook.lua` formats edited files on `post_tool_use`:
+prettier for `.vue/.ts/.mts/.tsx`, `zig fmt` for `.zig`. **You do not need to
+run `zig fmt` yourself on a file the agent just edited** — but you still must
+not run it as a manual tidy-up step (see the pitfall above).
+
+The `.zig` branch is gated on `was_fmt_clean_at_head()`: it runs `zig fmt` only
+when `git show HEAD:<file>` was already `zig fmt --check`-clean, and treats
+untracked (new) files as clean. Rationale is the same disaster as above turned
+into a guard — 20 of 40 sampled `src/**/*.zig` are not fmt-clean, so an ungated
+`zig fmt` after an edit turns ~40 touched lines into hundreds of unrelated ones.
+
+**Vendored-Lua gotcha that shapes any hook written here:** `io.popen` is NOT
+available. `vendor/lua/liolib.c` compiles it only under `LUA_USE_POSIX` /
+`LUA_USE_WINDOWS`, and `build.zig` defines neither, so it resolves to the ISO-C
+stub that raises `'popen' not supported` at runtime. Use `os.execute` (returns
+`true` on success, `nil, "exit", code` on non-zero) with shell redirection, plus
+`os.tmpname()` / `os.remove()` for temp files.
+
+Test the hook file directly — fast, and no nalar binary needed. The vendored Lua
+is 5.4.9, identical to system `lua5.4`, so the real file runs under the system
+interpreter:
+
+    uv run --with pytest python -m pytest tests/functional/hook_zig_fmt_test.py -v
+
+Plain `python3 -m pytest` fails here — the system python has no pytest; use
+`uv run --with pytest`..

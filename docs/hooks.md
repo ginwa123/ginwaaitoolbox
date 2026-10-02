@@ -78,6 +78,53 @@ Only an explicit, well-formed table changes behavior.
 See [`examples/hooks/register_hook.lua`](../examples/hooks/register_hook.lua):
 deny `rm -rf` shell commands pre-tool, redact `sk-` secrets post-tool.
 
+## Running commands from a hook
+
+Hooks commonly shell out (a formatter, a linter). Two platform facts
+constrain how:
+
+**`io.popen` is not available.** The embedded Lua compiles it only under
+`LUA_USE_POSIX` / `LUA_USE_WINDOWS`; without one of those it falls back to
+the ISO C stub, which raises `'popen' not supported` when called. Use
+`os.execute` instead — it returns `true` on success and
+`nil, "exit", code` on a non-zero exit, so the exit code is available:
+
+```lua
+local ok, how, code = os.execute("zig fmt --check " .. q)
+if ok then          -- exit 0
+elseif how == "exit" then return code end
+```
+
+For output you need to read back, redirect to a temp file and use
+`os.tmpname()` / `os.remove()` rather than a pipe. Quote paths per platform:
+POSIX uses `'...'`, `cmd.exe` uses `"..."` with embedded `"` doubled.
+
+Every hook run is synchronous on the tool-dispatch path, so cap anything
+slow with `timeout 30s sh -c '...'` on POSIX.
+
+## Format-on-edit, without the churn
+
+The project hook at `.nalar/hooks/register_hook.lua` uses exactly this to
+format what the agent edits: prettier for Vue/TS, `zig fmt` for Zig.
+
+The Zig case is not "just run the formatter". `zig fmt` rewrites the whole
+file, not the edited region, and this repo's Zig tree is deliberately not
+fmt-clean (`.github/workflows/ci.yml` says so on purpose, because gating on
+it would turn every PR red on a change nobody made). Running it
+unconditionally turns a small edit into a large diff of unrelated
+reformatting.
+
+So the hook gates on history: it runs `zig fmt` only when the file's
+committed version (`git show HEAD:<file>`) was already `zig fmt --check`-clean.
+Then anything the formatter still changes is either what this edit
+introduced or what the formatter already wanted to change — churn cannot
+leak into legacy hand-style. Untracked (new) files count as clean, since
+there is no history to disturb.
+
+If you copy this pattern, note that `zig fmt` leaves a file that does not
+parse byte-for-byte unchanged (it exits non-zero without writing), so a
+mid-edit file is never corrupted.
+
 ## Debugging
 
 Hook problems appear in the nalar log prefixed with `[hooks]`, e.g.
