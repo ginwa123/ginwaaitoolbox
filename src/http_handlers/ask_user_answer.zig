@@ -291,12 +291,34 @@ pub fn askUserAnswerHandler(
     // Best-effort by design: if the emit fails the ANSWER is still recorded,
     // so the user can recover by sending any message (which the
     // `session_create` guard turns into a normal run).
+    //
+    // Resume ONLY when this was the last open question. The model asks two
+    // questions in one turn often enough that resuming after the first is not
+    // an edge case — and when it happened the run would hit the
+    // `hasPendingQuestion` guard at the top of `workflow.zig`'s loop and abort
+    // before the LLM was ever called, so the answer sat in the transcript
+    // unread while the HTTP response claimed `resumed: true`. Worse, that
+    // aborted run holds the worker row for the length of its own startup and
+    // `resumeSession` refuses to start while one exists, so the answer to the
+    // SECOND question could be committed with `resumed: false` and then never
+    // delivered by anything at all. Deferring the resume removes both: the last
+    // answer resumes once, and the model reads every answer in the turn
+    // together rather than one turn at a time.
     var resumed = false;
+    var questions_remaining: usize = 0;
     if (outcome.resumed) {
-        resumed = ask_user_pending.resumeSession(di, allocator, session_id) catch |err| blk: {
-            std.log.warn("ask_user: resume after answer failed for {s}: {s}", .{ session_id, @errorName(err) });
-            break :blk false;
-        };
+        questions_remaining = remainingQuestions(allocator, di.db, session_id);
+        if (questions_remaining > 0) {
+            std.log.info(
+                "ask_user: {d} question(s) still open — deferring the resume for session {s}",
+                .{ questions_remaining, session_id },
+            );
+        } else {
+            resumed = ask_user_pending.resumeSession(di, allocator, session_id) catch |err| blk: {
+                std.log.warn("ask_user: resume after answer failed for {s}: {s}", .{ session_id, @errorName(err) });
+                break :blk false;
+            };
+        }
     }
 
     const payload = try std.json.Stringify.valueAlloc(allocator, .{
@@ -305,6 +327,11 @@ pub fn askUserAnswerHandler(
         .status = outcome.status,
         .answer = outcome.answer,
         .resumed = resumed,
+        // How many questions the human still owes an answer to. Lets a card say
+        // "1 of 2 answered — waiting on the rest" instead of showing a turn that
+        // looks dead. 0 whenever no resume was attempted (an already-resolved
+        // question, or an error path).
+        .questions_remaining = questions_remaining,
     }, .{});
     // `payload` copied the strings, so the outcome is done.
     outcome.deinit(allocator);
@@ -313,6 +340,31 @@ pub fn askUserAnswerHandler(
         .status_code = 200,
         .data = payload,
     });
+}
+
+/// How many questions for this session are still `pending`.
+///
+/// Zero is the signal to resume: this answer was the last one the human owed,
+/// so the model can be given the whole turn at once. A nonzero count means the
+/// resume must be deferred — see the step-4 comment in the handler.
+///
+/// A failed read reports 0, i.e. it resumes. That is the safe direction: the
+/// alternative is a run that never starts, which is the bug this exists to
+/// remove, so a transient DB error must not trade it for a stuck session.
+fn remainingQuestions(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    session_id: []const u8,
+) usize {
+    var rows = db.query(
+        allocator,
+        "SELECT COUNT(*) FROM session_pending_question WHERE session_id = ? AND status = ?",
+        &.{ session_id, ask_user_mod.Status.pending.to_str() },
+    ) catch return 0;
+    defer rows.deinit();
+    const row = (rows.next() catch return 0) orelse return 0;
+    defer row.deinit(allocator);
+    return std.fmt.parseInt(usize, row.values[0], 10) catch 0;
 }
 
 /// How many values the answer holds, for the payload's `"answers_count"`.
@@ -329,6 +381,85 @@ fn countAnswers(allocator: std.mem.Allocator, answer: []const u8) usize {
 // ============================================================================
 
 const testing = std.testing;
+
+fn insertQuestionRow(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    id: []const u8,
+    session: []const u8,
+    status: []const u8,
+) !void {
+    try db.exec(allocator,
+        \\INSERT INTO session_pending_question
+        \\  (id, session_id, tool_call_id, llm_history_id, question, multi_select, status, answer, created_at, resolved_at)
+        \\VALUES (?, ?, ?, 'row', 'q', 0, ?, NULL, 1, NULL)
+    , &.{ id, session, id, status });
+}
+
+fn pendingQuestionSchema(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend) !void {
+    try db.exec(allocator,
+        \\CREATE TABLE session_pending_question (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    tool_call_id TEXT NOT NULL,
+        \\    llm_history_id TEXT NOT NULL,
+        \\    question TEXT NOT NULL,
+        \\    multi_select INTEGER NOT NULL DEFAULT 0,
+        \\    status TEXT NOT NULL DEFAULT 'pending',
+        \\    answer TEXT,
+        \\    created_at INTEGER NOT NULL,
+        \\    resolved_at INTEGER
+        \\)
+    , &.{});
+}
+
+test "remainingQuestions: counts only THIS session's still-pending questions" {
+    const allocator = testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    var db: nalarcore.sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    try pendingQuestionSchema(allocator, &db);
+
+    // Nothing open → 0, which is the signal to resume.
+    try testing.expectEqual(@as(usize, 0), remainingQuestions(allocator, &db, "s1"));
+
+    try insertQuestionRow(allocator, &db, "q1", "s1", "pending");
+    try insertQuestionRow(allocator, &db, "q2", "s1", "pending");
+    // Another session's open question must not hold THIS one back, or two
+    // unrelated chats would deadlock each other.
+    try insertQuestionRow(allocator, &db, "q3", "s2", "pending");
+    try testing.expectEqual(@as(usize, 2), remainingQuestions(allocator, &db, "s1"));
+
+    // A resolved row is settled even though the row is still in the table.
+    try insertQuestionRow(allocator, &db, "q4", "s1", "answered");
+    try insertQuestionRow(allocator, &db, "q5", "s1", "skipped");
+    try insertQuestionRow(allocator, &db, "q6", "s1", "abandoned");
+    try testing.expectEqual(@as(usize, 2), remainingQuestions(allocator, &db, "s1"));
+
+    // Resolving one drops the count by exactly one — this is the transition
+    // that turns a deferred answer into the resuming one.
+    try db.exec(allocator, "UPDATE session_pending_question SET status = 'answered' WHERE id = 'q1'", &.{});
+    try testing.expectEqual(@as(usize, 1), remainingQuestions(allocator, &db, "s1"));
+
+    try db.exec(allocator, "UPDATE session_pending_question SET status = 'answered' WHERE id = 'q2'", &.{});
+    try testing.expectEqual(@as(usize, 0), remainingQuestions(allocator, &db, "s1"));
+    // …while the other session is untouched.
+    try testing.expectEqual(@as(usize, 1), remainingQuestions(allocator, &db, "s2"));
+}
+
+test "remainingQuestions: an unreadable table reports 0 so a resume still happens" {
+    const allocator = testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    var db: nalarcore.sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    // No session_pending_question table at all. Reporting 0 keeps the
+    // pre-existing "just resume" behaviour instead of stalling the session.
+    try testing.expectEqual(@as(usize, 0), remainingQuestions(allocator, &db, "s1"));
+}
 
 test "validateAnswerShape: single-select accepts any non-blank string" {
     try validateAnswerShape("staging", false, false);
