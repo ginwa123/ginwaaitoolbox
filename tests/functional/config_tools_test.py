@@ -39,6 +39,7 @@ from harness import (
     _reap_orphan_test_pids,
     _wait_ready,
     is_safe_tmp,
+    snapshot_parent_env,
 )
 
 
@@ -176,6 +177,12 @@ def preboot(default_nalar_bin):
             orig_xdg_state_home=orig_xdg_state_home,
             orig_xdg_data_home=orig_xdg_data_home,
             orig_xdg_cache_home=orig_xdg_cache_home,
+            # Builds a child `env` dict, never shadows the PARENT process, so
+            # `_env_shadowed` is empty — but teardown still needs the exact
+            # snapshot, or it restores HOME from the synthesised `orig_home`
+            # and invents a variable that never existed on Windows.
+            _env_backup=snapshot_parent_env(),
+            _env_shadowed={},
         )
         booted.append(h)
         return h

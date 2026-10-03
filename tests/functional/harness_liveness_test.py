@@ -46,6 +46,13 @@ def _wait_pid_dead(pid: int, timeout: float) -> bool:
     return impl(pid, timeout)
 
 
+def _snapshot_parent_env() -> dict[str, str | None]:
+    """Lazy alias, for the same reason as the two probes above."""
+    from harness import snapshot_parent_env as impl
+
+    return impl()
+
+
 def _spawn_sleeper(seconds: float = 30.0) -> subprocess.Popen:
     """A child that is definitely alive and definitely not exiting."""
     return subprocess.Popen(
@@ -311,3 +318,377 @@ class TestWaitDeadUsesThePopenHandle:
             f"only found {checked} spawning construction sites — the AST "
             f"walk is probably not matching anymore, so this guard is vacuous"
         )
+
+    def test_every_direct_construction_snapshots_the_parent_env(self) -> None:
+        """The same guard for the environment, which fails the same way.
+
+        A hand-built harness that omits `_env_backup` cannot tell "APPDATA was
+        unset" from "APPDATA was the empty string", so `teardown()` deletes it
+        from the parent process. The next module's nalar then dies inside
+        `Config.zig:getDefaultConfigPath` — before reaching the code that
+        module was testing.
+
+        Measured: after `http2_tls_test.py` ran, the parent process had LOST
+        `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` outright, and the next
+        module failed on an assertion about a completely different feature
+        (`server_port_bind_test` looking for "already in use" in stderr). It
+        passes in isolation, so it only ever shows up as an unexplained
+        order-dependent CI failure.
+        """
+        import ast
+        import pathlib
+
+        import harness
+
+        tests_dir = pathlib.Path(harness.__file__).parent
+        offenders: list[str] = []
+        checked = 0
+        for path in sorted(tests_dir.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.id
+                    if isinstance(func, ast.Name)
+                    else func.attr
+                    if isinstance(func, ast.Attribute)
+                    else None
+                )
+                if name != "FunctionalHarness":
+                    continue
+                kws = {k.arg for k in node.keywords if k.arg}
+                if "pid" in kws:
+                    pid_node = next(
+                        k.value for k in node.keywords if k.arg == "pid"
+                    )
+                    if isinstance(pid_node, ast.Constant) and pid_node.value is None:
+                        continue
+                checked += 1
+                if "_env_backup" not in kws:
+                    offenders.append(
+                        f"{path.name}:{node.lineno} FunctionalHarness(...) "
+                        f"without _env_backup=snapshot_parent_env()"
+                    )
+        assert not offenders, (
+            "every direct FunctionalHarness(...) that spawns a process must pass "
+            "_env_backup=snapshot_parent_env(), or its teardown() corrupts the "
+            "parent environment for every module that runs after it:\n  "
+            + "\n  ".join(offenders)
+        )
+        assert checked >= 3, (
+            f"only found {checked} spawning construction sites — the AST "
+            f"walk is probably not matching anymore, so this guard is vacuous"
+        )
+
+
+#: Captured once at import, before any test mutates ``os.environ``. Several
+#: tests below deliberately overwrite HOME, so `_harness` cannot read the real
+#: home from the environment at call time.
+_REAL_HOME = os.environ.get("HOME") or os.environ.get("USERPROFILE") or ""
+
+
+class TestParentEnvIsRestoredExactly:
+    """`teardown()` must be the EXACT inverse of `boot()`'s parent-env shadow.
+
+    These are cheap: they construct a harness with `pid=None`/`dry_run=True` so
+    nothing is spawned and nothing is killed — only the env bookkeeping runs.
+
+    The invariant under test is the whole reason the two bugs existed. The
+    old restore used lossy `""`-means-"absent" snapshots plus a *synthesised*
+    `orig_home` (on Windows `HOME` is unset, so it was derived from
+    `USERPROFILE`), which meant a teardown could add a variable that never
+    existed and delete three that did.
+    """
+
+    @staticmethod
+    def _harness(backup, shadowed):
+        import pathlib
+        import tempfile
+
+        from harness import REQUIRED_TMP_SUBSTR, FunctionalHarness
+
+        # The REAL home (captured at import, since some tests here overwrite
+        # HOME), so `is_safe_tmp()` accepts the tempdir in teardown's safety
+        # net. `orig_home` plays no part in the env bookkeeping these tests
+        # are about — that comes from `backup`/`shadowed` — so this does not
+        # weaken them.
+        real_home = _REAL_HOME
+        # The prefix MUST carry REQUIRED_TMP_SUBSTR, or `is_safe_tmp()` rejects
+        # the dir and teardown's safety net raises instead of cleaning up.
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
+        return FunctionalHarness(
+            port=8080,
+            nalar_bin=pathlib.Path("nalar-does-not-exist"),
+            temp_dir=tmp,
+            orig_home=real_home,
+            log_path=tmp / "nalar.log",
+            pid=None,
+            dry_run=True,
+            _proc=None,
+            _env_backup=backup,
+            _env_shadowed=shadowed,
+        )
+
+    @pytest.fixture
+    def _restore_env(self):
+        """Undo whatever a test did to os.environ, whatever that was."""
+        saved = dict(os.environ)
+        try:
+            yield
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
+    @pytest.mark.usefixtures("_restore_env")
+    def test_variable_that_was_absent_is_removed_not_invented(self) -> None:
+        """The exact regression: teardown must POP an absent key, not set it.
+
+        `http2_tls_test._spawn_nalar` built the harness by hand and left the
+        `orig_*` fields at their `""` default. `teardown()` read `""` as
+        "nothing to restore" and called `os.environ.pop`, deleting `APPDATA`
+        from the parent process outright.
+        """
+        from harness import _SHADOWED_ENV_KEYS, snapshot_parent_env
+
+        for key in ("APPDATA", "USERPROFILE", "LOCALAPPDATA"):
+            assert key in _SHADOWED_ENV_KEYS, (
+                f"{key} must be in the snapshot key set, or a shadow of it "
+                f"can never be restored"
+            )
+
+        backup = snapshot_parent_env()
+        # Pretend none of these were set, which is what the lossy "" default
+        # used to claim.
+        for key in ("APPDATA", "USERPROFILE", "LOCALAPPDATA"):
+            backup[key] = None
+
+        shadow_dir = "C:/some/harness-temp-dir"
+        shadowed = {
+            "APPDATA": shadow_dir + "/AppData/Roaming",
+            "USERPROFILE": shadow_dir,
+            "LOCALAPPDATA": shadow_dir + "/AppData/Local",
+        }
+        os.environ.update(shadowed)
+        for key in shadowed:
+            backup.setdefault(key, None)
+
+        self._harness(backup, shadowed).teardown()
+
+        for key in shadowed:
+            assert key not in os.environ, (
+                f"{key} was absent before the harness shadowed it, so teardown "
+                f"must remove it again rather than leaving it behind"
+            )
+
+    @pytest.mark.usefixtures("_restore_env")
+    def test_absent_home_is_not_invented_from_the_synthesised_orig_home(self) -> None:
+        """Windows has no `HOME`; restoring `orig_home` created one.
+
+        `orig_home` falls back to `USERPROFILE` on Windows precisely so that
+        `is_safe_tmp()` has something to compare against. That makes it a
+        value `HOME` never held, and the old unconditional
+        `os.environ["HOME"] = self.orig_home` wrote it into the environment
+        anyway — changing what `Path.home()` and `~` expand to for every test
+        that ran afterwards.
+        """
+        from harness import snapshot_parent_env
+
+        backup = snapshot_parent_env()
+        backup["HOME"] = None  # HOME genuinely unset, as on Windows
+        os.environ["HOME"] = "C:/some/harness-temp-dir"
+
+        # `_env_shadowed` is empty here: this harness never shadowed HOME in
+        # the parent (the hand-built path in http2_tls_test).
+        self._harness(backup, {}).teardown()
+
+        assert "HOME" not in os.environ, (
+            "teardown invented a HOME that did not exist before the harness "
+            "ran; orig_home is a SYNTHESISED fallback (USERPROFILE on Windows) "
+            "and must never be written back"
+        )
+
+    @pytest.mark.usefixtures("_restore_env")
+    def test_present_variable_is_restored_to_its_original_value(self) -> None:
+        backup = _snapshot_parent_env()
+        backup["APPDATA"] = "C:/real/AppData/Roaming"
+        os.environ["APPDATA"] = "C:/shadow/AppData/Roaming"
+
+        self._harness(backup, {"APPDATA": "C:/shadow/AppData/Roaming"}).teardown()
+
+        assert os.environ["APPDATA"] == "C:/real/AppData/Roaming"
+
+    @pytest.mark.usefixtures("_restore_env")
+    def test_does_not_clobber_a_variable_another_harness_now_owns(self) -> None:
+        """Two harnesses can be alive at once; teardown order must not matter.
+
+        The outer harness shadows APPDATA, the inner one shadows it again. If
+        the OUTER tears down first, a blind restore would put back the real
+        value and the inner harness's child processes would then write their
+        config into the developer's real roaming profile.
+
+        The guard is that a key is only restored while it still holds the
+        value *this* harness installed.
+        """
+        backup = _snapshot_parent_env()
+        backup["APPDATA"] = "C:/real/AppData/Roaming"
+
+        outer_shadow = "C:/outer/AppData/Roaming"
+        inner_shadow = "C:/inner/AppData/Roaming"
+
+        os.environ["APPDATA"] = outer_shadow
+        outer = self._harness(backup, {"APPDATA": outer_shadow})
+
+        os.environ["APPDATA"] = inner_shadow  # inner harness shadows again
+
+        outer.teardown()
+
+        assert os.environ["APPDATA"] == inner_shadow, (
+            "teardown clobbered a variable it no longer owns; the inner "
+            "harness's shadow must survive the outer harness's teardown"
+        )
+
+    @pytest.mark.usefixtures("_restore_env")
+    def test_teardown_twice_is_still_a_no_op(self) -> None:
+        backup = _snapshot_parent_env()
+        backup["APPDATA"] = "C:/real/AppData/Roaming"
+        os.environ["APPDATA"] = "C:/shadow/AppData/Roaming"
+
+        h = self._harness(backup, {"APPDATA": "C:/shadow/AppData/Roaming"})
+        h.teardown()
+        h.teardown()
+
+        assert os.environ["APPDATA"] == "C:/real/AppData/Roaming"
+
+    def test_snapshot_distinguishes_absent_from_empty(self) -> None:
+        """The property the whole fix rests on, asserted directly."""
+        from harness import _SHADOWED_ENV_KEYS, snapshot_parent_env
+
+        # Pick a key, remove it, snapshot, then set it to "" and snapshot again.
+        key = "APPDATA"
+        assert key in _SHADOWED_ENV_KEYS
+        saved = os.environ.pop(key, None)
+        try:
+            absent = snapshot_parent_env()[key]
+            os.environ[key] = ""
+            empty = snapshot_parent_env()[key]
+        finally:
+            if saved is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = saved
+
+        assert absent is None, "an unset variable must snapshot as None"
+        assert empty == "", "an empty variable must snapshot as ''"
+        assert absent != empty, (
+            "the snapshot collapsed 'absent' and 'empty' into one value, which "
+            "is what let teardown delete variables it should have restored"
+        )
+
+
+class TestBootLeavesTheParentEnvironmentAlone:
+    """The whole environment, not just the keys we thought to track.
+
+    This is the end-to-end version of the invariant above, and it exists
+    because the first attempt at that fix satisfied every key-level test and
+    still broke the suite.
+
+    `boot()` recorded what it shadowed by diffing the ENTIRE environment
+    against the snapshot:
+
+        {k: v for k, v in os.environ.items() if env_backup.get(k) != v}
+
+    Every key we do not track — `PATH`, `SystemRoot`, `TEMP` — has no entry in
+    `env_backup`, so `env_backup.get(k)` is `None`, so it compares unequal to
+    its own current value and is recorded as "shadowed". `teardown()` then
+    restored it by popping it, and the parent process lost `PATH` and
+    `SystemRoot`.
+
+    The key-level tests above all passed, because every one of them looked at
+    a key that *is* tracked. What gave it away was the *next* boot failing
+    with `subprocess.Popen ... NotADirectoryError: [WinError 267]` — a broken
+    process environment, surfacing as a mysterious directory error. That
+    repro is the test: assert the FULL environment round-trips.
+    """
+
+    def test_every_variable_survives_a_boot_teardown_round_trip(
+        self, default_nalar_bin
+    ) -> None:
+        from harness import FunctionalHarness
+
+        before = dict(os.environ)
+        h = FunctionalHarness.boot(default_nalar_bin)
+        try:
+            # Sanity: the boot really did shadow something, so a no-op round
+            # trip cannot make this pass vacuously.
+            from harness import _SHADOWED_ENV_KEYS
+
+            changed = [
+                k
+                for k in _SHADOWED_ENV_KEYS
+                if os.environ.get(k) != before.get(k)
+            ]
+            if os.name == "nt":
+                assert changed, (
+                    "boot() shadowed none of the parent environment on "
+                    "Windows, so this test would assert nothing"
+                )
+        finally:
+            h.teardown()
+
+        after = dict(os.environ)
+
+        lost = sorted(set(before) - set(after))
+        assert not lost, (
+            "teardown() DELETED these variables from the parent process; an "
+            f"untracked key must never be treated as 'was absent':\n  "
+            + "\n  ".join(f"{k}={before[k]!r}" for k in lost)
+        )
+
+        added = sorted(set(after) - set(before))
+        assert not added, (
+            "teardown() ADDED these variables to the parent process; the "
+            f"synthesised `orig_home` fallback must never be written back:\n  "
+            + "\n  ".join(f"{k}={after[k]!r}" for k in added)
+        )
+
+        changed = sorted(k for k in before if before[k] != after.get(k))
+        assert not changed, (
+            "teardown() left these variables holding the wrong value:\n  "
+            + "\n  ".join(f"{k}: {before[k]!r} -> {after.get(k)!r}" for k in changed)
+        )
+
+    def test_two_boots_in_a_row_both_work(self, default_nalar_bin) -> None:
+        """The symptom of losing `PATH`/`SystemRoot`: only the 2nd boot fails.
+
+        Kept as its own test because it is what actually surfaced the bug, and
+        it fails with a Windows error code that points nowhere near the cause
+        (`NotADirectoryError` from `Popen`, not "your environment is broken").
+        Asserting the error message would be useless; asserting that a second
+        boot succeeds is not.
+        """
+        import subprocess
+
+        from harness import FunctionalHarness
+
+        for attempt in (1, 2):
+            h = FunctionalHarness.boot(default_nalar_bin)
+            try:
+                assert h.health() is not None
+            finally:
+                h.teardown()
+            # Prove the environment is still usable at all — this is the
+            # cheapest possible subprocess spawn, and it is the thing that
+            # breaks when SystemRoot or PATH goes missing.
+            out = subprocess.run(
+                [sys.executable, "-c", "print('env ok')"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert out.returncode == 0, (
+                f"after boot/teardown #{attempt} the parent environment can no "
+                f"longer start a process: rc={out.returncode} "
+                f"stderr={out.stderr[-500:]!r}"
+            )

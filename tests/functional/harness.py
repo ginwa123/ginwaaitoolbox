@@ -99,6 +99,43 @@ REQUIRED_TMP_SUBSTR = "nalar-func-"
 #: the correct fallback there.
 _SIGKILL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
 
+#: Every environment variable ``boot()`` shadows in the PARENT process.
+#: Only used on Windows — Linux/mac shadow the CHILD env only, leaving the
+#: parent's environment alone.
+#:
+#: Listed explicitly (rather than diffing a snapshot against ``os.environ``)
+#: so the set of things the harness mutates process-globally is greppable.
+#: See ``boot`` / ``teardown`` for why the snapshot has to distinguish
+#: "absent" from "set to the empty string".
+_SHADOWED_ENV_KEYS = (
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+)
+
+
+def snapshot_parent_env() -> dict[str, str | None]:
+    """Exact pre-shadow snapshot of the parent environment.
+
+    ``None`` for a key means "was not set at all", which is different from
+    "was set to the empty string" and has to be represented to make the
+    restore an exact inverse.
+
+    Public because the functional suites that spawn nalar themselves (to
+    pre-write a config.json, or to pass extra flags) construct a
+    ``FunctionalHarness`` by hand instead of calling :meth:`boot`. Without
+    this they had no exact snapshot, defaulted the ``orig_*`` fields to
+    ``""``, and their ``teardown()`` deleted ``USERPROFILE`` / ``APPDATA`` /
+    ``LOCALAPPDATA`` from the parent process — which then broke whichever
+    module ran next.
+    """
+    return {k: os.environ.get(k) for k in _SHADOWED_ENV_KEYS}
+
 #: Port range the harness will scan for a free port. Skip 8081 (the
 #: always-running dev port per project memory). Used by the legacy
 #: sequential picker (``_find_free_port_sequential``); the modern
@@ -317,6 +354,16 @@ class FunctionalHarness:
     # `proc.poll()` instead of a hand-rolled platform probe. See
     # `_wait_dead` for why the hand-rolled version was wrong on Windows.
     _proc: subprocess.Popen | None = dataclasses.field(default=None, repr=False)
+    # Exact pre-shadow environment snapshot (None == the key was ABSENT) and
+    # the shadowed values we installed. Together they let `teardown` be the
+    # exact inverse of the mutation. See `teardown` for why the orig_*
+    # fields cannot do this. None on a hand-constructed harness.
+    _env_backup: dict[str, str | None] | None = dataclasses.field(
+        default=None, repr=False
+    )
+    _env_shadowed: dict[str, str] = dataclasses.field(
+        default_factory=dict, repr=False
+    )
     # Windows original env snapshot (USERPROFILE/APPDATA/LOCALAPPDATA) — empty on POSIX.
     orig_userprofile: str = ""
     orig_appdata: str = ""
@@ -383,6 +430,32 @@ class FunctionalHarness:
         orig_userprofile = os.environ.get("USERPROFILE", "")
         orig_appdata = os.environ.get("APPDATA", "")
         orig_localappdata = os.environ.get("LOCALAPPDATA", "")
+
+        # Exact snapshot of every variable this harness is about to shadow,
+        # distinguishing "was set to X" from "was not set at all".
+        #
+        # The orig_* values above cannot drive the restore, because they are
+        # lossy in two ways that both corrupt the parent environment:
+        #
+        #   * `orig_home` is SYNTHESISED. On Windows HOME is normally unset
+        #     and the line above falls back to USERPROFILE, so `orig_home` is
+        #     a value HOME never held. Restoring it with
+        #     `os.environ["HOME"] = orig_home` ADDS a variable that did not
+        #     exist before.
+        #   * `orig_userprofile` / `orig_appdata` / `orig_localappdata` are
+        #     plain strings, so an originally-absent variable is
+        #     indistinguishable from an empty one, and the restore pops it
+        #     instead of putting back what was there.
+        #
+        # Both were observable. After `http2_tls_test` ran, the parent env had
+        # gained `HOME` and LOST `USERPROFILE`, `APPDATA` and
+        # `LOCALAPPDATA` outright. The next module's nalar then died inside
+        # `Config.zig:getDefaultConfigPath` before reaching the code under
+        # test, which surfaced as a completely unrelated failure
+        # (`server_port_bind_test` asserting on a missing "already in use"
+        # string). Order-dependent, and invisible unless you run the modules
+        # in the unlucky order.
+        env_backup: dict[str, str | None] = snapshot_parent_env()
 
         # Snapshot XDG envs for isolation and restore. These are used by
         # nalar on Linux for config/state/cache paths (XDG spec). If the
@@ -475,6 +548,29 @@ class FunctionalHarness:
             appdata_local.mkdir(parents=True, exist_ok=True)
             os.environ["APPDATA"] = str(appdata_roaming)
             os.environ["LOCALAPPDATA"] = str(appdata_local)
+        # Record EXACTLY what we installed, so teardown can tell "still ours"
+        # from "someone else's now" and restore precisely. Only Windows
+        # shadows the parent process (Linux/mac keep the parent's env per the
+        # original request), so on POSIX this is empty and teardown falls back
+        # to restoring HOME alone, exactly as it always has.
+        #
+        # Restricted to `_SHADOWED_ENV_KEYS` on purpose. Diffing the WHOLE
+        # environment instead looks equivalent and is a trap: every key we do
+        # not track (`PATH`, `SystemRoot`, `TEMP`, …) has no entry in
+        # `env_backup`, so `env_backup.get(k)` is None, so it compares unequal
+        # to its own current value and lands in `env_shadowed`. Teardown then
+        # "restores" those by popping them, and the parent process loses PATH
+        # and SystemRoot. The damage only shows on the NEXT boot, as
+        # `subprocess.Popen` failing with WinError 267 — which is why the
+        # first harness in a process tears down fine and every one after it
+        # breaks.
+        env_shadowed: dict[str, str] = {}
+        if os.name == "nt":
+            env_shadowed = {
+                k: os.environ[k]
+                for k in _SHADOWED_ENV_KEYS
+                if k in os.environ and os.environ[k] != env_backup.get(k)
+            }
 
         log_path = temp_dir / "nalar.log"
         env = os.environ.copy()
@@ -552,6 +648,8 @@ class FunctionalHarness:
             pid=proc.pid,
             dry_run=os.environ.get("NALAR_FUNCTIONAL_DRY_RUN") == "1",
             _proc=proc,
+            _env_backup=env_backup,
+            _env_shadowed=env_shadowed,
             orig_userprofile=orig_userprofile,
             orig_appdata=orig_appdata,
             orig_localappdata=orig_localappdata,
@@ -658,35 +756,75 @@ class FunctionalHarness:
 
         Idempotent: safe to call twice.
         """
-        # 1. Restore HOME first (so any post-test code sees original env).
-        # HOME is restored on all platforms (Linux/mac keep parent HOME
-        # isolated only via child env, but teardown still ensures original
-        # is back). XDG and Windows vars are restored only on Windows per
-        # user request to not touch Linux/mac.
-        os.environ["HOME"] = self.orig_home
-        if os.name == "nt":
-            for key, orig in (
-                ("XDG_CONFIG_HOME", self.orig_xdg_config_home),
-                ("XDG_STATE_HOME", self.orig_xdg_state_home),
-                ("XDG_DATA_HOME", self.orig_xdg_data_home),
-                ("XDG_CACHE_HOME", self.orig_xdg_cache_home),
-            ):
-                if orig:
-                    os.environ[key] = orig
-                else:
+        # 1. Restore the shadowed variables, as the EXACT inverse of the mutation.
+        #
+        # Two properties, both learned the hard way:
+        #
+        #   EXACT. A key that was ABSENT before must be popped, not set to a
+        #   stand-in. The old code restored `HOME` unconditionally from
+        #   `orig_home`, which on Windows is a value synthesised from
+        #   USERPROFILE because HOME is not set there — so teardown invented a
+        #   HOME that never existed, and popped USERPROFILE / APPDATA /
+        #   LOCALAPPDATA outright because their lossy "" snapshot could not
+        #   tell "absent" from "empty".
+        #
+        #   GUARDED. Only put a key back if it still holds the value THIS
+        #   harness shadowed it to. Two harnesses can be alive at once (a
+        #   module-scoped one plus a per-test one, or a test that boots its
+        #   own), and a blind restore in the wrong teardown order would write
+        #   the inner harness's dead tempdir over the outer one's shadow, or
+        #   pop a variable the other harness legitimately owns. Skipping a key
+        #   we no longer own is what makes the two orders safe.
+        #
+        # Everything else about the shadowing is unchanged, and on Linux/macOS
+        # this still restores only HOME, as before.
+        if self._env_backup is not None:
+            for key, shadowed in self._env_shadowed.items():
+                if os.environ.get(key) != shadowed:
+                    continue  # someone else owns this key now
+                was = self._env_backup.get(key)
+                if was is None:
                     os.environ.pop(key, None)
-            if self.orig_userprofile:
-                os.environ["USERPROFILE"] = self.orig_userprofile
-            else:
-                os.environ.pop("USERPROFILE", None)
-            if self.orig_appdata:
-                os.environ["APPDATA"] = self.orig_appdata
-            else:
-                os.environ.pop("APPDATA", None)
-            if self.orig_localappdata:
-                os.environ["LOCALAPPDATA"] = self.orig_localappdata
-            else:
-                os.environ.pop("LOCALAPPDATA", None)
+                else:
+                    os.environ[key] = was
+            # HOME is restored on EVERY platform (the old code assigned it
+            # unconditionally) — but exactly, not from the synthesised
+            # `orig_home`. On POSIX nothing is shadowed in the parent, so
+            # this is the whole restore and it behaves as before; on Windows
+            # HOME is already in `_env_shadowed` and was handled above.
+            if "HOME" not in self._env_shadowed:
+                was = self._env_backup.get("HOME")
+                if was is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = was
+        else:
+            # Constructed by hand rather than by boot(): keep the old,
+            # lossy behaviour so nothing changes for that path.
+            os.environ["HOME"] = self.orig_home
+            if os.name == "nt":
+                for key, orig in (
+                    ("XDG_CONFIG_HOME", self.orig_xdg_config_home),
+                    ("XDG_STATE_HOME", self.orig_xdg_state_home),
+                    ("XDG_DATA_HOME", self.orig_xdg_data_home),
+                    ("XDG_CACHE_HOME", self.orig_xdg_cache_home),
+                ):
+                    if orig:
+                        os.environ[key] = orig
+                    else:
+                        os.environ.pop(key, None)
+                if self.orig_userprofile:
+                    os.environ["USERPROFILE"] = self.orig_userprofile
+                else:
+                    os.environ.pop("USERPROFILE", None)
+                if self.orig_appdata:
+                    os.environ["APPDATA"] = self.orig_appdata
+                else:
+                    os.environ.pop("APPDATA", None)
+                if self.orig_localappdata:
+                    os.environ["LOCALAPPDATA"] = self.orig_localappdata
+                else:
+                    os.environ.pop("LOCALAPPDATA", None)
 
         # 2. Stop the binary.
         if self.pid is not None and not self._stopped:
