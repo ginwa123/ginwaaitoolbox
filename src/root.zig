@@ -1121,6 +1121,16 @@ test {
     // so all of those tests were silently unrun. Same discovery workaround
     // as Config.zig above — verified with a canary test, not inferred.
     _ = @import("http_handlers/git_file_diffs.zig");
+    // http_handlers/ask_user_answer.zig holds the `remainingQuestions`
+    // counter that gates the answer endpoint's resume, so a wrong count either
+    // strands a recorded answer or resumes a turn the model is not ready for.
+    // `http_handlers/mod.zig` re-exports only `askUserAnswerHandler`, and a
+    // re-export alone does not pull the file's tests into the test binary —
+    // same discovery workaround as git_file_diffs above. Verified by MUTATING
+    // an assertion to a wrong value and confirming `zig build test` then
+    // failed; before this line the mutant passed, i.e. the tests were
+    // silently unrun.
+    _ = @import("http_handlers/ask_user_answer.zig");
     // The `gh` handlers spawn child processes, and their inline tests
     // (JSON payload shapes, error mapping, and the `run_captured`
     // contract) never ran — same discovery gap as git_file_diffs above.
