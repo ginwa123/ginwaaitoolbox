@@ -36,28 +36,27 @@
   component mounts. `App.vue` does the install.
 -->
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue'
+import { onUnmounted, ref, toRef, watch } from 'vue'
 
 import { useSseBus } from '../../helpers/sseBus'
-import type { SseState } from '../../helpers/sseClient'
 
 const bus = useSseBus()
-const state = ref<SseState>(bus.state.value)
+// `bus.state` is a `ShallowRef<SseState>` and this badge only ever READS it,
+// so alias it rather than copying it into a local `ref` and syncing with a
+// watcher. The copy also had to be seeded from `bus.state.value`, which is
+// exactly the kind of snapshot that goes stale.
+const state = toRef(bus.state)
 const attempt = ref(0)
 
-// `bus.state` is a `ShallowRef<SseState>`. Vue 3 doesn't expose
-// `ref.watch(...)` (that's a Vue 2 / pinia idiom), so use the
-// standalone `watch()` from 'vue' with `{ immediate: true }` so the
-// initial render reads the right state without waiting for the first
-// transition. The returned stop-handle tears down the watcher in
-// `onUnmounted`.
+// The remaining job is NOT derivation: it counts transitions of an EXTERNAL
+// signal. `attempt` depends on its own history, so `computed()` cannot express
+// it, and there is no local handler to move it into — the SSE bus reconnects
+// on its own. `immediate` keeps the first render honest, and the returned
+// stop-handle tears the watcher down in `onUnmounted`.
 const stop = watch(
   bus.state,
   (s) => {
-    state.value = s
-    // Bump the attempt counter on every reconnect; reset once the
-    // connection recovers or the bus is torn down. We track this
-    // locally because the bus's state ShallowRef does NOT expose the
+    // Tracked locally because the bus's state ShallowRef does NOT expose the
     // underlying `SseClient`'s `info.attempt` — only the state name.
     if (s === 'reconnecting') {
       attempt.value += 1
@@ -145,8 +144,15 @@ onUnmounted(() => {
 }
 
 @keyframes sse-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.45; transform: scale(0.85); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

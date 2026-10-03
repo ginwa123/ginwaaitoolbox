@@ -702,6 +702,7 @@ pub fn main(init: std.process.Init) !void {
     // risk here — but that is only true as long as nobody adds one below.
     try authed.get("/api/git/pr/checks", ai_mod.http_handlers.gitPrChecksHandler);
     try authed.get("/api/git/pr/diff", ai_mod.http_handlers.gitPrDiffHandler);
+    try authed.get("/api/git/pr/conflicts", ai_mod.http_handlers.gitPrConflictsHandler);
     try authed.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
     // File download for the `present_files` agent tool card
     // (PresentFiles.vue). Literal path under a fresh `/api/files/`

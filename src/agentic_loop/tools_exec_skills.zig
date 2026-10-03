@@ -22,6 +22,29 @@ const agent = nalarcore.agent;
 const skill_tools_mod = nalarcore.skill_tools;
 const wrapToolOutput = tools.wrapToolOutput;
 
+/// Turn a JSON parse failure into a message the model can act on.
+///
+/// The old form was `"add_skill failed: MissingField"` — an error NAME.
+/// It named no field, showed none of what was received, and gave nothing
+/// to correct itself from, so a model that omitted `description` simply
+/// emitted the same call again. With every `*SkillInput` field defaulted
+/// this path is now only reachable for genuinely malformed JSON or a
+/// wrong-typed field; it still has to say WHICH and show the payload.
+///
+/// Caller owns the returned slice.
+fn describeParseFailure(
+    allocator: std.mem.Allocator,
+    arguments: []const u8,
+    err: anyerror,
+    summary: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s} ({s}). Arguments must be a JSON object whose keys are the tool's own parameters, each with the declared type — `name`/`description`/`content` are strings and `is_global` is a boolean, not the string \"true\". Received: {s}", .{
+        summary,
+        @errorName(err),
+        arguments,
+    });
+}
+
 // ─── search_skills ───
 
 pub fn execSearchSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -170,13 +193,15 @@ pub fn execUseSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 // ─── remove_skill ───
 
 pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    // `ignore_unknown_fields`, same reason as execAddSkill: a stray key
+    // must not cost the call.
     const parsed = std.json.parseFromSlice(
         skill_tools_mod.RemoveSkillInput,
         ctx.allocator,
         tc.function.arguments,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_skill failed: {s}", .{@errorName(err)});
+        const err_msg = try describeParseFailure(ctx.allocator, tc.function.arguments, err, "remove_skill failed to parse its arguments");
         const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -204,13 +229,19 @@ pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
 // ─── add_skill ───
 
 pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    // `ignore_unknown_fields` — the sibling `execSearchSkills` has always
+    // had it, and without it a model that volunteers one extra key
+    // (`scope`, `session_id`, …) gets `UnknownField` and the write is
+    // lost. Every `*SkillInput` field now carries a default, so an
+    // OMITTED field also parses; `executeAddSkillToString` is where the
+    // "which argument is missing" message is produced.
     const parsed = std.json.parseFromSlice(
         skill_tools_mod.AddSkillInput,
         ctx.allocator,
         tc.function.arguments,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_skill failed: {s}", .{@errorName(err)});
+        const err_msg = try describeParseFailure(ctx.allocator, tc.function.arguments, err, "add_skill failed to parse its arguments");
         const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -244,13 +275,14 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 // ─── edit_skill ───
 
 pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    // `ignore_unknown_fields`, same reason as execAddSkill.
     const parsed = std.json.parseFromSlice(
         skill_tools_mod.EditSkillInput,
         ctx.allocator,
         tc.function.arguments,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "edit_skill failed: {s}", .{@errorName(err)});
+        const err_msg = try describeParseFailure(ctx.allocator, tc.function.arguments, err, "edit_skill failed to parse its arguments");
         const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };

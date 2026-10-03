@@ -834,6 +834,34 @@ pub fn makeGitPrChecksResponse(allocator: std.mem.Allocator, response: GitPrChec
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+// ─── Git PR conflicts types ───────────────────────────────────────────────
+// Wire shape for
+// `GET /api/git/pr/conflicts?path=<repo>&pr_url=<url>[&provider=][&base=][&head=]`.
+// `mergeable: CONFLICTING` says a PR cannot merge but never says *what* blocks
+// it — no forge API exposes that — so the backend runs the same three-way
+// merge locally (`git merge-tree --write-tree --name-only`) and names the
+// files.
+pub const GitPrConflictsResponse = struct {
+    pr_url: []const u8 = "",
+    /// The ref the merge was computed against, e.g. `refs/remotes/origin/main`.
+    /// Echoed so an empty list can be read as "clean as of THIS ref" rather
+    /// than as "the backend found nothing to look at".
+    base_ref: []const u8 = "",
+    /// Short commit `base_ref` pointed at. "" when rev-parse failed (cosmetic).
+    base_commit: []const u8 = "",
+    /// The head the merge was computed against (default "HEAD").
+    head: []const u8 = "",
+    /// Paths git refused to merge cleanly. Empty is a legitimate answer.
+    conflicting_files: []const []const u8 = &.{},
+    count: usize = 0,
+    /// True when the server capped `conflicting_files` at its MAX_CONFLICT_FILES.
+    truncated: bool = false,
+};
+
+pub fn makeGitPrConflictsResponse(allocator: std.mem.Allocator, response: GitPrConflictsResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 // ─── Git branches list types ──────────────────────────────────────────────
 // Wire shape for `GET /api/git/branches?path=<repo>`. Consumed by the
 // kanban "New task" dialog's base-branch picker so the user can choose
