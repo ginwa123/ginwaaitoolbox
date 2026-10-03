@@ -20,6 +20,9 @@ const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
 const xmlUnescape = @import("helpers").xmlUnescape;
 const on_event_sent = @import("on_event_sent.zig");
 const hooks = @import("hooks.zig");
+const secrets_substitution = @import("secrets_substitution.zig");
+const secrets_store = @import("secrets_store.zig");
+const workspace_scope = @import("workspace_scope.zig");
 const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 const insertLLMHistories = @import("insert_llm_histories.zig").inserLLMHistories;
 const skill_evals_db = @import("skill_evals_db.zig");
@@ -155,6 +158,17 @@ const ToolResult = struct {
     skill_saved: ?SkillSaveInfo = null,
     agent_saved: ?AgentSaveInfo = null,
     progressive_tool_saved: ?ProgressiveToolSaveInfo = null,
+    /// Secrets this dispatch resolved, so the caller can scrub them back out
+    /// of `output` before it is persisted or streamed. Empty when the call
+    /// carried no placeholder.
+    ///
+    /// OWNERSHIP: the CALLER owns this list and must release it with
+    /// `freeResolvedSecrets` once it has finished redacting with it. Unlike
+    /// `output` — which the agentic loop simply leaves to its request
+    /// allocator — these are live credential bytes, so they are freed
+    /// deterministically instead of at the end of a turn. The `&.{}` default
+    /// frees as a no-op.
+    secrets: []const secrets_substitution.ResolvedSecret = &.{},
 };
 
 const SkillSaveInfo = struct {
@@ -180,6 +194,173 @@ const MainAgentToolResult = struct {
     is_thinking: ?bool = null,
     skill_saved: ?SkillSaveInfo = null,
     agent_saved: ?AgentSaveInfo = null,
+};
+
+// ============================================================================
+// Workspace-secret substitution seam (plan 2026-10-02-workspace-secrets)
+//
+// The promise these helpers carry is two-sided. The executor gets the real
+// value (property A) and the model gets `{{SECRETS:NAME}}` back everywhere it
+// can read — in `llm_history`, in the persisted tool result, over SSE
+// (property B). Substitution alone only satisfies A.
+// ============================================================================
+
+/// The prefix every placeholder opens with. Used ONLY as a conservative fast
+/// path: `secrets_substitution.matchPlaceholder` cannot produce a match
+/// without this exact literal, so a negative answer here can never skip a real
+/// placeholder. If the grammar ever changes the only consequence is that we
+/// resolve a workspace for calls that did not need one — slower, still
+/// correct. It is deliberately NOT a placeholder detector: deciding what counts
+/// as a placeholder belongs to `substituteToolArguments` alone, and a second
+/// detector that can disagree with it is a correctness bug, not an optimization.
+const secrets_placeholder_prefix = "{{SECRETS:";
+
+fn mayContainSecretPlaceholder(args: []const u8) bool {
+    return std.mem.indexOf(u8, args, secrets_placeholder_prefix) != null;
+}
+
+/// Free a `resolved` list and every string in it. `name` and `value` are each
+/// their own allocation. A zero-length list is the "nothing was substituted"
+/// default and frees as a no-op.
+fn freeResolvedSecrets(allocator: std.mem.Allocator, resolved: []const secrets_substitution.ResolvedSecret) void {
+    for (resolved) |entry| {
+        allocator.free(entry.name);
+        allocator.free(entry.value);
+    }
+    allocator.free(resolved);
+}
+
+/// The failure envelope for a substitution that did not happen.
+///
+/// `args` must be the UN-substituted copy: on the error path
+/// `substituteToolArguments` never wrote to its output, so this embeds the
+/// placeholder and never a value.
+fn secretSubstitutionError(
+    allocator: std.mem.Allocator,
+    tool_name: []const u8,
+    args: []const u8,
+    resolver: *const SecretResolver,
+    err: secrets_substitution.SubstError,
+) ![]const u8 {
+    const message = switch (err) {
+        error.UnknownSecretName => try std.fmt.allocPrint(
+            allocator,
+            "no secret named '{s}' in this workspace — {{{{SECRETS:{s}}}}} cannot be resolved here. " ++
+                "Nothing was run. Ask the user to add that name to this workspace, or use a name that exists; " ++
+                "retrying the same placeholder will fail the same way.",
+            .{ resolver.missing_name orelse "?", resolver.missing_name orelse "?" },
+        ),
+        error.InvalidArguments => try std.fmt.allocPrint(
+            allocator,
+            "arguments were not valid JSON, so no secret could be substituted — nothing was run.",
+            .{},
+        ),
+        // Propagated rather than reported: an OOM here is a real fault, and
+        // reporting it as a bad placeholder would send the agent hunting for
+        // the wrong problem.
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer allocator.free(message);
+    return wrapToolOutput(allocator, tool_name, args, false, message, "");
+}
+
+/// Adapts `secrets_store` to `secrets_substitution.Resolver`, with a per-dispatch
+/// cache and no database dependency of its own.
+///
+/// Fail-closed by construction: a session that resolves to no workspace leaves
+/// `workspace_id` null, and `resolve` then answers null for every name, which
+/// `substituteToolArguments` reports as `error.UnknownSecretName`. There is no
+/// path on which an unresolved placeholder reaches an executor as literal text
+/// — "no workspace" is never treated as "no substitution needed".
+const SecretResolver = struct {
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    /// Null = the session belongs to no workspace. Resolved server-side from
+    /// the session id, so the model can never choose it.
+    workspace_id: ?[]const u8,
+    /// One store query per DISTINCT name. A placeholder repeated ten times in
+    /// one call must not become ten queries, and the values have to outlive
+    /// the resolver call that produced them because `redactOutput` runs later.
+    cache: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// The most recent name this resolver refused. Read by the error envelope
+    /// so it can name the key. It comes from the resolver seam rather than a
+    /// second scan of the arguments for the same reason the fast path above
+    /// stops at the prefix: only one thing may decide what a placeholder is.
+    missing_name: ?[]const u8 = null,
+
+    fn init(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) SecretResolver {
+        return .{
+            .allocator = allocator,
+            .db = db,
+            // Any failure to resolve — no session, no link, no matching
+            // workspace, a query error — collapses to "no workspace", which
+            // fails every name closed.
+            .workspace_id = workspace_scope.resolveWorkspaceId(allocator, db, session_id) catch null,
+        };
+    }
+
+    fn deinit(self: *SecretResolver) void {
+        // `HashMapUnmanaged.deinit` releases the table only, so the entries it
+        // does not own are released here.
+        var it = self.cache.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.cache.deinit(self.allocator);
+        if (self.missing_name) |name| self.allocator.free(name);
+        if (self.workspace_id) |id| self.allocator.free(id);
+    }
+
+    fn resolve(self: *SecretResolver, name: []const u8) ?[]const u8 {
+        if (self.cache.get(name)) |hit| return if (hit.len == 0) null else hit;
+
+        const workspace_id = self.workspace_id orelse return self.refuse(name);
+        const wanted = [_][]const u8{name};
+        const rows = secrets_store.loadSecretValues(self.allocator, self.db, workspace_id, &wanted) catch
+            return self.refuse(name);
+        defer secrets_store.freeSecretValueRows(self.allocator, rows);
+
+        for (rows) |row| {
+            // The cache stores copies rather than slices into `rows`, which
+            // the defer above releases as soon as this returns. A name is not
+            // a secret, so owning it as the key costs nothing.
+            const key = self.allocator.dupe(u8, row.name) catch return self.refuse(name);
+            const value = self.allocator.dupe(u8, row.value) catch {
+                self.allocator.free(key);
+                return self.refuse(name);
+            };
+            self.cache.put(self.allocator, key, value) catch {
+                self.allocator.free(key);
+                self.allocator.free(value);
+                return self.refuse(name);
+            };
+        }
+
+        // A name this workspace does not store is simply absent from `rows`,
+        // which is the same thing as a miss. Only the caller knows which
+        // placeholder it asked about, so reporting it is the caller's job.
+        return self.cache.get(name) orelse self.refuse(name);
+    }
+
+    /// Record which placeholder could not be resolved, then report the miss.
+    /// Every allocation failure above lands here too: turning exhaustion into
+    /// "unknown secret" misreports the cause, but it never substitutes
+    /// something the workspace did not supply, which is the failure that would
+    /// actually matter.
+    fn refuse(self: *SecretResolver, name: []const u8) ?[]const u8 {
+        if (self.missing_name) |previous| self.allocator.free(previous);
+        self.missing_name = self.allocator.dupe(u8, name) catch null;
+        return null;
+    }
+
+    fn lookup(ctx: ?*const anyopaque, name: []const u8) ?[]const u8 {
+        // The erased `ctx` is const because the `Resolver` signature says so;
+        // the adapter's own state (cache, last miss) is genuinely mutated, so
+        // the const is shed here rather than by widening the signature.
+        const self: *SecretResolver = @ptrCast(@alignCast(@constCast(ctx orelse return null)));
+        return self.resolve(name);
+    }
 };
 
 /// Lookup a tool by name and execute it using unified registry
@@ -213,6 +394,48 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
         .short_circuit => |out| return ToolResult{ .output = out },
     }
 
+    // ─── Workspace-secret substitution ───
+    //
+    // Deliberately AFTER the pre-hook: a user-authored Lua hook receives
+    // `arguments` and may log or rewrite them, so substituting first would
+    // hand plaintext to arbitrary user code with nothing downstream to scrub
+    // it. The hook therefore sees `{{SECRETS:NAME}}` and only the executor
+    // sees the value. It also runs on whatever the hook produced — a
+    // `.proceed_modified` replaced the arguments above, so the original
+    // string is not the right input.
+    var resolver: SecretResolver = undefined;
+    var resolver_live = false;
+    defer if (resolver_live) resolver.deinit();
+
+    var sub: secrets_substitution.SubstitutionResult = .{ .substituted_args = "", .resolved = &.{} };
+    var sub_live = false;
+    defer if (sub_live) {
+        ctx.allocator.free(sub.substituted_args);
+        freeResolvedSecrets(ctx.allocator, sub.resolved);
+    };
+
+    if (mayContainSecretPlaceholder(effective_call.function.arguments)) {
+        resolver = SecretResolver.init(ctx.allocator, ctx.db, ctx.session_id);
+        resolver_live = true;
+        secrets_substitution.substituteToolArguments(
+            ctx.allocator,
+            effective_call.function.arguments,
+            SecretResolver.lookup,
+            &resolver,
+            &sub,
+        ) catch |err| {
+            // Never dispatch: an empty substitution would reach the tool and
+            // surface much later as an opaque third-party 401. The envelope
+            // carries `effective_call.function.arguments`, which
+            // `substituteToolArguments` left untouched on the error path, so
+            // `parameters` still shows the placeholder rather than a value.
+            const envelope = try secretSubstitutionError(ctx.allocator, effective_call.function.name, effective_call.function.arguments, &resolver, err);
+            return ToolResult{ .output = envelope };
+        };
+        sub_live = true;
+        effective_call.function.arguments = sub.substituted_args;
+    }
+
     var result: ToolResult = blk: {
         for (tools_equipped.UNIFIED_TOOL_REGISTRY()) |entry| {
             if (std.mem.eql(u8, effective_call.function.name, entry.name)) {
@@ -231,6 +454,11 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     if (runPostHookOverride(ctx, effective_call.function.name, effective_call.function.arguments, result.output)) |replacement| {
         result.output = replacement;
     }
+
+    // Ownership of the resolved list moves to the caller, which redacts the
+    // output with it and then frees it; the defer above must not also do so.
+    result.secrets = sub.resolved;
+    sub.resolved = &.{};
     return result;
 }
 
@@ -606,15 +834,14 @@ pub fn handle_tool(
                     msg,
                     "",
                 );
-            } else
-                try wrapToolOutput(
-                    allocator,
-                    tool_call.function.name,
-                    tool_call.function.arguments,
-                    true,
-                    null,
-                    "",
-                );
+            } else try wrapToolOutput(
+                allocator,
+                tool_call.function.name,
+                tool_call.function.arguments,
+                true,
+                null,
+                "",
+            );
             // `insertLLMHistories` duplicates the content slice
             // internally (line 123 of insert_llm_histories.zig), so
             // we own and free the envelope string after the call
@@ -736,7 +963,9 @@ pub fn handle_tool(
                 defer allocator.free(err_msg);
                 tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                 errdefer allocator.free(tool_result);
-                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                // Nothing was substituted on this path (there is no executor to
+                // substitute for), so `resolved` is empty.
+                try persistRedacted(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, &.{}, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 allocator.free(tool_result);
                 continue;
             }
@@ -757,11 +986,57 @@ pub fn handle_tool(
                     .short_circuit => |out| {
                         tool_result = out;
                         errdefer allocator.free(tool_result);
-                        try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                        // A short-circuit returns before substitution runs.
+                        try persistRedacted(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, &.{}, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                         allocator.free(tool_result);
                         continue;
                     },
                 }
+
+                // ─── Workspace-secret substitution (MCP) ───
+                //
+                // MCP tools are intercepted here and `continue`d, so they NEVER
+                // reach `dispatchTool`. A hook placed only there would silently
+                // not cover them — and an API-key-authenticated MCP call is the
+                // most likely place a user reaches for a credential at all.
+                // Same position as in `dispatchTool`: after the pre-hook, on
+                // whatever the hook produced.
+                var mcp_resolver: SecretResolver = undefined;
+                var mcp_resolver_live = false;
+                defer if (mcp_resolver_live) mcp_resolver.deinit();
+
+                var mcp_sub: secrets_substitution.SubstitutionResult = .{ .substituted_args = "", .resolved = &.{} };
+                var mcp_sub_live = false;
+                defer if (mcp_sub_live) {
+                    allocator.free(mcp_sub.substituted_args);
+                    freeResolvedSecrets(allocator, mcp_sub.resolved);
+                };
+
+                if (mayContainSecretPlaceholder(mcp_call.function.arguments)) {
+                    mcp_resolver = SecretResolver.init(allocator, ctx.db, ctx.session_id);
+                    mcp_resolver_live = true;
+                    secrets_substitution.substituteToolArguments(
+                        allocator,
+                        mcp_call.function.arguments,
+                        SecretResolver.lookup,
+                        &mcp_resolver,
+                        &mcp_sub,
+                    ) catch |err| {
+                        // Never call the MCP server with a literal placeholder
+                        // or an empty credential. `mcp_call.function.arguments`
+                        // is untouched on the error path, so the envelope shows
+                        // the placeholder.
+                        const envelope = try secretSubstitutionError(allocator, mcp_call.function.name, mcp_call.function.arguments, &mcp_resolver, err);
+                        tool_result = envelope;
+                        errdefer allocator.free(tool_result);
+                        try persistRedacted(allocator, io, db, id_llm_history, session_id, cwd, mcp_call, tool_result, &.{}, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                        allocator.free(tool_result);
+                        continue;
+                    };
+                    mcp_sub_live = true;
+                    mcp_call.function.arguments = mcp_sub.substituted_args;
+                }
+
                 // Call MCP handler
                 tool_result = handle_mcp_tool.handle_mcp_tool_run(
                     allocator,
@@ -773,16 +1048,18 @@ pub fn handle_tool(
                         mcp_call.function.name,
                         @errorName(err),
                     });
+                    // The envelope embeds `mcp_call.function.arguments`, which
+                    // now holds the substituted value, so this site scrubs it.
                     tool_result = try wrapToolOutput(allocator, mcp_call.function.name, mcp_call.function.arguments, false, err_msg, "");
                     errdefer allocator.free(tool_result);
-                    try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, mcp_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                    try persistRedacted(allocator, io, db, id_llm_history, session_id, cwd, mcp_call, tool_result, mcp_sub.resolved, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                     allocator.free(tool_result);
                     continue;
                 };
                 if (runPostHookOverride(ctx, mcp_call.function.name, mcp_call.function.arguments, tool_result)) |replacement| {
                     tool_result = replacement;
                 }
-                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, mcp_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                try persistRedacted(allocator, io, db, id_llm_history, session_id, cwd, mcp_call, tool_result, mcp_sub.resolved, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 continue;
             }
 
@@ -795,12 +1072,35 @@ pub fn handle_tool(
                 });
                 tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
                 errdefer allocator.free(tool_result);
-                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                // `dispatchTool` reports a failed substitution as a result
+                // envelope rather than an error, so reaching here means it
+                // errored before or outside the substitution and `resolved` is
+                // empty. The envelope's `parameters` come from the raw
+                // `tool_call`, which keeps the placeholder in the DB (property
+                // B).
+                try persistRedacted(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, &.{}, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 allocator.free(tool_result);
                 continue;
             };
 
             tool_result = exec_result.output;
+            // `exec_result.secrets` is ours to release once the result has been
+            // scrubbed; the catch above `continue`s, so nothing registers it
+            // on a path that never got a result.
+            defer freeResolvedSecrets(allocator, exec_result.secrets);
+
+            // The skill-evals ledger below persists this same string, so the
+            // scrub has to happen here as well as at the persist site. Guarded
+            // on `resolved.len` so the overwhelmingly common no-placeholder
+            // call does not pay for a copy of its whole result. The `defer`
+            // is at loop scope, not block scope: `tool_result` keeps pointing
+            // at this buffer until the persist site at the bottom.
+            var ledger_scrubbed: ?[]u8 = null;
+            defer if (ledger_scrubbed) |scrubbed| allocator.free(scrubbed);
+            if (exec_result.secrets.len > 0) {
+                ledger_scrubbed = try secrets_substitution.redactOutput(allocator, tool_result, exec_result.secrets);
+                tool_result = ledger_scrubbed.?;
+            }
 
             // Apply property changes from tool execution
             if (exec_result.temperature) |temp| toolAgentTemp = temp;
@@ -847,11 +1147,51 @@ pub fn handle_tool(
                 };
             }
 
-            try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+            // `tool_result` may already be the scrubbed copy if this call
+            // resolved a secret; `redactOutput` is idempotent, so passing the
+            // same `resolved` again is a no-op walk rather than a second copy.
+            try persistRedacted(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, exec_result.secrets, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
         }
     }
 
     logger.debugFmt("Tool calls processing complete, looping back for next API call...", .{});
+}
+
+/// Persist a tool result with every resolved secret put back behind its
+/// placeholder, then release the scrubbed copy.
+///
+/// This is the boundary that makes property B true. `shell.zig`'s
+/// `result_to_json` puts `result.command` — the fully substituted command —
+/// into the result `data`, so `curl -H "Auth: {{SECRETS:gh}}"` hands the real
+/// token straight back to the model and from there into `llm_history` and the
+/// next provider request. Redaction is the feature, not hardening.
+///
+/// EVERY Phase-3 persist site goes through here, including the ones where
+/// nothing was substituted: passing an empty `resolved` takes the fast path
+/// below, which avoids `redactOutput`'s copy of a result that has nothing to
+/// scrub. `updateAndSendToolResult` is called from exactly one place (this
+/// function) and the static contract test below pins that count.
+fn persistRedacted(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    session_id: []const u8,
+    cwd: []const u8,
+    tool_call: agent.ToolCall,
+    result: []const u8,
+    resolved: []const secrets_substitution.ResolvedSecret,
+    temperature: f32,
+    is_thinking: bool,
+    agent_name: []const u8,
+    parent_session_id: []const u8,
+) !void {
+    if (resolved.len == 0) {
+        return updateAndSendToolResult(allocator, io, db, id, session_id, cwd, tool_call, result, temperature, is_thinking, agent_name, parent_session_id);
+    }
+    const redacted = try secrets_substitution.redactOutput(allocator, result, resolved);
+    defer allocator.free(redacted);
+    try updateAndSendToolResult(allocator, io, db, id, session_id, cwd, tool_call, redacted, temperature, is_thinking, agent_name, parent_session_id);
 }
 
 fn updateAndSendToolResult(
@@ -1817,4 +2157,593 @@ test "jsonEscapePath escapes backslashes and quotes for JSON embedding" {
     const quoted = try jsonEscapePath(allocator, "a\"b");
     defer allocator.free(quoted);
     try std.testing.expectEqualStrings("a\\\"b", quoted);
+}
+// ============================================================================
+// Workspace-secret substitution tests (plan 2026-10-02-workspace-secrets)
+//
+// Two properties are under test and they pull in opposite directions. A —
+// the executor receives the real value. B — the model never does: the value
+// must not appear in `llm_history.tool_calls_json`, in a persisted tool
+// result, or anywhere else the model can read it back.
+//
+// The fixture is in-memory SQLite with the tables these paths actually read:
+// the three `resolveWorkspaceId` walks, `workspace_secrets`, and the
+// `llm_history` / `sessions` columns `saveMessage` and
+// `updateToolResultById` name. The DDL is spelled out here rather than
+// imported from the migrations on purpose — these tests pin the dispatch
+// wiring, not the schema.
+// ============================================================================
+
+const secrets_test_workspace = "ws_secrets_test";
+/// Task-linked to a workspace item, so `resolveWorkspaceId` finds it through
+/// the exact-link branch.
+const secrets_test_session = "sess_secrets_test";
+/// In `sessions` with a cwd that no `workspace_items` path prefixes, so it
+/// resolves to nothing. This is the fail-closed case.
+const secrets_test_orphan_session = "sess_secrets_orphan";
+/// Chosen to contain nothing JSON-significant, so a canary found in an output
+/// is the credential itself and not an artifact of escaping.
+const secrets_test_canary = "canary-4f1c9a-Zx7Q";
+
+const SecretsFixture = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+
+    fn deinit(self: *SecretsFixture) void {
+        self.db.deinit();
+        self.threaded.deinit();
+    }
+
+    fn io(self: *SecretsFixture) std.Io {
+        return self.threaded.io();
+    }
+};
+
+fn secretsSetup(allocator: std.mem.Allocator) !SecretsFixture {
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // The three shapes `resolveWorkspaceId` walks before giving up.
+    // `saveMessage` also runs `UPDATE sessions SET cwd = ?, updated_at = ...`,
+    // so `updated_at` has to exist for the property-B test to get that far.
+    try db.exec(allocator,
+        \\CREATE TABLE sessions (
+        \\  id TEXT PRIMARY KEY,
+        \\  name TEXT,
+        \\  cwd TEXT,
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+    try db.exec(allocator,
+        \\CREATE TABLE workspace_items (
+        \\  id TEXT PRIMARY KEY,
+        \\  workspace_id TEXT,
+        \\  item_type TEXT,
+        \\  path TEXT
+        \\)
+    , &.{});
+    try db.exec(allocator,
+        \\CREATE TABLE workspace_item_tasks (
+        \\  id TEXT PRIMARY KEY,
+        \\  name TEXT,
+        \\  workspace_item_id TEXT
+        \\)
+    , &.{});
+
+    // Migration 101, in the columns the store reads. `value` is here because
+    // this fixture is the secret's own home; nothing in handle_tool.zig
+    // selects it except through `loadSecretValues`.
+    try db.exec(allocator,
+        \\CREATE TABLE workspace_secrets (
+        \\  id TEXT PRIMARY KEY,
+        \\  workspace_id TEXT NOT NULL,
+        \\  name TEXT NOT NULL,
+        \\  value TEXT NOT NULL,
+        \\  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+
+    // Every column `saveMessage` inserts or `updateToolResultById` writes.
+    // Nullable on purpose: an empty slice binds as SQL NULL in this backend,
+    // so a NOT NULL column would turn a `null` argument into a constraint
+    // failure that has nothing to do with secrets.
+    try db.exec(allocator,
+        \\CREATE TABLE llm_history (
+        \\  id TEXT PRIMARY KEY,
+        \\  session_id TEXT,
+        \\  model TEXT,
+        \\  response_content TEXT,
+        \\  finish_reason TEXT,
+        \\  role TEXT,
+        \\  tool_calls_json TEXT,
+        \\  tool_call_id TEXT,
+        \\  reasoning_content TEXT,
+        \\  reasoning_id TEXT,
+        \\  reasoning_encrypted_content TEXT,
+        \\  is_feed_to_llm INTEGER,
+        \\  agent TEXT,
+        \\  loop_index INTEGER,
+        \\  temperature REAL,
+        \\  is_thinking INTEGER,
+        \\  created_at_nano INTEGER,
+        \\  created_iso TEXT,
+        \\  parent_session_id TEXT,
+        \\  parent_id TEXT,
+        \\  prompt_tokens INTEGER,
+        \\  completion_tokens INTEGER,
+        \\  total_tokens INTEGER,
+        \\  cache_creation_input_tokens INTEGER,
+        \\  cache_read_input_tokens INTEGER,
+        \\  is_input INTEGER,
+        \\  is_output INTEGER,
+        \\  tool_name TEXT,
+        \\  diffview_before TEXT,
+        \\  diffview_after TEXT,
+        \\  image_url TEXT,
+        \\  video_url TEXT,
+        \\  is_loading INTEGER DEFAULT 0
+        \\)
+    , &.{});
+
+    try db.exec(allocator,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type, path)
+        \\VALUES ('wi_secrets', 'ws_secrets_test', 'kanban', '/proj/secrets')
+    , &.{});
+    try db.exec(allocator,
+        \\INSERT INTO workspace_item_tasks (id, name, workspace_item_id)
+        \\VALUES ('sess_secrets_test', 'Secrets task', 'wi_secrets')
+    , &.{});
+    try db.exec(allocator,
+        \\INSERT INTO sessions (id, name, cwd) VALUES
+        \\  ('sess_secrets_test', 'Linked', '/proj/secrets'),
+        \\  ('sess_secrets_orphan', 'Unlinked', '/elsewhere/no-item-here')
+    , &.{});
+
+    const row = try secrets_store.createSecret(allocator, &db, .{
+        .workspace_id = secrets_test_workspace,
+        .name = "TOK",
+        .value = secrets_test_canary,
+    });
+    secrets_store.freeSecretRow(allocator, row);
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// `ToolContext` for the secrets tests. `config` stays `undefined` because
+/// every tool used here hits the registry, and the registry walk never reads
+/// it — the same posture as `hookDispatchCtx`.
+fn secretsCtx(
+    allocator: std.mem.Allocator,
+    fx: *SecretsFixture,
+    logger: *logger_mod.Logger,
+    environment: ?*const std.process.Environ.Map,
+    session_id: []const u8,
+) ToolContext {
+    var temp: f32 = 0.4;
+    var thinking: bool = false;
+    return ToolContext{
+        .allocator = allocator,
+        .io = fx.io(),
+        .db = &fx.db,
+        .logger = logger,
+        .session_id = session_id,
+        .model = "test-model",
+        // Nonexistent, so no stray <cwd>/.nalar/hooks/register_hook.lua can
+        // reach these dispatches and rewrite the arguments under test.
+        .cwd = "/tmp/nalar-secrets-test-no-such-dir-xyz",
+        .api_key = "",
+        .base_url = "",
+        .config = undefined,
+        .agent_temperature = &temp,
+        .is_thinking = &thinking,
+        .environment = environment,
+        .active_loops = undefined,
+    };
+}
+
+/// HOME pointing at an empty tmpdir, so the Lua hook tiers find no
+/// `register_hook.lua` and every dispatch below exercises the real path.
+const SecretsEnv = struct {
+    map: std.process.Environ.Map,
+    tmp: std.testing.TmpDir,
+};
+
+fn secretsEnvMap(allocator: std.mem.Allocator) !SecretsEnv {
+    var tmp = std.testing.tmpDir(.{});
+    errdefer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    var map = std.process.Environ.Map.init(allocator);
+    errdefer map.deinit();
+    try map.put("HOME", path_buf[0..n]);
+    // %APPDATA% backs the config dir on Windows; keeping the test hermetic
+    // there too means the resolve path stays clean instead of logging.
+    const appdata_abs = try std.fs.path.join(allocator, &.{ path_buf[0..n], "appdata" });
+    defer allocator.free(appdata_abs);
+    try map.put("APPDATA", appdata_abs);
+    return .{ .map = map, .tmp = tmp };
+}
+
+/// A `write_file` call whose `content` is the given raw JSON fragment.
+/// Writing is how the tests observe the executor: the file on disk is proof of
+/// what the tool actually received, and its absence is proof the tool never
+/// ran.
+fn writeFileCall(
+    allocator: std.mem.Allocator,
+    tmp: *std.testing.TmpDir,
+    id: []const u8,
+    file_name: []const u8,
+    content_json: []const u8,
+) !agent.ToolCall {
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const abs = try std.fs.path.join(allocator, &.{ path_buf[0..n], file_name });
+    defer allocator.free(abs);
+    const escaped = try jsonEscapePath(allocator, abs);
+    defer allocator.free(escaped);
+    const args = try std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\",\"content\":{s}}}", .{ escaped, content_json });
+    return agent.ToolCall{ .id = id, .function = .{ .name = "write_file", .arguments = args } };
+}
+
+/// Read one column out of `llm_history` by id, straight from SQL so an
+/// assertion about what was persisted cannot be satisfied by the same code
+/// that wrote it.
+fn storedColumn(fx: *SecretsFixture, allocator: std.mem.Allocator, id: []const u8, column: []const u8) !?[]const u8 {
+    const sql = try std.fmt.allocPrint(allocator, "SELECT {s} FROM llm_history WHERE id = ?", .{column});
+    defer allocator.free(sql);
+    var q = try fx.db.query(allocator, sql, &[_][]const u8{id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return null;
+    defer row.deinit(allocator);
+    return try allocator.dupe(u8, row.values[0]);
+}
+
+test "secrets: the executor receives the real value (property A)" {
+    // Arena, like the `hook dispatch` tests above: `execWriteFile` hands the
+    // `data` payload it built to `wrapToolOutput` without freeing it, so the
+    // testing allocator would report a leak that has nothing to do with this
+    // feature.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var fx = try secretsSetup(allocator);
+    defer fx.deinit();
+    var env = try secretsEnvMap(allocator);
+    defer env.map.deinit();
+    defer env.tmp.cleanup();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const ctx = secretsCtx(allocator, &fx, &lg, &env.map, secrets_test_session);
+    const tc = try writeFileCall(allocator, &tmp, "call_secrets_a", "out.txt", "\"{{SECRETS:TOK}}\"");
+    const result = try dispatchTool(ctx, tc);
+    defer freeResolvedSecrets(allocator, result.secrets);
+
+    // The write landed with the credential in it, so the executor really was
+    // handed the value and not the placeholder.
+    const written = try tmp.dir.readFileAlloc(std.testing.io, "out.txt", allocator, .limited(1 << 20));
+    try std.testing.expectEqualStrings(secrets_test_canary, written);
+
+    try std.testing.expectEqual(@as(usize, 1), result.secrets.len);
+    try std.testing.expectEqualStrings("TOK", result.secrets[0].name);
+    try std.testing.expectEqualStrings(secrets_test_canary, result.secrets[0].value);
+
+    // `execWriteFile` embeds the arguments in the envelope's `parameters`, so
+    // the value is in the result string too — which is precisely why
+    // redaction cannot be skipped. This assertion is what makes the redaction
+    // tests below meaningful rather than vacuous.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, secrets_test_canary) != null);
+
+    // The caller's own tool_call is untouched: substitution writes to a copy.
+    try std.testing.expect(std.mem.indexOf(u8, tc.function.arguments, "{{SECRETS:TOK}}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.function.arguments, secrets_test_canary) == null);
+}
+
+test "secrets: llm_history keeps the placeholder, never the value (property B)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var fx = try secretsSetup(allocator);
+    defer fx.deinit();
+    var env = try secretsEnvMap(allocator);
+    defer env.map.deinit();
+    defer env.tmp.cleanup();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const ctx = secretsCtx(allocator, &fx, &lg, &env.map, secrets_test_session);
+    const tc = try writeFileCall(allocator, &tmp, "call_secrets_b", "out.txt", "\"{{SECRETS:TOK}}\"");
+
+    // Phase 2 of `handle_tool`, reproduced against the same database and in
+    // the same textual position — the assistant row is written with the RAW
+    // tool_calls BEFORE dispatch runs.
+    var assistant_tool_calls = [_]agent.ToolCall{tc};
+    try llm_history.saveMessage(allocator, fx.io(), &fx.db, .{
+        .session_id = secrets_test_session,
+        .model = "test-model",
+        .cwd = ctx.cwd,
+        .content = "",
+        .reasoning_content = null,
+        .role = agent.Role.assistant.to_str(),
+        .finish_reason = agent.FinishReason.tool.to_str(),
+        .tool_calls = assistant_tool_calls[0..],
+        .tool_call_id = null,
+        .agent_name = "Agent",
+        .loop_index = 0,
+        .temperature = 0.4,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    });
+
+    const result = try dispatchTool(ctx, tc);
+    defer freeResolvedSecrets(allocator, result.secrets);
+
+    const assistant_id = blk: {
+        var q = try fx.db.query(allocator, "SELECT id FROM llm_history WHERE tool_call_id IS NULL LIMIT 1", &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.TestExpectedEqual;
+        defer row.deinit(allocator);
+        break :blk try allocator.dupe(u8, row.values[0]);
+    };
+
+    const tool_calls_json = (try storedColumn(&fx, allocator, assistant_id, "tool_calls_json")).?;
+
+    // The model reads this column on the next turn. It must carry the
+    // placeholder and never the value.
+    try std.testing.expect(std.mem.indexOf(u8, tool_calls_json, "{{SECRETS:TOK}}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tool_calls_json, secrets_test_canary) == null);
+}
+
+test "secrets: the persisted tool result is scrubbed before it is stored" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var fx = try secretsSetup(allocator);
+    defer fx.deinit();
+    var env = try secretsEnvMap(allocator);
+    defer env.map.deinit();
+    defer env.tmp.cleanup();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const ctx = secretsCtx(allocator, &fx, &lg, &env.map, secrets_test_session);
+    const tc = try writeFileCall(allocator, &tmp, "call_secrets_redact", "out.txt", "\"{{SECRETS:TOK}}\"");
+    const result = try dispatchTool(ctx, tc);
+    defer freeResolvedSecrets(allocator, result.secrets);
+
+    // The Phase-1 placeholder row, then the same persist path Phase 3 takes.
+    try fx.db.exec(allocator,
+        \\INSERT INTO llm_history (id, session_id, model, response_content, role, tool_name, is_loading)
+        \\VALUES ('row_secrets_redact', ?, 'test-model', '', 'tool', 'write_file', 1)
+    , &[_][]const u8{secrets_test_session});
+
+    try persistRedacted(allocator, fx.io(), &fx.db, "row_secrets_redact", secrets_test_session, ctx.cwd, tc, result.output, result.secrets, 0.4, false, "Agent", "");
+
+    const stored = (try storedColumn(&fx, allocator, "row_secrets_redact", "response_content")).?;
+
+    try std.testing.expect(std.mem.indexOf(u8, stored, secrets_test_canary) == null);
+    try std.testing.expect(std.mem.indexOf(u8, stored, "{{SECRETS:TOK}}") != null);
+}
+
+test "secrets: the shell echo case is scrubbed too (shell.zig puts the command in data)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var fx = try secretsSetup(allocator);
+    defer fx.deinit();
+    var env = try secretsEnvMap(allocator);
+    defer env.map.deinit();
+    defer env.tmp.cleanup();
+
+    const ctx = secretsCtx(allocator, &fx, &lg, &env.map, secrets_test_session);
+    // `shell.zig`'s `result_to_json` serializes `result.command` into the
+    // result `data`, so the fully substituted command comes straight back —
+    // alongside the envelope's own `parameters` and the shell's stdout. This
+    // is the leak that survives when redaction is applied anywhere other than
+    // immediately before persistence.
+    //
+    // `mandatory_timeout` is required by `execute_command`; without it the tool
+    // returns an error envelope and never runs a shell, which would leave the
+    // leak one layer short and the test below passing for the wrong reason.
+    const args = try std.fmt.allocPrint(
+        allocator,
+        "{{\"command\":\"echo {{{{SECRETS:TOK}}}}\",\"mandatory_timeout\":5000}}",
+        .{},
+    );
+    const tc = agent.ToolCall{ .id = "call_secrets_shell", .function = .{ .name = "command", .arguments = args } };
+
+    const result = try dispatchTool(ctx, tc);
+    defer freeResolvedSecrets(allocator, result.secrets);
+    try std.testing.expectEqual(@as(usize, 1), result.secrets.len);
+    try std.testing.expectEqualStrings("TOK", result.secrets[0].name);
+
+    // The value really is in the raw result, more than once. Without this the
+    // redaction assertions would pass vacuously.
+    const raw_hits = std.mem.count(u8, result.output, secrets_test_canary);
+    try std.testing.expect(raw_hits >= 2);
+
+    const scrubbed = try secrets_substitution.redactOutput(allocator, result.output, result.secrets);
+
+    try std.testing.expect(std.mem.indexOf(u8, scrubbed, secrets_test_canary) == null);
+    // EVERY occurrence became a placeholder, not just the first: redaction
+    // sweeps the whole output, which is what makes it safe to apply at a
+    // boundary rather than to each field the tool happens to echo.
+    try std.testing.expectEqual(raw_hits, std.mem.count(u8, scrubbed, "{{SECRETS:TOK}}"));
+}
+
+test "secrets: an unknown placeholder fails with the key named and never dispatches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var fx = try secretsSetup(allocator);
+    defer fx.deinit();
+    var env = try secretsEnvMap(allocator);
+    defer env.map.deinit();
+    defer env.tmp.cleanup();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const ctx = secretsCtx(allocator, &fx, &lg, &env.map, secrets_test_session);
+    const tc = try writeFileCall(allocator, &tmp, "call_secrets_unknown", "never.txt", "\"{{SECRETS:NOPE}}\"");
+    const result = try dispatchTool(ctx, tc);
+    defer freeResolvedSecrets(allocator, result.secrets);
+
+    // Actionable: the agent is told which key is missing, immediately, rather
+    // than being handed an empty credential that fails later as a 401.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"success\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NOPE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Nothing was run") != null);
+    // Nothing was substituted, so there is nothing to redact with.
+    try std.testing.expectEqual(@as(usize, 0), result.secrets.len);
+
+    // Not dispatched: the target file was never created.
+    try std.testing.expectError(error.FileNotFound, tmp.dir.readFileAlloc(std.testing.io, "never.txt", allocator, .limited(1 << 20)));
+}
+
+test "secrets: a session with no workspace fails closed, never passing the placeholder through" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var fx = try secretsSetup(allocator);
+    defer fx.deinit();
+    var env = try secretsEnvMap(allocator);
+    defer env.map.deinit();
+    defer env.tmp.cleanup();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Same shape as the passing tests, but nothing links this session to a
+    // workspace, so `resolveWorkspaceId` returns null.
+    const ctx = secretsCtx(allocator, &fx, &lg, &env.map, secrets_test_orphan_session);
+    try std.testing.expect(
+        try workspace_scope.resolveWorkspaceId(allocator, &fx.db, secrets_test_orphan_session) == null,
+    );
+
+    const tc = try writeFileCall(allocator, &tmp, "call_secrets_orphan", "orphan.txt", "\"{{SECRETS:TOK}}\"");
+    const result = try dispatchTool(ctx, tc);
+    defer freeResolvedSecrets(allocator, result.secrets);
+
+    // "No workspace" must not degrade to "no substitution needed": it is
+    // reported as a miss like any other unknown name.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"success\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "TOK") != null);
+    try std.testing.expectEqual(@as(usize, 0), result.secrets.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, secrets_test_canary) == null);
+
+    // The outcome that matters: an un-resolved placeholder must never arrive
+    // at a tool as literal text to be used as a credential.
+    try std.testing.expectError(error.FileNotFound, tmp.dir.readFileAlloc(std.testing.io, "orphan.txt", allocator, .limited(1 << 20)));
+}
+
+test "secrets: a call with no placeholder is untouched" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var fx = try secretsSetup(allocator);
+    defer fx.deinit();
+    var env = try secretsEnvMap(allocator);
+    defer env.map.deinit();
+    defer env.tmp.cleanup();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // The fast path that skips substitution entirely has to leave an ordinary
+    // call working, or the feature breaks every tool that does not use it.
+    const ctx = secretsCtx(allocator, &fx, &lg, &env.map, secrets_test_session);
+    const tc = try writeFileCall(allocator, &tmp, "call_secrets_plain", "plain.txt", "\"no secrets here\"");
+    const result = try dispatchTool(ctx, tc);
+    defer freeResolvedSecrets(allocator, result.secrets);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"success\":true") != null);
+    try std.testing.expectEqual(@as(usize, 0), result.secrets.len);
+
+    const written = try tmp.dir.readFileAlloc(std.testing.io, "plain.txt", allocator, .limited(1 << 20));
+    try std.testing.expectEqualStrings("no secrets here", written);
+}
+
+test "secrets: the resolver queries the store once per distinct name and remembers a miss" {
+    // No dispatch here on purpose: this exercises the adapter's own memory
+    // handling, which the testing allocator can then actually police.
+    const allocator = std.testing.allocator;
+    var fx = try secretsSetup(allocator);
+    defer fx.deinit();
+
+    var resolver = SecretResolver.init(allocator, &fx.db, secrets_test_session);
+    defer resolver.deinit();
+
+    const first = resolver.resolve("TOK");
+    try std.testing.expectEqualStrings(secrets_test_canary, first.?);
+    // The cache returns the same buffer, so the second resolve neither
+    // re-queried nor re-duped. Pointer identity is the observable difference;
+    // the values would compare equal either way.
+    const second = resolver.resolve("TOK");
+    try std.testing.expectEqualStrings(secrets_test_canary, second.?);
+    try std.testing.expectEqual(@intFromPtr(first.?.ptr), @intFromPtr(second.?.ptr));
+    try std.testing.expectEqual(@as(usize, 1), resolver.cache.count());
+
+    // A miss is refused and remembered, so the error envelope can name the
+    // key instead of saying only that something was missing.
+    try std.testing.expect(resolver.resolve("ABSENT") == null);
+    try std.testing.expectEqualStrings("ABSENT", resolver.missing_name.?);
+}
+
+test "secrets: static contract — both dispatch paths substitute and every persist site redacts" {
+    // MCP tools are intercepted in Phase 3 and `continue`d, so they never
+    // reach `dispatchTool`. A future edit that deletes the MCP-branch call
+    // would otherwise be invisible: no test fails, and the feature silently
+    // stops covering the place a user is most likely to need it.
+    const max_bytes: usize = 1 * 1024 * 1024;
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        placeholder_impl_path,
+        std.testing.allocator,
+        .limited(max_bytes),
+    );
+    defer std.testing.allocator.free(source);
+
+    // Assembled, never written whole: this file is the haystack, so a literal
+    // needle would count itself and make every count below meaningless.
+    const subst_needle = "secrets_substitution." ++ "substituteToolArguments(";
+    const persist_needle = "persistRedacted" ++ "(allocator, io, db,";
+    const raw_persist_needle = "updateAndSend" ++ "ToolResult(allocator";
+    const branch_needle = "if (" ++ "isMCPTool(config, tool_call.function.name))";
+    const run_needle = "handle_mcp_tool." ++ "handle_mcp_tool_run(";
+
+    // Exactly two production call sites: dispatchTool and the MCP branch.
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, source, subst_needle));
+
+    // ...and the MCP one is INSIDE the branch, ahead of the run.
+    const branch_at = std.mem.indexOf(u8, source, branch_needle) orelse
+        return error.TestExpectedEqual;
+    const branch_region = source[branch_at..];
+    const subst_at = std.mem.indexOf(u8, branch_region, subst_needle) orelse
+        return error.TestExpectedEqual;
+    const run_at = std.mem.indexOf(u8, branch_region, run_needle) orelse
+        return error.TestExpectedEqual;
+    try std.testing.expect(subst_at < run_at);
+
+    // Redaction is a property of PERSISTENCE, so the choke point has to be
+    // unavoidable. What is left calling `updateAndSendToolResult` is only the
+    // pair of branches inside `persistRedacted` — anything else reaching the
+    // DB row directly is an un-scrubbed write.
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, source, raw_persist_needle));
+
+    // Seven persist sites, all through `persistRedacted`: the six that
+    // existed (unknown tool, MCP short-circuit, MCP dispatch error, MCP
+    // result, built-in dispatch error, built-in result) plus the MCP
+    // substitution failure, which must also be recorded rather than dropped.
+    try std.testing.expectEqual(@as(usize, 7), std.mem.count(u8, source, persist_needle));
 }

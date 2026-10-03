@@ -110,6 +110,19 @@ fn useCase(
         return error.DatabaseError;
     };
 
+    // `ON DELETE CASCADE` on `workspace_secrets` is documentation only —
+    // this project leaves `PRAGMA foreign_keys` off (Migration 072's tests),
+    // so the child rows have to go explicitly or a deleted workspace would
+    // leave every one of its credentials behind.
+    tx.exec(
+        allocator,
+        "DELETE FROM workspace_secrets WHERE workspace_id = ?",
+        &[_][]const u8{id},
+    ) catch {
+        std.log.warn("workspaceDelete: secret cleanup failed for {s}", .{id});
+        return error.DatabaseError;
+    };
+
     tx.commit() catch {
         std.log.warn("workspaceDelete: COMMIT failed for {s}", .{id});
         return error.DatabaseError;

@@ -9,6 +9,7 @@ import StandardTaskChatView from './views/StandardTaskChatView.vue'
 import Chats from './views/Chats.vue'
 import DocumentsView from './workspace/DocumentsView.vue'
 import SettingsView from './views/SettingsView.vue'
+import WorkspaceSettingsView from './views/WorkspaceSettingsView.vue'
 import CodeViewerStage from './views/CodeViewerStage.vue'
 import NotificationContainer from './shell/NotificationContainer.vue'
 import SseStatusBadge from './shell/SseStatusBadge.vue'
@@ -1145,6 +1146,15 @@ const currentView = computed(() => {
   // would be a separate plan.
   if (/^\/app\/kanban\/[^/]+\/settings\/?$/.test(path)) {
     return 'kanban-settings'
+  }
+  // Workspace settings page, `/app/:workspaceId/settings`. Same shape as
+  // the kanban-settings branch above and for the same reason: the path IS
+  // the discriminator, there is no `view=` query param to read, and it must
+  // be resolved before anything below claims a `/app/{id}` path. Checked
+  // here rather than in `parseAppPath` because `helpers/appUrl.ts` is not
+  // on this feature's edit surface — the regex keeps the new shape local.
+  if (/^\/app\/[^/]+\/settings\/?$/.test(path)) {
+    return 'workspace-settings'
   }
   // gitfile view - check only the ref (set synchronously before navigation)
   if (gitViewerFile.value) {
@@ -3412,6 +3422,11 @@ defineExpose({
 
     <!-- Settings page -->
     <SettingsView v-if="currentView === 'settings'" />
+
+    <!-- Workspace settings page (/app/:workspaceId/settings). Mounted as a
+         sibling of <main> like <SettingsView>, not inside the view chain:
+         which settings SECTION is open is `?section=`, owned by the view. -->
+    <WorkspaceSettingsView v-else-if="currentView === 'workspace-settings'" />
 
     <!-- Global error notification stack -->
     <NotificationContainer />

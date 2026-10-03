@@ -178,6 +178,15 @@ pub const documentsGetHandler = @import("documents_get.zig").documentsGetHandler
 pub const documentsUpdateHandler = @import("documents_update.zig").documentsUpdateHandler;
 pub const documentsDeleteHandler = @import("documents_delete.zig").documentsDeleteHandler;
 
+// Workspace-scoped secrets (Migration 101). Same house shape as the
+// documents block above: one file per HTTP verb, each carrying its own
+// private `useCase` + inline tests. No handler reads a secret's value back —
+// the response type has no field for one (Design Decision 9).
+pub const secretsListHandler = @import("secrets_list.zig").secretsListHandler;
+pub const secretsCreateHandler = @import("secrets_create.zig").secretsCreateHandler;
+pub const secretsUpdateHandler = @import("secrets_update.zig").secretsUpdateHandler;
+pub const secretsDeleteHandler = @import("secrets_delete.zig").secretsDeleteHandler;
+
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
 pub const kanbanColumnsListHandler = @import("kanban_columns_list.zig").kanbanColumnsListHandler;

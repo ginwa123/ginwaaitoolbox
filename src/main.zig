@@ -866,6 +866,20 @@ pub fn main(init: std.process.Init) !void {
     try authed.get("/api/workspaces/:workspace_id/documents/:document_id", ai_mod.http_handlers.documentsGetHandler);
     try authed.patch("/api/workspaces/:workspace_id/documents/:document_id", ai_mod.http_handlers.documentsUpdateHandler);
     try authed.delete("/api/workspaces/:workspace_id/documents/:document_id", ai_mod.http_handlers.documentsDeleteHandler);
+    // Workspace-scoped secrets (Migration 101). A value written here is
+    // never readable again over HTTP — the response types carry no value
+    // field (Design Decision 9).
+    //
+    // ROUTE ORDER IS LOAD-BEARING: `matchRoute` walks `self.routes.items`
+    // in registration order and returns on the first hit (router.zig:614),
+    // so a `:secret_id` route registered above a literal sibling would
+    // capture `/secrets` itself and every create would 404. The two
+    // literal routes are therefore first. `secrets_list.zig` pins that
+    // ordering by byte offset so the comment cannot rot.
+    try authed.get("/api/workspaces/:workspace_id/secrets", ai_mod.http_handlers.secretsListHandler);
+    try authed.post("/api/workspaces/:workspace_id/secrets", ai_mod.http_handlers.secretsCreateHandler);
+    try authed.patch("/api/workspaces/:workspace_id/secrets/:secret_id", ai_mod.http_handlers.secretsUpdateHandler);
+    try authed.delete("/api/workspaces/:workspace_id/secrets/:secret_id", ai_mod.http_handlers.secretsDeleteHandler);
     try authed.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
     try authed.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
     try authed.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);
