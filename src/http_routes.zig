@@ -291,6 +291,7 @@ fn registerGitRoutes(authed: *Group) !void {
     try authed.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
     try authed.get("/api/git/pr/status", ai_mod.http_handlers.gitPrStatusHandler);
     try authed.get("/api/git/pr/diff", ai_mod.http_handlers.gitPrDiffHandler);
+    try authed.get("/api/git/pr/conflicts", ai_mod.http_handlers.gitPrConflictsHandler);
 }
 
 fn registerFileRoutes(authed: *Group) !void {
