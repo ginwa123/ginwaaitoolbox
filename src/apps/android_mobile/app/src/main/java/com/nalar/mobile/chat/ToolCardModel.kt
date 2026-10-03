@@ -902,6 +902,18 @@ object ToolCard {
 
             ToolKind.Mcp -> ToolBody.Mcp(message.content)
 
+            // Both web-search tools carry an UNTYPED provider payload (D13):
+            // TinyFish returns `{results:[...]}`, Brave `{web:{results:[...]}}`,
+            // Serper `{organic:[...]}`, a self-hosted SearxNG a bare `[{...}]`.
+            // There is no shape to destructure without silently discarding the
+            // ones this build has never heard of, so `ToolBody.Raw`
+            // pretty-prints whatever arrived. The two kinds still exist as
+            // distinct cases so `primaryParameterKeys` can label a pending
+            // row with `provider` instead of a path.
+            ToolKind.WebSearch,
+            ToolKind.ListSearchProviders,
+            -> ToolBody.Raw(ToolOutput.fallbackBodyText(data))
+
             // The web's generic fallback shows the diff *whenever* the row
             // carries one, on top of the pill. A tool this client has no
             // renderer for that arrived with `diffview_before`/`after` is
