@@ -112,6 +112,15 @@ const initialTab = (): 'files' | 'pr' | 'commits' | 'evals' => {
   try {
     param = readTabParam()
   } catch {
+    // This catch exists ONLY for "mounted without a router" — hosts like
+    // ChatRightSidebar mount this panel standalone (ChatRightSidebar.spec.ts),
+    // and `useRoute()` injects nothing there, so `route.query` throws on a
+    // null deref. It cannot reach the user: nothing was fetched, this runs at
+    // mount before any data loads, and with no router there is no URL to keep
+    // in sync. `files` is the documented default, so the fallback is correct
+    // — but the condition is still logged rather than swallowed, because a
+    // mount that silently lost its router is worth seeing in the console.
+    console.warn('[SidebarDiffPanel] mounted without a router; defaulting ?panel to files')
     param = null
   }
   // Evals is reachable regardless of PR mode: it is about the agent's
@@ -201,6 +210,12 @@ const conflictsOnly = ref(
     try {
       return readConflictsParam()
     } catch {
+      // Same guard and same reason as initialTab: no router means
+      // `route.query` throws, nothing was fetched, and there is no URL to
+      // keep in sync. `false` = show the full PR file list, this panel's
+      // pre-router default — logged rather than swallowed for the same
+      // reason.
+      console.warn('[SidebarDiffPanel] mounted without a router; defaulting ?conflicts to off')
       return false
     }
   })(),
