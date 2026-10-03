@@ -165,13 +165,13 @@ test "useCase: never returns another workspace's documents" {
 // frontend then gets a 404 and the browser silently renders an empty
 // list. That failure is invisible to every useCase test above — the
 // useCase is correct, the route table is not — so it is asserted here
-// against `main.zig` as text, and a future sibling that shadows
+// against the route table as text, and a future sibling that shadows
 // `documents` fails at `zig build test` instead of in a user's browser.
 // The Python functional harness (`tests/functional/harness.py`) covers
 // the real wire round-trip; this is the cheap fail-closed guard that
 // runs on every commit.
 
-const main_src = @embedFile("../main.zig");
+const route_src = @embedFile("../http_routes.zig");
 
 const REQUIRED_ROUTES = [_][]const u8{
     "authed.get(\"/api/workspaces/:workspace_id/documents\"",
@@ -181,12 +181,12 @@ const REQUIRED_ROUTES = [_][]const u8{
     "authed.delete(\"/api/workspaces/:workspace_id/documents/:document_id\"",
 };
 
-test "documents routes: all five verbs are registered in main.zig" {
+test "documents routes: all five verbs are registered in http_routes.zig" {
     var problems: std.ArrayList([]const u8) = .empty;
     defer problems.deinit(testing.allocator);
 
     for (REQUIRED_ROUTES) |needle| {
-        if (std.mem.indexOf(u8, main_src, needle) == null) {
+        if (std.mem.indexOf(u8, route_src, needle) == null) {
             problems.append(testing.allocator, needle) catch @panic("OOM");
         }
     }
@@ -206,9 +206,9 @@ test "documents routes: the collection routes precede the :document_id routes" {
     // path to be exhausted, so this is belt-and-braces — but the comment
     // in main.zig claims it, and a claim a test does not check is a claim
     // that rots.
-    const list_at = std.mem.indexOf(u8, main_src, "authed.get(\"/api/workspaces/:workspace_id/documents\"") orelse
+    const list_at = std.mem.indexOf(u8, route_src, "authed.get(\"/api/workspaces/:workspace_id/documents\"") orelse
         return error.ListRouteMissing;
-    const detail_at = std.mem.indexOf(u8, main_src, "authed.get(\"/api/workspaces/:workspace_id/documents/:document_id\"") orelse
+    const detail_at = std.mem.indexOf(u8, route_src, "authed.get(\"/api/workspaces/:workspace_id/documents/:document_id\"") orelse
         return error.DetailRouteMissing;
 
     try testing.expect(list_at < detail_at);
@@ -225,7 +225,7 @@ test "documents routes: no GET sibling can capture 'documents' as a :param" {
     // Asserted by scanning every `authed.get("/api/workspaces/:workspace_id/`
     // registration and requiring its 4th segment to be a literal, not a
     // `:param`. Add such a route later and this fails.
-    var it = std.mem.splitSequence(u8, main_src, "authed.get(\"/api/workspaces/:workspace_id/");
+    var it = std.mem.splitSequence(u8, route_src, "authed.get(\"/api/workspaces/:workspace_id/");
     while (it.next()) |tail| {
         // Grab the path up to the closing quote.
         const end = std.mem.indexOfScalar(u8, tail, '"') orelse continue;

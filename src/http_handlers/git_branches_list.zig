@@ -277,7 +277,7 @@ const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/git_branches_list.zig";
 const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 const HTTP_RESP_PATH = "src/http_handlers/http_response.zig";
 const TEST_RUNNER_PATH = "src/ai_workflow/tui/test_runner.zig";
 
@@ -446,11 +446,11 @@ test "git branches route is registered in main.zig" {
     const source = try readSource(allocator, MAIN_PATH);
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "/api/git/branches") == null) {
-        std.debug.print("!! main.zig does not register /api/git/branches !!\n", .{});
+        std.debug.print("!! http_routes.zig does not register /api/git/branches !!\n", .{});
         return error.GitBranchesRouteMissing;
     }
     if (std.mem.indexOf(u8, source, "gitBranchesListHandler") == null) {
-        std.debug.print("!! main.zig does not reference gitBranchesListHandler !!\n", .{});
+        std.debug.print("!! http_routes.zig does not reference gitBranchesListHandler !!\n", .{});
         return error.GitBranchesHandlerRefMissing;
     }
 }

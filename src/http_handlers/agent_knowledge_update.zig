@@ -738,11 +738,11 @@ test "functional: non-empty relative file_path still returns NotAbsolutePath" {
 
 // ─── D. route-order contract: /reorder must precede /:knowledge_id ──────
 
-test "functional: main.zig registers /knowledge/reorder BEFORE /knowledge/:knowledge_id" {
+test "functional: http_routes.zig registers /knowledge/reorder BEFORE /knowledge/:knowledge_id" {
     const alloc = testing.allocator;
     const raw = try std.Io.Dir.cwd().readFileAlloc(
         testing.io,
-        "src/main.zig",
+        "src/http_routes.zig",
         alloc,
         .limited(1024 * 1024),
     );
@@ -758,7 +758,7 @@ test "functional: main.zig registers /knowledge/reorder BEFORE /knowledge/:knowl
     // captured by the :knowledge_id param route (knowledge_id="reorder").
     if (reorder_idx > param_idx) {
         std.debug.print(
-            "\n!! main.zig registers /knowledge/:knowledge_id BEFORE /knowledge/reorder — reorder is shadowed !!\n",
+            "\n!! http_routes.zig registers /knowledge/:knowledge_id BEFORE /knowledge/reorder — reorder is shadowed !!\n",
             .{},
         );
         return error.ReorderRouteShadowed;

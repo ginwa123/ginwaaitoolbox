@@ -693,11 +693,11 @@ test "task_update maps image_urls validation errors to 400/413" {
 const ID_ONLY_TASK_ROUTE = ".put(\"/api/workspaces/tasks/:task_id\"";
 const WORKSPACE_SCOPED_PUT = ".put(\"/api/workspaces/:workspace_id/";
 
-/// `main.zig` as COMPILED — `@embedFile` rather than a cwd-relative read,
+/// The route table as COMPILED — `@embedFile` rather than a cwd-relative read,
 /// so the assertions cannot pass by reading nothing from the wrong
 /// directory.
-fn readMainSource(allocator: std.mem.Allocator) ![]u8 {
-    return allocator.dupe(u8, @embedFile("../main.zig"));
+fn readRouteSource(allocator: std.mem.Allocator) ![]u8 {
+    return allocator.dupe(u8, @embedFile("../http_routes.zig"));
 }
 
 fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
@@ -712,12 +712,12 @@ fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
 
 test "the id-only task PUT route is registered" {
     const allocator = testing.allocator;
-    const src = try readMainSource(allocator);
+    const src = try readRouteSource(allocator);
     defer allocator.free(src);
 
     if (std.mem.indexOf(u8, src, ID_ONLY_TASK_ROUTE) == null) {
         std.debug.print(
-            "\n!! main.zig does not register {s} !!\n" ++
+            "\n!! http_routes.zig does not register {s} !!\n" ++
                 "   api.updateTaskSimple (the chat rename + kanban card rename\n" ++
                 "   path) PUTs /api/workspaces/tasks/<task_id>. Without the\n" ++
                 "   route every rename 404s.\n",
@@ -731,7 +731,7 @@ test "the id-only task PUT route is registered exactly once" {
     // A second registration would sit back down among the `:workspace_id`
     // routes, which is where this bug came from in the first place.
     const allocator = testing.allocator;
-    const src = try readMainSource(allocator);
+    const src = try readRouteSource(allocator);
     defer allocator.free(src);
 
     const n = countOccurrences(src, ID_ONLY_TASK_ROUTE);
@@ -746,7 +746,7 @@ test "the id-only task PUT route is registered exactly once" {
 
 test "the id-only task PUT route precedes every :workspace_id PUT route" {
     const allocator = testing.allocator;
-    const src = try readMainSource(allocator);
+    const src = try readRouteSource(allocator);
     defer allocator.free(src);
 
     const ours = std.mem.indexOf(u8, src, ID_ONLY_TASK_ROUTE) orelse
@@ -781,7 +781,7 @@ test "the id-only task PUT path keeps `tasks` a literal segment" {
     // frontend sends none). A `:param` in that slot would reintroduce the
     // exact failure this file's tests exist to prevent.
     const allocator = testing.allocator;
-    const src = try readMainSource(allocator);
+    const src = try readRouteSource(allocator);
     defer allocator.free(src);
 
     const bad = ".put(\"/api/workspaces/:workspace_id/tasks/:task_id\"";

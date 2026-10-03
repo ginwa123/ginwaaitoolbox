@@ -218,7 +218,7 @@ const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH =
     "src/http_handlers/design_items_create.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 const MOD_PATH = "src/http_handlers/mod.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -297,7 +297,7 @@ test "design_items_create.zig maps PathRequired + NameRequired to 400" {
 
 // ─── Contract 4: route is registered in main.zig ─────────────────────────
 
-test "POST /api/workspaces/:workspace_id/items/design is registered in src/main.zig" {
+test "POST /api/workspaces/:workspace_id/items/design is registered in src/http_routes.zig" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, MAIN_PATH);
     defer allocator.free(source);

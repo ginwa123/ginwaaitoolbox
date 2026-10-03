@@ -975,6 +975,15 @@ pub const daemon = service.daemon;
 pub const signal_handlers = service.signal_handlers;
 pub const crash_handler = service.crash_handler;
 pub const main_service = service.main_service;
+// Top-level CLI flag parsing (`--port`, `--static-dir`, `--http2`, `--tls`,
+// `--auth`, `--help`). Extracted from `main` so it is unit-testable without
+// booting the server — see cli_args.zig for why parsing must complete
+// before any subsystem starts.
+pub const cli_args = @import("cli_args.zig");
+// The HTTP route table, moved out of `main` so `main` reads as startup
+// sequence rather than ~490 lines of registration. See http_routes.zig
+// for why the call order inside it is load-bearing.
+pub const http_routes = @import("http_routes.zig");
 // `pub const helpers = ...` was removed: `helpers` is now its own
 // Zig module (see `b.createModule` in build.zig) wired in via
 // `mod.addImport("helpers", helpers_mod)`. Source files inside
@@ -1114,6 +1123,15 @@ test {
     _ = @import("modules/config/UserConfigStore.zig");
     _ = @import("service/crash_handler.zig"); // crash signal/exception handler contracts
     _ = @import("service/signal_handlers.zig"); // SIGINT+SIGTERM graceful-shutdown contracts
+    // Top-level CLI flag parser: impl + inline tests in one file. The
+    // `pub const cli_args = ...` re-export above does not trigger test
+    // discovery, so the file is imported again here — same workaround as
+    // modules/config/web_port.zig below.
+    _ = @import("cli_args.zig");
+    // Route-table contracts (registration + relative order). The
+    // re-export above does not trigger test discovery; importing the
+    // file again here does — same workaround as cli_args.zig above.
+    _ = @import("http_routes.zig");
     // http_handlers/git_file_diffs.zig has inline tests for the diff
     // splitter, the path extractor, and capDiff's truncation branch.
     // `http_handlers/mod.zig` re-exports only `gitFileDiffsHandler`, and a

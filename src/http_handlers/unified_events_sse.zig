@@ -604,7 +604,7 @@ const connected_handshake_in_source =
 // ─── Static check on the single unified handler source file ───────────────
 
 test "SSE handshake: unified stream handler sends the connected event" {
-    // The single SSE route registered in src/main.zig. Must contain
+    // The single SSE route registered in src/http_routes.zig. Must contain
     // the `connected` handshake string in its source, or the frontend
     // SseStatusBadge will be stuck on "Connecting…".
     //
@@ -710,7 +710,7 @@ test "SSE rejection: handler terminates the stream on auth/400 paths" {
 const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/unified_events_sse.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(
@@ -792,7 +792,7 @@ test "unified_events_sse.zig sends the connected handshake" {
 
 // ─── Contract 4: route is registered in main.zig ─────────────────────────
 
-test "/api/events is registered in src/main.zig" {
+test "/api/events is registered in src/http_routes.zig" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, MAIN_PATH);
     defer allocator.free(source);

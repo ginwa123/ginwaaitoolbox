@@ -941,7 +941,7 @@ fn llmSourceContains(allocator: std.mem.Allocator, path: []const u8, needle: []c
 }
 
 test "llmTestHandler: registers the POST route with /api/llm/test" {
-    const found = try llmSourceContains(testing.allocator, "src/main.zig", "/api/llm/test");
+    const found = try llmSourceContains(testing.allocator, "src/http_routes.zig", "/api/llm/test");
     try testing.expect(found);
 }
 
@@ -2064,7 +2064,7 @@ fn mcpSourceContains(allocator: std.mem.Allocator, path: []const u8, needle: []c
 }
 
 test "mcpTestHandler: registers the POST route with /api/mcp/test" {
-    const found = try mcpSourceContains(testing.allocator, "src/main.zig", "/api/mcp/test");
+    const found = try mcpSourceContains(testing.allocator, "src/http_routes.zig", "/api/mcp/test");
     try testing.expect(found);
 }
 
