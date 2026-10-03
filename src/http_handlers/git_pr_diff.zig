@@ -334,10 +334,10 @@ test "git_pr_diff handler is exported from mod.zig" {
 
 test "git_pr_diff route is registered in main.zig" {
     const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/main.zig");
+    const source = try readSource(allocator, "src/http_routes.zig");
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "/api/git/pr/diff") == null) {
-        std.debug.print("!! main.zig does not register /api/git/pr/diff !!\n", .{});
+        std.debug.print("!! http_routes.zig does not register /api/git/pr/diff !!\n", .{});
         return error.NotRegistered;
     }
 }

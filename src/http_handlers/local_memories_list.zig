@@ -168,7 +168,7 @@ const CREATE_PATH = "src/http_handlers/local_memories_create.zig";
 const UPDATE_PATH = "src/http_handlers/local_memories_update.zig";
 const DELETE_PATH = "src/http_handlers/local_memories_delete.zig";
 const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 const MEMORIES_HELPERS_PATH = "src/modules/agent/tools/memories.zig";
 
 /// Read a source file from disk, relative to the project root
