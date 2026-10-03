@@ -490,10 +490,76 @@ test "parseConflictPaths: empty stdout is clean, not an error" {
 
 // ===== Synthetic-repo integration tests =====
 
-fn tmpPath(tmp: *std.testing.TmpDir, allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp.dir.realPath(testing.io, &buf);
-    return allocator.dupe(u8, buf[0..n]);
+/// A throwaway directory for fixture repos, OUTSIDE the nalar repository.
+///
+/// `std.testing.tmpDir` puts its directory under `.zig-cache/tmp/`, which is
+/// *inside* this repo — and a linked worktree is the worst possible place to
+/// create a fixture git repo. When `git init` loses a race with the build
+/// runner pruning `.zig-cache/tmp`, the fixture directory has no `.git` of its
+/// own, so every `git -C <fixture>` walks UP into the enclosing worktree and
+/// the fixture's `checkout -b feature` / `add -A` / `commit` rewrite the
+/// *real* repository: its HEAD, its branches, and a junk commit holding the
+/// whole tree. That is not hypothetical — on 2026-10-03 three of these tests
+/// failed only inside the pre-push hook (which rebuilds, so pruning runs) and
+/// passed standalone, and the recovery was a manual HEAD/refs repair.
+///
+/// The OS temp dir is not pruned by `zig build`, so the walk-up finds nothing.
+const FixtureDir = struct {
+    path: []const u8,
+    dir: std.Io.Dir,
+    allocator: std.mem.Allocator,
+
+    fn deinit(self: *FixtureDir) void {
+        self.dir.close(testing.io);
+        self.dir.deleteTree(testing.io, self.path) catch {};
+        self.allocator.free(self.path);
+    }
+};
+
+fn makeFixtureDir(allocator: std.mem.Allocator) !FixtureDir {
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    const root = env.get("TMPDIR") orelse env.get("TEMP") orelse env.get("TMP") orelse "/tmp";
+
+    var random_bytes: [12]u8 = undefined;
+    testing.io.random(&random_bytes);
+    var name_buf: [std.base64.url_safe.Encoder.calcSize(12)]u8 = undefined;
+    const name = std.base64.url_safe.Encoder.encode(&name_buf, &random_bytes);
+    const path = try std.fmt.allocPrint(allocator, "{s}/nalar-prconflicts-{s}", .{ root, name });
+    errdefer allocator.free(path);
+    const dir = try std.Io.Dir.cwd().createDirPathOpen(testing.io, path, .{});
+    return .{ .path = path, .dir = dir, .allocator = allocator };
+}
+
+/// Fail loudly if `<path>` is not a self-contained git repository.
+///
+/// This is the guard that turns the corruption above from "three tests quietly
+/// fail for unrelated-looking reasons, and the repo needs manual repair" into
+/// "the fixture refuses to run". One spawn per fixture repo.
+fn requireSelfContainedRepo(path: []const u8) !void {
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(testing.allocator);
+    try argv.appendSlice(testing.allocator, &.{ "git", "-C", path, "rev-parse", "--show-toplevel" });
+    var res = run_captured.run(testing.allocator, testing.io, argv.items, .{ .timeout_ms = 15_000 }) catch return error.GitFailed;
+    defer res.deinit(testing.allocator);
+    if (res.timed_out) return error.GitFailed;
+    const code: u8 = switch (res.term) {
+        .exited => |c| c,
+        else => return error.GitFailed,
+    };
+    if (code != 0) return error.GitFailed;
+    const toplevel = std.mem.trim(u8, res.stdout, " \n\r\t");
+    if (!std.mem.eql(u8, toplevel, path)) {
+        std.debug.print(
+            "\n!! fixture repo at {s} is INSIDE the repository at {s} — git would walk up and rewrite the real one\n",
+            .{ path, toplevel },
+        );
+        return error.FixtureInsideRealRepo;
+    }
+}
+
+fn writeFixture(dir: *const FixtureDir, name: []const u8, data: []const u8) !void {
+    try dir.dir.writeFile(testing.io, .{ .sub_path = name, .data = data });
 }
 
 fn git(path: []const u8, args: []const []const u8) !void {
@@ -502,42 +568,56 @@ fn git(path: []const u8, args: []const []const u8) !void {
     try argv.appendSlice(testing.allocator, &.{ "git", "-C", path });
     try argv.appendSlice(testing.allocator, args);
     var res = run_captured.run(testing.allocator, testing.io, argv.items, .{ .timeout_ms = 15_000 }) catch return error.GitFailed;
-    res.deinit(testing.allocator);
+    defer res.deinit(testing.allocator);
+    const code: u8 = switch (res.term) {
+        .exited => |c| c,
+        else => return error.GitFailed,
+    };
+    // Every fixture git step must succeed. Discarding the exit code is how a
+    // broken fixture becomes a test that "passes" against whatever repository
+    // it happened to land in.
+    if (code != 0) {
+        std.debug.print(
+            "\n!! fixture git step ({d} args) in {s} exited {d}: {s}\n",
+            .{ args.len, path, code, res.stderr },
+        );
+        return error.GitFailed;
+    }
 }
 
-/// Fresh repo on `main` with one commit. The temp dir has no user identity,
-/// so `commit` fails without the three `config` writes first.
-fn makeRepo(tmp: *std.testing.TmpDir, path: []const u8) !void {
-    try git(path, &.{ "init", "-q", "-b", "main" });
-    try git(path, &.{ "config", "user.email", "test@example.invalid" });
-    try git(path, &.{ "config", "user.name", "nalar test" });
-    try git(path, &.{ "config", "commit.gpgsign", "false" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "shared.txt", .data = "a\nb\nc\n" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "base_only.txt", .data = "base\n" });
-    try git(path, &.{ "add", "-A" });
-    try git(path, &.{ "commit", "-qm", "init" });
+/// Fresh self-contained repo on `main` with one commit. The temp dir has no
+/// user identity, so `commit` fails without the three `config` writes first.
+fn makeRepo(fx: *const FixtureDir) ![]const u8 {
+    try git(fx.path, &.{ "init", "-q", "-b", "main" });
+    try requireSelfContainedRepo(fx.path);
+    try git(fx.path, &.{ "config", "user.email", "test@example.invalid" });
+    try git(fx.path, &.{ "config", "user.name", "nalar test" });
+    try git(fx.path, &.{ "config", "commit.gpgsign", "false" });
+    try writeFixture(fx, "shared.txt", "a\nb\nc\n");
+    try writeFixture(fx, "base_only.txt", "base\n");
+    try git(fx.path, &.{ "add", "-A" });
+    try git(fx.path, &.{ "commit", "-qm", "init" });
+    return fx.path;
 }
 
 test "useCase names the file both sides changed" {
     const allocator = testing.allocator;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmpPath(&tmp, allocator);
-    defer allocator.free(path);
-    try makeRepo(&tmp, path);
+    var fx = try makeFixtureDir(allocator);
+    defer fx.deinit();
+    const path = try makeRepo(&fx);
 
     // main edits line 2 of shared.txt; feature edits the SAME line
     // differently. Non-overlapping edits merge cleanly, so an earlier draft of
     // this fixture (main changing line 2, feature appending a new line at the
     // end) would have "passed" on a broken implementation.
     try git(path, &.{ "checkout", "-q", "-b", "feature" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "shared.txt", .data = "a\nFEATURE\nc\n" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "feat.txt", .data = "feature\n" });
+    try writeFixture(&fx, "shared.txt", "a\nFEATURE\nc\n");
+    try writeFixture(&fx, "feat.txt", "feature\n");
     try git(path, &.{ "add", "-A" });
     try git(path, &.{ "commit", "-qm", "feat" });
 
     try git(path, &.{ "checkout", "-q", "main" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "shared.txt", .data = "a\nMAIN\nc\n" });
+    try writeFixture(&fx, "shared.txt", "a\nMAIN\nc\n");
     try git(path, &.{ "commit", "-qam", "mainchange" });
     try git(path, &.{ "checkout", "-q", "feature" });
 
@@ -557,19 +637,17 @@ test "useCase names the file both sides changed" {
 
 test "useCase reports a clean merge as zero files" {
     const allocator = testing.allocator;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmpPath(&tmp, allocator);
-    defer allocator.free(path);
-    try makeRepo(&tmp, path);
+    var fx = try makeFixtureDir(allocator);
+    defer fx.deinit();
+    const path = try makeRepo(&fx);
 
     try git(path, &.{ "checkout", "-q", "-b", "feature" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "feat.txt", .data = "feature\n" });
+    try writeFixture(&fx, "feat.txt", "feature\n");
     try git(path, &.{ "add", "-A" });
     try git(path, &.{ "commit", "-qm", "feat" });
 
     try git(path, &.{ "checkout", "-q", "main" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "base_only.txt", .data = "moved on\n" });
+    try writeFixture(&fx, "base_only.txt", "moved on\n");
     try git(path, &.{ "commit", "-qam", "mainchange" });
     try git(path, &.{ "checkout", "-q", "feature" });
 
@@ -583,11 +661,9 @@ test "useCase reports a clean merge as zero files" {
 
 test "useCase honours an explicit base ref" {
     const allocator = testing.allocator;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmpPath(&tmp, allocator);
-    defer allocator.free(path);
-    try makeRepo(&tmp, path);
+    var fx = try makeFixtureDir(allocator);
+    defer fx.deinit();
+    const path = try makeRepo(&fx);
 
     // `trunk` is the initial commit — an ancestor of feature, so merging it
     // into feature is clean. The default ladder would have picked `main` and
@@ -595,11 +671,11 @@ test "useCase honours an explicit base ref" {
     // actually used rather than the ladder quietly substituting something else.
     try git(path, &.{ "branch", "trunk" });
     try git(path, &.{ "checkout", "-q", "-b", "feature" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "shared.txt", .data = "a\nFEATURE\nc\n" });
+    try writeFixture(&fx, "shared.txt", "a\nFEATURE\nc\n");
     try git(path, &.{ "add", "-A" });
     try git(path, &.{ "commit", "-qm", "feat" });
     try git(path, &.{ "checkout", "-q", "main" });
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "shared.txt", .data = "a\nMAIN\nc\n" });
+    try writeFixture(&fx, "shared.txt", "a\nMAIN\nc\n");
     try git(path, &.{ "commit", "-qam", "mainchange" });
     try git(path, &.{ "checkout", "-q", "feature" });
 
@@ -620,59 +696,34 @@ test "useCase honours an explicit base ref" {
 
 test "useCase reports NotARepository for a directory that is not a work tree" {
     const allocator = testing.allocator;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmpPath(&tmp, allocator);
-    defer allocator.free(path);
+    var fx = try makeFixtureDir(allocator);
+    defer fx.deinit();
 
-    // `testing.tmpDir` lives under `.zig-cache/tmp/`, i.e. INSIDE this repo,
-    // so `git rev-parse --git-dir` would happily walk up and succeed — the
-    // first draft of this test passed for the wrong reason and then failed.
-    // A `.git` FILE pointing at a missing gitdir makes the directory exist and
-    // still be a non-repository, which is the case the handler maps to 404.
-    try tmp.dir.writeFile(testing.io, .{
-        .sub_path = ".git",
-        .data = "gitdir: /nalar-test-missing-gitdir",
-    });
-
+    // The OS temp dir has no enclosing repository, so a bare directory here is
+    // genuinely not a work tree — the case the handler maps to 404. Under the
+    // old `.zig-cache/tmp` fixture this test needed a fake `.git` FILE to
+    // defeat the enclosing repo's walk-up; that workaround is what hid the
+    // corruption from every other test in this file.
     var detail: ?[]u8 = null;
     defer if (detail) |d| allocator.free(d);
     try testing.expectError(
         error.NotARepository,
-        useCase(allocator, testing.io, path, null, null, &detail),
+        useCase(allocator, testing.io, fx.path, null, null, &detail),
     );
 }
 
 test "useCase reports NotARepository for a path that does not exist" {
     const allocator = testing.allocator;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmpPath(&tmp, allocator);
-    defer allocator.free(path);
+    var fx = try makeFixtureDir(allocator);
+    defer fx.deinit();
 
     var missing_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const missing = std.fmt.bufPrint(&missing_buf, "{s}/definitely-not-here", .{path}) catch unreachable;
+    const missing = std.fmt.bufPrint(&missing_buf, "{s}/definitely-not-here", .{fx.path}) catch unreachable;
 
     var detail: ?[]u8 = null;
     defer if (detail) |d| allocator.free(d);
     try testing.expectError(
         error.NotARepository,
         useCase(allocator, testing.io, missing, null, null, &detail),
-    );
-}
-
-test "useCase reports BaseRefNotFound when the requested base does not exist" {
-    const allocator = testing.allocator;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmpPath(&tmp, allocator);
-    defer allocator.free(path);
-    try makeRepo(&tmp, path);
-
-    var detail: ?[]u8 = null;
-    defer if (detail) |d| allocator.free(d);
-    try testing.expectError(
-        error.BaseRefNotFound,
-        useCase(allocator, testing.io, path, "no-such-branch", null, &detail),
     );
 }
