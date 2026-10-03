@@ -519,15 +519,55 @@ const FixtureDir = struct {
 fn makeFixtureDir(allocator: std.mem.Allocator) !FixtureDir {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
-    const root = env.get("TMPDIR") orelse env.get("TEMP") orelse env.get("TMP") orelse "/tmp";
+    const raw_root = env.get("TMPDIR") orelse env.get("TEMP") orelse env.get("TMP") orelse "/tmp";
+    return makeFixtureDirIn(allocator, raw_root);
+}
+
+/// The body of [`makeFixtureDir`], with the temp root passed in rather than
+/// read from the environment. Split out so the regression test below can drive
+/// the REAL production path with a macOS-shaped root — `$TMPDIR` cannot be set
+/// for the running test binary, and a test that re-implements the logic instead
+/// of calling it proves nothing (the first draft of that test passed with the
+/// bug still in place).
+fn makeFixtureDirIn(allocator: std.mem.Allocator, raw_root: []const u8) !FixtureDir {
+    // macOS's $TMPDIR is `/var/folders/…/T/` — note the TRAILING SLASH. Naive
+    // concatenation then yields `…/T//nalar-prconflicts-x`, while every later
+    // read of `path` (git's argv, `writeFixture`) and git's own
+    // `--show-toplevel` spell it `…/T/nalar-prconflicts-x`. Strip the trailing
+    // separators so both sides agree on one spelling.
+    const root = std.mem.trimEnd(u8, raw_root, "/");
+    if (root.len == 0) return error.NoTempRoot;
 
     var random_bytes: [12]u8 = undefined;
     testing.io.random(&random_bytes);
     var name_buf: [std.base64.url_safe.Encoder.calcSize(12)]u8 = undefined;
     const name = std.base64.url_safe.Encoder.encode(&name_buf, &random_bytes);
-    const path = try std.fmt.allocPrint(allocator, "{s}/nalar-prconflicts-{s}", .{ root, name });
+    const joined = try std.fmt.allocPrint(allocator, "{s}/nalar-prconflicts-{s}", .{ root, name });
+    defer allocator.free(joined);
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(testing.io, joined, .{});
+
+    // Canonicalise before anything else. `git rev-parse --show-toplevel`
+    // reports the RESOLVED path, and on macOS both `/tmp` and `$TMPDIR`
+    // (`/var/folders/…`) are symlinks into `/private/…`. Comparing that
+    // against the unresolved string made requireSelfContainedRepo fire on
+    // every macOS runner: the repo WAS self-contained, the two strings just
+    // named the same directory by different routes.
+    var real_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_len = dir.realPath(testing.io, &real_buf) catch {
+        dir.close(testing.io);
+        return error.FixtureDirUnresolvable;
+    };
+    const path = try allocator.dupe(u8, real_buf[0..real_len]);
     errdefer allocator.free(path);
-    const dir = try std.Io.Dir.cwd().createDirPathOpen(testing.io, path, .{});
+
+    // Re-open on the canonical path so `writeFixture`'s sub_path writes land
+    // in the same directory the string names.
+    dir.close(testing.io);
+    dir = std.Io.Dir.cwd().openDir(testing.io, path, .{}) catch |err| {
+        allocator.free(path);
+        return err;
+    };
     return .{ .path = path, .dir = dir, .allocator = allocator };
 }
 
@@ -598,6 +638,50 @@ fn makeRepo(fx: *const FixtureDir) ![]const u8 {
     try git(fx.path, &.{ "add", "-A" });
     try git(fx.path, &.{ "commit", "-qm", "init" });
     return fx.path;
+}
+
+test "fixture dir survives a symlinked temp root with a trailing slash (macOS shape)" {
+    // Regression guard, 2026-10-03. Every macOS runner failed these tests with
+    // `FixtureInsideRealRepo` because $TMPDIR is BOTH a symlink into /private
+    // AND ends in a slash: the constructed path was `…/T//nalar-prconflicts-x`
+    // while `git rev-parse --show-toplevel` answers `…/T/nalar-prconflicts-x`.
+    // The repo was self-contained the whole time; only the two SPELLINGS of the
+    // same directory disagreed.
+    //
+    // Drives the REAL makeFixtureDirIn — the first draft of this test
+    // re-implemented the logic inline and therefore passed with the bug still
+    // in place, which is worse than no test at all.
+    const allocator = testing.allocator;
+    const base = try std.Io.Dir.cwd().realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(base);
+
+    const real_root = try std.fmt.allocPrint(allocator, "{s}/nalar-tmpprobe-real", .{base});
+    defer allocator.free(real_root);
+    const link_root = try std.fmt.allocPrint(allocator, "{s}/nalar-tmpprobe-link", .{base});
+    defer allocator.free(link_root);
+    const with_slash = try std.fmt.allocPrint(allocator, "{s}/", .{link_root});
+    defer allocator.free(with_slash);
+
+    std.Io.Dir.cwd().deleteTree(testing.io, real_root) catch {};
+    std.Io.Dir.cwd().deleteTree(testing.io, link_root) catch {};
+    var d = try std.Io.Dir.cwd().createDirPathOpen(testing.io, real_root, .{});
+    d.close(testing.io);
+    try std.Io.Dir.cwd().symLink(testing.io, real_root, link_root, .{});
+    defer std.Io.Dir.cwd().deleteTree(testing.io, link_root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(testing.io, real_root) catch {};
+
+    // `with_slash` is exactly macOS's $TMPDIR: a symlinked root ending in "/".
+    var fx = try makeFixtureDirIn(allocator, with_slash);
+    defer fx.deinit();
+
+    // The fixture must be its OWN git repo, or every `git -C fx.path` walks up
+    // and rewrites the enclosing repository.
+    try git(fx.path, &.{"init", "-q"});
+    try requireSelfContainedRepo(fx.path);
+
+    // And it must not name a path under the nalar checkout — this fixture is
+    // created relative to cwd here only to get a writable, unique parent.
+    try testing.expect(std.mem.indexOf(u8, fx.path, "nalar-prconflicts-") != null);
 }
 
 test "useCase names the file both sides changed" {
