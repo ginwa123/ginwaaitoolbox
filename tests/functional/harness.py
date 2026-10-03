@@ -52,6 +52,7 @@ import shlex
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -278,6 +279,39 @@ def is_safe_tmp(path: str | os.PathLike[str], orig_home: str | os.PathLike[str])
     if real_home and real == real_home:
         return False
     return True
+
+
+def _make_tree_writable(root: Path) -> None:
+    """Clear the read-only bit across ``root`` so Windows will let us delete it.
+
+    A read-only file cannot be deleted on Windows. `shutil.rmtree` raises
+
+        PermissionError: [WinError 5] Access is denied:
+          ...\\temp\\nalar-func-8j0gcuas\\branches-repo\\.git\\objects\\08\\585692...
+
+    and the teardown retry loop then sleeps through its entire budget and
+    re-raises, so the tempdir leaks and the test is reported red even though
+    the test itself passed.
+
+    git is the source: it creates loose objects with mode 0444, and any test
+    that makes a real repo in the tempdir (`git_pr_*`, the kanban branch
+    pickers, ...) inherits them. Waiting cannot help, because the attribute is
+    not going to change on its own — the loop was retrying against a permanent
+    condition.
+
+    POSIX has no read-only bit, so this is a no-op there and Linux/macOS
+    teardown is untouched.
+    """
+    if os.name != "nt":
+        return
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+            except OSError:
+                # Already gone, or we cannot touch it. rmtree will report it.
+                pass
 
 
 def harness_path(harness: Any, *parts: str) -> str:
@@ -881,6 +915,13 @@ class FunctionalHarness:
                     break
                 except OSError as e:
                     last_exc = e
+                    # Two different failures share this except clause and need
+                    # opposite treatment. A read-only file (git's loose
+                    # objects) will NEVER become deletable by waiting, so
+                    # clear the attribute first; the retry then succeeds on
+                    # the same attempt. A file still being flushed by a dying
+                    # child resolves itself, which is what the sleep is for.
+                    _make_tree_writable(self.temp_dir)
                     time.sleep(1.0)
             if last_exc is not None:
                 raise last_exc
