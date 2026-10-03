@@ -6,11 +6,11 @@
 
 **Architecture:** Three parts that must land as one change, because each is worthless alone.
 
-1. **Storage** — a `workspace_secrets` table (Migration 100) with an encrypted-at-rest value column and a `key_hint` column holding only the last 4 characters, so the UI can render `ghp_••••••••3f9a` without ever holding the value in a GET response.
+1. **Storage** — a `workspace_secrets` table (Migration 101) with an encrypted-at-rest value column and a `key_hint` column holding only the last 4 characters, so the UI can render `ghp_••••••••3f9a` without ever holding the value in a GET response.
 2. **The substitution boundary** — one function, `secrets_substitution.substituteToolArguments`, called from `dispatchTool` (`src/agentic_loop/handle_tool.zig:192`) *after* the Lua pre-hook and *before* the registry walk. It parses the raw arguments JSON, walks every string leaf, replaces `{{SECRETS:name}}` with the decrypted value, and returns the substituted string plus a list of `{name, value}` pairs used to redact the tool's own output. Substitution is deliberately **not** done in the Lua hook seam and **not** done on the raw bytes — both are explained in Design Decisions 4 and 5.
 3. **Discovery + the guarantee** — a `list_secrets` agent tool that returns names and hints only (never values), plus a prompt rule. The discovery tool exists because the repo has an explicit, twice-stated convention that catalogues are discovered by tool call and never pre-listed in the prompt (`src/modules/agent/prompts/core.zig:177` for skills, `:160` for progressive tools).
 
-**Tech Stack:** Zig 0.16 (`AgentTool`, `ToolExecContext`, `wrapToolOutput`, `std.crypto.aes_gcm.Aes256Gcm`), SQLite (Migration 100), Vue 3 + vitest, python functional harness (isolated tmpdir `HOME`, free port outside 8081).
+**Tech Stack:** Zig 0.16 (`AgentTool`, `ToolExecContext`, `wrapToolOutput`, `std.crypto.aes_gcm.Aes256Gcm`), SQLite (Migration 101), Vue 3 + vitest, python functional harness (isolated tmpdir `HOME`, free port outside 8081).
 
 ---
 
@@ -19,9 +19,10 @@
 - **NEVER kill or bind port 8081.** It is the always-running dev server. `tests/functional/harness.py:145` declares `RESERVED_PORTS: tuple[int, ...] = (8081,)` and the picker skips it.
 - **NEVER verify HTTP behaviour with `nohup ./zig-out/bin/nalar --port 8080 &` + `curl`.** Use `tests/functional/harness.py`, which boots a fresh binary against an isolated tmpdir `HOME` and tears both down. The anti-pattern leaks a process across tool calls and is exactly what missed the PR #291 bugs.
 - **`SqliteBackend.exec` binds a zero-length slice as SQL NULL** (`zig-pkg/databases-…/src/sqlite/Sqlite.zig:176-182`). Every `NOT NULL` text column written by this feature goes through `COALESCE(NULLIF(?, ''), '')`, exactly as `documents_store.zig:202-206` does. A `PATCH` that clears a secret to `""` will otherwise 500.
-- **A new migration must be version 100 and appear in `allMigrations`.** `runMigrations` gates on `migration.version > currentVersion` where `currentVersion` is `MAX(version)` (`src/migrations/migration.zig:1596-1597`) — a single global watermark. A migration that is not in the array, or whose version is ≤ the max, silently never runs on an existing database.
+- **A new migration must be version 101 and appear in `allMigrations`.** PR #781 (merged) took 100 with `workspace_members`; re-verify 101 is still free on `main` before writing the migration — a stale number here is the most likely reason Task 2 fails on day one. `runMigrations` gates on `migration.version > currentVersion` where `currentVersion` is `MAX(version)` (`src/migrations/migration.zig:1596-1597`) — a single global watermark. A migration that is not in the array, or whose version is ≤ the max, silently never runs on an existing database.
 - **No `// NEW (plan: …)` tags** in any new code or comment. Explain *why* in one plain sentence or not at all.
 - **Cross-platform:** the frontend uses Tailwind v4 utility classes plus CSS custom properties (`var(--semantic-text-muted)`), never hex literals. The backend must compile on Linux/macOS/Windows — the CI matrix runs `backend-{linux,macos,windows}`.
+- **`workspace_secrets` carries no `user_id`.** Access is workspace membership via `workspace_members` (PR #781), enforced by `auth_common.workspaceVisibilityClause` + `canSeeWorkspace` exactly as it is for `documents`. A per-secret owner column would answer authorship, not entitlement, and would contradict the middleware the moment a workspace is shared. See Design Decision 11.
 - **Route order matters both sides of the wire.** Backend `matchRoute` walks routes in registration order and returns on first hit (`zig-pkg/kabelweb-…/src/server/router.zig:614`), so literals must be registered before same-length `:param` siblings. Vue Router matches in registration order too (`src/apps/desktop/src/router/index.ts`), so `/app/:workspaceId/settings` must be registered **above** `/app/:workspaceId` at `router/index.ts:86`.
 - **Verification gates for this feature** (all must pass before the PR is opened):
   - `zig build test` (inline Zig tests, including the redaction tests)
@@ -79,7 +80,7 @@
 |---|---|
 | `matchRoute` walks `for (self.routes.items)` at `router.zig:614` and returns on first hit. **Note:** the repo's own `AGENTS.md` and two older plans cite `router.zig:182` for this — that line is a closing brace in the current vendored package and is **stale**. Use `:614`. | verified against the vendored package |
 | The documents precedent for a workspace-scoped CRUD resource is complete and copyable: `documents_store.zig`, five `documents_*.zig` handlers, five `mod.zig` re-exports at `:171-175`, five routes at `main.zig:840-844`. | verified |
-| Any route whose path carries `:workspace_id` is **automatically 404-gated** in auth mode by `auth_middleware.zig:74-82`. No per-handler auth code is needed for the workspace check. | `src/http_handlers/auth_middleware.zig:74-82` |
+| Any route whose path carries `:workspace_id` is **automatically 404-gated** in auth mode by `auth_middleware.zig:74-82`, which calls `canSeeWorkspace` (`auth_common.zig:217`). No per-handler auth code is needed for the workspace check. | verified on `main` at PR #783 time |
 | `GET /api/config/nalar` returns MCP server headers **in cleartext** (`mcp_servers` is `?std.json.Value`, sent "as-is") and sub-agent `api_key` verbatim. There is no redaction layer in the config surface today. | `src/http_handlers/http_response.zig:365`, `:429` |
 | **No `/app/:workspaceId/settings` route exists.** `SettingsView.vue` is global (LLM profiles, MCP, tools, memories) and its own tab state is a bare `ref` at `:11`. `/app/:workspaceId` at `router/index.ts:86` is a catch-all that would swallow `/app/ws_1/settings`. | verified |
 | `?section=` is the reserved query key inside the settings shell; `?tab=` is owned by browser tab-mode and must not be reused. | `src/apps/desktop/src/components/NalarSettings.vue:73-77` |
@@ -93,11 +94,11 @@
 
 ### 1. A new `workspace_secrets` table, not a `users.config_json` field
 
-**Decision:** Migration 100 creates `workspace_secrets`.
+**Decision:** Migration 101 creates `workspace_secrets`.
 
 **Rejected:** adding a `secrets` map to `users.config_json` (the `web_search` plan's no-migration route). It is wrong on three counts: (a) `config_json` is **user**-scoped and has no `workspace_id` — the feature's stated unit is the workspace; (b) the whole blob is returned to the browser by `GET /api/config/nalar` verbatim (`http_response.zig:365`), so a secrets map there would be readable by any authenticated user of the same account with one GET; (c) `Migration099` already treats `config_json` as a raw-string-rewritten blob — mixing a credential store into it invites the next token-rename migration to corrupt it.
 
-**Why a table is right:** the documents precedent (`documents_store.zig`) already proves the pattern: `workspace_id` is a function parameter that appears in the `WHERE` clause, never a value the caller can choose to omit.
+**Why a table is right:** the documents precedent (`documents_store.zig`) already proves the pattern: `workspace_id` is a function parameter that appears in the `WHERE` clause, never a value the caller can choose to omit. The who-may-use-it half of that is `auth_common.workspaceVisibilityClause` over `workspace_members` (see Design Decision 11).
 
 ### 2. Encrypt the value at rest with AES-256-GCM, keyed from a generated file
 
@@ -167,9 +168,21 @@
 
 ---
 
+### 11. No `user_id` column — membership in `workspace_members` IS the access check
+
+**Decision:** `workspace_secrets` carries `workspace_id` and nothing else. No `user_id`, no `created_by`.
+
+**Why:** [PR #781](https://github.com/ginwa123/ginwaaitoolbox/pull/781) (merged) added `workspace_members(workspace_id, user_id, role, joined_at, invited_by)` with `PRIMARY KEY (workspace_id, user_id)`, and `auth_common.workspaceVisibilityClause` (`auth_common.zig:158`) now answers "who may see this workspace" with an `EXISTS` subquery over that table. `canSeeWorkspace` (`auth_common.zig:217`) uses it. So a per-secret `user_id` would duplicate a decision the schema already makes one level up — and would immediately disagree with it the moment a workspace is shared, because the middleware grants access on membership while the row would grant it on authorship.
+
+The rule is the documents rule, unchanged: **`workspace_id` appears in every `WHERE` clause as a parameter the caller cannot omit**, and the middleware decides whether the caller may use that workspace at all. There is no second check to forget.
+
+**Consequence, stated plainly:** every member of a workspace can read, rotate, and delete every secret in it — including `viewer`-role members, because `workspaceVisibilityClause` filters on *membership only* and does not look at `m.role` at all. That is consistent with the rest of the app today (a `viewer` can already read every document in the workspace), but it is a sharper edge for credentials than for documents: a viewer who can read a document cannot spend an API key.
+
+**Not solved by adding a column.** If per-role secret access is wanted, the place to add it is a role predicate inside `workspaceVisibilityClause` or a new `secretsCanBeRead` sibling — not a `user_id` on the row, which would answer the wrong question (authorship ≠ entitlement).
+
 ## Wire Contract
 
-### Table (Migration 100)
+### Table (Migration 101)
 
 ```sql
 CREATE TABLE IF NOT EXISTS workspace_secrets (
@@ -260,7 +273,7 @@ Registered on the `authed` group so `auth_middleware.zig:74-82` applies the work
 
 | Action | File | Responsibility |
 |---|---|---|
-| Create | `src/migrations/migration.zig` | `Migration100CreateWorkspaceSecrets` (table + 2 indexes) + one `allMigrations` entry + inline tests |
+| Create | `src/migrations/migration.zig` | `Migration101CreateWorkspaceSecrets` (table + 2 indexes) + one `allMigrations` entry + inline tests |
 | Modify | `src/http_handlers/workspace_delete.zig` | Explicit `DELETE FROM workspace_secrets WHERE workspace_id = ?` (FK cascade is inert) |
 | Create | `src/agentic_loop/secrets_store.zig` | CRUD + `listSecretNames` (names/hints only) + `loadSecretValues` (dispatch-only). `workspace_id` is always a `WHERE` parameter. Encrypted write, decrypted read. |
 | Create | `src/agentic_loop/secrets_master_key.zig` | Load-or-create `secrets.key`, `0600` on POSIX; `seal`/`open` via `std.crypto.aes_gcm.Aes256Gcm` |
@@ -307,14 +320,14 @@ The only task that can be wrong in a way no other task can detect.
 - [ ] Run `zig build test` — the four tests go from red to green.
 - [ ] Commit: `feat(secrets): AES-256-GCM master key + seal/open`
 
-### Task 2 — Migration 100 + `secrets_store.zig`
+### Task 2 — Migration 101 + `secrets_store.zig`
 
-- [ ] Write the failing test (in-memory SQLite, the `setupDb` fixture at `migration.zig:3649`): after `Migration100CreateWorkspaceSecrets.up`, `pragma_table_info('workspace_secrets')` contains all 8 columns.
+- [ ] Write the failing test (in-memory SQLite, the `setupDb` fixture at `migration.zig:3649`): after `Migration101CreateWorkspaceSecrets.up`, `pragma_table_info('workspace_secrets')` contains all 8 columns.
 - [ ] Write the failing test: `uq_workspace_secrets_name` rejects a duplicate name in the same workspace but allows the same name in a **different** workspace.
 - [ ] Write the failing test: `createSecret` with an empty name returns `error.NameRequired` **before** touching the DB (the empty-slice-binds-as-NULL trap).
 - [ ] Write the failing test: `getSecret` with a foreign `workspace_id` returns `error.NotFound`, never another workspace's row.
 - [ ] Write the failing test: the stored `value_enc` bytes contain no substring of the plaintext (assert encryption, not just round-trip).
-- [ ] Implement `Migration100CreateWorkspaceSecrets` + its `allMigrations` entry at the array tail.
+- [ ] Implement `Migration101CreateWorkspaceSecrets` + its `allMigrations` entry at the array tail.
 - [ ] Implement `secrets_store.zig`: `listSecrets`, `getSecret`, `createSecret`, `updateSecret`, `deleteSecret`, `listSecretNames`, `loadSecretValues`. Every one takes `workspace_id` as a positional parameter that appears in the `WHERE` clause — copy the guard style from `documents_store.zig:137`.
 - [ ] Write `listSecretNames` to select `name, key_hint` only. It is the only function the agent path may call.
 - [ ] Add the explicit child-delete to `workspace_delete.zig`.
@@ -439,8 +452,10 @@ Unit tests cannot see route-order shadowing or the empty-slice-binds-as-NULL col
 2. **Is `key_hint` (last 4 chars) acceptable at all?** It is a deliberate small disclosure — GitHub and Stripe both do it — and it is the only way the UI distinguishes two rotations without decrypting on a read path. If you want zero disclosure, drop the column and render a bare "configured".
 3. **Should `list_secrets` really bypass the allowlist?** Design Decision 6 argues yes (the `Migration099` lesson: a tool only new agents have is a tool existing agents never see). The counter-argument is that a user who deliberately unchecked a tool would expect it gone. Your call.
 4. **Is an error on an unknown placeholder the right behaviour, or should it substitute empty?** This plan hard-fails with a named error (Decision 8) on the grounds that an empty substitution produces a confusing third-party 401 several steps later. Confirm.
-5. **Should the feature ship before the redaction pass is proven?** It must not — redaction is the feature (Decision 5). Flagging because it means Tasks 4 and 8 are not optional follow-ups.
-6. **`{{SECRETS:…}}` syntax — is `SECRETS` the right token, and should the `{{ }}` form be reserved?** The `{{ }}` delimiters are also used by `{{name: ""}}` in workflow diagnostics and `{{m,n}}` regex ranges in the search tool's help text (`progressive_catalog.zig:246`). A regex-quantifier false positive is harmless (it is never inside a tool argument), but if you want a distinct delimiter, now is the time.
+5. **Should a `viewer` be able to rotate a secret?** `workspaceVisibilityClause` filters on membership only — `m.role` is never read — so today every member, including a `viewer`, can read/rotate/delete every secret in a shared workspace. That matches how documents already behave, but a viewer who can read a document arguably should not be able to spend an API key. The plan does NOT add a column for this; the options are a role predicate in the visibility clause or a `secretsCanBeRead` helper. Confirm whether that matters now or is a follow-up.
+6. **Is the machine-wide master key still right now that workspaces are shared?** One `secrets.key` decrypts every workspace's secrets. With shared workspaces, per-workspace isolation of the *ciphertext* may matter more than it did when workspaces were single-owner. See Design Decision 2.
+7. **Should the feature ship before the redaction pass is proven?** It must not — redaction is the feature (Decision 5). Flagging because it means Tasks 4 and 8 are not optional follow-ups.
+8. **`{{SECRETS:…}}` syntax — is `SECRETS` the right token, and should the `{{ }}` form be reserved?** The `{{ }}` delimiters are also used by `{{name: ""}}` in workflow diagnostics and `{{m,n}}` regex ranges in the search tool's help text (`progressive_catalog.zig:246`). A regex-quantifier false positive is harmless (it is never inside a tool argument), but if you want a distinct delimiter, now is the time.
 
 ## Risks
 
