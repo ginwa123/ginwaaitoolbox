@@ -606,10 +606,14 @@ async function copyAllReviewComments() {
 
 // Sidebar file-row click (or header Open button): open the file in the
 // in-app code browser, which also updates the app URL (view=code-editor).
-// Null-guarded: the injection is absent outside an AppLayout subtree
-// (e.g. unit tests), where the click is a no-op.
+//
+// Captured at setup: inject() only resolves against an active component
+// instance, and a DOM event handler has none — calling it inside the
+// handler returned undefined and made this a silent no-op. Null-guarded
+// for mounts outside an AppLayout subtree (unit tests), where the click
+// is legitimately a no-op.
+const openInEditor = useInjectOpenInCodeEditor()
 function onChatSidebarOpenFile(payload: { path: string; line?: number }) {
-  const openInEditor = useInjectOpenInCodeEditor()
   if (!openInEditor || !effectiveCwd.value) return
   void openInEditor({ filePath: payload.path, cwd: effectiveCwd.value, line: payload.line })
 }
