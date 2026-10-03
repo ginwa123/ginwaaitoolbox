@@ -52,6 +52,13 @@ const BUILTIN_DEFAULT_TOOLS: readonly string[] = [
   // by default costs nothing.
   'add_document',
   'edit_document',
+  // Read-only, and a prerequisite for every edit: `edit_document` replaces
+  // the whole body, so the agent has to be able to FIND the row first.
+  'search_documents',
+  // `delete_document` is deliberately NOT in this preset. It is
+  // irreversible, so it belongs behind a tick in the checklist rather than
+  // inside the set every new agent starts with. It still shows up in the
+  // Documents group below, so it is one click away.
   'use_skill',
   'remove_skill',
   'add_skill',
@@ -104,6 +111,10 @@ const GROUP_BY_TOOL: Record<string, string> = {
   read_workspace_session: 'Memory & sessions',
   add_document: 'Documents',
   edit_document: 'Documents',
+  search_documents: 'Documents',
+  // Grouped with the other document tools so the irreversible one is one
+  // tick away, but NOT in RECOMMENDED_TOOLS above — see the note there.
+  delete_document: 'Documents',
   search_skills: 'Skills',
   use_skill: 'Skills',
   add_skill: 'Skills',

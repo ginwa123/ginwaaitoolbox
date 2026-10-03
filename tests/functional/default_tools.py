@@ -7,7 +7,8 @@ One copy, because there used to be four. `agent_tools_toggle_test`,
 `DEFAULT_AGENT_TOOLS` and updated none of them, so the next
 `zig build functional-test-all` failed 18 tests that were all really one
 assertion — and a reviewer reading the CI log had to diff four files to
-find that out.
+find that out. `search_documents` (2026-10-02) repeated the cycle once
+more.
 
 The backend's list is `DEFAULT_AGENT_TOOLS`, plus `DEFAULT_KANBAN_TOOLS`
 for kanban items — `src/agentic_loop/tools_equipped.zig`. Both are seeded
@@ -23,8 +24,15 @@ A stale entry here is a red build that names the one file to edit.
 
 from __future__ import annotations
 
-# Mirrors `DEFAULT_AGENT_TOOLS` — 30 names, sorted ASC, matching the
+# Mirrors `DEFAULT_AGENT_TOOLS` — 31 names, sorted ASC, matching the
 # wire order of `GET /api/agents/:agent_id/tools`.
+#
+# `delete_document` is deliberately ABSENT. It is irreversible, so it is
+# registered (and therefore one tick away in the Settings → Tools
+# checklist, which reads the same registry) but never seeded. Registered
+# and handed-out are two different decisions; see the static contract test
+# `search_documents is seeded by default but delete_document is NOT` in
+# `src/agentic_loop/tools_exec_document.zig`.
 DEFAULT_AGENT_TOOLS: list[str] = [
     "add_document",
     "add_skill",
@@ -45,6 +53,7 @@ DEFAULT_AGENT_TOOLS: list[str] = [
     "remove_skill",
     "save_memory",
     "search",
+    "search_documents",
     "search_skills",
     "search_tool",
     "spawn_sub_agent",

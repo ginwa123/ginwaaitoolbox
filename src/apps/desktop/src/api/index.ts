@@ -1637,6 +1637,14 @@ export const DEFAULT_CHAT_TOOLS = [
   // where a user says "write that down".
   'add_document',
   'edit_document',
+  // Read-only counterpart: `edit_document` replaces the WHOLE body, so a
+  // chat agent cannot revise a note it wrote earlier without a way to
+  // find the row first.
+  'search_documents',
+  // `delete_document` is intentionally omitted — irreversible, and it does
+  // not belong in the set every plain chat starts with. It stays one click
+  // away in Settings → Tools, and an agent can also reach it through
+  // search_tool → use_tool, which bypasses the allowlist.
 ].join(',')
 
 export async function sendChatMessage(

@@ -477,16 +477,37 @@ test "execSearchTool: limit/offset page the matches and report the true total" {
         threaded.io(),
         "{\"query\":\"^(list|load|save|search)_\",\"limit\":3,\"offset\":3}",
     );
-    const page2_remaining = total - 3;
-    // The page is capped by `limit`, so page 2 holds `min(3, total - 3)`
-    // rows — not always everything that is left. Writing `total - 3` here
-    // passed only while the catalog had six `list_*`/`load_*`/`save_*`/
-    // `search_*` tools, and adding a seventh silently broke the arithmetic
-    // rather than the tool.
-    const expect_page2_count = try std.fmt.allocPrint(a, "\"count\":{d}", .{@min(page2_remaining, @as(usize, 3))});
+    // Page 2 is a WINDOW of at most `limit` rows, so its count is
+    // `min(limit, total - offset)` — NOT `total - offset`.
+    //
+    // The old assertion here was `total - 3`, which silently assumed the
+    // entire remainder fit in one page, i.e. total <= 6. That was true
+    // while the catalog happened to hold 6 tools matching
+    // `^(list|load|save|search)_`, and went quietly false the moment a 7th
+    // landed (search_documents does) — while the paging itself stayed
+    // perfectly correct. Assert the windowing RULE instead: it holds for
+    // every catalog size, so the next tool added cannot break it.
+    const page2_expected = @min(@as(usize, 3), total - 3);
+    const expect_page2_count = try std.fmt.allocPrint(a, "\"count\":{d}", .{page2_expected});
     try testing.expect(std.mem.indexOf(u8, page2, expect_page2_count) != null);
     try testing.expect(std.mem.indexOf(u8, page2, "\"offset\":3,\"limit\":3") != null);
     try testing.expectEqual(total, try totalOf(a, page2));
+
+    // The last page proves the windowing all the way out: it is the only
+    // page that is NOT truncated, and its count is whatever is left. This
+    // is the assertion that was missing — without it, "page 2 holds the
+    // whole remainder" went unnoticed.
+    const page3 = try searchToolOutput(
+        a,
+        &db,
+        threaded.io(),
+        "{\"query\":\"^(list|load|save|search)_\",\"limit\":3,\"offset\":6}",
+    );
+    const page3_expected = if (total > 6) @min(@as(usize, 3), total - 6) else 0;
+    const expect_page3_count = try std.fmt.allocPrint(a, "\"count\":{d}", .{page3_expected});
+    try testing.expect(std.mem.indexOf(u8, page3, expect_page3_count) != null);
+    try testing.expectEqual(total, try totalOf(a, page3));
+    try testing.expect(std.mem.indexOf(u8, page3, "\"truncated\":false") != null);
 
     // The two pages are disjoint windows — not the same rows twice.
     const first = try namesJoined(a, page1);

@@ -148,22 +148,24 @@ describe('WorkspaceItemTaskCard — context menu', () => {
     wrapper.unmount()
   })
 
-  it('delete opens a confirmation and only emits deleteTask on confirm', async () => {
+  // Regression (task_1791030815108_1): the card used to mount its own
+  // ConfirmDialog, which only forwarded `deleteTask` — the click then
+  // reached Sidebar's confirm too, so one "Delete task" opened TWO
+  // stacked dialogs. The card now emits straight up and the terminal
+  // owner (Sidebar) is the only thing that asks for confirmation.
+  it('delete emits deleteTask and mounts NO dialog of its own', async () => {
     const wrapper = mountCard({ id: 't1', name: 'Alpha' })
     await openMenu(wrapper)
     await clickItem('kanban-task-context-menu-delete')
 
-    // Picking Delete must NOT delete on its own.
-    expect(wrapper.emitted('deleteTask')).toBeUndefined()
-    const confirmBtn = Array.from(document.body.querySelectorAll('button')).find(
-      (b) => b.textContent?.trim() === 'Delete',
-    ) as HTMLButtonElement | undefined
-    if (!confirmBtn) throw new Error('ConfirmDialog not shown')
-    expect(confirmBtn).toBeTruthy()
-    confirmBtn!.click()
-    await nextTick()
-
+    // Exactly one emission, with the full payload.
+    expect(wrapper.emitted('deleteTask')).toHaveLength(1)
     expect(wrapper.emitted('deleteTask')?.[0]).toEqual(['ws_1', 'item_1', 't1'])
+
+    // And zero confirm dialogs in the document: the card contributes
+    // no overlay, so the only confirm the user can see is the one the
+    // delete's real owner opens.
+    expect(document.body.querySelectorAll('button')).toHaveLength(0)
 
     wrapper.unmount()
   })

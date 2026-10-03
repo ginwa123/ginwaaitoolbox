@@ -37,7 +37,6 @@ import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
 import KanbanTaskContextMenu from '../kanban/KanbanTaskContextMenu.vue'
 import GitBranchMenu from '../shell/GitBranchMenu.vue'
-import ConfirmDialog from '../dialogs/ConfirmDialog.vue'
 import { stopSession } from '../../api'
 import type { KanbanColumn } from '../../stores/workspaces'
 import {
@@ -219,17 +218,15 @@ const viewDetailFromMenu = () => {
   emit('viewTaskDetail', props.task.id)
 }
 
-// Context-menu "Delete task". Gated behind a confirmation: the button
-// needed a precise hit on a 24px target, the menu item needs a right-click
-// plus one pick from a list. Similar odds, same consequence, so the
-// irreversible row gets an explicit stop.
-const confirmDeleteOpen = ref(false)
+// Context-menu "Delete task". Emits straight up like every other task
+// action; the confirmation is owned by whoever performs the delete
+// (Sidebar's ConfirmDialog, via AppLayout's delete-task pass-through).
+// The card used to open its own ConfirmDialog here, but that dialog only
+// forwarded — it never deleted anything — so the click still reached the
+// Sidebar and opened a second, stacked confirm on top of the first. Two
+// owners for one irreversible action; the card keeps none of them.
 const requestDeleteFromMenu = () => {
   closeTaskMenu()
-  confirmDeleteOpen.value = true
-}
-const confirmDelete = () => {
-  confirmDeleteOpen.value = false
   emit('deleteTask', props.workspaceId, props.itemId, props.task.id)
 }
 
@@ -932,14 +929,6 @@ watch([gitBranchBadge, effectiveCwd], () => {
       :pr-url="gitMenuPrUrl"
       @open-branch="openGitBranchInBackground"
       @open-pr="openGitPrInBackground"
-    />
-    <ConfirmDialog
-      :show="confirmDeleteOpen"
-      title="Delete task"
-      :message="`“${task.name}” will be permanently deleted. This cannot be undone.`"
-      confirm-text="Delete"
-      @close="confirmDeleteOpen = false"
-      @confirm="confirmDelete"
     />
   </div>
 </template>
