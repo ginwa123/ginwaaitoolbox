@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A user stores a credential once per workspace under a name of their choosing (`GITHUB_TOKEN`, `stripe_key`, …). The agent may reference it from **any** tool parameter as the literal text `{{SECRETS:GITHUB_TOKEN}}`; the backend substitutes the real value immediately before the tool executes. The model never receives the value — not in the prompt, not in a tool result, not in the database, not in the SSE stream.
+**Goal:** A user stores a credential once per workspace under a name of their choosing (`GITHUB_TOKEN`, `stripe_key`, …). The agent may reference it from **any** tool parameter as the literal text `{{SECRETS:GITHUB_TOKEN}}`; the backend substitutes the real value immediately before the tool executes. The model never receives the value **through the substitution path** — not in a prompt, not in a tool argument it can read back, not in a tool result, not in `llm_history`, not over SSE. (It is stored plaintext, so this is *not* a claim that the model can never obtain it by other means; see Design Decision 2.)
 
 **Architecture:** Three parts that must land as one change, because each is worthless alone.
 
-1. **Storage** — a `workspace_secrets` table (Migration 101) with an encrypted-at-rest value column and a `key_hint` column holding only the last 4 characters, so the UI can render `ghp_••••••••3f9a` without ever holding the value in a GET response.
+1. **Storage** — a `workspace_secrets` table (Migration 101) holding `workspace_id`, `name` and a plaintext `value` column, matching how `config.json` already holds the LLM `api_key`. No encryption at rest, no `key_hint` (reviewer, 2026-10-03).
 2. **The substitution boundary** — one function, `secrets_substitution.substituteToolArguments`, called from `dispatchTool` (`src/agentic_loop/handle_tool.zig:192`) *after* the Lua pre-hook and *before* the registry walk. It parses the raw arguments JSON, walks every string leaf, replaces `{{SECRETS:name}}` with the decrypted value, and returns the substituted string plus a list of `{name, value}` pairs used to redact the tool's own output. Substitution is deliberately **not** done in the Lua hook seam and **not** done on the raw bytes — both are explained in Design Decisions 4 and 5.
-3. **Discovery + the guarantee** — a `list_secrets` agent tool that returns names and hints only (never values), plus a prompt rule. The discovery tool exists because the repo has an explicit, twice-stated convention that catalogues are discovered by tool call and never pre-listed in the prompt (`src/modules/agent/prompts/core.zig:177` for skills, `:160` for progressive tools).
+3. **Discovery + the guarantee** — a `list_secrets` agent tool that returns names only (never values), plus a prompt rule. The discovery tool exists because the repo has an explicit, twice-stated convention that catalogues are discovered by tool call and never pre-listed in the prompt (`src/modules/agent/prompts/core.zig:177` for skills, `:160` for progressive tools).
 
-**Tech Stack:** Zig 0.16 (`AgentTool`, `ToolExecContext`, `wrapToolOutput`, `std.crypto.aes_gcm.Aes256Gcm`), SQLite (Migration 101), Vue 3 + vitest, python functional harness (isolated tmpdir `HOME`, free port outside 8081).
+**Tech Stack:** Zig 0.16 (`AgentTool`, `ToolExecContext`, `wrapToolOutput`, `std.json` parse/re-serialize), SQLite (Migration 101), Vue 3 + vitest, python functional harness (isolated tmpdir `HOME`, free port outside 8081). **No new dependencies, no crypto.**
 
 ---
 
@@ -39,12 +39,12 @@
 |---|---|
 | Highest existing migration is **99** (`Migration099RenameListSkillsTool`). No 100/101/102 exists. | `src/migrations/migration.zig:2046`, struct at `:3782` |
 | `allMigrations` is an array literal ending at `src/migrations/migration.zig:2047`; a new migration is one `pub const MigrationNNNX = struct` + one array entry. | `src/migrations/migration.zig:1790-2047` |
-| **There is NO encryption anywhere in `src/`.** Every `crypto` hit is hashing (bcrypt, sha2, blake3). Zero cipher imports, zero keychain/keyring, zero `crypto.random`. The only `encrypt`-named column is `reasoning_encrypted_content`, a pass-through of Anthropic's own opaque token. | `rg -i 'encrypt\|decrypt\|cipher\|aes\|keyring' src/` |
+| **There is NO encryption anywhere in `src/`.** Every `crypto` hit is hashing (bcrypt, sha2, blake3). Zero cipher imports, zero keyring, zero `crypto.random`. This is why plaintext storage (DD2) is consistent rather than novel. The only `encrypt`-named column is `reasoning_encrypted_content`, a pass-through of Anthropic's own opaque token. | `rg -i 'encrypt\|decrypt\|cipher\|aes\|keyring' src/` |
 | **There is NO `secrets` table, route, tool, module, or `{{SECRETS:` token anywhere.** Zero name collisions with the proposed `secrets` / `list_secrets` / `workspace_secrets`. | verified by exhaustive search |
 | The newest workspace-scoped table is `documents` (Migration 098): `workspace_id TEXT NOT NULL`, FK to `workspaces(id)`, **no `user_id`**. | `src/migrations/migration.zig:3732-3741` |
 | Only **five** tables carry a `user_id` (`workspaces`, `sessions`, `worker`, `skill_eval_runs`, `skill_eval_results`). Workspace scoping does not use it. | `src/migrations/migration.zig:4594`, `:4603`, `:5329`, `:5557`, `:5595` |
 | `PRAGMA foreign_keys` is deliberately OFF, so a declared `ON DELETE CASCADE` is documentation only — the workspace-delete path issues the child DELETE itself. | `src/migrations/migration.zig:3713-3716` |
-| Zig 0.16 ships `std.crypto.aes_gcm.Aes256Gcm` (`/usr/lib/zig/std/crypto/aes_gcm.zig:11-12`) and `std.Random.DefaultCsprng` (`/usr/lib/zig/std/Random.zig:16`). **`std.crypto.random` does not exist** in this Zig version — `web_port.zig:20` documents that absence verbatim. | verified in the toolchain |
+| Zig 0.16 *does* ship `std.crypto.aes_gcm.Aes256Gcm` (`/usr/lib/zig/std/crypto/aes_gcm.zig:11-12`) — encryption was available and was deliberately declined (DD2), not overlooked. | verified in the toolchain |
 | `getDefaultConfigDir` is cross-platform (APPDATA / Library/Application Support / `.config`) and is the established home for user state. | `src/modules/config/Config.zig:2644-2669` |
 
 ### The dispatch layer — the load-bearing part
@@ -100,15 +100,35 @@
 
 **Why a table is right:** the documents precedent (`documents_store.zig`) already proves the pattern: `workspace_id` is a function parameter that appears in the `WHERE` clause, never a value the caller can choose to omit. The who-may-use-it half of that is `auth_common.workspaceVisibilityClause` over `workspace_members` (see Design Decision 11).
 
-### 2. Encrypt the value at rest with AES-256-GCM, keyed from a generated file
+### 2. No encryption at rest — the value is stored as plaintext `TEXT`
 
-**Decision:** `value_enc BLOB NOT NULL` holds `nonce ‖ ciphertext ‖ tag` from `std.crypto.aes_gcm.Aes256Gcm`. The 32-byte key lives in `secrets.key` under the config dir (created `0600` on POSIX), generated with `std.Random.DefaultCsprng`.
+**Decision (reviewer, 2026-10-03):** no master key, no cipher. `value TEXT NOT NULL` holds the
+plaintext, exactly as `config.json` holds the LLM `api_key` and `users.config_json` holds MCP
+header values today. No `secrets_master_key.zig`, no `secrets.key`, no `value_enc`.
 
-**Rejected (a): plaintext.** The DB is a single file at `~/.config/nalar/agent.db`; plaintext means every backup, every `sqlite3` invocation and every accidental copy of that file yields every credential. The feature is *about* not leaking the value, so storing it in the clear would be a self-refuting design.
+**Why this is coherent, not careless:** it makes the feature match the repo's existing credential
+posture instead of being the one place that claims more. Encryption at rest would only have
+protected the `agent.db` file, and only because the key sat *beside* it in the same config dir —
+so a compromised home directory gets everything either way, while every backup, every `sqlite3`
+invocation and every copied `.db` would have been inert. That trade was judged not worth a
+crypto module, a key-file lifecycle, and three platform-conditional code paths. Agreed.
 
-**Rejected (b): OS keychain (libsecret / DPAPI / Keychain).** No binding exists in `build.zig.zon`, and the CI matrix builds on Linux/macOS/Windows — a keychain backend is three platform-specific code paths plus a runtime dependency, for a feature whose threat model is "the DB file leaks", not "the machine is compromised".
+**What the feature therefore does and does not promise — read this before writing the header:**
 
-**Honest limitation, stated in the module header:** this protects the database file, not the account. Anyone who can read `secrets.key` (it sits beside `config.json`, which already holds the LLM `api_key` in plaintext) can decrypt. The realistic gain is that a stolen DB backup, a shared `agent.db`, or a repo-embedded `.db` is inert. Do not describe this as "secure storage".
+The substitution machinery still guarantees the value is never passed to the model **by that
+machinery**: it never appears in a prompt, in a tool argument the model can read back, in a tool
+result, in `llm_history`, or over SSE. That part is unchanged and is what Tasks 3, 4 and 8 prove.
+
+It does **not** defend against the model going to disk for it. There is no sandbox on the read
+path — `read_file.zig` contains no sandbox check, and `file_sandbox.zig` governs only
+`present_files` and `GET /api/files/download` ("may this file be shown to the browser"), not
+reads. `command` spawns `bash -c` with no allowlist. So a prompt-injected model can run
+`sqlite3 ~/.config/nalar/agent.db 'SELECT value FROM workspace_secrets'` and read every secret in
+every workspace. **With plaintext storage that is a one-command exfiltration.**
+
+That is exactly today's exposure for `api_key` and MCP headers, so this change makes nothing
+worse — but it means the plan must not overclaim. The Goal line is amended accordingly, and any
+future copy of this feature's description must carry the same caveat.
 
 ### 3. `{{SECRETS:NAME}}` is substituted at `dispatchTool` AND at the MCP branch
 
@@ -138,7 +158,7 @@
 
 ### 6. A `list_secrets` tool, not a prompt-inlined list of names
 
-**Decision:** new agent tool `list_secrets` (no arguments) returning `{ name, key_hint, created_at }` for the calling session's workspace, resolved server-side. Registered in `UNIFIED_TOOL_REGISTRY`, default-on for agent and kanban via `DEFAULT_AGENT_TOOLS`.
+**Decision:** new agent tool `list_secrets` (no arguments) returning `{ name, created_at }` for the calling session's workspace, resolved server-side. Registered in `UNIFIED_TOOL_REGISTRY`, default-on for agent and kanban via `DEFAULT_AGENT_TOOLS`.
 
 **Rejected:** injecting the names into the system prompt as a per-session block (the `makeWorkspaceContext` pattern at `prompts_build_messages_for_agent_prompt.zig:188-193`). It breaks the convention the repo states twice — catalogues are discovered by tool call, never pre-listed — and it puts a per-workspace-varying byte range into the cacheable system prefix, which `prompts_build_messages_for_agent_prompt.zig:113-120` explicitly calls out as a cache-fragmentation cost.
 
@@ -156,11 +176,20 @@
 
 **Rejected:** substituting an empty string. `Authorization: ` produces a 401 from a third party several steps later, and the model has no way to connect that to a typo in a placeholder. The immediate, specific error is the only one the agent can act on.
 
-### 9. The UI never renders a stored value, and never receives one on a GET
+### 9. The UI never renders a stored value, and never receives one
 
-**Decision:** `GET /api/workspaces/:workspace_id/secrets` returns `{ name, key_hint, created_at, updated_at }` — **no value field at all**. The value exists only in the POST/PATCH request bodies. `key_hint` is the last 4 characters stored at write time, so the UI can distinguish two rotations of the same key without the backend ever decrypting on a read path.
+**Decision (reviewer, 2026-10-03):** `GET /api/workspaces/:workspace_id/secrets` returns
+`{ name, created_at, updated_at }` — **no value field and no `key_hint` field**. The value exists
+only in POST/PATCH request bodies. `key_hint` was proposed and dropped: with it gone, the UI
+renders a row as `NAME` + "configured" + `updated_at`, and cannot distinguish two rotations of the
+same key. That is the accepted cost of zero disclosure on the read path — rotation is confirmed by
+having saved it, not by reading it back.
 
-**Rejected:** returning the value and masking it client-side (what `LlmConfigForm.vue:308-319` does for `api_key`). "The value crossed the network to the browser and we chose not to display it" is not a guarantee — it is one XSS away from exposure, and it is already a live bug shape in this repo (`McpServersSection.vue:135` renders the raw header value into a `title=` tooltip, with the `maskValue()` call at `:138`).
+**Rejected:** returning the value and masking it client-side (what `LlmConfigForm.vue:308-319` does
+for `api_key`). "The value crossed the network to the browser and we chose not to display it" is not
+a guarantee — it is one XSS away from exposure, and it is already a live bug shape in this repo
+(`McpServersSection.vue:135` renders the raw header value into a `title=` tooltip, with the
+`maskValue()` call at `:138`).
 
 ### 10. Redaction must be applied to the config GET too, or the feature is half a promise
 
@@ -189,12 +218,8 @@ CREATE TABLE IF NOT EXISTS workspace_secrets (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
     name TEXT NOT NULL,
-    -- Last 4 chars of the plaintext, stored separately so the UI can
-    -- distinguish rotations without any read path decrypting.
-    key_hint TEXT NOT NULL DEFAULT '',
-    -- AES-256-GCM: 12-byte nonce ‖ ciphertext ‖ 16-byte tag, keyed from
-    -- `secrets.key` in the config dir. Never selected on a list path.
-    value_enc BLOB NOT NULL,
+    -- Plaintext, per Design Decision 2. Never selected on a list path.
+    value TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
@@ -235,8 +260,8 @@ Registered on the `authed` group so `auth_middleware.zig:74-82` applies the work
 
 | Method | Path | Success | Body |
 |---|---|---|---|
-| `GET` | `/api/workspaces/:workspace_id/secrets` | 200 | `{ "secrets": [{ "id", "name", "key_hint", "created_at", "updated_at" }], "count": N }` |
-| `POST` | `/api/workspaces/:workspace_id/secrets` | 201 | `{ "secret": { "id", "name", "key_hint", "created_at", "updated_at" } }` |
+| `GET` | `/api/workspaces/:workspace_id/secrets` | 200 | `{ "secrets": [{ "id", "name", "created_at", "updated_at" }], "count": N }` |
+| `POST` | `/api/workspaces/:workspace_id/secrets` | 201 | `{ "secret": { "id", "name", "created_at", "updated_at" } }` |
 | `PATCH` | `/api/workspaces/:workspace_id/secrets/:secret_id` | 200 | `{ "secret": { …same… } }` |
 | `DELETE` | `/api/workspaces/:workspace_id/secrets/:secret_id` | 200 | `{ "id": string, "success": true }` |
 | any error | — | 4xx/5xx | `{ "error": string }` (`http_response.zig:350-354`) |
@@ -275,10 +300,9 @@ Registered on the `authed` group so `auth_middleware.zig:74-82` applies the work
 |---|---|---|
 | Create | `src/migrations/migration.zig` | `Migration101CreateWorkspaceSecrets` (table + 2 indexes) + one `allMigrations` entry + inline tests |
 | Modify | `src/http_handlers/workspace_delete.zig` | Explicit `DELETE FROM workspace_secrets WHERE workspace_id = ?` (FK cascade is inert) |
-| Create | `src/agentic_loop/secrets_store.zig` | CRUD + `listSecretNames` (names/hints only) + `loadSecretValues` (dispatch-only). `workspace_id` is always a `WHERE` parameter. Encrypted write, decrypted read. |
-| Create | `src/agentic_loop/secrets_master_key.zig` | Load-or-create `secrets.key`, `0600` on POSIX; `seal`/`open` via `std.crypto.aes_gcm.Aes256Gcm` |
+| Create | `src/agentic_loop/secrets_store.zig` | CRUD + `listSecretNames` (names only) + `loadSecretValues` (dispatch-only). `workspace_id` is always a `WHERE` parameter. Plaintext `value` column, never selected on a list path. |
 | Create | `src/agentic_loop/secrets_substitution.zig` | `substituteToolArguments` (parse → walk → substitute → re-serialize), `redactOutput`, `listNamesForPrompt`. Pure + injectable resolver so tests need no filesystem. |
-| Create | `src/agentic_loop/tools_exec_list_secrets.zig` | `execListSecrets` — names + hints only, workspace resolved from `ctx.session_id` |
+| Create | `src/agentic_loop/tools_exec_list_secrets.zig` | `execListSecrets` — names only, workspace resolved from `ctx.session_id` |
 | Create | `src/modules/agent/tools/list_secrets.zig` | The `AgentTool` schema + description |
 | Modify | `src/agentic_loop/tools_equipped.zig` | Registry entry; `list_secrets_tool` into `DEFAULT_AGENT_TOOLS` |
 | Modify | `src/agentic_loop/tools.zig` | Re-export `execListSecrets` |
@@ -297,7 +321,7 @@ Registered on the `authed` group so `auth_middleware.zig:74-82` applies the work
 | Modify | `src/apps/desktop/src/router/index.ts` | `/app/:workspaceId/settings` **above** `/app/:workspaceId` at `:86` |
 | Modify | `src/apps/desktop/src/components/AppLayout.vue` | `currentView` branch for the new path |
 | Create | `src/apps/desktop/src/components/views/WorkspaceSettingsView.vue` | Workspace-scoped settings page, `?section=`-backed tab |
-| Create | `src/apps/desktop/src/components/workspace/SecretsSection.vue` | CRUD list, masked hint, write-only value input |
+| Create | `src/apps/desktop/src/components/workspace/SecretsSection.vue` | CRUD list, "configured" state, write-only value input |
 | Create | `src/apps/desktop/src/stores/secrets.ts` | Pinia store; `error` is rendered, never write-only |
 | Create | `src/apps/desktop/src/__tests__/SecretsSection.spec.ts` | vitest spec incl. the no-value-in-DOM assertion |
 | Create | `tests/functional/workspace_secrets_test.py` | Functional tests over the real wire |
@@ -306,35 +330,20 @@ Registered on the `authed` group so `auth_middleware.zig:74-82` applies the work
 
 ## Tasks
 
-### Task 1 — `secrets_master_key.zig`: seal/open, isolated
-
-The only task that can be wrong in a way no other task can detect.
-
-- [ ] Write the failing test: `seal` then `open` round-trips a value containing `"`, `\`, a newline, and a NUL byte.
-- [ ] Write the failing test: two different nonces for the same plaintext produce different ciphertexts (proves the nonce is fresh per call, not fixed).
-- [ ] Write the failing test: a truncated ciphertext returns `error.DecryptFailed` rather than garbage — GCM's tag check is the whole point.
-- [ ] Write the failing test: `loadOrCreate` on an absent path creates a 32-byte key and returns `created = true`; a second call returns `created = false`.
-- [ ] Implement `loadOrCreate(allocator, io, config_dir) !struct { key: [32]u8, created: bool }` — read `secrets.key`; if absent, generate 32 bytes with `std.Random.DefaultCsprng` and write with mode `0600` on POSIX.
-- [ ] Implement `seal(allocator, key, plaintext) ![]u8` and `open(allocator, key, blob) ![]u8` using `std.crypto.aes_gcm.Aes256Gcm`, 12-byte random nonce prefixed to the output.
-- [ ] Add a module header stating the limitation from Design Decision 2 verbatim — this protects the DB file, not the account.
-- [ ] Run `zig build test` — the four tests go from red to green.
-- [ ] Commit: `feat(secrets): AES-256-GCM master key + seal/open`
-
-### Task 2 — Migration 101 + `secrets_store.zig`
+### Task 1 — Migration 101 + `secrets_store.zig`
 
 - [ ] Write the failing test (in-memory SQLite, the `setupDb` fixture at `migration.zig:3649`): after `Migration101CreateWorkspaceSecrets.up`, `pragma_table_info('workspace_secrets')` contains all 8 columns.
 - [ ] Write the failing test: `uq_workspace_secrets_name` rejects a duplicate name in the same workspace but allows the same name in a **different** workspace.
 - [ ] Write the failing test: `createSecret` with an empty name returns `error.NameRequired` **before** touching the DB (the empty-slice-binds-as-NULL trap).
 - [ ] Write the failing test: `getSecret` with a foreign `workspace_id` returns `error.NotFound`, never another workspace's row.
-- [ ] Write the failing test: the stored `value_enc` bytes contain no substring of the plaintext (assert encryption, not just round-trip).
 - [ ] Implement `Migration101CreateWorkspaceSecrets` + its `allMigrations` entry at the array tail.
 - [ ] Implement `secrets_store.zig`: `listSecrets`, `getSecret`, `createSecret`, `updateSecret`, `deleteSecret`, `listSecretNames`, `loadSecretValues`. Every one takes `workspace_id` as a positional parameter that appears in the `WHERE` clause — copy the guard style from `documents_store.zig:137`.
-- [ ] Write `listSecretNames` to select `name, key_hint` only. It is the only function the agent path may call.
+- [ ] Write `listSecretNames` to select `name` only. It is the only function the agent path may call.
 - [ ] Add the explicit child-delete to `workspace_delete.zig`.
 - [ ] Run `zig build test`.
-- [ ] Commit: `feat(secrets): migration 100 + encrypted workspace-scoped store`
+- [ ] Commit: `feat(secrets): migration 101 + workspace-scoped secret store`
 
-### Task 3 — `secrets_substitution.zig`: the boundary (pure, no DB)
+### Task 2 — `secrets_substitution.zig`: the boundary (pure, no DB)
 
 - [ ] Write the failing test: `{"command":"curl -H 'Auth: {{SECRETS:GH}}'"}` with `GH=abc` → the string leaf becomes `curl -H 'Auth: abc'`.
 - [ ] Write the failing test: a secret whose value is `he said "hi"\n` still yields **parseable** JSON when re-parsed by `std.json.parseFromSlice`.
@@ -349,7 +358,7 @@ The only task that can be wrong in a way no other task can detect.
 - [ ] Run `zig build test`.
 - [ ] Commit: `feat(secrets): JSON-safe placeholder substitution + output redaction`
 
-### Task 4 — Wire both dispatch paths + assert the DB keeps the placeholder
+### Task 3 — Wire both dispatch paths + assert the DB keeps the placeholder
 
 The task that closes the loop. Do not fold it into Task 5.
 
@@ -363,7 +372,7 @@ The task that closes the loop. Do not fold it into Task 5.
 - [ ] Run `zig build test`.
 - [ ] Commit: `feat(secrets): substitute at dispatch, redact before persist`
 
-### Task 5 — `list_secrets` tool + registry + allowlist bypass + prompt rule
+### Task 4 — `list_secrets` tool + registry + allowlist bypass + prompt rule
 
 - [ ] Write the failing test: `execListSecrets` with a context whose session resolves to workspace A returns only workspace A's names.
 - [ ] Write the failing test: the result string contains no value substring, and the tool's schema JSON contains no `value` key.
@@ -377,10 +386,10 @@ The task that closes the loop. Do not fold it into Task 5.
 - [ ] Run `zig build test`.
 - [ ] Commit: `feat(secrets): list_secrets tool + prompt rule`
 
-### Task 6 — HTTP handlers + routes
+### Task 5 — HTTP handlers + routes
 
 - [ ] Write the failing inline test for each handler's `useCase` against in-memory SQLite (the `documents_*.zig` pattern: private `useCase`, tagged error set, inline `std.testing` tests in the same file).
-- [ ] Write the failing test: `useCase` for LIST selects no `value_enc` column — assert the SQL string itself, so a future edit that adds it fails.
+- [ ] Write the failing test: `useCase` for LIST selects no `value` column — assert the SQL string itself, so a future edit that adds it fails.
 - [ ] Write the failing test: a POST with `value: ""` returns 400 `ValueRequired` rather than 500 (the `COALESCE(NULLIF(…))` trap at the HTTP layer).
 - [ ] Implement the four handler files with the two-exhaustive-`switch` error mapping.
 - [ ] Implement `SecretResponse` + `makeSecretListResponse` in `http_response.zig` with **no value field**, and add a comment saying why (Design Decision 9) so a future edit does not "helpfully" add it back.
@@ -390,9 +399,9 @@ The task that closes the loop. Do not fold it into Task 5.
 - [ ] Run `zig build test`.
 - [ ] Commit: `feat(secrets): workspace-scoped HTTP surface`
 
-### Task 7 — Frontend: API client, store, section, route
+### Task 6 — Frontend: API client, store, section, route
 
-- [ ] Write the failing vitest spec: `SecretsSection` renders one row per secret with `key_hint`, and `wrapper.html()` contains **no substring of any value** — the direct analogue of `McpServersSection.spec.ts:24-31` and `LlmConfigForm.spec.ts:60-72`.
+- [ ] Write the failing vitest spec: `SecretsSection` renders one row per secret showing only the name and a "configured" state, and `wrapper.html()` contains **no substring of any value** — the direct analogue of `McpServersSection.spec.ts:24-31` and `LlmConfigForm.spec.ts:60-72`.
 - [ ] Write the failing vitest spec: the value input is `type="password"` and there is **no** reveal toggle, because there is no stored value to reveal.
 - [ ] Write the failing vitest spec: the empty state renders `data-testid="empty-state"`.
 - [ ] Write the failing vitest spec: clicking add emits `add`; clicking delete emits `delete` with the name.
@@ -404,11 +413,11 @@ The task that closes the loop. Do not fold it into Task 5.
 - [ ] Run `npx vue-tsc --noEmit` and `npx vitest --run src/__tests__/SecretsSection.spec.ts`.
 - [ ] Commit: `feat(secrets): workspace settings UI (write-only values)`
 
-### Task 8 — Functional tests over the real wire
+### Task 7 — Functional tests over the real wire
 
 Unit tests cannot see route-order shadowing or the empty-slice-binds-as-NULL collapse. These must.
 
-- [ ] Write the test: full CRUD round-trip — create a secret, list it (`key_hint` present, no `value` anywhere in the response body), patch the value, delete it.
+- [ ] Write the test: full CRUD round-trip — create a secret, list it (name present, **no `value` anywhere in the response body**), patch the value, delete it.
 - [ ] Write the test: **cross-workspace isolation** — workspace B's `GET` returns `count: 0`; workspace B's `GET` of A's secret id returns **404, not 403**.
 - [ ] Write the test: create with `value: ""` → 400 (not 500).
 - [ ] Write the test: duplicate name in one workspace → 409; same name in a second workspace → 201.
@@ -417,7 +426,7 @@ Unit tests cannot see route-order shadowing or the empty-slice-binds-as-NULL col
 - [ ] Run the suite via `tests/functional/harness.py`. **Never** `curl` a live server.
 - [ ] Commit: `test(secrets): functional coverage for CRUD, isolation, and substitution errors`
 
-### Task 9 — Documentation + PR
+### Task 8 — Documentation + PR
 
 - [ ] Add the feature to `docs/superpowers/plans/` index conventions if the repo requires it (check `docs/SPEC.md` — it is a historical inventory, not a live route index, so most likely no edit is needed).
 - [ ] Write the PR body: goal, why the three parts are one change, the task table, the leak vectors closed, and the decisions needing a reviewer (1, 2, 5, 9).
@@ -430,7 +439,7 @@ Unit tests cannot see route-order shadowing or the empty-slice-binds-as-NULL col
 ## Verification
 
 1. **Refactor gate** — after Task 3, confirm the substitution module has **zero** imports of `handle_tool`, `workflow`, or any `http_handlers` file (no import cycles; `tools_exec_document.zig` is the precedent for a leaf exec module).
-2. **Leak gate** — `rg -n 'value_enc' src/` must show every hit on a path that is either a write or the dispatch-only `loadSecretValues`. No list/read path may select it. Assert this mechanically with a source-grep test, not by eye.
+2. **Leak gate** — `rg -n 'value' src/agentic_loop/secrets_store.zig src/http_handlers/secrets_*.zig` must show every hit on a path that is either a write or the dispatch-only `loadSecretValues`. No list/read path may select it. Assert this mechanically with a source-grep test, not by eye.
 3. **Placeholder-persistence gate** — the Task 4 test asserting `tool_calls_json` still holds `{{SECRETS:…}}` is the single most important test in the plan. It is what proves the model never sees the value in history replay.
 4. **Redaction gate** — the `shell.zig` echo case gets its own explicit test, because it is the leak that survives if redaction is applied at the wrong layer.
 5. **Isolation gate** — cross-workspace reads return 404 and never 403, in both the Zig inline tests and the functional suite.
@@ -449,14 +458,11 @@ Unit tests cannot see route-order shadowing or the empty-slice-binds-as-NULL col
 
 ## Open Questions for the reviewer
 
-1. **Should the master key be a file, or derived from something the user already has?** A file is what this plan assumes. The alternative is deriving from the user's password hash — which fails every non-`--auth` (local) user, the primary deployment. Confirm the file is acceptable, and confirm where it should live if you want it somewhere other than the config dir.
-2. **Is `key_hint` (last 4 chars) acceptable at all?** It is a deliberate small disclosure — GitHub and Stripe both do it — and it is the only way the UI distinguishes two rotations without decrypting on a read path. If you want zero disclosure, drop the column and render a bare "configured".
-3. **Should `list_secrets` really bypass the allowlist?** Design Decision 6 argues yes (the `Migration099` lesson: a tool only new agents have is a tool existing agents never see). The counter-argument is that a user who deliberately unchecked a tool would expect it gone. Your call.
-4. **Is an error on an unknown placeholder the right behaviour, or should it substitute empty?** This plan hard-fails with a named error (Decision 8) on the grounds that an empty substitution produces a confusing third-party 401 several steps later. Confirm.
-5. ~~**Should a `viewer` be able to rotate a secret?**~~ **CLOSED — deferred by reviewer decision (2026-10-03): membership-only access ships in v1; role-based access is a later, separate change.** `workspaceVisibilityClause` filters on membership only — `m.role` is never read — so every member, including a `viewer`, can read/rotate/delete every secret in a shared workspace. This matches how documents already behave and is **accepted for v1**. It is recorded here rather than deleted so the implementer does not "fix" it with a `user_id` column: when the role work lands, the place to add it is a role predicate in `workspaceVisibilityClause` or a `secretsCanBeRead` sibling — a per-row owner column would answer authorship, not entitlement. See Design Decision 11.
-6. **Is the machine-wide master key still right now that workspaces are shared?** One `secrets.key` decrypts every workspace's secrets. With shared workspaces, per-workspace isolation of the *ciphertext* may matter more than it did when workspaces were single-owner. See Design Decision 2.
-7. **Should the feature ship before the redaction pass is proven?** It must not — redaction is the feature (Decision 5). Flagging because it means Tasks 4 and 8 are not optional follow-ups.
-8. **`{{SECRETS:…}}` syntax — is `SECRETS` the right token, and should the `{{ }}` form be reserved?** The `{{ }}` delimiters are also used by `{{name: ""}}` in workflow diagnostics and `{{m,n}}` regex ranges in the search tool's help text (`progressive_catalog.zig:246`). A regex-quantifier false positive is harmless (it is never inside a tool argument), but if you want a distinct delimiter, now is the time.
+1. **Should `list_secrets` really bypass the allowlist?** Design Decision 6 argues yes (the `Migration099` lesson: a tool only new agents have is a tool existing agents never see). The counter-argument is that a user who deliberately unchecked a tool would expect it gone. Your call.
+2. **Is an error on an unknown placeholder the right behaviour, or should it substitute empty?** This plan hard-fails with a named error (Decision 8) on the grounds that an empty substitution produces a confusing third-party 401 several steps later. Confirm.
+3. ~~**Should a `viewer` be able to rotate a secret?**~~ **CLOSED — deferred by reviewer decision (2026-10-03): membership-only access ships in v1; role-based access is a later, separate change.** `workspaceVisibilityClause` filters on membership only — `m.role` is never read — so every member, including a `viewer`, can read/rotate/delete every secret in a shared workspace. This matches how documents already behave and is **accepted for v1**. It is recorded here rather than deleted so the implementer does not "fix" it with a `user_id` column: when the role work lands, the place to add it is a role predicate in `workspaceVisibilityClause` or a `secretsCanBeRead` sibling — a per-row owner column would answer authorship, not entitlement. See Design Decision 11.
+4. **Should the feature ship before the redaction pass is proven?** It must not — redaction is the feature (Decision 5). Flagging because it means Tasks 4 and 8 are not optional follow-ups.
+5. **`{{SECRETS:…}}` syntax — is `SECRETS` the right token, and should the `{{ }}` form be reserved?** The `{{ }}` delimiters are also used by `{{name: ""}}` in workflow diagnostics and `{{m,n}}` regex ranges in the search tool's help text (`progressive_catalog.zig:246`). A regex-quantifier false positive is harmless (it is never inside a tool argument), but if you want a distinct delimiter, now is the time.
 
 ## Risks
 
@@ -468,7 +474,7 @@ Unit tests cannot see route-order shadowing or the empty-slice-binds-as-NULL col
 | Byte-level substitution corrupts JSON when a secret contains `"` / `\` / newline | High | Parse-and-re-serialize (Decision 4); four dedicated tests; `jsonEscapePath` explicitly not reused. |
 | The model learns to `echo` a secret it just used | Medium | `SecretsToolRule` states the rule explicitly; redaction is the backstop, the prompt is the primary control. |
 | Tool called with a placeholder the user deleted mid-session | Low | Fails closed with a named error; the agent re-calls `list_secrets`. |
-| Master key file is world-readable on a shared host | Low | `0600` on POSIX; Windows inherits `%APPDATA%` ACLs. Documented as a limitation, not claimed as secure. |
+| **Any process that can read `agent.db` reads every secret** — and the agent itself can (`command` → `bash -c`, no allowlist; `read_file` has no sandbox). Accepted: identical to today's exposure for `api_key` and MCP headers. Recorded in DD2 and in the Goal line so the plan never overclaims. | Accepted | Documented explicitly in DD2; the substitution-path guarantee (no prompt / no tool arg / no tool result / no history / no SSE) is unchanged and is what Tasks 2, 3 and 7 prove. |
 | Existing agents never see `list_secrets` | Low | Server-side injection in `filterAndMergeTools`, bypassing the allowlist. |
 | Route-order shadowing breaks `GET /secrets` against a future `/secrets/:secret_id` | Low | Literals registered first + a static-contract test per route. |
 
