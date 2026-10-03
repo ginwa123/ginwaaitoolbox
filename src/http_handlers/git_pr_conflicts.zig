@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const http_response = @import("http_response.zig");
 const nalar_core = @import("nalarcore");
 const gserverz = nalar_core.gserverz;
@@ -669,6 +670,12 @@ test "fixture dir survives a symlinked temp root with a trailing slash (macOS sh
     // logic inline and therefore passed with the bug still in place, which is
     // worse than no test at all.
     const allocator = testing.allocator;
+    // The bug this guards is macOS/Linux-shaped, and on Windows the symlink
+    // creates but the mixed `\`+`/` path does not resolve the same way —
+    // GitHub's runners also lack SeCreateSymbolicLinkPrivilege by default, so
+    // this cannot run there. Say so rather than fail on an unrelated path.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     const raw = env.get("TMPDIR") orelse env.get("TEMP") orelse env.get("TMP") orelse "/tmp";
@@ -698,7 +705,7 @@ test "fixture dir survives a symlinked temp root with a trailing slash (macOS sh
 
     // The fixture must be its OWN git repo, or every `git -C fx.path` walks up
     // and rewrites the enclosing repository.
-    try git(fx.path, &.{"init", "-q"});
+    try git(fx.path, &.{ "init", "-q" });
     try requireSelfContainedRepo(fx.path);
 }
 
