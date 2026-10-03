@@ -1071,6 +1071,15 @@ test {
     // tests are otherwise invisible to `zig build test` — the same discovery
     // workaround as the Lua hooks above.
     _ = @import("agentic_loop/secrets_substitution.zig");
+    // The workspace-secrets HTTP surface (Migration 101): one file per verb,
+    // each carrying its own `useCase` tests plus the route-registration
+    // contracts that pin the literal routes ahead of the `:secret_id` ones.
+    // Same discovery workaround as the store above — the `http_handlers`
+    // re-exports alone do not pull these files' tests in.
+    _ = @import("http_handlers/secrets_list.zig");
+    _ = @import("http_handlers/secrets_create.zig");
+    _ = @import("http_handlers/secrets_update.zig");
+    _ = @import("http_handlers/secrets_delete.zig");
     // `databases` package tests run in the ruangsql repo's own CI
     // (github.com/ginwa123/ruangsql) — see the package's build.zig.
     // The main test step doesn't import them here because the package
