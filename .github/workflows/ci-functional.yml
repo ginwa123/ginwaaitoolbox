@@ -244,6 +244,78 @@ jobs:
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
+      - name: Exclude the build paths from Defender (Windows)
+        if: runner.os == 'Windows'
+        # The single biggest reason this cell is ~8-10x slower per test than
+        # Linux, and the one lever that actually moves it.
+        #
+        # MEASURED, on run 37136277927 `functional Windows X64 · shard 2/3`:
+        #
+        #     wall 62.3 min total -> 235 of ~279 shard items complete
+        #     235 tests/functional/ (the whole API suite) + 1 functional_ui
+        #
+        # i.e. ~15 s per API test. The SAME suite on Linux takes ~1.8 s per
+        # item end-to-end (8.5 min for a whole shard), and on an ordinary
+        # Windows dev box it is ~1.5 s per test — so this is not a code
+        # hotspot, it is a flat ~8-10x tax on everything the runner does.
+        #
+        # What the suite does that is worst-case for Defender: it boots a
+        # real ~16 MB nalar.exe per test (~280 times per shard), each boot
+        # creating a brand-new tmpdir HOME and running every migration into
+        # a fresh SQLite database, then deleting the whole tree. That is
+        # process-create plus thousands of file create/write/delete calls
+        # per test, each one through a minifilter.
+        #
+        # (For the record: the boot itself is NOT the hotspot. A cold boot
+        # with all 100 migrations measured 0.55 s on a dev box, against a
+        # 0.002 s file copy of the finished DB — so "pre-seed the migrated
+        # database" would buy nothing. The tax is uniform, which is why the
+        # remedy is environmental rather than algorithmic.)
+        #
+        # SCOPE: three paths only — the workspace, `runner.temp` (the venv
+        # and the pinned playwright dir), and the system TEMP the harness
+        # writes its per-test tmpdirs under. The OS, user profile and
+        # Program Files stay scanned. This is an ephemeral, single-use
+        # runner that only ever builds this repository.
+        #
+        # Failure here is NOT fatal and must not be: on some runner images
+        # `Add-MpPreference` is slow or the Defender module is absent, and a
+        # 30x slower-but-correct shard beats a red one. It writes a marker so
+        # a later step can tell whether the fast path was actually taken.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $targets = @(
+            $env:GITHUB_WORKSPACE,
+            $env:RUNNER_TEMP,
+            $env:TEMP
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
+          $applied = @()
+          $failed  = @()
+          foreach ($t in $targets) {
+            try {
+              Add-MpPreference -ExclusionPath $t -ErrorAction Stop
+              $applied += $t
+              Write-Host "excluded: $t"
+            } catch {
+              $failed += "$t ($($_.Exception.Message))"
+              Write-Warning "could not exclude ${t}: $($_.Exception.Message)"
+            }
+          }
+
+          if ($applied.Count -gt 0) {
+            "defender_excluded=true" >> $env:GITHUB_ENV
+            Write-Host "Defender exclusions active for $($applied.Count) path(s)."
+          } else {
+            "defender_excluded=false" >> $env:GITHUB_ENV
+            Write-Warning "No Defender exclusions applied — the suite will run at full scan cost."
+          }
+          if ($failed.Count -gt 0) {
+            Write-Warning ("not excluded: " + ($failed -join "; "))
+          }
+          $global:LASTEXITCODE = 0
+
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows'
         # The windows-2022 image already has VS 2022 with the C++ workload.
