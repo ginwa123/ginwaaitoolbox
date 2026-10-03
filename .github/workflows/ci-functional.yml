@@ -276,6 +276,79 @@ jobs:
           }
           $global:LASTEXITCODE = 0
 
+      - name: Resolve the vcpkg baseline (Windows)
+        id: vcpkg-baseline
+        if: runner.os == 'Windows'
+        # The cache key for the ports install below.
+        #
+        # `windows-2022` is a MOVING image tag: its vcpkg (and therefore its
+        # ports tree — curl, openssl, libpq, sqlite3 all get new versions)
+        # changes underneath us. A cache keyed only on the port list would
+        # happily restore an `installed/` tree built from an OLDER ports
+        # tree, and the result is a header/library pair that disagree —
+        # which fails deep inside `zig build` as an opaque link error rather
+        # than as "your cache is stale".
+        #
+        # So the key carries vcpkg's own version string. When the image moves,
+        # the key misses and the ports are rebuilt, which is the correct
+        # outcome and also the only thing that keeps the cache from growing a
+        # new ~1 GB entry per image bump.
+        #
+        # Runs after the bootstrap step and before the install, so
+        # `vcpkg.exe` is guaranteed to exist.
+        shell: pwsh
+        run: |
+          $raw = (& C:\vcpkg\vcpkg.exe version) -join "-"
+          # Sanitise to [A-Za-z0-9.-]: `actions/cache` keys are used verbatim
+          # in a file path, and vcpkg's output contains spaces.
+          $safe = ($raw -replace '[^A-Za-z0-9.\-]', '-') -replace '-+', '-'
+          Write-Host "vcpkg version (raw) : $raw"
+          Write-Host "vcpkg cache key part: $safe"
+          "value=$safe" >> $env:GITHUB_OUTPUT
+          $global:LASTEXITCODE = 0
+
+      - name: Cache the vcpkg ports (Windows)
+        if: runner.os == 'Windows'
+        # ~10 MINUTES PER WINDOWS JOB, and it is the same ten minutes every
+        # time.
+        #
+        # Measured on run 37136277927: `Install vcpkg ports (Windows)` took
+        # 8.5 / 10.2 / 10.7 min on the three shards — against 0.6-0.7 min for
+        # Linux's `ci-install-linux-deps.sh`. Linux is quick only because
+        # `ubuntu-24.04` already ships libcurl/openssl/libpq/sqlite3;
+        # `windows-2022` ships vcpkg *bootstrapped* but NOT with the four
+        # ports built, so every job compiles them from source.
+        #
+        # With three shards on three separate VMs, that is ~30 minutes of
+        # duplicated compilation per PR, plus ~10 more in the backend cell —
+        # for output that is byte-identical every run. It is also most of the
+        # gap between "checkout to first test" on Windows (11 min) and Linux
+        # (1 min).
+        #
+        # Only `installed/` is cached, deliberately:
+        #   * NOT the whole of `C:\vcpkg` — the backend cell runs
+        #     `vcpkg integrate install`, which writes MSBuild integration
+        #     state outside `installed/`. Caching that would restore another
+        #     job's integration state into a fresh VM.
+        #   * NOT `downloads/` — it roughly doubles the entry size and only
+        #     helps on a cold miss, where the ports are being rebuilt for a
+        #     NEW vcpkg baseline and want new sources anyway. The expensive
+        #     half is the compile, and that is what `installed/` holds.
+        #
+        # `installed/` only, so a restore is exactly the four port trees plus
+        # vcpkg's status files. The `Install vcpkg ports` step below still
+        # runs on a hit — it becomes a no-op resolution rather than a
+        # compile — and it keeps its four `Test-Path` header assertions, so a
+        # truncated or half-restored cache fails HERE with "vcpkg port X
+        # missing" instead of as an opaque link error later.
+        #
+        # Keyed by image (`inputs.os`) for the reason every other cache here
+        # is: these are platform-specific binaries.
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: v1-vcpkg-ports-${{ inputs.os }}-${{ steps.vcpkg-baseline.outputs.value }}
+
       - name: Install vcpkg ports (Windows)
         if: runner.os == 'Windows'
         # ALL FOUR ports in ONE `vcpkg install` invocation. vcpkg takes an
