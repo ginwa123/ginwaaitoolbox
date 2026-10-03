@@ -52,6 +52,17 @@ when the task ends in "commit + push". Pairs with the general
   the `worktree/fix-skipped-tests` branch). Run the whole suite.
 - A stray `zig test --listen=-` compiler holds the build-cache lock and makes every
   later build look hung: `pgrep -af "listen=-"`.
+- **`zig build install` can print `install nalar cached`, exit 0, and still leave
+  `zig-out/bin/nalar` ABSENT** (hit 2026-10-03). The install step's cache hit
+  short-circuits the copy-back, so a partially-deleted `zig-out/` is never
+  repaired and the functional harness then silently SKIPS the whole suite via
+  the `default_nalar_bin` fixture's `FileNotFoundError` path. Fix:
+  `rm -rf zig-out && zig build install --summary all` — the compile step stays
+  cache-warm, so this costs seconds, not the 10+ min cold build. **Do not read
+  "every test skipped" as green**; check `ls zig-out/bin/nalar` first.
+- **A worktree starts with `zig-out/bin/` holding only `nalarcli` and
+  `nalar-tui`**, so the first functional run in a fresh worktree needs that
+  `zig build install` even when `.zig-cache/` is already multi-GB warm.
 
 
 ## The project hook formats .zig for you (added 2026-10-03)
