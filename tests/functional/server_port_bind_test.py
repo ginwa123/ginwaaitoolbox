@@ -35,12 +35,30 @@ from harness import REQUIRED_TMP_SUBSTR, find_free_port_random, is_safe_tmp
 def _squatter(port: int) -> socket.socket:
     """Bind + listen on ``port`` so nalar's bind() must fail.
 
-    SO_REUSEADDR matches what nalar's own listener sets (kabelweb
-    `http_server.zig` `setReuseAddr`), so the only thing standing between
-    the two is that a bound-and-listening socket refuses a second bind.
+    POSIX: ``SO_REUSEADDR`` matches what nalar's own listener sets (kabelweb
+    `http_server.zig` `setReuseAddr`), so the only thing standing between the
+    two is that a bound-and-listening socket refuses a second bind.
+
+    Windows: that reasoning is WRONG, and the test hung for 90 s because of
+    it. ``SO_REUSEADDR`` has different semantics there — it permits a second
+    socket to bind an address another socket is already using, which is the
+    long-standing Windows ``SO_REUSEADDR`` hazard. So with ``SO_REUSEADDR``
+    the squatter did not actually squat: nalar bound the same port
+    successfully, started serving, and never exited, and the test failed on
+    ``subprocess.TimeoutExpired`` instead of on the contract it is checking.
+
+    ``SO_EXCLUSIVEADDRUSE`` is the Windows flag for "and nobody else may have
+    this address", and it is honoured regardless of what the second socket
+    asks for. Setting it BEFORE ``bind`` is what makes the squatter a real
+    squatter on Windows. The two flags are mutually contradictory on Windows,
+    so this sets exactly one of them per platform rather than both.
     """
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    if exclusive is not None:  # Windows
+        s.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+    else:  # POSIX
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("127.0.0.1", port))
     s.listen(1)
     return s
