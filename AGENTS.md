@@ -188,6 +188,39 @@ existing `?panel=` param so mount restores it.
 - ❌ Local-only `ref` booleans for view state in routed components.
 
 
+## Frontend — Banned Code in Vue/TS (the `useEffect` ban)
+
+`src/apps/desktop/` enforces the Vue/TS analogue of React's **"You Might Not
+Need an Effect"** doctrine. The bans are LINT RULES, not advice — the full
+table, the React→Vue mapping, and the "what is NOT banned" list live in
+**`docs/vue-ts-banned-code.md`**. Read that before arguing with a lint error.
+
+| Rule | Bans | Fix |
+|---|---|---|
+| `local/no-watch-effect` | `watchEffect()` — implicit deps | `watch(src, cb)`, or `computed()` |
+| `local/no-derived-state-watch` | a `watch` whose body only assigns computable state | `computed()`, or `toRef()` |
+| `local/no-silent-fallback-catch` | a `catch` that returns `[]`/`null`/`''` with no log, no error ref, no comment | put the failure in the type (`sync/runtime.ts`) |
+| `@typescript-eslint/ban-ts-comment` | `@ts-ignore`, `@ts-nocheck` | fix the type; `@ts-expect-error -- reason` is allowed |
+| `@typescript-eslint/no-explicit-any` | bare `any` | narrow it, or add an inline `--reason` disable |
+
+**`watch(() => props.id, () => load())` is ALLOWED** — it is the legitimate
+`useEffect` equivalent and the dominant idiom here (46 of 103 real call
+sites). The derived-state rule requires the callback body to contain **no
+call at all** before it fires. Do not "fix" a lint error by rewriting a real
+side-effect watcher as `computed`; that deletes the behaviour.
+
+The two ratcheted rules are pinned by `src/apps/desktop/eslint-suppressions.json`
+(113 sites). Fixing a site is good; adding one turns CI red. Regenerate with
+`pnpm run lint:banned-baseline` **only after** fixing debt — never to silence
+a new violation. Note that `--suppress-rule` records only `error`-severity
+violations, so those rules must stay at `error`; softening one to `warn`
+silently disables its baseline.
+
+`src/__tests__/bannedCodeRules.spec.ts` pins both directions (that each ban
+fires, and that the legitimate shapes stay silent). If you change a rule,
+run it.
+
+
 ## Frontend — No `try`/`catch` in the desktop app; use Effect-TS
 
 New frontend code in `src/apps/desktop/` MUST express fallibility in the
