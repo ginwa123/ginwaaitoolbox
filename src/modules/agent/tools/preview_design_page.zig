@@ -112,11 +112,7 @@ fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     return try result.toOwnedSlice(allocator);
 }
 
-fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    const clean = try sanitizeControlChars(allocator, error_msg);
-    defer allocator.free(clean);
-    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
-}
+const errorJSON = helpers.tool_json.errorJSON;
 
 /// Generate a unique preview id of the form `pv_<unix_ms>_<6 hex>`.
 /// Self-contained copy of the id scheme the deleted `show_preview` tool

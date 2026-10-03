@@ -107,6 +107,11 @@ _ = @import("tools/document.zig"); // add_document / edit_document (Migration 09
     // non-Windows host. 2026-09-29 flatten: those tests moved inline into
     // tools.zig, the tools-module root, so this edge now points at the host.
     _ = @import("tools/tools.zig");
+    // Shared `element_id` shape validator for the three design tools that
+    // take one. It only carries inline tests — the three call sites alias
+    // it rather than registering it — so without this line it would never
+    // be compiled into the test binary.
+    _ = @import("tools/design_ids.zig");
     _ = @import("tools/list_memory.zig");
     _ = @import("tools/add_design_element.zig");
     _ = @import("tools/memory.zig");

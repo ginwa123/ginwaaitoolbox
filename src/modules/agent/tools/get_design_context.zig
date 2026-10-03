@@ -89,11 +89,7 @@ pub const get_design_context_tool = AgentTool{
 
 // ─── JSON helpers ────
 
-fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    const clean = try sanitizeControlChars(allocator, error_msg);
-    defer allocator.free(clean);
-    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
-}
+const errorJSON = helpers.tool_json.errorJSON;
 
 // ─── Execute ─────────────────────────────────────────────────────────────
 

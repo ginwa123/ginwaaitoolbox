@@ -84,19 +84,9 @@ pub const move_element_to_page_tool = AgentTool{
     },
 };
 
-/// Error JSON object `{"error":...}` so the tool dispatcher can detect
-/// it via the top-level `error` key.
-pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    const clean = try sanitizeControlChars(allocator, error_msg);
-    defer allocator.free(clean);
-    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
-}
+pub const errorJSON = helpers.tool_json.errorJSON;
 
-/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees it.
-pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
-    defer allocator.free(error_msg);
-    return try errorJSON(allocator, error_msg);
-}
+pub const errorJSONOwned = helpers.tool_json.errorJSONOwned;
 
 /// Validate `element_id` is non-empty and `new_page_id` is non-empty.
 /// Returns null when both are valid, or an error JSON object on a
