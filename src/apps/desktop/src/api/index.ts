@@ -4941,6 +4941,42 @@ export async function getPrStatus(
   return await apiFetch<GitPrStatus>(`/git/pr/status?${params.toString()}`, { silent: true })
 }
 
+// Which-files-conflict API. `getPrStatus` tells us a PR is CONFLICTING but
+// not what blocks it — no forge API exposes that, so the backend runs the
+// same three-way merge locally (`git merge-tree --write-tree --name-only`)
+// and names the paths. Fetched only while a conflict is showing: a clean PR
+// costs zero extra spawns and renders exactly as before.
+export interface GitPrConflicts {
+  pr_url: string
+  /** The ref the merge was computed against, e.g. `refs/remotes/origin/main`. */
+  base_ref: string
+  /** Short commit `base_ref` pointed at. '' when rev-parse failed (cosmetic). */
+  base_commit: string
+  head: string
+  /** Paths git refused to merge cleanly. Empty is a legitimate answer. */
+  conflicting_files: string[]
+  count: number
+  /** True when the server capped `conflicting_files`. */
+  truncated: boolean
+}
+
+export async function getPrConflicts(
+  cwd: string,
+  prUrl: string,
+  opts?: { provider?: string; base?: string; head?: string },
+): Promise<GitPrConflicts> {
+  const params = new URLSearchParams({
+    path: cwd,
+    pr_url: prUrl,
+  })
+  if (opts?.provider) params.set('provider', opts.provider)
+  if (opts?.base) params.set('base', opts.base)
+  if (opts?.head) params.set('head', opts.head)
+  // silent: true — the PR tab renders this failure inline next to the badge,
+  // so a toast on top of that would double-report the same problem.
+  return await apiFetch<GitPrConflicts>(`/git/pr/conflicts?${params.toString()}`, { silent: true })
+}
+
 // Read file content API (for CodeEditor)
 export interface ReadFileResponse {
   content: string
