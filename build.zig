@@ -2829,11 +2829,21 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // hand two server threads the same value. That was the
     // `UNIQUE constraint failed: workspace_items.id` -> HTTP 500 on
     // windows-2022 when the in-tick tie-break counter was `threadlocal`.
+    //
+    // `link_libc = true` is REQUIRED and only fails on Linux/macOS, so it
+    // is invisible from a Windows dev box. `unixTimestampNanos` reaches
+    // `extern "c" fn clock_gettime` on POSIX (and `extern "kernel32"` on
+    // Windows), and without libc linked the Linux/macOS test binaries
+    // fail to LINK with an undefined `clock_gettime`. The neighbouring
+    // `test_path_tests` root above sets it for the same reason.
+    // Windows will happily link either way, which is why this needs CI's
+    // Linux cell to catch and not the local one.
     const unix_nanos_id_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/helpers/unix_nanos_id_test.zig"),
             .target = test_target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "helpers", .module = helpers_mod },
             },
