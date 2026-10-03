@@ -576,6 +576,21 @@ fn makeFixtureDirIn(allocator: std.mem.Allocator, raw_root: []const u8) !Fixture
 /// This is the guard that turns the corruption above from "three tests quietly
 /// fail for unrelated-looking reasons, and the repo needs manual repair" into
 /// "the fixture refuses to run". One spawn per fixture repo.
+/// Spell a path the way git spells it.
+///
+/// git reports `/` separators on EVERY platform, including Windows, where
+/// `Dir.realPath` hands back `D:\a\…`. Comparing those two strings directly
+/// fails on identical directories — which is what turned the Windows backend
+/// red on 2026-10-03 with a `FixtureInsideRealRepo` whose two printed paths
+/// were visibly the same directory. Caller frees.
+fn toGitSeparators(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const buf = try allocator.dupe(u8, path);
+    for (buf) |*c| {
+        if (c.* == '\\') c.* = '/';
+    }
+    return buf;
+}
+
 fn requireSelfContainedRepo(path: []const u8) !void {
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(testing.allocator);
@@ -589,7 +604,9 @@ fn requireSelfContainedRepo(path: []const u8) !void {
     };
     if (code != 0) return error.GitFailed;
     const toplevel = std.mem.trim(u8, res.stdout, " \n\r\t");
-    if (!std.mem.eql(u8, toplevel, path)) {
+    const want = try toGitSeparators(testing.allocator, path);
+    defer testing.allocator.free(want);
+    if (!std.mem.eql(u8, toplevel, want)) {
         std.debug.print(
             "\n!! fixture repo at {s} is INSIDE the repository at {s} — git would walk up and rewrite the real one\n",
             .{ path, toplevel },
@@ -641,24 +658,26 @@ fn makeRepo(fx: *const FixtureDir) ![]const u8 {
 }
 
 test "fixture dir survives a symlinked temp root with a trailing slash (macOS shape)" {
-    // Regression guard, 2026-10-03. Every macOS runner failed these tests with
+    // Regression guard, 2026-10-03. macOS failed every one of these tests with
     // `FixtureInsideRealRepo` because $TMPDIR is BOTH a symlink into /private
     // AND ends in a slash: the constructed path was `…/T//nalar-prconflicts-x`
     // while `git rev-parse --show-toplevel` answers `…/T/nalar-prconflicts-x`.
     // The repo was self-contained the whole time; only the two SPELLINGS of the
     // same directory disagreed.
     //
-    // Drives the REAL makeFixtureDirIn — the first draft of this test
-    // re-implemented the logic inline and therefore passed with the bug still
-    // in place, which is worse than no test at all.
+    // Drives the REAL makeFixtureDirIn. The first draft re-implemented the path
+    // logic inline and therefore passed with the bug still in place, which is
+    // worse than no test at all.
     const allocator = testing.allocator;
-    const base = try std.Io.Dir.cwd().realPathFileAlloc(testing.io, ".", allocator);
-    defer allocator.free(base);
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    const raw = env.get("TMPDIR") orelse env.get("TEMP") orelse env.get("TMP") orelse "/tmp";
+    const root = std.mem.trimEnd(u8, raw, "/");
 
-    const real_root = try std.fmt.allocPrint(allocator, "{s}/nalar-tmpprobe-real", .{base});
-    defer allocator.free(real_root);
-    const link_root = try std.fmt.allocPrint(allocator, "{s}/nalar-tmpprobe-link", .{base});
-    defer allocator.free(link_root);
+    var rb: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var wb: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_root = try std.fmt.bufPrint(&rb, "{s}/nalar-tmpprobe-real", .{root});
+    const link_root = try std.fmt.bufPrint(&wb, "{s}/nalar-tmpprobe-link", .{root});
     const with_slash = try std.fmt.allocPrint(allocator, "{s}/", .{link_root});
     defer allocator.free(with_slash);
 
@@ -666,7 +685,10 @@ test "fixture dir survives a symlinked temp root with a trailing slash (macOS sh
     std.Io.Dir.cwd().deleteTree(testing.io, link_root) catch {};
     var d = try std.Io.Dir.cwd().createDirPathOpen(testing.io, real_root, .{});
     d.close(testing.io);
-    try std.Io.Dir.cwd().symLink(testing.io, real_root, link_root, .{});
+    // Windows needs SeCreateSymbolicLinkPrivilege, which GitHub's runners do
+    // not grant by default — skip rather than fail there. The macOS/Linux
+    // runners are the ones that actually regressed.
+    std.Io.Dir.cwd().symLink(testing.io, real_root, link_root, .{}) catch return error.SkipZigTest;
     defer std.Io.Dir.cwd().deleteTree(testing.io, link_root) catch {};
     defer std.Io.Dir.cwd().deleteTree(testing.io, real_root) catch {};
 
@@ -678,10 +700,21 @@ test "fixture dir survives a symlinked temp root with a trailing slash (macOS sh
     // and rewrites the enclosing repository.
     try git(fx.path, &.{"init", "-q"});
     try requireSelfContainedRepo(fx.path);
+}
 
-    // And it must not name a path under the nalar checkout — this fixture is
-    // created relative to cwd here only to get a writable, unique parent.
-    try testing.expect(std.mem.indexOf(u8, fx.path, "nalar-prconflicts-") != null);
+test "requireSelfContainedRepo accepts a path git spells with forward slashes" {
+    // Regression guard, 2026-10-03 (Windows). git reports `/` separators on
+    // every platform; `Dir.realPath` returns `\` on Windows. Comparing the
+    // raw strings made the Windows backend fail on a directory that was
+    // obviously self-contained — the error even printed both paths and they
+    // were the same directory.
+    const want = try toGitSeparators(testing.allocator, "D:\\a\\b");
+    defer testing.allocator.free(want);
+    try testing.expectEqualStrings("D:/a/b", want);
+
+    const posix = try toGitSeparators(testing.allocator, "/tmp/x");
+    defer testing.allocator.free(posix);
+    try testing.expectEqualStrings("/tmp/x", posix);
 }
 
 test "useCase names the file both sides changed" {
