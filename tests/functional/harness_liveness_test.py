@@ -21,6 +21,7 @@ Python process and every case runs in well under a second.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -60,6 +61,42 @@ def _spawn_sleeper(seconds: float = 30.0) -> subprocess.Popen:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _tree_pids(root: int) -> list[int]:
+    """Every live descendant of ``root``, including ``root`` itself."""
+    pids = [root]
+    try:
+        out = subprocess.run(
+            ["taskkill", "/T", "/PID", str(root)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        for chunk in out.stdout.split():
+            if chunk.isdigit():
+                pids.append(int(chunk))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return pids
+
+
+def _kill_quietly(pid: int) -> None:
+    """Best-effort cleanup so a failing assertion does not leak processes."""
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
 
 
 class TestPidIsAlive:
@@ -609,6 +646,50 @@ class TestParentEnvIsRestoredExactly:
             os.environ["HOME"] = real_home
 
     @pytest.mark.usefixtures("_restore_env")
+    def test_a_hand_built_harness_without_a_snapshot_restores_nothing(self) -> None:
+        """No snapshot means "I never shadowed anything" — so touch nothing.
+
+        This is the regression that made `server_port_bind_test` fail in a full
+        sweep while passing in isolation. `harness_safety_test.py` builds two
+        harnesses by hand without passing `_env_backup`, and `teardown()`'s old
+        fallback "restored" them from the lossy `orig_*` fields — which default
+        to `""`, and `""` used to mean "delete this". So after that module ran,
+        the parent process had lost `APPDATA` outright:
+
+            LEAKED APPDATA: 'C:\\Users\\ginwa\\AppData\\Roaming' -> None
+
+        The next nalar to start then printed `warning: APPDATA environment
+        variable not set` and died in `Config.zig:getDefaultConfigPath`,
+        before reaching the code the failing test was exercising. `envleak.py`
+        over `harness_safety_test.py` is what pins it to that module.
+        """
+        import pathlib
+        import tempfile
+
+        from harness import REQUIRED_TMP_SUBSTR, FunctionalHarness
+
+        before = dict(os.environ)
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
+        h = FunctionalHarness(
+            port=9999,
+            nalar_bin=pathlib.Path("nalar-does-not-exist"),
+            temp_dir=tmp,
+            orig_home=_REAL_HOME,
+            log_path=tmp / "nalar.log",
+            pid=None,
+            dry_run=True,
+            _proc=None,
+            # NOTE: no _env_backup, no _env_shadowed -- the hand-built shape.
+        )
+        h.teardown()
+
+        assert dict(os.environ) == before, (
+            "a harness constructed without a snapshot must leave the parent "
+            "environment completely alone; it never shadowed it. Changed: "
+            f"{sorted(k for k in set(before) | set(os.environ) if before.get(k) != os.environ.get(k))}"
+        )
+
+    @pytest.mark.usefixtures("_restore_env")
     def test_does_not_clobber_a_variable_another_harness_now_owns(self) -> None:
         """Two harnesses can be alive at once; teardown order must not matter.
 
@@ -674,6 +755,95 @@ class TestParentEnvIsRestoredExactly:
             "the snapshot collapsed 'absent' and 'empty' into one value, which "
             "is what let teardown delete variables it should have restored"
         )
+
+
+class TestStopBinaryKillsTheWholeTree:
+    """Teardown must kill DESCENDANTS, not just the server it spawned.
+
+    POSIX got this for free: `start_new_session=True` puts nalar in its own
+    process group and `_signal_group` calls `os.killpg`, so workers die with
+    it. Windows had no equivalent -- `os.kill(pid)` terminates exactly one
+    process -- and a worker that inherited nalar's SQLite handle keeps
+    `agent.db` open after nalar is gone:
+
+        PermissionError: [WinError 32] The process cannot access the file
+        because it is being used by another process:
+        ...\\.config\\nalar\\agent.db
+
+    That lock is held by a process that was never going to exit, so the
+    rmtree retry loop cannot fix it -- it just burns its whole budget and
+    re-raises, turning a passing test into a teardown ERROR. It was the
+    largest remaining source of red on windows-2022: 7 of the 9 teardown
+    ERRORs across the three shards of run `37151287651`, all in
+    `chat_row_context_menu_ui_test`, which spawns workers.
+
+    The tree is built for real here rather than simulated, because the whole
+    question is whether the platform's kill reaches a grandchild -- and the
+    previous version of this test spawned its stand-in from pytest, which made
+    it a non-descendant and asserted the opposite of the truth.
+    """
+
+    def test_a_grandchild_holding_a_file_does_not_survive_the_kill(self) -> None:
+        import pathlib
+        import tempfile
+
+        from harness import REQUIRED_TMP_SUBSTR, FunctionalHarness
+
+        holder_dir = pathlib.Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
+        locked = holder_dir / "agent.db"
+        locked.write_bytes(b"x")
+
+        # `parent` spawns `child`, which opens the file and sleeps. Signalling
+        # `parent` must take `child` with it -- the same shape as nalar
+        # spawning a worker that holds agent.db.
+        parent_src = (
+            "import subprocess, sys, time\n"
+            "p = subprocess.Popen([sys.executable, '-c',\n"
+            "    \"import sys,time\\n\"\n"
+            "    \"f=open(sys.argv[1],'r+b')\\n\"\n"
+            "    \"print('held', flush=True)\\n\"\n"
+            "    \"time.sleep(600)\", sys.argv[1]],\n"
+            "    stdout=subprocess.PIPE)\n"
+            "print(p.stdout.readline().strip(), flush=True)\n"
+            "time.sleep(600)\n"
+        )
+        parent = subprocess.Popen(
+            [sys.executable, "-c", parent_src, str(locked)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=(os.name != "nt"),
+        )
+        try:
+            line = parent.stdout.readline().strip()
+            assert b"held" in line, (
+                f"the stand-in tree never opened the file (got {line!r}), so "
+                f"this test would prove nothing"
+            )
+
+            # Call the real implementation with only `pid` set -- it touches
+            # nothing else on self.
+            target = type("_T", (), {"pid": parent.pid})()
+            FunctionalHarness._signal_group(target, signal.SIGTERM)
+
+            # The grandchild must be gone, and the file deletable. Give the
+            # OS a moment to release the handle after termination.
+            deadline = time.monotonic() + 20.0
+            while time.monotonic() < deadline:
+                try:
+                    locked.unlink()
+                    break
+                except PermissionError:
+                    time.sleep(0.2)
+
+            assert not locked.exists(), (
+                f"the descendant holding {locked} outlived the kill, so "
+                f"teardown's rmtree will fail with WinError 32. The kill must "
+                f"take the whole process tree, not just the pid it was given."
+            )
+        finally:
+            for p in _tree_pids(parent.pid):
+                _kill_quietly(p)
+            parent.wait(timeout=30)
 
 
 class TestOverlappingBootHarnesses:  # noqa: D101 - see the test docstrings

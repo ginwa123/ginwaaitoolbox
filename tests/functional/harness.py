@@ -922,33 +922,21 @@ class FunctionalHarness:
             if self._env_owns_baseline:
                 self._env_owns_baseline = False
                 release_parent_env_baseline()
-        else:
-            # Constructed by hand rather than by boot(): keep the old,
-            # lossy behaviour so nothing changes for that path.
-            os.environ["HOME"] = self.orig_home
-            if os.name == "nt":
-                for key, orig in (
-                    ("XDG_CONFIG_HOME", self.orig_xdg_config_home),
-                    ("XDG_STATE_HOME", self.orig_xdg_state_home),
-                    ("XDG_DATA_HOME", self.orig_xdg_data_home),
-                    ("XDG_CACHE_HOME", self.orig_xdg_cache_home),
-                ):
-                    if orig:
-                        os.environ[key] = orig
-                    else:
-                        os.environ.pop(key, None)
-                if self.orig_userprofile:
-                    os.environ["USERPROFILE"] = self.orig_userprofile
-                else:
-                    os.environ.pop("USERPROFILE", None)
-                if self.orig_appdata:
-                    os.environ["APPDATA"] = self.orig_appdata
-                else:
-                    os.environ.pop("APPDATA", None)
-                if self.orig_localappdata:
-                    os.environ["LOCALAPPDATA"] = self.orig_localappdata
-                else:
-                    os.environ.pop("LOCALAPPDATA", None)
+        # `_env_backup is None` means this harness was built by hand and never
+        # shadowed the parent -- only `boot()` does that, and it always
+        # snapshots. So there is nothing to undo, and the old fallback here
+        # used to "restore" from the lossy `orig_*` fields, which DELETED
+        # USERPROFILE / APPDATA / LOCALAPPDATA whenever a caller had not
+        # passed them (their default is "").
+        #
+        # That was not hypothetical. `harness_safety_test.py` builds two
+        # harnesses by hand, so after that module ran the parent process had
+        # lost APPDATA outright -- and the next nalar to start refused with
+        # `warning: APPDATA environment variable not set`, dying in
+        # `Config.zig:getDefaultConfigPath` before reaching the code under
+        # test. In a full sweep that surfaced as `server_port_bind_test`
+        # failing on a missing "already in use" string, having passed in
+        # isolation.
 
         # 2. Stop the binary.
         if self.pid is not None and not self._stopped:
@@ -1039,10 +1027,10 @@ class FunctionalHarness:
             the child in its own process group; os.killpg() signals
             the whole group (defends against children that ignore
             SIGTERM).
-          - Windows: there are no process groups. start_new_session
-            maps to CREATE_NEW_PROCESS_GROUP, and TerminateProcess is
-            the only way to kill a child we don't own. We skip the
-            pgid dance and kill by pid directly.
+          - Windows: no killpg exists, so `_signal_group` shells out to
+            `taskkill /T`, which is the equivalent -- it terminates the
+            process AND its descendants. Killing only the pid leaves
+            workers holding `agent.db`, and teardown then cannot delete it.
 
         Teardown budget (was 10s, now 3s) — the slim budget is
         safe because ``/test/shutdown`` exits the process within
@@ -1141,12 +1129,46 @@ class FunctionalHarness:
             except OSError:
                 pass
         else:
-            # Windows: no killpg. Best effort — SIGTERM (which
-            # Python maps to TerminateProcess for the child).
+            # Windows: `os.kill` terminates exactly ONE process. nalar spawns
+            # children (agent workers, a shell nalar for terminal sessions),
+            # and any child that inherited the SQLite handle keeps
+            # `agent.db` open -- so teardown's rmtree fails with
+            #
+            #   PermissionError: [WinError 32] The process cannot access the
+            #   file because it is being used by another process:
+            #   ...\.config\nalar\agent.db
+            #
+            # for as long as that child lives. Retrying cannot fix it: the
+            # lock is held by a process that is never going to exit on its
+            # own. Measured across three windows-2022 shards of run
+            # `37151287651`, this was the single largest remaining cause of
+            # red -- 7 of the 9 teardown ERRORs, all in
+            # `chat_row_context_menu_ui_test`, which spawns workers.
+            #
+            # `taskkill /T` is the Windows equivalent of `killpg`: it kills the
+            # process AND every descendant. That asymmetry with POSIX (which
+            # does get `killpg`) is the whole bug -- the comment above used to
+            # say "Windows: there are no process groups", which is true of
+            # signalling and false about the consequence.
+            #
+            # `/F` is not extra force: `os.kill(pid, SIGTERM)` already maps to
+            # TerminateProcess on Windows, so there is no graceful variant to
+            # preserve here. The graceful path is `/test/shutdown` above, which
+            # `_stop_binary` tries first.
             try:
-                os.kill(self.pid, sig)
-            except OSError:
-                pass
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self.pid)],
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                # taskkill missing or unusable -- fall back to killing just
+                # the one process, which is what this always did.
+                try:
+                    os.kill(self.pid, sig)
+                except OSError:
+                    pass
 
 
 # ============================================================================
