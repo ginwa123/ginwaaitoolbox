@@ -1026,10 +1026,20 @@ const handleCloseAddMemoryTaskDialog = () => {
   addMemoryTaskItemId.value = null
 }
 
+// The single owner of the task-delete confirmation. Every delete path
+// (kanban card context menu, kanban row button, sidebar task row)
+// arrives here, so naming the task is what tells the user which card
+// they are about to destroy — the menu they just used to pick it.
 const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
+  const item = workspacesStore.workspaces
+    .find((w) => w.id === workspaceId)
+    ?.items.find((i) => i.id === itemId)
+  const taskName = item?.tasks?.find((t) => t.id === taskId)?.name
   openDeleteConfirm({
-    title: 'Delete Task',
-    message: 'Delete this task?',
+    title: 'Delete task',
+    message: taskName
+      ? `“${taskName}” will be permanently deleted. This cannot be undone.`
+      : 'This task will be permanently deleted. This cannot be undone.',
     onConfirm: () => workspacesStore.deleteTask(workspaceId, itemId, taskId),
   })
 }
