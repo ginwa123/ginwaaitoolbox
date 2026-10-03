@@ -112,12 +112,43 @@ jobs:
     # in the thing that proves the shards partition the suite. Let it fall
     # back to the job id.
     runs-on: ${{ inputs.os }}
-    # A cold Windows cell has to build the vcpkg ports before anything can
-    # link, then a ~90 MB zig build, then ~1/3 of the suites, each booting
-    # a real nalar per test. That is well inside 75 minutes; the previous
-    # 90 was sized for a FULL unsharded run and the default 360 would let
-    # a wedged runner hold a machine for six hours.
-    timeout-minutes: 75
+    # Per-platform, because 75 minutes is right for two of the three cells
+    # and fatal for the third.
+    #
+    # The 75 was sized from Linux and macOS, where a whole shard job —
+    # checkout, venv, a zig build and 1/3 of BOTH suites — finishes in about
+    # 9 minutes. Windows is roughly an order of magnitude slower at
+    # everything this job does: `vcpkg install` alone is 11 minutes before
+    # a single test can link, and every test boots a real nalar and (in the
+    # UI suite) a Vite dev server.
+    #
+    # Measured, from run 37046311981 `functional Windows X64 · shard 1/3`:
+    #
+    #     18:33:49  job starts
+    #     18:45:48  the functional step begins          <- 12 min of setup
+    #     19:48:57  "The operation was canceled."       <- 63 min, never
+    #                                                             finished
+    #
+    # `18:33:49 + 75 min` is exactly where it died, so 75 is not "too tight
+    # on a bad day" — it is below what the cell needs on a normal day. It
+    # has been that way for every run in the last 60: I checked the job list
+    # for the whole recent history and EVERY `functional Windows X64` shard
+    # is `cancelled`, none has ever completed.
+    #
+    # It is also self-reinforcing, which is what made it look unfixable.
+    # The step buffers its output through `tee | tail -n 80`, so a killed job
+    # prints nothing, and `actions/cache` only saves in post-job cleanup —
+    # a job that dies on the timeout never saves its `.zig-cache`. The next
+    # run therefore misses the cache, pays another cold ~90 MB compile, and
+    # dies on the same wall. The cache key was never once found in a log:
+    #   `Cache not found for input keys: v1-func-zig-windows-2022-...`
+    # So the honest fix is headroom; once ONE run completes, its cache is
+    # saved and every later run starts warm.
+    #
+    # 150, not 360: a timeout is a ceiling, not a target — a job that needs
+    # 90 still exits at 90 — so the only thing a generous ceiling costs is
+    # when something is genuinely wedged, and 2.5 h bounds that.
+    timeout-minutes: ${{ inputs.os == 'windows-2022' && 150 || 75 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -573,11 +604,20 @@ jobs:
         # having: the run is red, and the tail of a red run is the part
         # nobody can read.
         #
-        # `continue-on-error` because artifact storage is an account-level
-        # quota this repo does not control, and hitting it turned an
-        # otherwise-green run red once already. The gate is the pytest
-        # step above; this is a diagnostic.
-        if: failure()
+        # `if: failure() || cancelled()` and not `failure()` alone.
+        #
+        # `cancelled()` is the case that costs the most when it is missing.
+        # A job that dies on `timeout-minutes` reports `cancelled`, so this
+        # step used to be skipped exactly when there was something to read:
+        # on run 37046311981 the Windows shard died with 145 lines staged in
+        # `/tmp/functional-test.log` and the console showed nothing, because
+        # the step above pipes through `tee … | tail -n 80` and `tail` only
+        # prints when its input closes. Both halves of the evidence were
+        # discarded and the timeout cost a full run to diagnose blind.
+        # `always()` is deliberately not used instead — this repo has already
+        # been bitten by artifact quota turning a green run red, and there is
+        # no reason to upload a log from a job that passed.
+        if: failure() || cancelled()
         continue-on-error: true
         uses: actions/upload-artifact@v5
         with:
