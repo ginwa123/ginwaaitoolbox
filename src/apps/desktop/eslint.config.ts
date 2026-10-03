@@ -4,6 +4,7 @@ import pluginVue from 'eslint-plugin-vue'
 import pluginVitest from '@vitest/eslint-plugin'
 import pluginOxlint from 'eslint-plugin-oxlint'
 import skipFormatting from 'eslint-config-prettier/flat'
+import localBannedCode from './eslint-rules/index'
 
 // To allow more languages other than `ts` in `.vue` files, uncomment the following lines:
 // import { configureVueProject } from '@vue/eslint-config-typescript'
@@ -27,6 +28,69 @@ export default defineConfigWithVueTs(
   },
 
   ...pluginOxlint.buildFromOxlintConfigFile('.oxlintrc.json'),
+
+  // The Vue/TS banned-code rules — the local analogue of React's
+  // "you might not need an effect" doctrine, plus the swallowed-error class
+  // that PR #719 shipped. See `docs/vue-ts-banned-code.md`.
+  //
+  // Everything here is severity `error`, because ESLint's `--suppress-rule`
+  // only records ERROR-level violations — a `warn` baseline is silently
+  // written as an empty `{}` and the ratchet never engages. So the tiering is
+  // done by SUPPRESSION, not by severity:
+  //
+  //   no baselines needed  — zero occurrences; new code fails immediately.
+  //   baselined in          — pre-existing debt, pinned by the counts in
+  //   eslint-suppressions.json, so the count can only fall. Fix a site and
+  //   the baseline shrinks; add one and CI goes red.
+  //
+  // Regenerate after intentionally fixing debt:
+  //   pnpm run lint:banned-baseline
+  {
+    name: 'app/banned-code',
+    files: ['src/**/*.{vue,ts}'],
+    plugins: { local: localBannedCode },
+    rules: {
+      // Zero occurrences today. `watchEffect` tracks its dependencies
+      // implicitly, so a later refactor can silently change when it re-runs —
+      // it is the Vue spelling of the useEffect anti-pattern.
+      'local/no-watch-effect': 'error',
+      // A watcher that writes back into the value it watches. Vue re-runs a
+      // watcher when a dependency it READS changes, so a self-write schedules
+      // another run — the loop only ends when the write is accidentally
+      // idempotent. Distinct from `no-derived-state-watch`, which allows a
+      // callback containing calls; the feedback loop hides in exactly those
+      // "legitimate side effect" bodies.
+      'local/no-watch-feedback-loop': 'error',
+      // 26 baselined sites.
+      'local/no-derived-state-watch': 'error',
+      // 87 baselined sites.
+      'local/no-silent-fallback-catch': 'error',
+      // `@ts-ignore` silences a whole file region with no obligation to
+      // explain, and `@ts-nocheck` silences the entire file — both are at
+      // zero occurrences here, so both are free to forbid outright.
+      //
+      // `@ts-expect-error` is allowed WITH a `-- reason`: it documents the
+      // suppression and, unlike `@ts-ignore`, it fails the build if the error
+      // it covers is ever fixed. The existing uses are deliberate
+      // negative-type tests — `sseIsInputOutput.spec.ts` assigns `'1'` to a
+      // boolean field precisely to assert the compiler rejects it.
+      '@typescript-eslint/ban-ts-comment': [
+        'error',
+        {
+          'ts-ignore': true,
+          'ts-nocheck': true,
+          'ts-check': false,
+          'ts-expect-error': 'allow-with-description',
+          minimumDescriptionLength: 8,
+        },
+      ],
+      // Already at zero — every one of the 631 `as any` in this repo carries
+      // an inline `// eslint-disable-next-line … -- <reason>`, so switching
+      // the rule on costs nothing and makes that discipline enforceable for
+      // new code. `any` erases the error channel this repo is trying to widen.
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
 
   skipFormatting,
 )

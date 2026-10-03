@@ -1340,14 +1340,18 @@ const activeDesignChatTask = computed<TaskType | null>(() => {
 // full canvas width — the dialog opens on top of the canvas with a
 // dimmed backdrop. The collapse-state + design resize handle +
 // DESIGN_WIDTH_STORAGE_KEY localStorage are removed below.
-const designChatDialogOpen = ref(false)
-watch(
-  () => activeDesignChatTaskId.value,
-  (id) => {
-    designChatDialogOpen.value = !!id
+// Open state IS "there is an active design chat task id" — so express that as
+// a writable computed instead of a ref plus a watcher that keeps the two in
+// sync. The ref version needed `{ immediate: true }` and still left a window
+// where the dialog's own `v-model:show` write and the watcher could disagree.
+const designChatDialogOpen = computed({
+  get: () => !!activeDesignChatTaskId.value,
+  // The dialog can only ask to close (it never opens itself). Closing clears
+  // the id, which is what "closed" actually means everywhere else.
+  set: (open: boolean) => {
+    if (!open) activeDesignChatTaskId.value = ''
   },
-  { immediate: true },
-)
+})
 
 // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
 // agent chat inline view. Driven by `activeTask` — when the
