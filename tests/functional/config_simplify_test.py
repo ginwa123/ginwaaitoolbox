@@ -174,6 +174,12 @@ def preboot(default_nalar_bin):
             orig_home=orig_home,
             log_path=log_path,
             pid=proc.pid,
+            # Pass the Popen handle too. FunctionalHarness._wait_dead
+            # answers "is the server dead?" from this handle via poll();
+            # without it the harness has to fall back to probing the bare
+            # pid, which on Windows cannot distinguish an exited process
+            # from a live one.
+            _proc=proc,
             orig_userprofile=orig_userprofile,
             orig_appdata=orig_appdata,
             orig_localappdata=orig_localappdata,

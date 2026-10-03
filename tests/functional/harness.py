@@ -313,6 +313,10 @@ class FunctionalHarness:
     pid: int | None = None
     dry_run: bool = False
     _stopped: bool = dataclasses.field(default=False, repr=False)
+    # The Popen handle for the server, kept so liveness can be answered with
+    # `proc.poll()` instead of a hand-rolled platform probe. See
+    # `_wait_dead` for why the hand-rolled version was wrong on Windows.
+    _proc: subprocess.Popen | None = dataclasses.field(default=None, repr=False)
     # Windows original env snapshot (USERPROFILE/APPDATA/LOCALAPPDATA) — empty on POSIX.
     orig_userprofile: str = ""
     orig_appdata: str = ""
@@ -547,6 +551,7 @@ class FunctionalHarness:
             log_path=log_path,
             pid=proc.pid,
             dry_run=os.environ.get("NALAR_FUNCTIONAL_DRY_RUN") == "1",
+            _proc=proc,
             orig_userprofile=orig_userprofile,
             orig_appdata=orig_appdata,
             orig_localappdata=orig_localappdata,
@@ -799,61 +804,54 @@ class FunctionalHarness:
         self._wait_dead(1.0, "post-sigkill")  # best-effort final wait
 
     def _wait_dead(self, timeout: float, label: str = "wait") -> bool:
-        """Return True iff the process exited within ``timeout`` seconds.
+        """Return True iff the server process exited within ``timeout``.
 
-        Uses ``os.waitpid(pid, WNOHANG)`` to detect exit. WNOHANG is
-        the correct call here — ``os.kill(pid, 0)`` returns 0 for
-        zombie processes (the process is dead but the parent hasn't
-        reaped it), so it would falsely report "alive" for a zombie
-        and stall the harness for the full SIGTERM/SIGKILL budget.
+        Asks ``Popen.poll()``, which is the only liveness answer that is
+        correct on all three runners: it uses each platform's native wait
+        (waitpid on POSIX, the process handle on Windows) and reaps the
+        child, so there is no zombie to mistake for a live process.
 
-        ``waitpid(WNOHANG)`` returns:
-          - ``(0, 0)``            — process is still running, no zombie
-          - ``(pid, status)``     — child has exited and we JUST reaped it
-          - raises ``OSError`` (ECHILD) — child doesn't exist (no zombie either)
+        The hand-rolled probe this replaced branched on ``hasattr(os,
+        "waitpid")``, which is **True** on CPython/Windows, and was broken
+        there — it reported a **running** nalar as dead:
 
-        On Windows, ``os.waitpid`` is unavailable; we fall back to
-        ``os.kill(pid, 0)``. The Windows backend doesn't have zombie
-        processes (CreateProcess+wait semantics differ), so the
-        heuristic is sufficient there.
+        ``os.WNOHANG`` does not exist on Windows, so the old
+        ``try: wnohang = os.WNOHANG / except AttributeError: wnohang = 0``
+        silently selected waitpid's **blocking** mode, and
+        ``os.waitpid(pid, 0)`` raised ``ChildProcessError`` for a child
+        Windows was not tracking — which the old code read as "dead, ECHILD".
+        Verified directly on this host against a child that was
+        demonstrably still sleeping:
+
+            waitpid -> ChildProcessError -> claimed DEAD
+
+        So teardown proceeded to ``shutil.rmtree`` with nalar still running
+        and still holding ``agent.db``, every teardown raised
+        ``PermissionError: [WinError 32]`` — after burning the full
+        10 x 1s retry budget, i.e. 10 seconds per test — and the server was
+        never actually killed. Those accumulating servers are what turned a
+        ~2.7 s/test suite (Linux) into ~44 s/test on windows-2022 and pushed
+        all three Windows shards past their timeout.
+
+        The old ``os.kill(pid, 0)`` fallback is no better on Windows, in the
+        other direction: it raises ``WinError 87`` for a pid that does not
+        exist (so "dead" is right there), but returns cleanly for a pid that
+        has already exited (so a dead nalar reads as alive forever). See
+        ``_pid_is_alive`` for the probe that gets both cases right.
         """
         assert self.pid is not None
-        has_waitpid = hasattr(os, "waitpid")
-        # WNOHANG may not exist on some platforms; fall back to 0
-        # (blocking) but we cap the loop with `timeout` so it's not
-        # actually blocking.
-        try:
-            wnohang = os.WNOHANG
-        except AttributeError:
-            wnohang = 0
-        t0 = time.monotonic()
+        proc = self._proc
+        if proc is None:
+            # No handle (constructed by hand rather than by boot()).
+            # Fall back to the pidfile probe, which is Windows-correct.
+            return not _pid_is_alive(self.pid)
         deadline = time.monotonic() + timeout
-        polls = 0
-        while time.monotonic() < deadline:
-            polls += 1
-            if has_waitpid:
-                try:
-                    wpid, _status = os.waitpid(self.pid, wnohang)
-                except ChildProcessError:
-                    # ECHILD — no such process (already reaped and gone)
-                    return True
-                except OSError:
-                    # Some other error — treat as alive and retry
-                    pass
-                else:
-                    if wpid == self.pid:
-                        # We just reaped the zombie — process is really dead
-                        return True
-                    # wpid == 0 means still running, no zombie yet
-            else:
-                # Windows / fallback: kill(pid, 0) returns 0 if alive
-                # (including zombie — but Windows doesn't have those)
-                try:
-                    os.kill(self.pid, 0)
-                except OSError:
-                    return True
+        while True:
+            if proc.poll() is not None:
+                return True
+            if time.monotonic() >= deadline:
+                return False
             time.sleep(0.05)
-        return False
 
     def _signal_group(self, sig: int) -> None:
         """Signal the process group on POSIX, or the pid on Windows.
@@ -1036,35 +1034,108 @@ def find_free_port_random(
     )
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """Return True iff ``pid`` names a live process.
+
+    Platform-correct, unlike ``os.kill(pid, 0)``:
+
+    * POSIX: ``kill(pid, 0)`` is the classic probe. ``ESRCH`` means dead.
+    * Windows: ``os.kill(pid, 0)`` cannot answer the question. CPython's
+      Windows ``os.kill`` implements only ``SIGTERM`` / ``CTRL_C_EVENT`` /
+      ``CTRL_BREAK_EVENT``, and signal 0 falls through to the
+      ``OpenProcess`` path — measured on this host (CPython 3.11.9):
+
+          os.kill(os.getpid(), 0)      -> no exception   (alive)   OK
+          os.kill(<live child>, 0)     -> no exception   (alive)   OK
+          os.kill(999999, 0)           -> WinError 87    (dead)    OK
+          os.kill(<exited child>, 0)   -> no exception   (dead)    WRONG
+
+      So a pid that never existed is reported dead, but a pid that has
+      already exited still answers "alive" — the handle lingers. Used as a
+      "has it gone?" test after a kill that is exactly the wrong
+      direction: the waiter never sees the process die.
+
+      So ask the kernel directly: ``OpenProcess(SYNCHRONIZE)`` fails with
+      ``ERROR_INVALID_PARAMETER`` when the pid does not exist, and
+      ``WaitForSingleObject(handle, 0)`` reports ``WAIT_TIMEOUT`` only
+      while the process is still running. A pid we are not permitted to
+      open is reported **alive**: "cannot tell" must never become "dead",
+      or the orphan reaper kills innocent processes.
+
+    Callers must treat this as authoritative. Every previous Windows
+    judgement call here went the wrong way.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _pid_is_alive_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Alive, just not ours to signal.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _pid_is_alive_windows(pid: int) -> bool:
+    """Windows half of `_pid_is_alive`. See that docstring for why."""
+    import ctypes  # local import: only this branch needs it
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    SYNCHRONIZE = 0x00100000
+    WAIT_TIMEOUT = 0x00000102
+    ERROR_ACCESS_DENIED = 5
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # argtypes/restype are load-bearing, not decoration. Without them ctypes
+    # marshals every argument as a 32-bit `c_int`, so the `c_void_p` handle
+    # OpenProcess hands back would be TRUNCATED before it reached
+    # CloseHandle — and a truncated handle is not "this handle or nothing",
+    # it is some other object in this process. One bad reap would close a
+    # file or a socket out from under the test run.
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+
+    handle = kernel32.OpenProcess(
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        err = ctypes.get_last_error()
+        # 87 ERROR_INVALID_PARAMETER: no such pid -> dead.
+        # 5 ERROR_ACCESS_DENIED: exists, owned by someone else -> alive.
+        # Any other error is also "cannot tell", so answer alive: guessing
+        # "dead" here is what made the reaper dangerous.
+        return err == ERROR_ACCESS_DENIED
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _wait_pid_dead(pid: int, timeout: float) -> bool:
     """Return True iff ``pid`` exited within ``timeout`` seconds.
 
-    Uses ``os.kill(pid, 0)`` as a liveness probe. Cross-platform:
-    POSIX and Windows both support the probe. ESRCH ⇒ dead; EPERM ⇒
-    alive-but-not-ours (treated as "dead for our purposes" because we
-    can't signal it anyway).
-
-    Windows note: ``os.kill(dead_pid, 0)`` raises plain ``OSError``
-    (``[WinError 87] The parameter is incorrect``), NOT
-    ``ProcessLookupError`` — so the except clause must be broad
-    ``OSError`` (narrow ``(ProcessLookupError, PermissionError)``
-    lets 87 escape, aborting the orphan-reap loop mid-scan and
-    leaking every tempdir after the first dead pid).
-
-    For subprocess children specifically, prefer ``os.waitpid(WNOHANG)``
-    which also reaps zombies — see ``_stop_binary`` for the richer case.
+    Thin wrapper over `_pid_is_alive` so the orphan reaper cannot
+    reintroduce an ``os.kill(pid, 0)`` probe: on Windows that call
+    reports an EXITED pid as still alive, so the reaper's "wait for it to
+    die" step always timed out and escalated to ``SIGKILL`` — killing a pid
+    that had already been recycled onto an unrelated process.
     """
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            # ProcessLookupError / PermissionError on POSIX;
-            # [WinError 87] on Windows for a dead pid. Either way
-            # the pid is gone (or not ours) — dead for our purposes.
+    while True:
+        if not _pid_is_alive(pid):
             return True
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(0.05)
-    return False
 
 
 def _reap_orphan_test_pids() -> int:
@@ -1114,20 +1185,21 @@ def _reap_orphan_test_pids() -> int:
             continue
         # If the harness python is alive, this test is still in progress —
         # another worker scanning concurrently must NOT kill it.
-        # NOTE: broad OSError (not just ProcessLookupError): on
-        # Windows a dead pid raises [WinError 87], which must count
-        # as "harness dead" or the whole reap loop aborts on the
-        # first orphan (leaking every tempdir after it). The outer
-        # `except Exception` is the backstop for non-OSError probe
-        # failures (e.g. CPython's SystemError when a recycled pid
-        # lands on a protected system process): one bad entry must
-        # never abort the scan — skip it and reap the rest.
+        #
+        # `_pid_is_alive` rather than a bare `os.kill(harness_pid, 0)`.
+        # The old comment here claimed WinError 87 "must count as harness
+        # dead"; the truth is that `os.kill(pid, 0)` cannot answer the
+        # question on Windows at all — see `_pid_is_alive`. Guessing wrong
+        # here made the reaper SIGTERM the nalar pid of a test that was
+        # still running, and (once leaked pids get recycled onto unrelated
+        # processes) could terminate something innocent outright.
+        # `_pid_is_alive` asks the kernel via OpenProcess/
+        # WaitForSingleObject and reports "cannot tell" as alive, so an
+        # unkillable entry is skipped rather than guessed at. The outer
+        # `except Exception` remains the backstop for anything else — one
+        # bad entry must never abort the scan.
         try:
-            try:
-                os.kill(harness_pid, 0)
-            except OSError:
-                pass  # harness is dead — this dir is an orphan
-            else:
+            if _pid_is_alive(harness_pid):
                 continue
             # Harness is dead. Kill the nalar child if alive.
             if nalar_pid and nalar_pid != os.getpid():

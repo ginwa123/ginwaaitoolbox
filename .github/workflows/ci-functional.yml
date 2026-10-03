@@ -112,43 +112,50 @@ jobs:
     # in the thing that proves the shards partition the suite. Let it fall
     # back to the job id.
     runs-on: ${{ inputs.os }}
-    # Per-platform, because 75 minutes is right for two of the three cells
-    # and fatal for the third.
+    # Per-platform. Linux and macOS finish a whole shard job — checkout,
+    # venv, a zig build and 1/3 of BOTH suites — in 8-15 min, so 75 is
+    # generous for them. Windows was not: 150, then a raise, and every
+    # shard still died on the ceiling.
     #
-    # The 75 was sized from Linux and macOS, where a whole shard job —
-    # checkout, venv, a zig build and 1/3 of BOTH suites — finishes in about
-    # 9 minutes. Windows is roughly an order of magnitude slower at
-    # everything this job does: `vcpkg install` alone is 11 minutes before
-    # a single test can link, and every test boots a real nalar and (in the
-    # UI suite) a Vite dev server.
+    # WHY WINDOWS IS DIFFERENT — and it was not "Windows is slow".
+    # Measured on run 37109078837 (main @ fb7b2dc4):
     #
-    # Measured, from run 37046311981 `functional Windows X64 · shard 1/3`:
+    #     functional Linux  X64  shard 1/3    8.4 min
+    #     functional Linux  X64  shard 2/3   10.8 min
+    #     functional Linux  X64  shard 3/3   11.1 min
+    #     functional macOS  X64  shard 1/3   12.6 min
+    #     functional macOS  X64  shard 2/3   15.0 min
+    #     functional macOS  X64  shard 3/3   12.8 min
+    #     functional Windows X64 shard 1/3  150.4 min  (cancelled)
+    #     functional Windows X64 shard 2/3  150.4 min  (cancelled)
+    #     functional Windows X64 shard 3/3  150.3 min  (cancelled)
     #
-    #     18:33:49  job starts
-    #     18:45:48  the functional step begins          <- 12 min of setup
-    #     19:48:57  "The operation was canceled."       <- 63 min, never
-    #                                                             finished
+    # Windows did 195 of its 279 tests in 138 min of pytest: 42 s/test
+    # against Linux's 2.7 s/test, with the failures spread evenly from 1%
+    # to 67% rather than clustered late. A flat 15x, not a ramp.
     #
-    # `18:33:49 + 75 min` is exactly where it died, so 75 is not "too tight
-    # on a bad day" — it is below what the cell needs on a normal day. It
-    # has been that way for every run in the last 60: I checked the job list
-    # for the whole recent history and EVERY `functional Windows X64` shard
-    # is `cancelled`, none has ever completed.
+    # The cause was in the harness, not the runner: `_wait_dead` reported
+    # a RUNNING nalar as dead (see tests/functional/harness.py), so every
+    # teardown ran the full 10 x 1s rmtree retry budget against a live
+    # server still holding agent.db — 10 s per test, and the server was
+    # never killed, so instances piled up for the rest of the shard. That
+    # is now fixed, and the ceiling is set from a measurement taken after
+    # the fix rather than from a guess made before it.
     #
-    # It is also self-reinforcing, which is what made it look unfixable.
-    # The step buffers its output through `tee | tail -n 80`, so a killed job
-    # prints nothing, and `actions/cache` only saves in post-job cleanup —
-    # a job that dies on the timeout never saves its `.zig-cache`. The next
-    # run therefore misses the cache, pays another cold ~90 MB compile, and
-    # dies on the same wall. The cache key was never once found in a log:
-    #   `Cache not found for input keys: v1-func-zig-windows-2022-...`
-    # So the honest fix is headroom; once ONE run completes, its cache is
-    # saved and every later run starts warm.
+    # 300 for Windows, 75 for the other two. The number is deliberately
+    # NOT derived from the pre-fix 42 s/test figure, because that figure
+    # was mostly the 10 s teardown stall and would have asked for ~7 h.
+    # If a future run needs more headroom the answer is to make the suite
+    # faster, not to keep raising this — 300 is still well under the 360
+    # ceiling for a GitHub-hosted runner, and a wedged job now costs 5 h
+    # of one machine instead of 6.
     #
-    # 150, not 360: a timeout is a ceiling, not a target — a job that needs
-    # 90 still exits at 90 — so the only thing a generous ceiling costs is
-    # when something is genuinely wedged, and 2.5 h bounds that.
-    timeout-minutes: ${{ inputs.os == 'windows-2022' && 150 || 75 }}
+    # A killed job still saves nothing: `actions/cache` writes in post-job
+    # cleanup, so a shard that times out never persists its `.zig-cache` and
+    # the next run pays another cold compile. That is the second half of
+    # why these shards looked unfixable, and it is why "just raise the
+    # timeout" was not sufficient on its own.
+    timeout-minutes: ${{ inputs.os == 'windows-2022' && 300 || 75 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -326,23 +333,53 @@ jobs:
         # job:
         #   - the pytest/playwright venv, at ${{ runner.temp }}/nalar-ci-venv
         #     (build.zig reads NALAR_FUNC_VENV_DIR at config time)
-        #   - Playwright's Chromium download, at ~/.cache/ms-playwright
+        #   - Playwright's Chromium download, at the job-level
+        #     PLAYWRIGHT_BROWSERS_PATH below
+        #
+        # THE BROWSERS PATH IS PINNED, NOT DISCOVERED. Playwright picks a
+        # DIFFERENT default directory per platform —
+        #   ~/.cache/ms-playwright              (Linux)
+        #   ~/Library/Caches/ms-playwright      (macOS)
+        #   %LOCALAPPDATA%\ms-playwright        (Windows)
+        # — so the `~/.cache/ms-playwright` this step used to cache is a
+        # path that exists ONLY on Linux. On windows-2022 the cache saved
+        # an empty/nonexistent directory, the key still matched, and every
+        # run re-downloaded all three browser payloads. That is visible in
+        # the run logs as ~310 MB of Chromium, headless-shell and FFmpeg
+        # coming down on a cache hit:
+        #   Chrome for Testing ... downloaded to
+        #     C:\Users\runneradmin\AppData\Local\ms-playwright\chromium-1243
+        # i.e. the cache and the download disagreed about where the
+        # browsers live. Setting PLAYWRIGHT_BROWSERS_PATH to one explicit
+        # directory makes the install and the cache agree on all three
+        # platforms, and keeps the whole thing under runner.temp so it
+        # survives post-job cleanup like the venv does.
+        #
+        # It is set at JOB level, not on the pytest step, because it has to
+        # be in the environment of BOTH ends: `zig build
+        # functional-test-all` runs `python -m playwright install chromium`
+        # (build.zig:3249) and then spawns pytest, and Playwright resolves
+        # the same variable in each. A step-level value would give the
+        # install one directory and the browser launch another — a silently
+        # redownloading cache, which is the bug this replaces.
         #
         # Key scoped by RUNNER IMAGE (`inputs.os`) plus the interpreter,
         # never by `runner.os`: a venv is a directory of scripts and
         # site-packages whose layout and wheel tags are platform-specific
         # (Windows uses `Scripts/`, not `bin/`), so a Linux-built venv
         # restored onto a Windows runner is not a slow cache hit — it is a
-        # broken interpreter path. Three cells means three caches; that is
-        # the price of running the suites on three platforms.
+        # broken interpreter path. The browser binaries are equally
+        # platform-specific, so they belong under the same per-image key.
+        # Three cells means three caches; that is the price of running the
+        # suites on three platforms.
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/ms-playwright
+            ${{ runner.temp }}/ms-playwright
             ${{ runner.temp }}/nalar-ci-venv
-          key: v3-py-${{ inputs.os }}-py312-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
+          key: v4-py-${{ inputs.os }}-py312-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
           restore-keys: |
-            v3-py-${{ inputs.os }}-py312-
+            v4-py-${{ inputs.os }}-py312-
 
       - name: Cache pnpm store
         # The Vite dev server is spawned by UIHarness during the run via
@@ -476,6 +513,30 @@ jobs:
           # what normalises Windows' mixed separators to the `Scripts/`
           # layout.
           NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
+          # ONE browser directory for all three runners. Playwright's
+          # default is platform-dependent (`~/.cache/ms-playwright` on
+          # Linux, `~/Library/Caches/ms-playwright` on macOS,
+          # `%LOCALAPPDATA%\ms-playwright` on Windows), which is why the
+          # cache step could only ever hit on Linux — on windows-2022 it
+          # saved a nonexistent directory, the key still matched, and
+          # every run re-downloaded ~310 MB of Chromium on a cache *hit*.
+          #
+          # This step is the ONLY consumer, and that is the point: this one
+          # `run:` block is what executes
+          # `zig build functional-test-all`, which in turn runs
+          # `python -m playwright install chromium` (build.zig:3249) and
+          # then pytest. `b.addSystemCommand` inherits the parent
+          # environment, so a value set here reaches the installer AND the
+          # browser launch — which is what has to agree with the cache.
+          #
+          # STEP level, and that is forced rather than chosen: `runner` is
+          # not an available context in `jobs.<job_id>.env` (or in
+          # workflow-level `env`). Putting `${{ runner.temp }}` there makes
+          # GitHub reject the file outright — the run appears, exits
+          # `failure` in the same second, has zero jobs, and no check run
+          # is attached to the PR. Found by bisecting this very file; see
+          # the PR.
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
           # ── THE SHARD ─────────────────────────────────────────────
           # These two variables are the entire sharding contract; they
           # are read by tests/conftest.py, which slices the collected

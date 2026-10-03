@@ -332,6 +332,11 @@ def _spawn_nalar(
         log_path=log_path,
         pid=proc.pid,
         dry_run=os.environ.get("NALAR_FUNCTIONAL_DRY_RUN") == "1",
+        # Same reason boot() passes it: _wait_dead answers liveness from the
+        # Popen handle via poll(). Without it this harness falls back to
+        # probing the bare pid, which on Windows cannot tell an exited
+        # process from a live one.
+        _proc=proc,
     )
 
     started = time.monotonic()
