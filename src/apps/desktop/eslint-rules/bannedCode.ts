@@ -208,9 +208,88 @@ function everyStatementIsRefWrite(list: unknown): boolean {
 }
 
 /**
+ * Is `node` inside `ancestor`? ESLint links `parent` during traversal, so this
+ * walks up rather than re-walking the tree.
+ */
+function isInside(node: Node | null | undefined, ancestor: Node): boolean {
+  let cur = asNode(prop(node, 'parent'))
+  let depth = 0
+  while (cur && depth < 200) {
+    if (cur === ancestor) return true
+    cur = asNode(prop(cur, 'parent'))
+    depth += 1
+  }
+  return false
+}
+
+/**
+ * Root binding of a write target: `a.b = 1` → `a`, `x++` → `x`.
+ */
+function writtenRoot(node: Node | null): string | null {
+  let cur = node
+  while (cur) {
+    if (cur.type === 'Identifier') return prop(cur, 'name') as string
+    if (cur.type === 'MemberExpression' || cur.type === 'ChainExpression') {
+      cur =
+        cur.type === 'ChainExpression'
+          ? asNode(prop(cur, 'expression'))
+          : asNode(prop(cur, 'object'))
+      continue
+    }
+    if (cur.type === 'CallExpression' || cur.type === 'AwaitExpression') {
+      cur = asNode(prop(cur, cur.type === 'CallExpression' ? 'callee' : 'expression'))
+      continue
+    }
+    return null
+  }
+  return null
+}
+
+/**
+ * Every assignment in `node`, descending through guards.
+ *
+ * ALL of them, not just the first: `AppLayout.vue` has one watcher body that
+ * clears TWO refs, and only one of them is written elsewhere. Checking just
+ * the first would miss that and report a body that is half user-editable.
+ */
+function allAssignments(node: Node | null, into: Node[] = [], depth = 0): Node[] {
+  if (!node || depth > 40) return into
+  if (node.type === 'AssignmentExpression') {
+    into.push(node)
+    return into
+  }
+  const record = node as unknown as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (key === 'parent') continue
+    const child = record[key]
+    if (Array.isArray(child)) {
+      for (const item of child) allAssignments(asNode(item), into, depth + 1)
+    } else {
+      allAssignments(asNode(child), into, depth + 1)
+    }
+  }
+  return into
+}
+
+/**
  * `watch()` whose callback body contains no impure call AND whose every
  * statement is a `.value` assignment. That combination is the Vue spelling
  * of React's banned `useEffect(() => setState(derived), [dep])`.
+ *
+ * SUBTLETY THAT MATTERS — a writable mirror is NOT derived state.
+ *
+ * The defining property of derived state is that you cannot write it yourself;
+ * it is a pure function of something else. `const doubled = computed(...)` has
+ * no setter. So when the mirrored ref is ALSO assigned somewhere else — a
+ * `v-model`, a click handler, an `emit` — it is genuinely state, and the
+ * watcher is the standard Vue way to seed it when a prop changes. Telling
+ * someone to replace that with `computed()` does not simplify their code, it
+ * BREAKS it: the input stops accepting keystrokes.
+ *
+ * React draws the same line, and its own docs describe the "adjust state when
+ * a prop changes" effect as legitimate when you need to compare a previous
+ * value. So this rule exempts any watcher whose target is written elsewhere,
+ * and only reports a true one-way mirror.
  */
 export const noDerivedStateWatch: Rule.RuleModule = {
   meta: {
@@ -226,11 +305,66 @@ export const noDerivedStateWatch: Rule.RuleModule = {
     },
   },
   create(context) {
+    /**
+     * Every write in the file, keyed by root binding: `a.value = 1` → `a`,
+     * `x++` → `x`, and a template `v-model="draft"` → `draft`.
+     */
+    const writes = new Map<string, Node[]>()
+
+    const addWrite = (name: string, at: Node): void => {
+      const bucket = writes.get(name)
+      if (bucket) bucket.push(at)
+      else writes.set(name, [at])
+    }
+
+    const recordWrites = (root: Node | null): void => {
+      walk(root, (n) => {
+        if (n.type === 'AssignmentExpression' || n.type === 'UpdateExpression') {
+          const left =
+            n.type === 'AssignmentExpression'
+              ? asNode(prop(n, 'left'))
+              : asNode(prop(n, 'argument'))
+          const name = writtenRoot(left)
+          if (name) addWrite(name, n)
+          return undefined
+        }
+        // `v-model="draft"` is a WRITE to `draft`, and this parser represents
+        // it as a VExpressionContainer whose parent is a `VAttribute` with
+        // directive key `model` — there is no `VModelExpression` node here, so
+        // keying on that type silently matches nothing.
+        if (n.type === 'VExpressionContainer') {
+          const attribute = asNode(prop(n, 'parent'))
+          if (attribute?.type === 'VAttribute' && prop(attribute, 'directive') === true) {
+            const key = asNode(prop(attribute, 'key'))
+            if (prop(asNode(prop(key, 'name')), 'name') === 'model') {
+              const name = writtenRoot(asNode(prop(n, 'expression')))
+              if (name) addWrite(name, n)
+            }
+          }
+        }
+        return undefined
+      })
+    }
+
     function report(node: Node): void {
       context.report({ node: node as never, messageId: 'derivedStateWatch' })
     }
 
+    /** Written by anything outside `watchCall` ⇒ real state, not derived. */
+    function isWritableElsewhere(target: Node | null, watchCall: Node): boolean {
+      const name = writtenRoot(target)
+      if (!name) return false
+      const bucket = writes.get(name)
+      if (!bucket) return false
+      return bucket.some((w) => !isInside(w, watchCall))
+    }
+
     return {
+      Program(node) {
+        recordWrites(node as unknown as Node)
+        const template = asNode(prop(node as unknown as Node, 'templateBody'))
+        if (template) recordWrites(template)
+      },
       CallExpression(node) {
         const call = node as unknown as Node
         if (calleeName(asNode(prop(call, 'callee'))) !== 'watch') return
@@ -247,7 +381,9 @@ export const noDerivedStateWatch: Rule.RuleModule = {
 
         // `watch(a, v => (b.value = v))` — concise body is always an assignment.
         if (body.type === 'AssignmentExpression') {
-          if (isRefAssignment(body)) report(call)
+          if (isRefAssignment(body) && !isWritableElsewhere(asNode(prop(body, 'left')), call)) {
+            report(call)
+          }
           return
         }
         if (body.type !== 'BlockStatement') return
@@ -272,8 +408,45 @@ export const noDerivedStateWatch: Rule.RuleModule = {
           return undefined
         })
         if (hasImpureCall) return
+        if (!everyStatementIsRefWrite(statements)) return
 
-        if (everyStatementIsRefWrite(statements)) report(call)
+        const assignments = allAssignments(body)
+
+        // A mirror READS what it watches. `b.value = v ?? 0` uses the new
+        // value; a reset or a trigger does not — `attempt.value = 0` and
+        // `attempt.value += 1` (SseStatusBadge counting SSE reconnects) depend
+        // on the value's own history or on a constant, so `computed()` cannot
+        // express them and telling someone to use `computed()` is nonsense.
+        // React's own rule is the same: it bans syncing derived state, not
+        // reacting to a transition.
+        const paramNames = new Set(
+          (Array.isArray(prop(callback, 'params')) ? (prop(callback, 'params') as Node[]) : [])
+            .map((p) => prop(p, 'name'))
+            .filter((n): n is string => typeof n === 'string'),
+        )
+        if (paramNames.size > 0) {
+          const readsNewValue = assignments.some((a) => {
+            let hit = false
+            walk(asNode(prop(a, 'right')), (n) => {
+              if (n.type === 'Identifier' && paramNames.has(prop(n, 'name') as string)) {
+                hit = true
+                return true
+              }
+              return undefined
+            })
+            return hit
+          })
+          if (!readsNewValue) return
+        }
+
+        // Every target must be a true one-way mirror. If ANY of them is
+        // written elsewhere (v-model, handler, emit), this is a draft the user
+        // edits, and `computed()` would remove their ability to edit it.
+        for (const assignment of assignments) {
+          if (isWritableElsewhere(asNode(prop(assignment, 'left')), call)) return
+        }
+
+        report(call)
       },
     }
   },

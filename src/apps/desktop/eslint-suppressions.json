@@ -10,16 +10,8 @@
     }
   },
   "src/components/AppLayout.vue": {
-    "local/no-derived-state-watch": {
-      "count": 2
-    },
     "local/no-silent-fallback-catch": {
       "count": 2
-    }
-  },
-  "src/components/FilePickerDialog.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
     }
   },
   "src/components/NalarSettings.vue": {
@@ -28,15 +20,7 @@
     }
   },
   "src/components/design/DesignView.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    },
     "local/no-silent-fallback-catch": {
-      "count": 1
-    }
-  },
-  "src/components/design/PropertiesPanel.vue": {
-    "local/no-derived-state-watch": {
       "count": 1
     }
   },
@@ -45,32 +29,14 @@
       "count": 1
     }
   },
-  "src/components/file/FileInput.vue": {
-    "local/no-derived-state-watch": {
-      "count": 3
-    }
-  },
   "src/components/git/GitCommits.vue": {
     "local/no-silent-fallback-catch": {
       "count": 1
     }
   },
-  "src/components/kanban/GitBaseBranchSelect.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    }
-  },
   "src/components/kanban/KanbanDescriptionEditor.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    },
     "local/no-silent-fallback-catch": {
       "count": 1
-    }
-  },
-  "src/components/kanban/KanbanTaskDetail.vue": {
-    "local/no-derived-state-watch": {
-      "count": 3
     }
   },
   "src/components/kanban/KanbanView.vue": {
@@ -83,28 +49,8 @@
       "count": 1
     }
   },
-  "src/components/nalar/LlmConfigForm.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    }
-  },
-  "src/components/nalar/LlmConfigModal.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    }
-  },
-  "src/components/nalar/McpServerModal.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    }
-  },
   "src/components/preview/PreviewContentRenderer.vue": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    }
-  },
-  "src/components/shell/SseStatusBadge.vue": {
-    "local/no-derived-state-watch": {
       "count": 1
     }
   },
@@ -144,9 +90,6 @@
     }
   },
   "src/components/tool_outputs/TextReplace.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    },
     "local/no-silent-fallback-catch": {
       "count": 1
     }
@@ -181,18 +124,7 @@
       "count": 2
     }
   },
-  "src/components/views/ChatsList.vue": {
-    "local/no-derived-state-watch": {
-      "count": 2
-    },
-    "local/no-watch-feedback-loop": {
-      "count": 1
-    }
-  },
   "src/components/views/KanbanSettingsView.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    },
     "local/no-silent-fallback-catch": {
       "count": 1
     }
@@ -218,9 +150,6 @@
     }
   },
   "src/components/views/chat_right_sidebar/SidebarDiffView.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    },
     "local/no-silent-fallback-catch": {
       "count": 1
     }
@@ -241,9 +170,6 @@
     }
   },
   "src/composables/useChatScrollRestore.ts": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    },
     "local/no-silent-fallback-catch": {
       "count": 1
     }
@@ -259,17 +185,11 @@
     }
   },
   "src/composables/useKanbanColumnScrollRestore.ts": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    },
     "local/no-silent-fallback-catch": {
       "count": 1
     }
   },
   "src/composables/useKanbanScrollRestore.ts": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    },
     "local/no-silent-fallback-catch": {
       "count": 1
     }
@@ -285,9 +205,6 @@
     }
   },
   "src/helpers/VirtualScroller.vue": {
-    "local/no-derived-state-watch": {
-      "count": 1
-    },
     "local/no-silent-fallback-catch": {
       "count": 2
     }

@@ -53,11 +53,26 @@ const doubled = computed(() => props.n * 2)
 watch(() => props.id, async (id) => { rows.value = await fetchRows(id) })
 ```
 
-`attempt.value += 1` inside a watcher is also allowed when the body also
-does something observable: an accumulator depends on the value's own history,
-so `computed()` cannot express it. A watcher that does *nothing but*
-accumulate is still reported — that one is usually an event counter that
-belongs in the handler that caused it.
+`attempt.value += 1` inside a watcher is also allowed when the body does
+something observable, or when it never reads the new value — an accumulator
+depends on its own history, and a reset (`attempt.value = 0`) is a transition,
+not a derivation. `SseStatusBadge.vue` counts SSE reconnects that way and is
+correct to.
+
+### A mirror you can also write is NOT derived state
+
+The defining property of derived state is that you **cannot write it
+yourself**. `watch(() => props.x, (v) => { draft.value = v })` where `draft`
+is also bound with `v-model` is real state, and replacing the watcher with
+`computed()` does not simplify it — it makes the input read-only. React draws
+the same line: its docs call "adjust state when a prop changes" legitimate
+when you need the previous value.
+
+So `local/no-derived-state-watch` first collects every write in the file
+(script assignments, `update` expressions, and template `v-model`s) and skips
+any watcher whose target is written outside itself. When this was added, 15 of
+the 26 baselined sites stopped being violations — they had never been bugs,
+just the standard Vue editable-draft idiom.
 
 ---
 
@@ -76,9 +91,12 @@ watch(() => props.row, () => { props.row.busy = true })
 watch(list, (v) => { v.forEach(i => { i.done = true }) }, { deep: true })
 ```
 
-Enforced by `local/no-watch-feedback-loop`. **1 site in this repo**:
-`ChatsList.vue:978`, a `deep: true` watcher that mutates `item.processing` on
-the very array it watches.
+Enforced by `local/no-watch-feedback-loop`. The one site that existed
+(`ChatsList.vue:978` — a `deep: true` watcher that mutated `item.processing` on
+the very array it watched) has been deleted: the body was
+`if (item.processing) { item.processing = true }`, a guaranteed no-op that a
+second watcher had already made redundant. The rule now stands at **zero**
+occurrences, so it needs no baseline at all.
 
 ```ts
 // ✅ Derive instead of mirroring.
@@ -166,7 +184,7 @@ lands red gets reverted. So the two ratcheted rules run against a **baseline**
 of the violations that already exist:
 
 ```jsonc
-// src/apps/desktop/eslint-suppressions.json  (114 sites, committed)
+// src/apps/desktop/eslint-suppressions.json  (87 sites, committed)
 {
   "src/components/AppLayout.vue": {
     "local/no-derived-state-watch": { "count": 2 },
@@ -207,8 +225,8 @@ the "allows" half is the one that matters.
 | Rule | Before | Now | How |
 |---|---|---|---|
 | `local/no-watch-effect` | 0 | **0** | `error`, no baseline needed |
-| `local/no-watch-feedback-loop` | 0 | 1 | baselined, ratcheting |
-| `local/no-derived-state-watch` | 25 | 26 | baselined, ratcheting |
+| `local/no-watch-feedback-loop` | 0 | **0** | fixed + exempted, no baseline needed |
+| `local/no-derived-state-watch` | 25 | **0** | fixed + exempted, no baseline needed |
 | `local/no-silent-fallback-catch` | 87 | 87 | baselined, ratcheting |
 | `ban-ts-comment` (`@ts-ignore`) | 0 | **0** | `error`, no baseline needed |
 | `no-explicit-any` | 0 | **0** | `error`, no baseline needed |

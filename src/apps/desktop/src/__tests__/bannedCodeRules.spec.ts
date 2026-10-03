@@ -152,7 +152,45 @@ describe('local/no-derived-state-watch', () => {
     ).toEqual(['local/no-derived-state-watch'])
   })
 
-  it('allows a watch with a const declaration before the assignment', () => {
+  it('allows a body that resets state and never reads the new value', () => {
+    // SseStatusBadge counts SSE reconnects. `attempt.value = 0` and
+    // `attempt.value += 1` depend on the counter's own history, not on the
+    // watched value, so `computed()` cannot express them and the "use
+    // computed" advice would be nonsense — the bus reconnects on its own and
+    // there is no local handler to move this into.
+    expect(
+      lint(
+        `watch(bus.state, (s) => { if (s === 'up') { attempt.value += 1 } else { attempt.value = 0 } })`,
+        ONLY_DERIVED,
+      ),
+    ).toEqual([])
+  })
+
+  it('allows a mirror into a ref the code also writes elsewhere', () => {
+    // The defining property of derived state is that you CANNOT write it
+    // yourself. `draft` is bound with v-model, so it is real state and
+    // replacing the watcher with `computed()` would make the input
+    // read-only. 15 of the original 26 sites are this shape.
+    expect(
+      lint(
+        `const draft = ref('')\nwatch(() => props.x, (v) => { draft.value = v ?? '' })\ndraft.value = 'typed'`,
+        ONLY_DERIVED,
+      ),
+    ).toEqual([])
+  })
+
+  it('still flags a one-way mirror that reads the new value', () => {
+    // The exemption must not swallow the real thing: `pure` is never written
+    // anywhere else, so it genuinely is derived state.
+    expect(
+      lint(
+        `const pure = ref('')\nwatch(() => props.x, (v) => { pure.value = v ?? '' })`,
+        ONLY_DERIVED,
+      ),
+    ).toEqual(['local/no-derived-state-watch'])
+  })
+
+  it('flags a watch with a const declaration before the assignment', () => {
     // A local means the body computes something non-trivial.
     expect(
       lint(

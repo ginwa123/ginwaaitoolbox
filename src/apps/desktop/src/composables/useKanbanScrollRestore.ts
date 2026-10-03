@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
 
 /**
  * Persists a scrolling container's scroll offset to `localStorage`
@@ -63,19 +63,11 @@ export function useKanbanScrollRestore(
   storageKey: Ref<string> | string,
   axis: 'x' | 'y' = 'x',
 ): void {
-  // Make a reactive local ref so a dynamic storage key (computed
-  // from props) updates without re-registering listeners.
-  const keyRef = ref(typeof storageKey === 'string' ? storageKey : '')
-
-  if (typeof storageKey !== 'string') {
-    watch(
-      storageKey,
-      (v) => {
-        keyRef.value = v
-      },
-      { immediate: true },
-    )
-  }
+  // Alias the key rather than mirroring it into a local ref — a dynamic
+  // storage key (computed from props) then stays live with no watcher.
+  // This used to initialise to '' whenever `storageKey` was a Ref and rely on
+  // an `{ immediate: true }` watcher to fill it in.
+  const keyRef: Ref<string> = typeof storageKey === 'string' ? ref(storageKey) : storageKey
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
