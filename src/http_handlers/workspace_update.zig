@@ -92,7 +92,7 @@ fn useCase(
     {
         var q = sqlite_db.query(
             allocator,
-            "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
+            "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime auth_common.workspaceVisibilityClause("workspaces"),
             &[_][]const u8{ id, owner, owner },
         ) catch {
             return error.DatabaseError;
@@ -106,7 +106,7 @@ fn useCase(
     }
 
     sqlite_db.exec(allocator,
-        "UPDATE workspaces SET name = ?, updated_at = datetime('now') WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
+        "UPDATE workspaces SET name = ?, updated_at = datetime('now') WHERE id = ? AND " ++ comptime auth_common.workspaceVisibilityClause("workspaces"),
         &[_][]const u8{ name_val.string, id, owner, owner },
     ) catch {
         return error.DatabaseError;

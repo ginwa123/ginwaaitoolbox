@@ -160,10 +160,33 @@ fn useCase(
 /// from now on carry a real owner and are private to it; rows from before
 /// per-user isolation keep the shared `user_system` sentinel.
 fn createWorkspace(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, workspace_id: []const u8, name: []const u8, owner: []const u8) !void {
-    _ = try db.exec(allocator,
+    // `workspace_members.user_id` is NOT NULL and `SqliteBackend.exec` binds
+    // an empty slice as SQL NULL, so an unresolved owner has to be normalised
+    // BEFORE it reaches a bind list — binding the raw "" would fail the whole
+    // create with a constraint violation instead of storing a member row.
+    const member = auth_common.normaliseOwnerId(owner);
+
+    // One transaction: a workspace must never exist without the membership
+    // row that makes it visible to its own creator.
+    var tx = try db.begin();
+    defer tx.commitOrRollback() catch {};
+    errdefer tx.rollback() catch {};
+
+    _ = try tx.exec(allocator,
         \\INSERT INTO workspaces (id, name, position, created_at, updated_at, user_id)
         \\VALUES (?, ?,
         \\    COALESCE((SELECT MAX(position) FROM workspaces), -1) + 1,
         \\    datetime('now'), datetime('now'), ?)
-    , &[_][]const u8{ workspace_id, name, owner });
+    , &[_][]const u8{ workspace_id, name, member });
+
+    // The membership row IS the visibility grant (Migration 100). `user_id`
+    // on `workspaces` is kept in sync deliberately — it is the rollback path
+    // and is dropped in Migration 101.
+    _ = try tx.exec(
+        allocator,
+        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'owner')",
+        &[_][]const u8{ workspace_id, member },
+    );
+
+    try tx.commit();
 }
