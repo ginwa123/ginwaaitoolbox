@@ -13,12 +13,12 @@ Pre-flight (2026-10-03):
 |---|---|---|---|
 | 1 | Migration 101 + `secrets_store.zig` | **done** | `71a99e08` (+`f6a6b1ca`) |
 | 2 | `secrets_substitution.zig` (substitute + redact) | **done** | `d44ae03f` |
-| 3 | Wire dispatchTool + MCP branch; assert DB keeps placeholder | todo | — |
-| 4 | `list_secrets` tool + registry + allowlist bypass + prompt rule | todo | — |
-| 5 | HTTP handlers + routes | todo | — |
-| 6 | Frontend: client, store, section, route | todo | — |
-| 7 | Functional tests over the real wire | todo | — |
-| 8 | Docs + PR | todo | — |
+| 3 | Wire dispatchTool + MCP branch; assert DB keeps placeholder | **done** | `afe9b807` |
+| 4 | `list_secrets` tool + registry + allowlist bypass + prompt rule | **done** | `6a51add6` |
+| 5 | HTTP handlers + routes | **done** | `6fb86c65` |
+| 6 | Frontend: client, store, section, route | **done** | `b8024879` |
+| 7 | Functional tests over the real wire | **done** | `d63a97ee` |
+| 8 | Docs + PR | in progress | pending |
 
 Gate for every task: `zig build test` green (plus `vue-tsc` + vitest from Task 6 on).
 
@@ -51,3 +51,23 @@ Gate for every task: `zig build test` green (plus `vue-tsc` + vitest from Task 6
 - Plaintext `value` column — no master key, no encryption (DD2).
 - No `key_hint` column; the UI renders "configured" (DD9).
 - No `// NEW (plan: ...)` tags in new code.
+- Tasks 5 and 6 dispatched in parallel (Zig handlers vs frontend, disjoint trees).
+- Task 8's agent was cut off before committing; the final gates, plan-doc rev 3 and
+  PR update were completed in-session.
+
+## FINAL GATES (all run, all green)
+
+- `zig build test --summary all` -> `Build Summary: 8/8 steps succeeded; 4407/4417
+  tests passed (10 skipped)`, exit 0
+- `npx vue-tsc --noEmit` -> exit 0
+- `npx vitest --run src/__tests__/SecretsSection.spec.ts` -> 16 passed
+- `pytest tests/functional/workspace_secrets_test.py` -> 9 passed
+
+## Deviations from the plan (recorded in plan rev 3)
+
+1. No `GET .../secrets/:secret_id` route - write-only is structural, not a per-struct property.
+2. Dropped `idx_workspace_secrets_workspace` (duplicate of the UNIQUE index).
+3. `root.zig` test-discovery imports were required; without them none of the new inline
+   tests compile into the test binary and the build reports green vacuously.
+4. The Lua POST-hook still sees substituted args + unredacted output. Design Decision 3
+   pins only the pre-hook. Left alone deliberately; flagged for a future decision.

@@ -105,6 +105,23 @@
 > PR #780 added the `web_search` feature). Every `path:line` below was re-audited against
 > the merged tree, and **Migration 101 was re-verified as free**. No design change from rev 1.
 
+> **Rev 3 (2026-10-03, post-implementation).** All 8 tasks shipped. Three places
+> where the implementation is *stronger* or *different* than rev 2 planned, recorded
+> below so a reader does not go looking for things that were never built.
+>
+> - **There is no `GET .../secrets/:secret_id` route.** Write-only is therefore
+>   *structural* — the read path does not exist in the route table — rather than a
+>   property of one response struct that a future edit could widen.
+> - **`idx_workspace_secrets_workspace` was dropped.** Rev 2 asked for two indexes on
+>   the identical column pair; a UNIQUE index already serves `WHERE workspace_id = ?`
+>   and the `ORDER BY name` the list path carries.
+> - **`workspace_secrets` rows are deleted explicitly on workspace delete.** `ON DELETE
+>   CASCADE` is inert here (`PRAGMA foreign_keys` is off), so this is required, not
+>   belt-and-braces.
+>
+> No design decision was reversed. The reasoning in rev 1–2 is left intact so the
+> deviations are legible.
+
 ### 2. No encryption at rest — the value is stored as plaintext `TEXT`
 
 **Decision (reviewer, 2026-10-03):** no master key, no cipher. `value TEXT NOT NULL` holds the
@@ -237,8 +254,10 @@ ON workspace_secrets(workspace_id, name)
 ```
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_workspace_secrets_workspace
-ON workspace_secrets(workspace_id, name)
+-- NOT built: the plan originally also asked for
+--   CREATE INDEX idx_workspace_secrets_workspace ON workspace_secrets(workspace_id, name)
+-- which duplicates uq_workspace_secrets_name exactly. A UNIQUE index is an ordinary
+-- b-tree; SQLite uses it for the scope predicate and the list ordering already.
 ```
 
 Naming follows the established convention: `idx_<table>_<cols>` for plain, `uq_<table>_<cols>` for UNIQUE (see `uq_skill_eval_facts` at `src/migrations/migration.zig:5535`).
@@ -271,7 +290,12 @@ Registered on the `authed` group so `auth_middleware.zig:74-82` applies the work
 | `DELETE` | `/api/workspaces/:workspace_id/secrets/:secret_id` | 200 | `{ "id": string, "success": true }` |
 | any error | — | 4xx/5xx | `{ "error": string }` (`http_response.zig:350-354`) |
 
-**No response body anywhere contains the value.** Not on create, not on update, not on list, not on get.
+**No response body anywhere contains the value.** Not on create, not on update, not on list.
+
+**There is deliberately no `GET .../secrets/:secret_id`.** Rev 2 assumed one; it was not
+built. Write-only is then structural — the read path is absent from the route table — so
+no future edit to a response struct can widen it without also adding a route. The
+functional suite covers it by asserting a 404 with an empty body.
 
 **Request bodies:**
 
@@ -322,6 +346,7 @@ Registered on the `authed` group so `auth_middleware.zig:74-82` applies the work
 | Modify | `src/http_handlers/http_response.zig` | `SecretResponse` (no value field) + `makeSecretListResponse` |
 | Modify | `src/http_handlers/mod.zig` | Four re-exports, mirroring `documentsListHandler` at `:171` |
 | Modify | `src/main.zig` | Four `try authed.<verb>(…)` routes, literals before `:secret_id` |
+| Modify | `src/root.zig` | Test-discovery `_ = @import(…)` lines. **Required, not optional** — Zig's lazy analysis will not pull a re-exported file's inline tests into the test binary, so without these the new tests compile nowhere and report green vacuously. |
 | Modify | `src/apps/desktop/src/api/index.ts` | `Secret` interface + four client functions (relative path, no `/api`) |
 | Modify | `src/apps/desktop/src/router/index.ts` | `/app/:workspaceId/settings` **above** `/app/:workspaceId` at `:86` |
 | Modify | `src/apps/desktop/src/components/AppLayout.vue` | `currentView` branch for the new path |
@@ -485,9 +510,48 @@ Unit tests cannot see route-order shadowing or the empty-slice-binds-as-NULL col
 
 ---
 
+---
+
+## What actually shipped (2026-10-03)
+
+| Commit | Task |
+|---|---|
+| `d44ae03f` | 2 — `secrets_substitution.zig`: parse/walk/re-serialize + redact (15 tests) |
+| `71a99e08` | 1 — Migration 101 + `secrets_store.zig` (11 tests) |
+| `f6a6b1ca` | 1 — `workspace_secrets` cleanup on workspace delete |
+| `afe9b807` | 3 — substitution at both dispatch points, redaction before persist (9 tests) |
+| `6a51add6` | 4 — `list_secrets` tool, allowlist bypass, gated prompt rule |
+| `6fb86c65` | 5 — four HTTP handlers + routes (36 tests) |
+| `b8024879` | 6 — frontend: client, store, section, route (16 vitest) |
+| `d63a97ee` | 7 — functional suite over the real wire (9 tests) |
+
+**Final gates** (all run, all green):
+- `zig build test --summary all` → `Build Summary: 8/8 steps succeeded; 4407/4417 tests passed (10 skipped)`, exit 0
+- `npx vue-tsc --noEmit` → exit 0
+- `npx vitest --run src/__tests__/SecretsSection.spec.ts` → 16 passed
+- `pytest tests/functional/workspace_secrets_test.py` → 9 passed
+
+### Deviations from the plan, and why
+
+1. **No `GET .../secrets/:secret_id`.** The plan's wire contract listed one; it was not
+   built. Write-only became structural instead of a per-response-struct property. The
+   functional suite asserts a 404.
+2. **One index, not two.** `idx_workspace_secrets_workspace` duplicated
+   `uq_workspace_secrets_name` byte-for-byte. Dropped.
+3. **`root.zig` needed test-discovery imports.** Not in the plan's File Map, and not
+   optional: without `_ = @import(…)` inside root.zig's test block, none of the new inline
+   tests are compiled into the test binary — the build reports green while running none
+   of them. Worth knowing for any future feature that adds inline tests.
+4. **The Lua post-hook still sees substituted arguments and unredacted output.** Design
+   Decision 3 pins only the pre-hook. The post hook already saw unredacted output before
+   this change and lives inside the user's own trust domain (they wrote that Lua), so it
+   was left alone — but it is the one remaining path from a secret to user-authored code,
+   and it deserves a decision if the threat model ever includes local hooks.
+
 ## Plan saved checklist
 
 - [x] Plan saved to `docs/superpowers/plans/2026-10-02-workspace-secrets.md`
 - [x] Header includes Goal, Architecture, Tech Stack, Global Constraints
 - [x] Every task has bite-sized steps (write failing test → implement → verify → commit)
-- [ ] **User reviewed before execution begins**
+- [x] **User reviewed before execution begins**
+- [x] All 8 tasks executed; final gates green (see What actually shipped)
