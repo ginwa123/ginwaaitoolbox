@@ -1056,6 +1056,10 @@ test {
     // mcp_http above — the `pub const` re-export alone doesn't pull tests.
     _ = @import("agentic_loop/lua_bindings.zig");
     _ = @import("agentic_loop/hooks.zig");
+    // Workspace-secret placeholder substitution: a pure module whose inline
+    // tests are otherwise invisible to `zig build test` — the same discovery
+    // workaround as the Lua hooks above.
+    _ = @import("agentic_loop/secrets_substitution.zig");
     // `databases` package tests run in the ruangsql repo's own CI
     // (github.com/ginwa123/ruangsql) — see the package's build.zig.
     // The main test step doesn't import them here because the package
