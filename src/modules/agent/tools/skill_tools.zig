@@ -333,10 +333,12 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8)
 
 // ─── remove_skill ───
 
-/// Input structure for remove_skill tool
+/// Input structure for remove_skill tool. `session_id` is unused and
+/// defaulted so a model that omits it (the common case — it is not
+/// something the tool needs) does not get `error.MissingField`.
 pub const RemoveSkillInput = struct {
     skill_name: []const u8,
-    session_id: []const u8,
+    session_id: []const u8 = "",
     /// If true, remove from global skills directory (~/.config/nalar/skills/)
     /// If false, remove from local skills directory (.nalar/skills/)
     is_global: bool = false,
@@ -400,6 +402,10 @@ pub const remove_skill_tool_system_prompt =
     \\
 ;
 
+/// Actionable `remove_skill` failure. Exposed for tests.
+pub const REMOVE_SKILL_BAD_NAME =
+    "remove_skill: `skill_name` must be a single directory name — letters, digits, dots, dashes, underscores; no slashes, spaces, or leading/trailing dot. It is joined onto the skills directory, so a path would delete outside it. Got: '";
+
 pub const remove_skill_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -445,6 +451,21 @@ pub fn execute_remove_skill_to_string(
     if (input.skill_name.len == 0) {
         return removeSkillJsonError(allocator, "", "skill_name cannot be empty");
     }
+    // Same traversal guard as add_skill/edit_skill: `skill_dir_path` is
+    // built by joining this onto the skills directory.
+    if (!isValidSkillName(input.skill_name)) {
+        const msg = std.fmt.allocPrint(allocator, "{s}{s}'", .{ REMOVE_SKILL_BAD_NAME, input.skill_name }) catch {
+            return removeSkillJsonError(allocator, input.skill_name, REMOVE_SKILL_BAD_NAME);
+        };
+        defer allocator.free(msg);
+        return removeSkillJsonError(allocator, input.skill_name, msg);
+    }
+
+    // A relative session `cwd` used to resolve against the PROCESS cwd,
+    // so remove_skill silently deleted from the wrong place — see
+    // `absolutizeCwd`.
+    const abs_cwd = try absolutizeCwd(allocator, cwd);
+    defer allocator.free(abs_cwd);
 
     // Determine skills directory based on is_global flag
     const skills_dir: []const u8 = if (input.is_global) blk: {
@@ -456,7 +477,7 @@ pub fn execute_remove_skill_to_string(
         } else {
             return removeSkillJsonError(allocator, input.skill_name, "Environment not available for global skills");
         }
-    } else try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" });
+    } else try std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".nalar", "skills" });
 
     // Build path to skill directory
     // Duplicate skill_name to ensure no aliasing with path.join's internal buffer allocation
@@ -508,16 +529,161 @@ pub fn removeSkillJsonErrorEmpty(allocator: std.mem.Allocator, error_msg: []cons
     return removeSkillJsonError(allocator, "", error_msg);
 }
 
+// ─── shared argument resolution ────────────────────────────────────────
+//
+// `add_skill` / `edit_skill` / `remove_skill` are the only tools a model
+// calls with hand-written prose, and the two mistakes it makes most are
+// both handled here rather than at the parse site:
+//
+//   (a) omitting a required argument. That used to surface as
+//       `error.MissingField` — an error NAME that names no field — so
+//       the model had nothing to correct itself from and retried.
+//   (b) pasting YAML frontmatter into `content`, because every example of
+//       "the skill format" shows a `---` block. `buildSkillContent`
+//       ALWAYS prepends its own frontmatter, so (b) wrote the block
+//       twice: the model's copy became body text, `parseSkillFile` kept
+//       it there, and every later `edit_skill` preserved the duplicate.
+
+/// A leading `---` … `---` frontmatter block split off `content`. Both
+/// slices point into the input; nothing is allocated.
+const FrontmatterSplit = struct {
+    /// The text between the fences (no fences), or "" when `content` did
+    /// not open with a frontmatter block.
+    frontmatter: []const u8,
+    /// Everything after the closing fence — the whole input when there
+    /// was no frontmatter block.
+    body: []const u8,
+};
+
+/// Split a leading YAML frontmatter block off `content`.
+///
+/// The closing fence must start a line and may be followed by `\r`, `\n`,
+/// both, or nothing at all (a model that trimmed the final newline is not
+/// a reason to write the block twice). A `---` inside the body is only
+/// reached when the block is unterminated, which is treated as no
+/// frontmatter rather than a guess.
+fn splitLeadingFrontmatter(content: []const u8) FrontmatterSplit {
+    const none: FrontmatterSplit = .{ .frontmatter = "", .body = content };
+    if (!std.mem.startsWith(u8, content, "---\n")) return none;
+
+    const rest = content["---\n".len..];
+    var idx: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, rest, idx, '-')) |i| {
+        idx = i + 1;
+        if (i != 0 and rest[i - 1] != '\n') continue;
+        if (!std.mem.startsWith(u8, rest[i..], "---")) continue;
+
+        var end = i + 3;
+        if (end < rest.len and rest[end] == '\r') end += 1;
+        if (end < rest.len and rest[end] == '\n') end += 1;
+        // `---x` is not a closing fence; only EOF / `\n` / `\r\n` is.
+        if (end != rest.len and end != i + 4 and end != i + 5) continue;
+
+        return .{ .frontmatter = rest[0..i], .body = rest[end..] };
+    }
+    return none;
+}
+
+/// Read `key: value` out of a frontmatter block. Borrowed, trimmed, with
+/// one layer of matching quotes removed. Null when the key is absent or
+/// its value is empty. Deliberately not `skills.parseYamlFrontmatter` —
+/// that allocates and returns null unless BOTH `name` and `description`
+/// are present, and here each is wanted independently.
+fn frontmatterField(frontmatter: []const u8, key: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, frontmatter, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, trimmed, key)) continue;
+        const after = trimmed[key.len..];
+        // Guards `name` matching a `names:` line.
+        if (after.len == 0 or after[0] != ':') continue;
+
+        var value = std.mem.trim(u8, after[1..], " \t\r");
+        if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
+            value = value[1 .. value.len - 1];
+        } else if (value.len >= 2 and value[0] == '\'' and value[value.len - 1] == '\'') {
+            value = value[1 .. value.len - 1];
+        }
+        if (value.len == 0) return null;
+        return value;
+    }
+    return null;
+}
+
+/// The first of `args` that is not empty, else null. Borrowed.
+fn firstNonEmpty(args: []const ?[]const u8) ?[]const u8 {
+    for (args) |maybe| {
+        const v = maybe orelse continue;
+        if (v.len != 0) return v;
+    }
+    return null;
+}
+
+/// True when `name` is usable as a single directory name under the skills
+/// folder. A separator, whitespace, a leading dot or a `..` segment is
+/// rejected because `std.fs.path.join(skills_dir, name)` would then write
+/// `<skills_dir>/<name>/SKILL.MD` OUTSIDE the skills directory — a path
+/// traversal reachable straight from a tool argument. The frontmatter
+/// `name:` is also what every later lookup keys on, so it has to be
+/// stable and comparable.
+fn isValidSkillName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 128) return false;
+    if (name[0] == '.' or name[name.len - 1] == '.') return false;
+    for (name) |c| {
+        switch (c) {
+            'a'...'z', 'A'...'Z', '0'...'9', '-', '_', '.' => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
+/// Resolve a session `cwd` to an absolute path. Caller frees the result.
+///
+/// `insertWorker` persists the raw `cwd_session` without the `isAbsolute`
+/// check the request path applies (src/http_handlers/session_create.zig:402
+/// vs :237), so a RELATIVE cwd reaches every tool — and the skills tools
+/// then refuse outright with "Skills directory must be an absolute path",
+/// which turned a cosmetic input into a dead tool call.
+///
+/// `std.Io.Dir.cwd().realPath` is deliberately not used here: on Linux it
+/// resolves the `AT_FDCWD` sentinel fd and ALWAYS fails with ENOENT (see
+/// the note on `skills.get_skills_dir_path`), which is how every
+/// project-local skill ended up unresolvable there. `helpers.getcwd` is
+/// the portable spelling.
+fn absolutizeCwd(allocator: std.mem.Allocator, cwd: []const u8) ![]u8 {
+    if (cwd.len == 0) return error.CwdUnavailable;
+    if (std.fs.path.isAbsolute(cwd)) return allocator.dupe(u8, cwd);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = helpers.getcwd(&buf) orelse return error.CwdUnavailable;
+    // `path.join` treats every argument as one component, so a cwd with a
+    // trailing separator does not produce a doubled one.
+    return std.fs.path.join(allocator, &[_][]const u8{ base, cwd });
+}
+
 // ─── add_skill ───
 
-/// Input structure for add_skill tool
+/// Input structure for add_skill tool.
+///
+/// Every field carries a default, which makes it optional to
+/// `std.json.parseFromSlice`. That is deliberate: with a non-defaulted
+/// `name`/`description`/`content`, a model that omitted `description`
+/// got `error.MissingField` back — an error name that names no field —
+/// and had nothing to correct itself from. Empty is now a value that
+/// reaches `executeAddSkillToString`, which reports WHICH argument is
+/// missing and what to send. A model may also omit `description` and put
+/// it in `content`'s frontmatter; that is lifted, not rejected.
 pub const AddSkillInput = struct {
-    /// Skill identifier (required)
-    name: []const u8,
-    /// When to trigger this skill (required)
-    description: []const u8,
-    /// Skill body content (required)
-    content: []const u8,
+    /// Skill identifier. Required, but may be omitted when `content`
+    /// opens with a `name:` frontmatter line.
+    name: []const u8 = "",
+    /// When to trigger this skill. Required, but may be omitted when
+    /// `content` opens with a `description:` frontmatter line.
+    description: []const u8 = "",
+    /// Skill body. A leading `---` frontmatter block is stripped and its
+    /// fields lifted; the body is what gets written after the generated
+    /// frontmatter.
+    content: []const u8 = "",
     /// Auto-create skills directory if needed (default: true)
     create_with_dir: bool = true,
     /// If true, save to global skills directory (~/.config/nalar/skills/)
@@ -525,7 +691,14 @@ pub const AddSkillInput = struct {
     is_global: bool = false,
 };
 
-/// Tool definition for add_skill
+/// Tool definition for add_skill.
+///
+/// The `description` and the parameter docs below are the ONLY per-tool
+/// text that reaches the model: `AgentTool.function.system_prompt` is
+/// copied into the runtime tool struct (src/root.zig:865) and freed at
+/// :884, and never read into any prompt — the one renderer that would
+/// consume it (`appendToolListing`) has no call sites. So the guidance
+/// has to live here, in the schema the model actually reads.
 pub const add_skill_tool_system_prompt =
     \\## Add Skill Tool — Behavior
     \\Use `add_skill` to create a new reusable skill file.
@@ -538,29 +711,35 @@ pub const add_skill_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "add_skill",
-        .description = "Create a new skill file in the skills directory. Use this when the user wants to save a workflow, pattern, or reusable instructions as a skill for future use.",
+        .description =
+        \\Create a new skill file in the skills directory. Use this when the user wants to save a workflow, pattern, or reusable instructions as a skill for future use.
+        \\
+        \\`name` and `description` are SEPARATE ARGUMENTS; `content` is the markdown BODY only. The `---` YAML frontmatter is generated from `name` + `description` — never paste one into `content`. (If you do, it is stripped and its fields lifted, so nothing breaks, but you lose the chance to be explicit about either field.)
+        \\
+        \\`description` decides whether any future session finds the skill at all: `search_skills` returns that one sentence and nothing else. Prefer local (`.nalar/skills/`); pass `is_global: true` only when the procedure holds outside this repo.
+        ,
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "name",
                     .type = "string",
-                    .description = "The unique identifier name for the skill (e.g., 'my-workflow', 'code-review-pattern')",
+                    .description = "The skill's directory name, sent as its own argument. Kebab-case letters, digits, dots, dashes, underscores; no slashes, spaces or leading dot (it is joined onto the skills directory, so a path would write outside it). Example: 'zig-move-code-static-contract-path-pins'.",
                 },
                 .{
                     .name = "description",
                     .type = "string",
-                    .description = "When to use this skill - describe the trigger conditions and what the skill accomplishes",
+                    .description = "One sentence: what the skill does AND when to use it — trigger conditions, not a title. Example: \"Use when MOVING Zig code between files in this repo and a static-contract test breaks on the path.\"",
                 },
                 .{
                     .name = "content",
                     .type = "string",
-                    .description = "The full skill content/markdown body that will be loaded when the skill is invoked",
+                    .description = "The markdown BODY: `## When to Use`, `## Procedure`, `## Pitfalls`. Skip sections that do not apply. No `---` frontmatter block — it is generated.",
                 },
                 .{
                     .name = "is_global",
                     .type = "boolean",
-                    .description = "If true, save to global skills directory (~/.config/nalar/skills/). If false, save to local directory (.nalar/skills/). Default: false",
+                    .description = "true writes the shared ~/.config/nalar/skills/ (every project); false (default) writes this project's <cwd>/.nalar/skills/.",
                 },
             },
             .required = &.{ "name", "description", "content" },
@@ -568,6 +747,21 @@ pub const add_skill_tool = AgentTool{
         .system_prompt = add_skill_tool_system_prompt,
     },
 };
+
+/// Actionable `add_skill` failures. Each names the argument that is wrong
+/// AND what to send, because a message the model cannot act on just
+/// produces the same call again — which is what `"Description cannot be
+/// empty"` did. Exposed for tests.
+pub const ADD_SKILL_MISSING_NAME =
+    "add_skill: `name` is required. Send the skill's directory name as its own argument — kebab-case, letters/digits/dots/dashes/underscores, no slashes or spaces (e.g. \"zig-move-code-static-contract-path-pins\"). It becomes the folder name AND the frontmatter `name:`. (A `name:` inside `content`'s frontmatter is read from there instead.)";
+pub const ADD_SKILL_MISSING_DESCRIPTION =
+    "add_skill: `description` is required. Send it as its own argument: ONE sentence saying what the skill does AND when to use it — it is the only text `search_skills` returns, so a title or a restatement of `name` makes the skill undiscoverable. (A `description:` inside `content`'s frontmatter is read from there instead.)";
+pub const ADD_SKILL_MISSING_CONTENT =
+    "add_skill: `content` is empty. Send the markdown BODY — `## When to Use` (when it should load), `## Procedure` (atomic steps, exact commands, how to verify), `## Pitfalls` (failure modes you actually hit). A frontmatter block alone leaves nothing for the skill to teach; frontmatter is generated from `name` + `description`.";
+pub const ADD_SKILL_BAD_NAME =
+    "add_skill: `name` must be a single directory name — letters, digits, dots, dashes, underscores; no slashes, spaces, or leading/trailing dot. It is joined onto the skills directory, so a path would write outside it. Got: '";
+pub const ADD_SKILL_CWD_UNRESOLVED =
+    "add_skill: this session's working directory is relative and could not be absolutized, so the skills directory is unknown. Retry with is_global: true to write to the global skills folder instead.";
 
 /// JSON payload for add_skill results. Both `skill_name` and `name` carry
 /// the skill name: `skill_name` matches the tool schema, `name` matches the
@@ -594,71 +788,121 @@ pub const AddSkillOutput = struct {
 /// Returns a JSON string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, environment: ?*const std.process.Environ.Map, input: AddSkillInput) []const u8 {
-    // Validate input
-    if (input.name.len == 0) return addSkillJsonError(allocator, input.name, "Skill name cannot be empty");
-    if (input.description.len == 0) return addSkillJsonError(allocator, input.name, "Description cannot be empty");
-    if (input.content.len == 0) return addSkillJsonError(allocator, input.name, "Content cannot be empty");
+    // `SkillWriteToolRule` shows the skill format as a `---` frontmatter
+    // block, so models routinely paste one into `content`. Lift it out
+    // instead of writing it twice: `buildSkillContent` ALWAYS prepends its
+    // own frontmatter, so a frontmatter-carrying `content` used to produce
+    // a file with two blocks — and `parseSkillFile` then read the second
+    // as body text, which every later `edit_skill` preserved.
+    const split = splitLeadingFrontmatter(input.content);
+    const fm: ?[]const u8 = if (split.frontmatter.len != 0) split.frontmatter else null;
+
+    const name = firstNonEmpty(&.{ input.name, if (fm) |f| frontmatterField(f, "name") else null });
+    const description = firstNonEmpty(&.{ input.description, if (fm) |f| frontmatterField(f, "description") else null });
+    // The body is what gets written; the lifted frontmatter is regenerated
+    // from `name` + `description` by `buildSkillContent`.
+    const content = split.body;
+
+    // Every message names the argument AND what to send, because the old
+    // ones ("Description cannot be empty") told the model nothing and it
+    // retried the identical call.
+    const resolved_name = name orelse {
+        return addSkillJsonError(allocator, "", ADD_SKILL_MISSING_NAME);
+    };
+    if (description == null) {
+        return addSkillJsonError(allocator, resolved_name, ADD_SKILL_MISSING_DESCRIPTION);
+    }
+    if (content.len == 0) {
+        return addSkillJsonError(allocator, resolved_name, ADD_SKILL_MISSING_CONTENT);
+    }
+    if (!isValidSkillName(resolved_name)) {
+        const msg = std.fmt.allocPrint(allocator, "{s}{s}", .{ ADD_SKILL_BAD_NAME, resolved_name }) catch {
+            return addSkillJsonError(allocator, "", ADD_SKILL_BAD_NAME);
+        };
+        defer allocator.free(msg);
+        return addSkillJsonError(allocator, "", msg);
+    }
+    const resolved: AddSkillInput = .{
+        .name = resolved_name,
+        .description = description.?,
+        .content = content,
+        .create_with_dir = input.create_with_dir,
+        .is_global = input.is_global,
+    };
+
+    // A relative session `cwd` used to fail the whole call here. Resolve it
+    // against the process cwd first — see `absolutizeCwd`.
+    const abs_cwd = absolutizeCwd(allocator, cwd) catch {
+        // Built inline rather than via a `const` + `defer free` dance: the
+        // literal fallback below is static memory and must not be freed.
+        const detail = std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
+            ADD_SKILL_CWD_UNRESOLVED,
+            cwd,
+            ". Give the session an absolute working directory, or set is_global: true to write to the global skills folder.",
+        });
+        return addSkillJsonError(allocator, resolved_name, detail catch ADD_SKILL_CWD_UNRESOLVED);
+    };
+    defer allocator.free(abs_cwd);
 
     // Determine skills directory based on is_global flag
-    const skills_dir: []const u8 = if (input.is_global) blk: {
+    const skills_dir: []const u8 = if (resolved.is_global) blk: {
         if (environment) |env| {
             const path = skills.get_global_skills_path_from_env(allocator, env) orelse {
-                return addSkillJsonError(allocator, input.name, "Failed to get global skills path");
+                return addSkillJsonError(allocator, resolved_name, "Failed to get global skills path");
             };
             break :blk path;
         } else {
-            return addSkillJsonError(allocator, input.name, "Environment not available for global skills");
+            return addSkillJsonError(allocator, resolved_name, "Environment not available for global skills");
         }
-    } else std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" }) catch {
-        return addSkillJsonError(allocator, input.name, "Failed to build skills directory path");
+    } else std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".nalar", "skills" }) catch {
+        return addSkillJsonError(allocator, resolved_name, "Failed to build skills directory path");
     };
     // skills_dir is heap-allocated in both branches (global via get_global_skills_path_from_env,
     // local via path.join). Free it once at the end of the function via a single defer.
     defer allocator.free(skills_dir);
 
-    // Duplicate input.name to ensure no aliasing with path.join's internal buffer allocation
-    const name_copy = allocator.dupe(u8, input.name) catch {
-        return addSkillJsonError(allocator, input.name, "Failed to allocate memory for skill name");
+    // Duplicate resolved.name to ensure no aliasing with path.join's internal buffer allocation
+    const name_copy = allocator.dupe(u8, resolved_name) catch {
+        return addSkillJsonError(allocator, resolved_name, "Failed to allocate memory for skill name");
     };
     defer allocator.free(name_copy);
 
     const skill_dir = std.fs.path.join(allocator, &[_][]const u8{ skills_dir, name_copy }) catch {
-        return addSkillJsonError(allocator, input.name, "Failed to build skill directory path");
+        return addSkillJsonError(allocator, resolved_name, "Failed to build skill directory path");
     };
     defer allocator.free(skill_dir);
 
     const skill_file = std.fs.path.join(allocator, &[_][]const u8{ skill_dir, "SKILL.MD" }) catch {
-        return addSkillJsonError(allocator, input.name, "Failed to build skill file path");
+        return addSkillJsonError(allocator, resolved_name, "Failed to build skill file path");
     };
     defer allocator.free(skill_file);
 
     // `createFileAbsolute` below asserts `skill_file` is absolute and ABORTS the
-    // whole process (Debug/ReleaseSafe) when it is not. The local branch is
-    // joined onto the session `cwd` — which no ingress validates as absolute
-    // (e.g. a session created with a relative `cwd_session`) — and the global
-    // branch trusts an unchecked XDG_CONFIG_HOME/HOME, so enforce the contract.
+    // whole process (Debug/ReleaseSafe) when it is not. `absolutizeCwd`
+    // handles the local branch; the global branch still trusts an unchecked
+    // XDG_CONFIG_HOME/HOME, so enforce the contract here too.
     if (!std.fs.path.isAbsolute(skill_file)) {
-        return addSkillJsonError(allocator, input.name, "Skills directory must be an absolute path");
+        return addSkillJsonError(allocator, resolved_name, ADD_SKILL_CWD_UNRESOLVED);
     }
 
     // Create directories if needed using std.io.Dir
-    if (input.create_with_dir) {
+    if (resolved.create_with_dir) {
         const cwd_dir = std.Io.Dir.cwd();
         cwd_dir.createDirPath(io, skill_dir) catch {
-            return addSkillJsonError(allocator, input.name, "Failed to create skill directory");
+            return addSkillJsonError(allocator, resolved_name, "Failed to create skill directory");
         };
     }
 
     // Build skill content with YAML frontmatter
-    const file_content = buildSkillContent(allocator, input);
+    const file_content = buildSkillContent(allocator, resolved);
     defer allocator.free(file_content);
     if (file_content.len == 0) {
-        return addSkillJsonError(allocator, input.name, "Failed to build skill content");
+        return addSkillJsonError(allocator, resolved_name, "Failed to build skill content");
     }
 
     // Write the file using absolute path with Io.Dir
     const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
-        return addSkillJsonError(allocator, input.name, "Failed to create skill file");
+        return addSkillJsonError(allocator, resolved_name, "Failed to create skill file");
     };
     defer std.Io.File.close(file, io);
 
@@ -768,20 +1012,26 @@ pub fn addSkillJsonErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u
 
 // ─── edit_skill ───
 
-/// Input structure for edit_skill tool
+/// Input structure for edit_skill tool. `skill_name` is defaulted so a
+/// call that omits it parses and gets a message naming the field rather
+/// than `error.MissingField`.
 pub const EditSkillInput = struct {
     /// Skill identifier (required)
-    skill_name: []const u8,
-    /// New description (optional - omit to keep existing)
+    skill_name: []const u8 = "",
+    /// New description (optional - omit to keep existing). A `description:`
+    /// line inside `content`'s frontmatter is used when this is null.
     description: ?[]const u8 = null,
-    /// New skill content (optional - omit to keep existing)
+    /// New skill content (optional - omit to keep existing). A leading
+    /// `---` frontmatter block is stripped and its `description:` lifted.
     content: ?[]const u8 = null,
     /// If true, edit in global skills directory (~/.config/nalar/skills/)
     /// If false, edit in local skills directory (.nalar/skills/)
     is_global: bool = false,
 };
 
-/// Tool definition for edit_skill
+/// Tool definition for edit_skill. See the note on `add_skill_tool` —
+/// `function.description` and the parameter docs are the only per-tool
+/// text that reaches the model.
 pub const edit_skill_tool_system_prompt =
     \\## Edit Skill Tool — Behavior
     \\Use `edit_skill` to update an existing skill's description or body.
@@ -793,29 +1043,35 @@ pub const edit_skill_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "edit_skill",
-        .description = "Edit an existing skill file. Updates the description and/or content of a skill. At least one of description or content must be provided.",
+        .description =
+        \\Edit an existing skill file. Updates the description and/or content of a skill. At least one of description or content must be provided; omit the other to keep it.
+        \\
+        \\`skill_name` is the directory name `search_skills` reported — not the SKILL.MD path, which is `use_skill`'s argument. `is_global` must match the tier it lives in; get that wrong and the error names the tier that actually holds it, so the fix is one flag away.
+        \\
+        \\`content` is the BODY only — the frontmatter is regenerated on every write. Rewriting the `description` is the highest-leverage edit available: it is the one line that decides whether this skill is ever loaded.
+        ,
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "skill_name",
                     .type = "string",
-                    .description = "The exact name of the skill to edit (e.g., 'my-workflow')",
+                    .description = "The skill's directory name, as `search_skills` reported it (e.g. 'my-workflow'). NOT the SKILL.MD path.",
                 },
                 .{
                     .name = "description",
                     .type = "string",
-                    .description = "New description for the skill - when to use this skill and what it accomplishes",
+                    .description = "New one-sentence description: what the skill does AND when to use it. Omit to keep the existing one.",
                 },
                 .{
                     .name = "content",
                     .type = "string",
-                    .description = "New skill content/markdown body that will be loaded when the skill is invoked",
+                    .description = "New markdown BODY — `## When to Use` / `## Procedure` / `## Pitfalls`. No `---` frontmatter block. Omit to keep the existing body.",
                 },
                 .{
                     .name = "is_global",
                     .type = "boolean",
-                    .description = "If true, edit in global skills directory (~/.config/nalar/skills/). If false, edit in local directory (.nalar/skills/). Default: false",
+                    .description = "Must match the tier the skill lives in. false (default) = this project's <cwd>/.nalar/skills/<name>/SKILL.MD; true = the shared ~/.config/nalar/skills/<name>/SKILL.MD.",
                 },
             },
             .required = &.{"skill_name"},
@@ -823,6 +1079,16 @@ pub const edit_skill_tool = AgentTool{
         .system_prompt = edit_skill_tool_system_prompt,
     },
 };
+
+/// Actionable `edit_skill` failures. Exposed for tests.
+pub const EDIT_SKILL_MISSING_NAME =
+    "edit_skill: `skill_name` is required. Send the skill's directory name as `search_skills` reported it (e.g. \"my-workflow\") — not the SKILL.MD path, which only `use_skill` takes. Run `search_skills` if you are unsure the skill exists.";
+pub const EDIT_SKILL_BAD_NAME =
+    "edit_skill: `skill_name` must be a single directory name — letters, digits, dots, dashes, underscores; no slashes, spaces, or leading/trailing dot. It is joined onto the skills directory, so a path would read or write outside it. Got: '";
+pub const EDIT_SKILL_NOTHING_TO_CHANGE =
+    "edit_skill: nothing to change — `description` and `content` were both omitted. Send a new `description` (the one line that decides whether this skill is ever found), a new `content` body, or both.";
+pub const EDIT_SKILL_CWD_UNRESOLVED =
+    "edit_skill: this session's working directory is relative and could not be absolutized, so the skills directory is unknown. Retry with is_global: true to edit the global skills folder instead.";
 
 /// JSON payload for edit_skill results. `skill_name`/`name` and
 /// `updated`/`edited` are duplicated: the first of each pair matches the
@@ -853,13 +1119,34 @@ pub const EditSkillOutput = struct {
 pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, environment: ?*const std.process.Environ.Map, input: EditSkillInput) ![]const u8 {
     // Validate input
     if (input.skill_name.len == 0) {
-        return editSkillJsonError(allocator, input.skill_name, "Skill name cannot be empty");
+        return editSkillJsonError(allocator, input.skill_name, EDIT_SKILL_MISSING_NAME);
     }
+    // `skill_name` is joined onto the skills directory, so a path-like
+    // value reads or writes outside it — same guard as `add_skill`.
+    if (!isValidSkillName(input.skill_name)) {
+        const msg = std.fmt.allocPrint(allocator, "{s}{s}'", .{ EDIT_SKILL_BAD_NAME, input.skill_name }) catch {
+            return editSkillJsonError(allocator, input.skill_name, EDIT_SKILL_BAD_NAME);
+        };
+        defer allocator.free(msg);
+        return editSkillJsonError(allocator, input.skill_name, msg);
+    }
+
+    // A `description:` carried in `content`'s frontmatter counts as a
+    // supplied description, so the model is not told "nothing to change"
+    // for sending one field in the place it was taught to.
+    const split = splitLeadingFrontmatter(input.content orelse "");
+    const fm: ?[]const u8 = if (split.frontmatter.len != 0) split.frontmatter else null;
+    const lifted_description: ?[]const u8 = if (fm) |f| frontmatterField(f, "description") else null;
 
     // At least one of description or content must be provided
     if (input.description == null and input.content == null) {
-        return editSkillJsonError(allocator, input.skill_name, "At least one of description or content must be provided");
+        return editSkillJsonError(allocator, input.skill_name, EDIT_SKILL_NOTHING_TO_CHANGE);
     }
+
+    // A relative session `cwd` used to fail the whole call here — see
+    // `absolutizeCwd`.
+    const abs_cwd = try absolutizeCwd(allocator, cwd);
+    defer allocator.free(abs_cwd);
 
     // Determine skills directory based on is_global flag
     const skills_dir: []const u8 = if (input.is_global) blk: {
@@ -871,7 +1158,7 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
         } else {
             return editSkillJsonError(allocator, input.skill_name, "Environment not available for global skills");
         }
-    } else try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" });
+    } else try std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".nalar", "skills" });
     // skills_dir is heap-allocated in both branches (global via get_global_skills_path_from_env,
     // local via path.join). Free it once at the end of the function via a single defer.
     defer allocator.free(skills_dir);
@@ -886,10 +1173,10 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
 
     // `createFileAbsolute` at the bottom of this function asserts `skill_file` is
     // absolute and ABORTS the whole process (Debug/ReleaseSafe) when it is not.
-    // The local branch joins onto the session `cwd` (never validated as
-    // absolute at ingress) and the global branch trusts XDG_CONFIG_HOME/HOME.
+    // `absolutizeCwd` handles the local branch; the global branch still
+    // trusts XDG_CONFIG_HOME/HOME.
     if (!std.fs.path.isAbsolute(skill_file)) {
-        return editSkillJsonError(allocator, input.skill_name, "Skills directory must be an absolute path");
+        return editSkillJsonError(allocator, input.skill_name, EDIT_SKILL_CWD_UNRESOLVED);
     }
 
     // Check if the skill file exists
@@ -901,7 +1188,9 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
     };
 
     if (!file_exists) {
-        return editSkillJsonError(allocator, input.skill_name, "Skill file not found");
+        const hint = try editSkillNotFoundHint(allocator, io, input, abs_cwd, environment);
+        defer allocator.free(hint);
+        return editSkillJsonError(allocator, input.skill_name, hint);
     }
 
     // Read existing skill content
@@ -917,9 +1206,11 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
         allocator.free(parsed.content);
     }
 
-    // Use new values or existing ones
-    const new_description = input.description orelse parsed.description;
-    const new_content = input.content orelse parsed.content;
+    // Use new values or existing ones. A frontmatter block in `content` is
+    // stripped so the write cannot re-introduce the doubled-frontmatter
+    // that `add_skill` used to produce from such a body.
+    const new_description = firstNonEmpty(&.{ input.description, lifted_description }) orelse parsed.description;
+    const new_content = if (input.content != null) split.body else parsed.content;
 
     // Build updated skill content with YAML frontmatter
     const updated_content = try buildEditSkillContent(allocator, input.skill_name, new_description, new_content);
@@ -939,6 +1230,64 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
     return try editSkillJsonSuccess(allocator, input.skill_name, skill_file);
 }
 
+/// Build the "not found" message for `edit_skill`.
+///
+/// `"Skill file not found"` named neither the tier that was searched nor
+/// the flag that selects it, so the one fix available to the model —
+/// flipping `is_global` — was undiscoverable. When the skill IS in the
+/// other tier, this says so and gives the exact retry. Caller frees.
+fn editSkillNotFoundHint(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    input: EditSkillInput,
+    abs_cwd: []const u8,
+    environment: ?*const std.process.Environ.Map,
+) ![]const u8 {
+    const searched = if (input.is_global)
+        "the global tier (you passed is_global: true)"
+    else
+        "this project's local tier (you passed is_global: false)";
+
+    // The tier the model did NOT ask for.
+    var other_dir: ?[]u8 = null;
+    defer if (other_dir) |d| allocator.free(d);
+    if (input.is_global) {
+        other_dir = try std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".nalar", "skills" });
+    } else if (environment) |env| {
+        // `@constCast` is safe here: the callee allocated this buffer and
+        // hands over ownership, and the defer above frees it.
+        if (skills.get_global_skills_path_from_env(allocator, env)) |g| other_dir = @constCast(g);
+    }
+
+    if (other_dir) |dir| {
+        const other_file = try std.fs.path.join(allocator, &[_][]const u8{ dir, input.skill_name, "SKILL.MD" });
+        defer allocator.free(other_file);
+
+        const found = blk: {
+            std.Io.Dir.cwd().access(io, other_file, .{}) catch break :blk false;
+            break :blk true;
+        };
+        if (found) {
+            return std.fmt.allocPrint(
+                allocator,
+                "edit_skill: skill '{s}' was not found in {s}, but it EXISTS in the other tier at {s}. Retry the identical call with is_global: {}.",
+                .{ input.skill_name, searched, other_file, !input.is_global },
+            );
+        }
+        return std.fmt.allocPrint(
+            allocator,
+            "edit_skill: skill '{s}' was not found in {s}, nor in the other tier (looked in {s}). Run search_skills — it lists every installed skill with its scope and exact name.",
+            .{ input.skill_name, searched, other_file },
+        );
+    }
+
+    return std.fmt.allocPrint(
+        allocator,
+        "edit_skill: skill '{s}' was not found in {s}, and the other tier could not be resolved to compare against. Run search_skills to list the installed names.",
+        .{ input.skill_name, searched },
+    );
+}
+
 /// Parsed skill file structure
 const ParsedSkill = struct {
     description: []const u8,
@@ -946,81 +1295,44 @@ const ParsedSkill = struct {
 };
 
 fn parseSkillFile(allocator: std.mem.Allocator, file_content: []const u8) !ParsedSkill {
-    var result = ParsedSkill{
-        .description = try allocator.dupe(u8, ""),
-        .content = try allocator.dupe(u8, ""),
-    };
-    errdefer {
-        allocator.free(result.description);
-        allocator.free(result.content);
+    // One parser, shared with the write path. The hand-rolled scanner this
+    // replaces derived the key as `trim(frontmatter[i..i], ": ")` at each
+    // `:`, which is always the EMPTY string — so `description` never matched
+    // and every `edit_skill` that supplied only `content` silently rewrote
+    // the frontmatter to `description: ""`. Nothing caught it: the existing
+    // tests all supplied a new description, so the read path was never
+    // exercised on its own.
+    const split = splitLeadingFrontmatter(file_content);
+    if (split.frontmatter.len == 0) {
+        // No frontmatter — the whole file is the body.
+        return .{
+            .description = try allocator.dupe(u8, ""),
+            .content = try allocator.dupe(u8, file_content),
+        };
     }
 
-    // Find frontmatter boundaries
-    const frontmatter_start = std.mem.indexOf(u8, file_content, "---\n") orelse {
-        // No frontmatter - treat entire content as content
-        result.content = try allocator.dupe(u8, file_content);
-        return result;
-    };
+    var description = frontmatterField(split.frontmatter, "description") orelse "";
 
-    const frontmatter_end = std.mem.indexOf(u8, file_content[frontmatter_start + 4 ..], "---\n") orelse {
-        // Malformed frontmatter
-        result.content = try allocator.dupe(u8, file_content);
-        return result;
-    };
-
-    const frontmatter = file_content[frontmatter_start + 4 .. frontmatter_start + 4 + frontmatter_end];
-
-    // Parse frontmatter
-    var current_key: ?[]const u8 = null;
-    var in_string = false;
-    var string_start: usize = 0;
-
-    var i: usize = 0;
-    while (i < frontmatter.len) : (i += 1) {
-        const c = frontmatter[i];
-
-        if (in_string) {
-            if (c == '"') {
-                // End of string
-                in_string = false;
-                const value = frontmatter[string_start..i];
-
-                if (current_key) |key| {
-                    if (std.mem.eql(u8, key, "description")) {
-                        allocator.free(result.description);
-                        result.description = try uneditSkillEscapeYamlString(allocator, value);
-                    }
-                }
-
-                current_key = null;
-            }
-        } else {
-            if (c == ':') {
-                // End of key
-                const key_start = if (i > 0 and frontmatter[i - 1] == ' ') i - 2 else i;
-                current_key = std.mem.trim(u8, frontmatter[key_start..i], ": ");
-                // Skip whitespace and opening quote
-                var j = i + 1;
-                while (j < frontmatter.len and (frontmatter[j] == ' ' or frontmatter[j] == '\t')) j += 1;
-                if (j < frontmatter.len and frontmatter[j] == '"') {
-                    in_string = true;
-                    string_start = j + 1;
-                    i = j;
-                }
-            } else if (c == '\n') {
-                current_key = null;
-            }
+    // Heal the doubled-frontmatter corruption on READ. `buildSkillContent`
+    // always prepends its own block, so any file written by an `add_skill`
+    // whose `content` arrived carrying one has the block twice — and the
+    // second copy opens the body here. Without this, `edit_skill` copies the
+    // duplicate forward forever and `use_skill` hands the model a body that
+    // opens with frontmatter. Stripping on read repairs every already-written
+    // skill the next time it is touched.
+    var body = split.body;
+    const inner = splitLeadingFrontmatter(std.mem.trim(u8, body, "\n"));
+    if (inner.frontmatter.len != 0) {
+        body = inner.body;
+        if (description.len == 0) {
+            description = frontmatterField(inner.frontmatter, "description") orelse "";
         }
     }
 
-    // Get content after frontmatter
-    const after_frontmatter = frontmatter_start + 4 + frontmatter_end + 4;
-    if (after_frontmatter < file_content.len) {
-        allocator.free(result.content);
-        result.content = try allocator.dupe(u8, std.mem.trim(u8, file_content[after_frontmatter..], "\n"));
-    }
-
-    return result;
+    return .{
+        .description = try allocator.dupe(u8, description),
+        .content = try allocator.dupe(u8, std.mem.trim(u8, body, "\n")),
+    };
 }
 
 /// Build skill file content with YAML frontmatter
@@ -1074,38 +1386,6 @@ fn editSkillEscapeYamlString(allocator: std.mem.Allocator, s: []const u8) ![]con
             '"' => try result.appendSlice(allocator, "\\\""),
             '\\' => try result.appendSlice(allocator, "\\\\"),
             else => try result.append(allocator, c),
-        }
-    }
-
-    return result.toOwnedSlice(allocator);
-}
-
-/// Unescape YAML string (reverse of escapeYamlString)
-fn uneditSkillEscapeYamlString(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
-    const needs_unescape = std.mem.indexOf(u8, s, "\\") != null;
-
-    if (!needs_unescape) {
-        return allocator.dupe(u8, s);
-    }
-
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '\\' and i + 1 < s.len) {
-            i += 1;
-            switch (s[i]) {
-                '"' => try result.append(allocator, '"'),
-                '\\' => try result.append(allocator, '\\'),
-                else => {
-                    try result.append(allocator, '\\');
-                    try result.append(allocator, s[i]);
-                    continue;
-                },
-            }
-        } else {
-            try result.append(allocator, s[i]);
         }
     }
 
@@ -1250,7 +1530,6 @@ test "freeSkillsListData handles empty arrays" {
     // Should not panic
     freeSkillsListData(alloc, data);
 }
-
 
 test "use_skill_tool - has correct tool definition" {
     try std.testing.expectEqualStrings("use_skill", use_skill_tool.function.name);
@@ -1541,7 +1820,7 @@ test "add_skill - empty name returns error" {
     const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expect(!parsed.value.created);
-    try std.testing.expectEqualStrings("Skill name cannot be empty", parsed.value.@"error" orelse "");
+    try std.testing.expectEqualStrings(ADD_SKILL_MISSING_NAME, parsed.value.@"error" orelse "");
 }
 
 test "add_skill - empty description returns error" {
@@ -1561,7 +1840,7 @@ test "add_skill - empty description returns error" {
     const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expect(!parsed.value.created);
-    try std.testing.expectEqualStrings("Description cannot be empty", parsed.value.@"error" orelse "");
+    try std.testing.expectEqualStrings(ADD_SKILL_MISSING_DESCRIPTION, parsed.value.@"error" orelse "");
 }
 
 test "add_skill - empty content returns error" {
@@ -1581,7 +1860,7 @@ test "add_skill - empty content returns error" {
     const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expect(!parsed.value.created);
-    try std.testing.expectEqualStrings("Content cannot be empty", parsed.value.@"error" orelse "");
+    try std.testing.expectEqualStrings(ADD_SKILL_MISSING_CONTENT, parsed.value.@"error" orelse "");
 }
 
 test "add_skill - tool definition includes is_global parameter" {
@@ -1652,7 +1931,7 @@ test "add_skill - executeAddSkillToString validates empty content" {
     const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expect(!parsed.value.created);
-    try std.testing.expectEqualStrings("Content cannot be empty", parsed.value.@"error" orelse "");
+    try std.testing.expectEqualStrings(ADD_SKILL_MISSING_CONTENT, parsed.value.@"error" orelse "");
 }
 
 test "add_skill - buildSkillContent escapes special characters" {
@@ -1838,7 +2117,7 @@ test "edit_skill - empty skill_name returns error" {
     const parsed = try std.json.parseFromSlice(EditSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expect(!parsed.value.updated);
-    try std.testing.expectEqualStrings("Skill name cannot be empty", parsed.value.@"error" orelse "");
+    try std.testing.expectEqualStrings(EDIT_SKILL_MISSING_NAME, parsed.value.@"error" orelse "");
 }
 
 test "edit_skill - neither description nor content provided returns error" {
@@ -1858,7 +2137,7 @@ test "edit_skill - neither description nor content provided returns error" {
     const parsed = try std.json.parseFromSlice(EditSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
     defer parsed.deinit();
     try std.testing.expect(!parsed.value.updated);
-    try std.testing.expectEqualStrings("At least one of description or content must be provided", parsed.value.@"error" orelse "");
+    try std.testing.expectEqualStrings(EDIT_SKILL_NOTHING_TO_CHANGE, parsed.value.@"error" orelse "");
 }
 
 test "edit_skill - tool definition includes is_global parameter" {
@@ -2035,4 +2314,427 @@ test "edit_skill - edit truncates existing skill file (no append-mode corruption
     try std.testing.expect(std.mem.indexOf(u8, updated, "OLD-CONTENT-MARKER") == null);
     try std.testing.expect(std.mem.indexOf(u8, updated, "trailing junk that should be completely wiped") == null);
     try std.testing.expect(std.mem.indexOf(u8, updated, "append-junk-trailing-bytes") == null);
+}
+
+// ─── tests: argument resolution (the two failure modes that were live) ───
+
+test "splitLeadingFrontmatter - splits a fenced block, leaves everything else alone" {
+    const with_fm = "---\nname: foo\ndescription: \"bar\"\n---\n## Body\n";
+    const s = splitLeadingFrontmatter(with_fm);
+    try std.testing.expectEqualStrings("name: foo\ndescription: \"bar\"\n", s.frontmatter);
+    try std.testing.expectEqualStrings("## Body\n", s.body);
+
+    // No fence at the head → the whole input is the body.
+    const bare = splitLeadingFrontmatter("## Body\n\n---\nnot a fence\n");
+    try std.testing.expectEqualStrings("", bare.frontmatter);
+    try std.testing.expectEqualStrings("## Body\n\n---\nnot a fence\n", bare.body);
+
+    // Unterminated fence → not treated as frontmatter (never a guess).
+    const open = splitLeadingFrontmatter("---\nname: foo\n");
+    try std.testing.expectEqualStrings("", open.frontmatter);
+
+    // Closing fence at EOF (no trailing newline) still splits.
+    const eof = splitLeadingFrontmatter("---\nname: foo\n---");
+    try std.testing.expectEqualStrings("name: foo\n", eof.frontmatter);
+    try std.testing.expectEqualStrings("", eof.body);
+
+    // `---x` is not a fence.
+    const notfence = splitLeadingFrontmatter("---\nname: foo\n---x\nbody");
+    try std.testing.expectEqualStrings("", notfence.frontmatter);
+}
+
+test "frontmatterField - reads values, strips quotes, rejects near-misses" {
+    const fm = "name: foo-bar\ndescription: \"Use when X.\"\nnames: wrong-key\nempty:\n";
+    try std.testing.expectEqualStrings("foo-bar", frontmatterField(fm, "name").?);
+    try std.testing.expectEqualStrings("Use when X.", frontmatterField(fm, "description").?);
+    // `name` must not match the `names:` line.
+    try std.testing.expectEqualStrings("right", frontmatterField("names: wrong-key\nname: right\n", "name").?);
+    // An empty value is no value.
+    try std.testing.expect(frontmatterField("empty:\n", "empty") == null);
+    try std.testing.expect(frontmatterField("name: foo\n", "description") == null);
+}
+
+test "isValidSkillName - rejects traversal and separator characters" {
+    try std.testing.expect(isValidSkillName("my-skill"));
+    try std.testing.expect(isValidSkillName("my_skill.v2"));
+
+    // The traversal that `path.join(skills_dir, name)` would have honoured.
+    try std.testing.expect(!isValidSkillName("../../etc/passwd"));
+    try std.testing.expect(!isValidSkillName(".."));
+    try std.testing.expect(!isValidSkillName("a/b"));
+    try std.testing.expect(!isValidSkillName("a\\b"));
+    try std.testing.expect(!isValidSkillName(".hidden"));
+    try std.testing.expect(!isValidSkillName("trailing."));
+    try std.testing.expect(!isValidSkillName("has space"));
+    try std.testing.expect(!isValidSkillName(""));
+}
+
+test "add_skill - content carrying frontmatter does NOT double the block (the live corruption)" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const tmp_path = "/tmp/nalar-add-skill-fm-test";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    // Exactly the shape a model produces when it pastes the skill format:
+    // frontmatter inside `content`, and NO `description` argument.
+    const input = AddSkillInput{
+        .name = "fm-lifted",
+        .description = "",
+        .content = "---\nname: fm-lifted\ndescription: \"Lifted from content.\"\n---\n## When to Use\n\nAlways.\n",
+    };
+
+    const output = executeAddSkillToString(alloc, io, tmp_path, null, input);
+    defer alloc.free(output);
+
+    const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.created);
+
+    const file = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", "fm-lifted", "SKILL.MD" });
+    defer alloc.free(file);
+    const body = try std.Io.Dir.cwd().readFileAlloc(io, file, alloc, std.Io.Limit.limited(64 * 1024));
+    defer alloc.free(body);
+
+    // Exactly TWO fences (the generated block's open + close). Four is the bug
+    // that shipped: the opening fence has no preceding newline, so this counts
+    // both rather than matching only the closer.
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, body, "---\n"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "name: fm-lifted"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, body, "Lifted from content."));
+
+    // The frontmatter was lifted into the description, not left in the body.
+    try std.testing.expect(std.mem.indexOf(u8, body, "## When to Use") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "description: \"Lifted from content.\"") != null);
+}
+
+test "add_skill - a RELATIVE cwd resolves instead of refusing (was: must be an absolute path)" {
+    const alloc = std.testing.allocator;
+
+    // `absolutizeCwd` is the fix; assert it directly so the guard is covered
+    // by a test rather than only by the disk tests' absolute `/tmp` cwd.
+    const abs = try absolutizeCwd(alloc, "/already/absolute");
+    defer alloc.free(abs);
+    try std.testing.expectEqualStrings("/already/absolute", abs);
+
+    // Relative → joined onto the process cwd, so the result IS absolute.
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = helpers.getcwd(&buf).?;
+    const resolved = try absolutizeCwd(alloc, "sub/dir");
+    defer alloc.free(resolved);
+    try std.testing.expect(std.fs.path.isAbsolute(resolved));
+    try std.testing.expect(std.mem.startsWith(u8, resolved, base));
+
+    try std.testing.expectError(error.CwdUnavailable, absolutizeCwd(alloc, ""));
+}
+
+test "add_skill - a path-like name is refused with a message naming the rule" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const tmp_path = "/tmp/nalar-add-skill-badname";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    const input = AddSkillInput{
+        .name = "../escaped",
+        .description = "d",
+        .content = "## Body\n",
+    };
+    const output = executeAddSkillToString(alloc, io, tmp_path, null, input);
+    defer alloc.free(output);
+
+    const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.created);
+    const err = parsed.value.@"error" orelse "";
+    try std.testing.expect(std.mem.startsWith(u8, err, ADD_SKILL_BAD_NAME));
+    try std.testing.expect(std.mem.indexOf(u8, err, "../escaped") != null);
+
+    // Nothing escaped the skills directory.
+    try std.testing.expect(!helpers.fileExists("/tmp/nalar-add-skill-badname/escaped/SKILL.MD"));
+}
+
+test "add_skill / edit_skill - every field defaults, so a missing one parses" {
+    // The regression that produced `add_skill failed: MissingField`: with
+    // non-defaulted fields, `std.json.parseFromSlice` rejects the payload
+    // before any of the actionable messages can be produced.
+    const alloc = std.testing.allocator;
+
+    // Omitted `description` parses; it is validated downstream, where the
+    // message can name the argument.
+    const omitted_desc = try std.json.parseFromSlice(
+        AddSkillInput,
+        alloc,
+        "{\"name\":\"x\",\"content\":\"## Body\\n\"}",
+        .{ .allocate = .alloc_always },
+    );
+    defer omitted_desc.deinit();
+    try std.testing.expectEqualStrings("x", omitted_desc.value.name);
+    try std.testing.expectEqualStrings("", omitted_desc.value.description);
+
+    // An extra key must not cost the call — that is what
+    // `ignore_unknown_fields` buys, and what produced
+    // `add_skill failed: UnknownField` before.
+    const extra_key = try std.json.parseFromSlice(
+        AddSkillInput,
+        alloc,
+        "{\"name\":\"x\",\"description\":\"d\",\"content\":\"c\",\"scope\":\"global\"}",
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    );
+    defer extra_key.deinit();
+    try std.testing.expectEqualStrings("x", extra_key.value.name);
+
+    const no_name = try std.json.parseFromSlice(
+        EditSkillInput,
+        alloc,
+        "{\"description\":\"d\"}",
+        .{},
+    );
+    defer no_name.deinit();
+    try std.testing.expectEqualStrings("", no_name.value.skill_name);
+
+    // remove_skill: `session_id` is unused, so omitting it must not fail.
+    const no_session = try std.json.parseFromSlice(
+        RemoveSkillInput,
+        alloc,
+        "{\"skill_name\":\"x\"}",
+        .{ .allocate = .alloc_always },
+    );
+    defer no_session.deinit();
+    try std.testing.expectEqualStrings("x", no_session.value.skill_name);
+    try std.testing.expectEqualStrings("", no_session.value.session_id);
+}
+
+test "edit_skill - frontmatter in content lifts the description and is not re-duplicated" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const tmp_path = "/tmp/nalar-edit-skill-fm";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    const seed = AddSkillInput{
+        .name = "edit-fm",
+        .description = "Original description.",
+        .content = "## When to Use\n\nOriginal body.\n",
+    };
+    const seeded = executeAddSkillToString(alloc, io, tmp_path, null, seed);
+    defer alloc.free(seeded);
+
+    // The model rewrites the body and, out of habit, re-pastes frontmatter
+    // with the new description in it.
+    const out = try executeEditSkillToString(alloc, io, tmp_path, null, .{
+        .skill_name = "edit-fm",
+        .content = "---\ndescription: \"Rewritten description.\"\n---\n## When to Use\n\nNew body.\n",
+    });
+    defer alloc.free(out);
+
+    const parsed = try std.json.parseFromSlice(EditSkillOutput, alloc, out, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.updated);
+
+    const file = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", "edit-fm", "SKILL.MD" });
+    defer alloc.free(file);
+    const body = try std.Io.Dir.cwd().readFileAlloc(io, file, alloc, std.Io.Limit.limited(64 * 1024));
+    defer alloc.free(body);
+
+    // Lifted, not duplicated, and the OLD description is gone.
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, body, "---\n"));
+    try std.testing.expect(std.mem.indexOf(u8, body, "Rewritten description.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Original description.") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "New body.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Original body.") == null);
+}
+
+test "edit_skill - a path-like skill_name is refused before touching the disk" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const tmp_path = "/tmp/nalar-edit-skill-badname";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    const secret = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, "secret.txt" });
+    defer alloc.free(secret);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = secret, .data = "do not clobber me" });
+
+    const out = try executeEditSkillToString(alloc, io, tmp_path, null, .{
+        .skill_name = "../secret",
+        .content = "## Owned\n",
+    });
+    defer alloc.free(out);
+
+    const parsed = try std.json.parseFromSlice(EditSkillOutput, alloc, out, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.updated);
+    try std.testing.expect(std.mem.startsWith(u8, parsed.value.@"error" orelse "", EDIT_SKILL_BAD_NAME));
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, secret, alloc, std.Io.Limit.limited(1024));
+    defer alloc.free(after);
+    try std.testing.expectEqualStrings("do not clobber me", after);
+}
+
+test "edit_skill - not-found names the tier that actually holds the skill" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const tmp_path = "/tmp/nalar-edit-skill-tierhint";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    // Skill exists ONLY in the global tier; the call asks for local.
+    var env = std.process.Environ.Map.init(alloc);
+    defer env.deinit();
+    const xdg = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".config-home" });
+    defer alloc.free(xdg);
+    try env.put("XDG_CONFIG_HOME", xdg);
+
+    const seeded = executeAddSkillToString(alloc, io, tmp_path, &env, .{
+        .name = "global-only",
+        .description = "Lives in the global tier.",
+        .content = "## When to Use\n\nOnly globally.\n",
+        .is_global = true,
+    });
+    defer alloc.free(seeded);
+
+    const out = try executeEditSkillToString(alloc, io, tmp_path, &env, .{
+        .skill_name = "global-only",
+        .description = "new",
+        .is_global = false, // wrong tier on purpose
+    });
+    defer alloc.free(out);
+
+    const parsed = try std.json.parseFromSlice(EditSkillOutput, alloc, out, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.updated);
+
+    const err = parsed.value.@"error" orelse "";
+    try std.testing.expect(std.mem.indexOf(u8, err, "EXISTS in the other tier") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "is_global: true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err, "local tier") != null);
+}
+
+test "remove_skill - a path-like skill_name is refused" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const tmp_path = "/tmp/nalar-remove-skill-badname";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    const out = try execute_remove_skill_to_string(alloc, io, tmp_path, null, .{
+        .skill_name = "../../etc",
+        .session_id = "s",
+    });
+    defer alloc.free(out);
+
+    const parsed = try std.json.parseFromSlice(RemoveSkillOutput, alloc, out, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.removed);
+    try std.testing.expect(std.mem.startsWith(u8, parsed.value.@"error" orelse "", REMOVE_SKILL_BAD_NAME));
+}
+
+test "skill tool descriptions carry the rules the failure modes needed" {
+    // The per-tool `system_prompt` field is never rendered (see the note on
+    // `add_skill_tool`), so `description` is the only per-tool surface the
+    // model reads. Pin the rules it must state.
+    for ([_][]const u8{ add_skill_tool.function.description, edit_skill_tool.function.description }) |desc| {
+        try std.testing.expect(std.mem.indexOf(u8, desc, "frontmatter") != null);
+        try std.testing.expect(std.mem.indexOf(u8, desc, "is_global") != null);
+    }
+    // The add_skill contract stated three ways: separate args, body only,
+    // and why the description matters.
+    try std.testing.expect(std.mem.indexOf(u8, add_skill_tool.function.description, "SEPARATE ARGUMENTS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, add_skill_tool.function.description, "search_skills") != null);
+}
+
+test "parseSkillFile - heals the doubled frontmatter already on disk" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const tmp_path = "/tmp/nalar-parse-heal";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    const dir = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", "legacy-doubled" });
+    defer alloc.free(dir);
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    // Byte-for-byte the shape `add_skill` produced for every skill whose
+    // `content` arrived with a frontmatter block — the corruption that
+    // shipped. `---` at lines 1, 4, 5, 8.
+    const file = try std.fs.path.join(alloc, &[_][]const u8{ dir, "SKILL.MD" });
+    defer alloc.free(file);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = "---\nname: legacy-doubled\ndescription: \"Written twice.\"\n---\n" ++
+        "---\nname: legacy-doubled\ndescription: \"Written twice.\"\n---\n" ++
+        "## When to Use\n\nThe real body.\n" });
+
+    // Reading it back: the description parses, and the body is clean.
+    const raw = try std.Io.Dir.cwd().readFileAlloc(io, file, alloc, std.Io.Limit.limited(64 * 1024));
+    defer alloc.free(raw);
+    const parsed = try parseSkillFile(alloc, raw);
+    defer {
+        alloc.free(parsed.description);
+        alloc.free(parsed.content);
+    }
+    try std.testing.expectEqualStrings("Written twice.", parsed.description);
+    try std.testing.expectEqualStrings("## When to Use\n\nThe real body.", parsed.content);
+
+    // A description-only edit now carries the duplicate no further.
+    const out = try executeEditSkillToString(alloc, io, tmp_path, null, .{
+        .skill_name = "legacy-doubled",
+        .description = "Rewritten once.",
+    });
+    defer alloc.free(out);
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, file, alloc, std.Io.Limit.limited(64 * 1024));
+    defer alloc.free(after);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, after, "---\n"));
+    try std.testing.expect(std.mem.indexOf(u8, after, "The real body.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, after, "Rewritten once.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, after, "Written twice.") == null);
+}
+
+test "edit_skill - a content-only edit KEEPS the description (it used to be wiped)" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const tmp_path = "/tmp/nalar-edit-skill-keep-desc";
+
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    const seeded = executeAddSkillToString(alloc, io, tmp_path, null, .{
+        .name = "keep-desc",
+        .description = "The sentence search_skills will return.",
+        .content = "## When to Use\n\nFirst body.\n",
+    });
+    defer alloc.free(seeded);
+
+    // `description` omitted — the tool must read the existing one off disk.
+    const out = try executeEditSkillToString(alloc, io, tmp_path, null, .{
+        .skill_name = "keep-desc",
+        .content = "## When to Use\n\nSecond body.\n",
+    });
+    defer alloc.free(out);
+
+    const file = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", "keep-desc", "SKILL.MD" });
+    defer alloc.free(file);
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, file, alloc, std.Io.Limit.limited(64 * 1024));
+    defer alloc.free(after);
+
+    try std.testing.expect(std.mem.indexOf(u8, after, "The sentence search_skills will return.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, after, "Second body.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, after, "First body.") == null);
+    // The empty frontmatter this used to write.
+    try std.testing.expect(std.mem.indexOf(u8, after, "description: \"\"") == null);
 }
