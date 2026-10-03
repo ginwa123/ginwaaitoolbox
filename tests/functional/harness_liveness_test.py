@@ -492,16 +492,20 @@ class TestParentEnvIsRestoredExactly:
         `os.environ["HOME"] = self.orig_home` wrote it into the environment
         anyway — changing what `Path.home()` and `~` expand to for every test
         that ran afterwards.
+
+        Modelled on a harness that DID shadow HOME, which is what `boot()` does
+        on Windows. A harness that shadowed nothing restores nothing at all —
+        see `test_a_hand_built_harness_does_not_restore_what_it_never_shadowed`
+        for that half of the rule.
         """
         from harness import snapshot_parent_env
 
+        shadow = "C:/some/harness-temp-dir"
         backup = snapshot_parent_env()
         backup["HOME"] = None  # HOME genuinely unset, as on Windows
-        os.environ["HOME"] = "C:/some/harness-temp-dir"
+        os.environ["HOME"] = shadow
 
-        # `_env_shadowed` is empty here: this harness never shadowed HOME in
-        # the parent (the hand-built path in http2_tls_test).
-        self._harness(backup, {}).teardown()
+        self._harness(backup, {"HOME": shadow}).teardown()
 
         assert "HOME" not in os.environ, (
             "teardown invented a HOME that did not exist before the harness "
@@ -518,6 +522,91 @@ class TestParentEnvIsRestoredExactly:
         self._harness(backup, {"APPDATA": "C:/shadow/AppData/Roaming"}).teardown()
 
         assert os.environ["APPDATA"] == "C:/real/AppData/Roaming"
+
+    @pytest.mark.usefixtures("_restore_env")
+    def test_nested_harnesses_restore_the_TRUE_original_in_both_orders(self) -> None:
+        """The case the clobber-only guard above does not cover.
+
+        Two harnesses overlap. The inner one snapshots the environment while
+        the outer's shadow is already active, so its "original" value IS the
+        outer's shadowed tempdir. Restoring per-harness therefore looks
+        correct -- every harness puts back exactly what it recorded -- and
+        still leaves the parent pointing into a directory that no longer
+        exists.
+
+        Measured with two real `boot()` harnesses, outer torn down first:
+
+            DIRTY HOME:         None -> '...\\nalar-func-x94db7s6'  exists=False
+            DIRTY USERPROFILE:  'C:\\Users\\ginwa' -> '...\\nalar-func-x94db7s6'  exists=False
+            DIRTY APPDATA:      'C:\\Users\\ginwa\\AppData\\Roaming'
+                                -> '...\\nalar-func-x94db7s6\\AppData\\Roaming'  exists=False
+
+        An `APPDATA` pointing at a removed directory is what makes the next
+        nalar die inside `Config.zig:getDefaultConfigPath` -- before it
+        reaches the code the next test is trying to exercise.
+
+        So the harness restores against a process-wide baseline captured by
+        the OUTERMOST shadow, not against its own snapshot. Both teardown
+        orders are checked, because only one of them was broken.
+        """
+        from harness import FunctionalHarness, _SHADOWED_ENV_KEYS
+
+        for order in ("inner-first", "outer-first"):
+            real = {k: os.environ.get(k) for k in _SHADOWED_ENV_KEYS}
+
+            outer = self._harness(dict(real), {"APPDATA": "C:/outer/AppData/Roaming"})
+            os.environ["APPDATA"] = "C:/outer/AppData/Roaming"
+            inner = self._harness(dict(real), {"APPDATA": "C:/inner/AppData/Roaming"})
+            os.environ["APPDATA"] = "C:/inner/AppData/Roaming"
+
+            if order == "inner-first":
+                inner.teardown()
+                outer.teardown()
+            else:
+                outer.teardown()
+                inner.teardown()
+
+            for k in _SHADOWED_ENV_KEYS:
+                now = os.environ.get(k)
+                assert now == real[k], (
+                    f"{order}: {k} should be back to its true original "
+                    f"{real[k]!r}, got {now!r}. A harness restored another "
+                    f"harness's shadow, which points into a deleted tempdir."
+                )
+                if real[k] is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = real[k]
+
+    def test_a_hand_built_harness_does_not_restore_what_it_never_shadowed(self) -> None:
+        """`_env_shadowed` empty means "I mutated nothing" -- restore nothing.
+
+        Three suites build a harness by hand and pass a child `env` dict
+        instead of shadowing the parent. Restoring HOME from their own
+        snapshot looks harmless and is not: taken under another harness's
+        shadow, that snapshot is a tempdir that is about to be deleted, so the
+        "restore" injects it into the environment.
+        """
+        from harness import _SHADOWED_ENV_KEYS
+
+        real_home = os.environ.get("HOME")
+        # A snapshot taken while some other harness's shadow was active.
+        stale = dict({k: os.environ.get(k) for k in _SHADOWED_ENV_KEYS})
+        stale["HOME"] = "C:/deleted/outer-tempdir"
+
+        os.environ["HOME"] = "C:/real/home"
+        h = self._harness(stale, {})
+        h.teardown()
+
+        assert os.environ.get("HOME") == "C:/real/home", (
+            "a harness that shadowed nothing in the parent must not restore "
+            "anything; HOME was changed from 'C:/deleted/outer-tempdir' to "
+            f"{os.environ.get('HOME')!r}"
+        )
+        if real_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = real_home
 
     @pytest.mark.usefixtures("_restore_env")
     def test_does_not_clobber_a_variable_another_harness_now_owns(self) -> None:
@@ -584,6 +673,85 @@ class TestParentEnvIsRestoredExactly:
         assert absent != empty, (
             "the snapshot collapsed 'absent' and 'empty' into one value, which "
             "is what let teardown delete variables it should have restored"
+        )
+
+
+class TestOverlappingBootHarnesses:  # noqa: D101 - see the test docstrings
+    """Two LIVE `boot()` harnesses must not poison the parent environment.
+
+    The hand-built-harness tests above pass an explicit `_env_backup`, so they
+    cannot reach the code that decides WHAT the backup is. Only `boot()`
+    does, which is why this needed a real test with real servers: a
+    hand-built harness with a supplied baseline passes whether or not the
+    process-wide baseline exists, and a first attempt at guarding this
+    regression was verified not to fail when the baseline was removed.
+
+    Both teardown orders are covered because only one of them was broken, and
+    the broken one is invisible to any test that only checks the intermediate
+    state.
+    """
+
+    def test_environment_is_pristine_after_both_orders(
+        self, default_nalar_bin
+    ) -> None:
+        from harness import _SHADOWED_ENV_KEYS, FunctionalHarness
+
+        for order in ("inner-first", "outer-first"):
+            real = {k: os.environ.get(k) for k in _SHADOWED_ENV_KEYS}
+            try:
+                outer = FunctionalHarness.boot(default_nalar_bin)
+                inner = FunctionalHarness.boot(default_nalar_bin)
+                if order == "inner-first":
+                    inner.teardown()
+                    outer.teardown()
+                else:
+                    outer.teardown()
+                    inner.teardown()
+
+                for k in _SHADOWED_ENV_KEYS:
+                    now = os.environ.get(k)
+                    assert now == real[k], (
+                        f"{order}: {k} should be back to {real[k]!r}, got "
+                        f"{now!r}. A harness restored another harness's "
+                        f"shadow, which points into a tempdir that teardown "
+                        f"has since deleted -- and an APPDATA like that "
+                        f"makes the next nalar die in "
+                        f"Config.zig:getDefaultConfigPath before it reaches "
+                        f"the code under test."
+                    )
+            finally:
+                for k, v in real.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+    def test_baseline_is_released_so_a_later_run_starts_clean(
+        self, default_nalar_bin
+    ) -> None:
+        """The refcount has to return to zero, or the baseline goes stale.
+
+        If `teardown` forgets to release, the next `boot()` reuses a baseline
+        captured before an earlier harness ran, and the parent environment is
+        restored to whatever it was then rather than to what it is now. That
+        failure is invisible within one test and shows up as cross-test drift
+        much later.
+        """
+        import harness as harness_mod
+
+        from harness import FunctionalHarness
+
+        h = FunctionalHarness.boot(default_nalar_bin)
+        assert harness_mod._ENV_BASELINE_OWNERS >= 1, (
+            "boot() must register a baseline participant while it is alive"
+        )
+        h.teardown()
+        assert harness_mod._ENV_BASELINE_OWNERS == 0, (
+            "teardown did not release the baseline; a later boot() would "
+            "restore a stale environment"
+        )
+        assert harness_mod._ENV_BASELINE is None, (
+            "the baseline should be cleared once the last harness is gone"
         )
 
 

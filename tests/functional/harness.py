@@ -120,6 +120,57 @@ _SHADOWED_ENV_KEYS = (
 )
 
 
+#: Process-wide baseline for the Windows parent-env shadow.
+#:
+#: A per-harness snapshot is NOT enough when two harnesses overlap. The inner
+#: one snapshots the environment while the outer's shadow is already active, so
+#: its "original" value is the outer's shadowed tempdir -- and once the outer
+#: tempdir is gone, restoring that baseline leaves the parent pointing into a
+#: deleted directory.
+#:
+#: Measured, with two real ``boot()`` harnesses and the outer tearing down
+#: first (both orders now correct):
+#:
+#:     after both teardowns (outer-first)
+#:       DIRTY HOME:       None -> '...\Temp\nalar-func-x94db7s6'  exists=False
+#:       DIRTY USERPROFILE: 'C:\Users\ginwa' -> '...\nalar-func-x94db7s6'  exists=False
+#:       DIRTY APPDATA:    'C:\Users\ginwa\AppData\Roaming'
+#:                         -> '...\nalar-func-x94db7s6\AppData\Roaming'  exists=False
+#:       DIRTY LOCALAPPDATA: ... exists=False
+#:
+#: An ``APPDATA`` pointing at a removed directory is what makes the next nalar
+#: die inside ``Config.zig:getDefaultConfigPath``, before reaching the code the
+#: next test is exercising.
+#:
+#: So every harness restores against the value the environment had before the
+#: OUTERMOST one shadowed it, and the baseline is released when the last one
+#: tears down.
+_ENV_BASELINE: dict[str, str | None] | None = None
+_ENV_BASELINE_OWNERS = 0
+
+
+def acquire_parent_env_baseline() -> dict[str, str | None]:
+    """Register a shadow participant and return the pre-shadow baseline.
+
+    The first caller fixes the baseline; later callers get the same one. Pair
+    every call with :func:`release_parent_env_baseline`.
+    """
+    global _ENV_BASELINE, _ENV_BASELINE_OWNERS
+    if _ENV_BASELINE is None:
+        _ENV_BASELINE = snapshot_parent_env()
+    _ENV_BASELINE_OWNERS += 1
+    return dict(_ENV_BASELINE)
+
+
+def release_parent_env_baseline() -> None:
+    """Drop one shadow participant; clear the baseline when the last leaves."""
+    global _ENV_BASELINE, _ENV_BASELINE_OWNERS
+    if _ENV_BASELINE_OWNERS > 0:
+        _ENV_BASELINE_OWNERS -= 1
+    if _ENV_BASELINE_OWNERS == 0:
+        _ENV_BASELINE = None
+
+
 def snapshot_parent_env() -> dict[str, str | None]:
     """Exact pre-shadow snapshot of the parent environment.
 
@@ -398,6 +449,10 @@ class FunctionalHarness:
     _env_shadowed: dict[str, str] = dataclasses.field(
         default_factory=dict, repr=False
     )
+    # True when this harness called `acquire_parent_env_baseline()` and so owes
+    # it a matching release. Idempotent teardown must not double-decrement, so
+    # the flag is cleared on first release.
+    _env_owns_baseline: bool = dataclasses.field(default=False, repr=False)
     # Windows original env snapshot (USERPROFILE/APPDATA/LOCALAPPDATA) — empty on POSIX.
     orig_userprofile: str = ""
     orig_appdata: str = ""
@@ -489,7 +544,20 @@ class FunctionalHarness:
         # (`server_port_bind_test` asserting on a missing "already in use"
         # string). Order-dependent, and invisible unless you run the modules
         # in the unlucky order.
-        env_backup: dict[str, str | None] = snapshot_parent_env()
+        #
+        # On Windows this is the PROCESS-WIDE baseline, not a per-harness
+        # snapshot: a per-harness snapshot taken under another harness's shadow
+        # is that shadow, and restoring it leaves the parent pointing into a
+        # deleted tempdir. See `acquire_parent_env_baseline`.
+        #
+        # Only Windows registers: on POSIX nothing is shadowed in the parent,
+        # so there is no baseline to share and `teardown` restores HOME alone.
+        env_owns_baseline = False
+        if os.name == "nt":
+            env_backup = acquire_parent_env_baseline()
+            env_owns_baseline = True
+        else:
+            env_backup = snapshot_parent_env()
 
         # Snapshot XDG envs for isolation and restore. These are used by
         # nalar on Linux for config/state/cache paths (XDG spec). If the
@@ -684,6 +752,7 @@ class FunctionalHarness:
             _proc=proc,
             _env_backup=env_backup,
             _env_shadowed=env_shadowed,
+            _env_owns_baseline=env_owns_baseline,
             orig_userprofile=orig_userprofile,
             orig_appdata=orig_appdata,
             orig_localappdata=orig_localappdata,
@@ -816,22 +885,43 @@ class FunctionalHarness:
             for key, shadowed in self._env_shadowed.items():
                 if os.environ.get(key) != shadowed:
                     continue  # someone else owns this key now
+                # `self._env_backup` is the PROCESS-WIDE baseline on Windows,
+                # so this restores what the environment held before the
+                # OUTERMOST harness shadowed it - not this harness's own view,
+                # which may itself be another harness's shadow.
                 was = self._env_backup.get(key)
                 if was is None:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = was
             # HOME is restored on EVERY platform (the old code assigned it
-            # unconditionally) — but exactly, not from the synthesised
+            # unconditionally) - but exactly, not from the synthesised
             # `orig_home`. On POSIX nothing is shadowed in the parent, so
             # this is the whole restore and it behaves as before; on Windows
             # HOME is already in `_env_shadowed` and was handled above.
-            if "HOME" not in self._env_shadowed:
+            #
+            # A hand-built harness that never shadowed the parent has nothing
+            # to undo here either, and restoring from ITS snapshot is actively
+            # harmful: that snapshot may have been taken under another
+            # harness's shadow, which would put a deleted tempdir back into
+            # the environment. `_env_shadowed` being empty is the signal.
+            if "HOME" not in self._env_shadowed and self._env_shadowed:
                 was = self._env_backup.get("HOME")
                 if was is None:
                     os.environ.pop("HOME", None)
                 else:
                     os.environ["HOME"] = was
+            elif not self._env_shadowed and os.name != "nt":
+                # POSIX: boot() never shadows the parent, so HOME is the only
+                # key that was ever at risk and it is restored exactly.
+                was = self._env_backup.get("HOME")
+                if was is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = was
+            if self._env_owns_baseline:
+                self._env_owns_baseline = False
+                release_parent_env_baseline()
         else:
             # Constructed by hand rather than by boot(): keep the old,
             # lossy behaviour so nothing changes for that path.
