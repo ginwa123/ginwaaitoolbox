@@ -28,10 +28,10 @@ Vue 3 frontend (`src/apps/desktop`), python functional harness
 
 ## TL;DR — five defects, all reproduced
 
-| # | Defect | Severity | Proof |
-|---|--------|----------|-------|
-| 1 | Answering question 1 of 2 returns `resumed:true` but **never calls the LLM**. The answer sits inert until question 2 is answered. | High | `test_answering_the_first_of_two_records_the_answer_but_delivers_nothing` |
-| 2 | An answer committed while any run holds the worker row gets `resumed:false` and is **never delivered** — no queue, no retry. Permanent stall. | Critical | `test_a_second_answer_while_a_run_is_in_flight_is_recorded_and_never_delivered` |
+| # | Defect | Severity | Status |
+|---|--------|----------|--------|
+| 1 | Answering question 1 of 2 returns `resumed:true` but **never calls the LLM**. The answer sits inert until question 2 is answered. | High | **FIXED** `36c2d4fb` |
+| 2 | An answer committed while any run holds the worker row gets `resumed:false` and is **never delivered** — no queue, no retry. Permanent stall. | Critical | **FIXED** `36c2d4fb` |
 | 3 | The tool's own prompt **lies**: sibling tool calls in an `ask_user` batch are described as "discarded". They are not — they execute. | High | read of `handle_tool.zig:711` vs `ask_user.zig:327` |
 | 4 | Each `AskUser` card registers its **own** `window` keydown listener → one `Enter` fires **N** POSTs, one digit pick applies to **all** cards. | High | `AskUser.multi-card.spec.ts` (4 tests) |
 | 5 | There is **no list endpoint**, so a card cannot know a sibling is open. | Medium | `test_no_endpoint_tells_the_frontend_how_many_questions_are_open` |
@@ -381,3 +381,47 @@ Baseline to compare against: `ask_user_test.py` = 11 pass (one run showed the
 - [x] Verified every `path:line` citation mechanically
 - [x] PR opened with the findings
 - [ ] User reviewed and picked a fix scope
+
+---
+
+## Addendum — what actually got fixed (`36c2d4fb`)
+
+**The Design Decisions above recommended the wrong fix.** Decision 1 proposed
+collapsing a multi-`ask_user` batch in `handle_tool`. The shipped fix is ~5 lines
+in `ask_user_answer.zig`:
+
+> Resume only when nothing is left pending.
+
+```zig
+questions_remaining = remainingQuestions(allocator, di.db, session_id);
+if (questions_remaining > 0) { /* defer */ } else { /* resume */ }
+```
+
+The last answer resumes once and the model reads every answer in the turn
+together. Why this beats collapsing the batch:
+
+| | collapse batch (was recommended) | defer resume (shipped) |
+|---|---|---|
+| size | ~50 lines through `handle_tool` Phase 3 | 5 lines, one file |
+| the model's 2nd question | silently discarded | answered normally |
+| new tool-result row semantics | yes | none |
+
+It also **withdraws defect 5**: with `questions_remaining` in the response and
+the frontend able to count its own pending cards out of the transcript, no list
+endpoint is needed. Defect 5 was not a defect.
+
+Defect 4 (the keyboard fan-out) is no longer *harmful* — N POSTs now converge
+correctly — but it is still wrong UX and remains open.
+
+### Test trap worth keeping
+
+`src/root.zig` carries a list of files that must be explicitly imported for
+`zig build test` to see their inline tests; a `pub const` re-export in a
+`mod.zig` is **not** enough. Six files already document this. The two new unit
+tests in `ask_user_answer.zig` were silently unrun until added to that list —
+proven by mutating an assertion and watching `zig build test` exit 0, then exit
+1 once the import existed. **A green `zig build test` is not evidence a test
+ran.**
+
+Also: `zig build` does **not** compile the service binary. `zig build
+install:linux` is the gate that catches errors in `src/http_handlers/**`.
