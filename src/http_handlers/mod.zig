@@ -56,6 +56,12 @@ pub const authIsAuthorized = @import("auth_middleware.zig").isAuthorized;
 // Workspace handlers (stub implementations for desktop app compatibility)
 pub const workspacesListHandler = @import("workspaces_list.zig").workspacesListHandler;
 pub const workspacesCreateHandler = @import("workspaces_create.zig").workspacesCreateHandler;
+// The single workspace-create path: id generation, the `position = MAX + 1`
+// INSERT, the `workspace_members` grant and the attached default project.
+// Exposed so `nalar create-admin` (src/main.zig) and any future signup route
+// can provision an account's "Default" workspace through the same code the
+// POST /api/workspaces handler uses.
+pub const workspace_provisioning = @import("workspace_provisioning.zig");
 pub const workspacesReorderHandler = @import("workspaces_reorder.zig").workspacesReorderHandler;
 pub const workspaceGetHandler = @import("workspace_get.zig").workspaceGetHandler;
 pub const workspaceUpdateHandler = @import("workspace_update.zig").workspaceUpdateHandler;

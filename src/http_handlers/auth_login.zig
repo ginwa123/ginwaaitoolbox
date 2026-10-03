@@ -9,6 +9,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const auth_common = @import("auth_common.zig");
+const provisioning = @import("workspace_provisioning.zig");
 
 pub const LoginBody = struct {
     email: []const u8 = "",
@@ -115,6 +116,31 @@ pub fn authLoginHandler(
     };
     // Best-effort last_login stamp; login already succeeded.
     db.exec(allocator, "UPDATE users SET last_login_at = datetime('now') WHERE id = ?", &[_][]const u8{user_id}) catch {};
+
+    // An account with no workspaces lands on "No workspace selected" — an
+    // empty sidebar behind a single "+ New workspace" button. Provision one
+    // named "Default" now that the account is usable. Idempotent, so an
+    // established user's login changes nothing.
+    //
+    // Deliberately NON-FATAL, and it runs AFTER the session row is written:
+    // the credentials are proven good at this point, and failing the response
+    // over a workspace insert would lock a user out of an account they
+    // correctly authenticated to. The "+ New workspace" button, and the next
+    // login, both still work.
+    const provisioned = provisioning.ensureDefaultWorkspace(
+        allocator,
+        db,
+        io,
+        user_id,
+        di.environment,
+    ) catch |err| blk: {
+        std.log.warn("auth_login: default workspace provisioning failed for {s} (non-fatal, the sidebar will show none): {s}", .{ user_email, @errorName(err) });
+        break :blk null;
+    };
+    // `null` means the user already had workspaces — nothing to clean up.
+    if (provisioned) |workspace| {
+        defer workspace.deinit(allocator);
+    }
 
     const data = try std.json.Stringify.valueAlloc(allocator, LoginOk{
         .user = .{ .id = user_id, .email = user_email, .name = user_name, .role = user_role },

@@ -1310,6 +1310,30 @@ fn dispatchCreateAdmin(
         return error.InvalidArgs;
     };
     std.debug.print("create-admin: admin '{s}' created\n", .{email_v});
+
+    // Give the account its "Default" workspace at creation time rather than
+    // making the first login do it: a brand-new admin who runs this command
+    // should find the workspace already there. `auth_login.zig` runs the same
+    // idempotent ensure, which covers accounts created before this and any
+    // future signup path.
+    const provisioned = ai_mod.http_handlers.workspace_provisioning.ensureDefaultWorkspace(
+        allocator,
+        &dbSqlite,
+        io,
+        id,
+        environment,
+    ) catch |err| {
+        // The account exists and can log in; a missing workspace is
+        // recoverable from the sidebar, and the first login retries. Failing
+        // the command here would report a created admin that is unusable.
+        std.log.warn("create-admin: could not provision the default workspace (non-fatal, the first login retries): {s}", .{@errorName(err)});
+        return true;
+    };
+    // `null` here means the user already had workspaces — nothing to report.
+    if (provisioned) |workspace| {
+        defer workspace.deinit(allocator);
+        std.debug.print("create-admin: workspace '{s}' ({s}) provisioned\n", .{ workspace.name, workspace.id });
+    }
     return true;
 }
 
