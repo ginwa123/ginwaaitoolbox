@@ -307,6 +307,11 @@ pub const gitPrDiffHandler = @import("git_pr_diff.zig").gitPrDiffHandler;
 pub const gitPrStatusHandler = @import("git_pr_status.zig").gitPrStatusHandler;
 pub const gitPrConflictsHandler = @import("git_pr_conflicts.zig").gitPrConflictsHandler;
 
+/// GET /api/git/pr/checks — CI jobs for a PR plus the steps inside each
+/// failed one. Registered next to the status handler because the two
+/// share provider resolution (`git_pr_status.resolveProvider`).
+pub const gitPrChecksHandler = @import("git_pr_checks.zig").gitPrChecksHandler;
+
 // Queue messages handlers
 pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;
 // Session background-process handlers — list + log tail for

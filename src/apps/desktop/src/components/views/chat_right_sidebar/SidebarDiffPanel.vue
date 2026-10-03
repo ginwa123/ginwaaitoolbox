@@ -8,6 +8,7 @@ import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
 import { useContextMenu } from '../../../composables/useContextMenu'
 import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
 import GitCommits from '../../git/GitCommits.vue'
+import PrChecksPanel from './PrChecksPanel.vue'
 import SkillEvalsPanel from './SkillEvalsPanel.vue'
 import {
   parseUnifiedDiff,
@@ -72,12 +73,14 @@ const changeCount = computed(
 const router = useRouter()
 const route = useRoute()
 
-const readTabParam = (): 'files' | 'pr' | 'commits' | 'evals' | null => {
+const readTabParam = (): 'files' | 'pr' | 'commits' | 'checks' | 'evals' | null => {
   const v = route.query.panel
-  return v === 'files' || v === 'pr' || v === 'commits' || v === 'evals' ? v : null
+  return v === 'files' || v === 'pr' || v === 'commits' || v === 'checks' || v === 'evals'
+    ? v
+    : null
 }
 
-const syncTabParam = (tab: 'files' | 'pr' | 'commits' | 'evals' | null) => {
+const syncTabParam = (tab: 'files' | 'pr' | 'commits' | 'checks' | 'evals' | null) => {
   const query = { ...route.query }
   if (tab) query.panel = tab
   else delete query.panel
@@ -99,30 +102,42 @@ const syncConflictsParam = (on: boolean) => {
 }
 
 const isPrMode = computed(() => (props.prUrl ?? '').trim().length > 0)
-// Every view switch lands in the URL (?panel=files|pr|commits|evals) so
-// refresh, Back/Forward, and shared links restore the same panel. The commits
-// tab is valid with or without an attached PR; ?panel=pr without a prUrl
-// still falls back to files (pre-commits behavior). The evals tab is
-// independent of PR mode — it shows the agent's self-eval verdicts.
+// Every view switch lands in the URL (?panel=files|pr|commits|checks|evals)
+// so refresh, Back/Forward, and shared links restore the same panel. The
+// commits tab is valid with or without an attached PR; ?panel=pr without a
+// prUrl still falls back to files (pre-commits behavior). Checks is reachable
+// without a PR too — it says so rather than 404-ing a panel that is simply
+// open. The evals tab is independent of PR mode — it shows the agent's
+// self-eval verdicts.
 // The route read is guarded: hosts like ChatRightSidebar mount this panel
 // without a router (see ChatRightSidebar.spec.ts), where useRoute has no
 // current route — mount must never crash there.
-const initialTab = (): 'files' | 'pr' | 'commits' | 'evals' => {
-  let param: 'files' | 'pr' | 'commits' | 'evals' | null = null
+const initialTab = (): 'files' | 'pr' | 'commits' | 'checks' | 'evals' => {
+  let param: 'files' | 'pr' | 'commits' | 'checks' | 'evals' | null = null
   try {
     param = readTabParam()
-  } catch {
+  } catch (e) {
+    // Hosts like ChatRightSidebar mount this panel with no router at all
+    // (ChatRightSidebar.spec.ts), where useRoute has no current route —
+    // so there is no query to read and `null` ("no ?panel=") is the correct
+    // answer, not a hidden failure. Logged anyway so a host that DID
+    // install a router and then threw is still visible.
+    console.warn('[sidebar-diff-panel] could not read ?panel=', e)
     param = null
   }
-  // Evals is reachable regardless of PR mode: it is about the agent's
-  // self-assessment, not about the diff.
+  // Evals and checks are reachable regardless of PR mode.
   if (param === 'evals') return 'evals'
+  if (param === 'checks') return 'checks'
   if (isPrMode.value) return param ?? 'pr'
   return param === 'commits' ? 'commits' : 'files'
 }
-const activeTab = ref<'files' | 'pr' | 'commits' | 'evals'>(initialTab())
+const activeTab = ref<'files' | 'pr' | 'commits' | 'checks' | 'evals'>(initialTab())
 const showCommits = computed(() => activeTab.value === 'commits')
+const showChecks = computed(() => activeTab.value === 'checks')
 const showEvals = computed(() => activeTab.value === 'evals')
+// PrChecksPanel loads itself, so the sidebar's ↻ asks it directly rather
+// than going through loadTab (which has nothing to fetch for this tab).
+const checksRef = ref<InstanceType<typeof PrChecksPanel> | null>(null)
 const showTabs = computed(() => isPrMode.value)
 const showPr = computed(() => isPrMode.value && activeTab.value === 'pr')
 const loadedTabs = ref(new Set<string>())
@@ -200,7 +215,11 @@ const conflictsOnly = ref(
   (() => {
     try {
       return readConflictsParam()
-    } catch {
+    } catch (e) {
+      // Same router-less mount as readTabParam above: no router means no
+      // query, so "no ?conflicts=1" is the correct answer. Logged so a
+      // genuinely broken host is not indistinguishable from a router-less one.
+      console.warn('[sidebar-diff-panel] could not read ?conflicts=', e)
       return false
     }
   })(),
@@ -659,13 +678,11 @@ const loadFullList = async (cwd: string = props.cwd) => {
 
 // Per-tab lazy load: each side fetches once until cwd/prUrl changes.
 // The commits tab needs no panel-level fetch — GitCommits.vue loads
-// (and paginates) itself when it mounts.
-const loadTab = async (tab: 'files' | 'pr' | 'commits' | 'evals', force = false) => {
+// (and paginates) itself when it mounts, and so does PrChecksPanel.vue.
+const loadTab = async (tab: 'files' | 'pr' | 'commits' | 'checks' | 'evals', force = false) => {
   if (!force && loadedTabs.value.has(tab)) return
   if (tab === 'pr') await Promise.all([loadPrDiff(), loadPrStatus()])
   else if (tab === 'files') await loadGitStatus()
-  // 'commits' and 'evals' need no panel-level fetch: GitCommits.vue and
-  // SkillEvalsPanel.vue each load themselves when they mount.
   loadedTabs.value.add(tab)
 }
 
@@ -675,10 +692,11 @@ const loadTab = async (tab: 'files' | 'pr' | 'commits' | 'evals', force = false)
 const refreshCurrentTab = async () => {
   if (showPr.value) await loadTab('pr', true)
   else if (showCommits.value) await loadTab('commits', true)
+  else if (showChecks.value) checksRef.value?.reload()
   else await loadTab('files', true)
 }
 
-const setActiveTab = (tab: 'files' | 'pr' | 'commits' | 'evals') => {
+const setActiveTab = (tab: 'files' | 'pr' | 'commits' | 'checks' | 'evals') => {
   activeTab.value = tab
   syncTabParam(tab)
   void loadTab(tab)
@@ -837,7 +855,7 @@ defineExpose({
 <template>
   <div class="flex flex-col h-full min-h-0" data-testid="sidebar-diff-panel">
     <div
-      v-if="showTabs || showEvals || !isPrMode"
+      v-if="showTabs || showEvals || showChecks || !isPrMode"
       class="flex items-center gap-1 px-3 h-9 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
       role="tablist"
@@ -900,6 +918,25 @@ defineExpose({
         @click="setActiveTab('commits')"
       >
         Commits
+      </button>
+      <button
+        type="button"
+        class="text-dense px-2 py-1 rounded hover:opacity-80"
+        data-testid="sidebar-tab-checks"
+        role="tab"
+        :aria-selected="activeTab === 'checks'"
+        :style="
+          activeTab === 'checks'
+            ? {
+                color: 'var(--semantic-text)',
+                fontWeight: 600,
+                boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+              }
+            : { color: 'var(--semantic-text)', opacity: '0.6' }
+        "
+        @click="setActiveTab('checks')"
+      >
+        Checks
       </button>
       <button
         type="button"
@@ -1032,7 +1069,10 @@ defineExpose({
       </button>
     </div>
 
-    <div v-if="showEvals" class="flex-1 min-h-0">
+    <div v-if="showChecks" class="flex-1 min-h-0">
+      <PrChecksPanel ref="checksRef" :cwd="cwd" :pr-url="prUrl" :pr-provider="prProvider" />
+    </div>
+    <div v-else-if="showEvals" class="flex-1 min-h-0">
       <SkillEvalsPanel :session-id="sessionId" />
     </div>
     <div v-else-if="showCommits && !showPr" class="flex-1 min-h-0">

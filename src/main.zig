@@ -697,6 +697,10 @@ pub fn main(init: std.process.Init) !void {
     try authed.get("/api/git/commit/file", ai_mod.http_handlers.gitCommitFileDiffHandler);
     try authed.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
     try authed.get("/api/git/pr/status", ai_mod.http_handlers.gitPrStatusHandler);
+    // Literal path. `/api/git/pr/*` has NO `:param` siblings (asserted by
+    // a test in git_pr_checks.zig), so there is no matchRoute shadowing
+    // risk here — but that is only true as long as nobody adds one below.
+    try authed.get("/api/git/pr/checks", ai_mod.http_handlers.gitPrChecksHandler);
     try authed.get("/api/git/pr/diff", ai_mod.http_handlers.gitPrDiffHandler);
     try authed.get("/api/git/pr/conflicts", ai_mod.http_handlers.gitPrConflictsHandler);
     try authed.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
