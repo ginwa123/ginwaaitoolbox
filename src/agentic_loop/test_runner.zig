@@ -134,7 +134,8 @@ test {
     // Workspace-scoped chat history — read/search/list other sessions
     // in the caller's workspace (replaces the global history search).
     _ = @import("tools_exec_read_workspace_session.zig");
-_ = @import("tools_exec_document.zig"); // add_document + edit_document exec wrappers (Migration 098)
+    _ = @import("tools_exec_document.zig"); // add_document + edit_document + delete_document + search_documents exec wrappers (Migration 098)
+    _ = @import("documents_search.zig"); // matching / paging / rendering for the search_documents tool
     // Workspace-scoped chat history — session-to-workspace resolution
     // (task link + cwd heuristic) with in-memory SQLite tests.
     _ = @import("workspace_scope.zig");

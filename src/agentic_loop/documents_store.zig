@@ -83,6 +83,11 @@ pub const ListDocumentsError = error{
     OutOfMemory,
 };
 
+/// Same error set as `ListDocumentsError`; `searchDocuments` reuses it so a
+/// caller that handles "the list failed" already handles "the search
+/// failed" and cannot accidentally drop one arm.
+pub const SearchDocumentsError = ListDocumentsError;
+
 pub const GetDocumentError = error{
     IdsRequired,
     NotFound,
@@ -136,7 +141,8 @@ pub fn listDocuments(
 ) ListDocumentsError![]DocumentRow {
     if (workspace_id.len == 0) return error.WorkspaceIdRequired;
 
-    var q = db.query(allocator,
+    var q = db.query(
+        allocator,
         SELECT_COLUMNS ++ " WHERE workspace_id = ? ORDER BY updated_at DESC, id DESC",
         &[_][]const u8{workspace_id},
     ) catch return error.QueryFailed;
@@ -145,6 +151,88 @@ pub fn listDocuments(
     var list: std.ArrayList(DocumentRow) = .empty;
     // On a mid-iteration OOM the already-built rows would leak; unwind
     // them here rather than at each `try`.
+    errdefer freeDocumentRows(allocator, list.items);
+
+    while (q.next() catch return error.QueryFailed) |r| {
+        defer r.deinit(allocator);
+        try list.append(allocator, try rowFromValues(allocator, r.values));
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+/// The LIKE escape character used by `searchDocuments`. Named so the SQL and
+/// the escaper below can never disagree — a mismatch here is a wrong answer,
+/// not a compile error.
+const LIKE_ESCAPE = '\\';
+
+/// Escape `needle` into a SQLite `LIKE ... ESCAPE '\'` pattern that matches
+/// any string CONTAINING it verbatim.
+///
+/// SQLite's LIKE treats `%` and `_` as wildcards and has no other escape, so
+/// a bare needle containing them would widen the match instead of narrowing
+/// it. Both are escaped here — and so is the escape character itself, which
+/// is the arm that is easy to forget and turns `C:\src` into a pattern whose
+/// `\` swallows the next character.
+fn likeContainsPattern(allocator: std.mem.Allocator, needle: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '%');
+    for (needle) |c| {
+        if (c == '%' or c == '_' or c == LIKE_ESCAPE) try out.append(allocator, LIKE_ESCAPE);
+        try out.append(allocator, c);
+    }
+    try out.append(allocator, '%');
+    return out.toOwnedSlice(allocator);
+}
+
+/// Documents in one workspace whose TITLE or CONTENT contains `needle`,
+/// case-insensitively — newest-updated first.
+///
+/// `needle` is a LITERAL substring, never a pattern. This is the cheap
+/// prefilter the `search_documents` tool runs BEFORE the regex engine, and
+/// the caller is responsible for passing `null` unless the model asked for
+/// literal text: a LIKE test is a SUPERSET of a regex's matches only when
+/// the regex contains no metacharacters, so prefiltering `foo.bar` with
+/// `LIKE '%foo.bar%'` would silently drop every document whose title matched
+/// the regex but not the literal. `documents_search.literalPrefilter` is the
+/// one place that decides this, and it errs toward `null`.
+///
+/// `null` or `""` means "no narrowing" — return the whole workspace, the
+/// same rows `listDocuments` would.
+pub fn searchDocuments(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_id: []const u8,
+    needle: ?[]const u8,
+) SearchDocumentsError![]DocumentRow {
+    if (workspace_id.len == 0) return error.WorkspaceIdRequired;
+
+    const pattern: ?[]u8 = blk: {
+        const raw = needle orelse break :blk null;
+        if (raw.len == 0) break :blk null;
+        break :blk try likeContainsPattern(allocator, raw);
+    };
+    defer if (pattern) |p| allocator.free(p);
+
+    const sql = if (pattern != null)
+        SELECT_COLUMNS ++
+            " WHERE workspace_id = ?" ++
+            " AND (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')" ++
+            " ORDER BY updated_at DESC, id DESC"
+    else
+        SELECT_COLUMNS ++ " WHERE workspace_id = ? ORDER BY updated_at DESC, id DESC";
+
+    var q = db.query(
+        allocator,
+        sql,
+        if (pattern) |p|
+            &[_][]const u8{ workspace_id, p, p }
+        else
+            &[_][]const u8{workspace_id},
+    ) catch return error.QueryFailed;
+    defer q.deinit();
+
+    var list: std.ArrayList(DocumentRow) = .empty;
     errdefer freeDocumentRows(allocator, list.items);
 
     while (q.next() catch return error.QueryFailed) |r| {
@@ -168,7 +256,8 @@ pub fn getDocument(
 ) GetDocumentError!DocumentRow {
     if (workspace_id.len == 0 or document_id.len == 0) return error.IdsRequired;
 
-    var q = db.query(allocator,
+    var q = db.query(
+        allocator,
         SELECT_COLUMNS ++ " WHERE id = ? AND workspace_id = ?",
         &[_][]const u8{ document_id, workspace_id },
     ) catch return error.QueryFailed;
@@ -274,7 +363,8 @@ pub fn deleteDocument(
     // the same "not found" the guard would have reported, so a second
     // round-trip is only needed to distinguish the two cases. `total_rows`
     // on the exec result is the count, so do it explicitly.
-    var q = db.query(allocator,
+    var q = db.query(
+        allocator,
         "SELECT id FROM documents WHERE id = ? AND workspace_id = ?",
         &[_][]const u8{ document_id, workspace_id },
     ) catch return error.DeleteFailed;
@@ -282,7 +372,8 @@ pub fn deleteDocument(
     const r = (q.next() catch return error.DeleteFailed) orelse return error.NotFound;
     defer r.deinit(allocator);
 
-    db.exec(allocator,
+    db.exec(
+        allocator,
         "DELETE FROM documents WHERE id = ? AND workspace_id = ?",
         &[_][]const u8{ document_id, workspace_id },
     ) catch return error.DeleteFailed;

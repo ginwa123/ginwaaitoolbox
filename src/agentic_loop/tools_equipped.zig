@@ -109,6 +109,12 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         // isolation boundary it writes into.
         document_mod.add_document_tool,
         document_mod.edit_document_tool,
+        document_mod.search_documents_tool,
+        // NOT default-on. Destructive and irreversible, so it stays out of
+        // DEFAULT_AGENT_TOOLS and out of the frontend presets — an agent
+        // reaches it through the Settings → Tools checklist or
+        // `search_tool` → `use_tool`, both of which ignore the allowlist.
+        document_mod.delete_document_tool,
         use_skill_mod.use_skill_tool,
         remove_skill_mod.remove_skill_tool,
         add_skill_mod.add_skill_tool,
@@ -250,6 +256,12 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // list, so no second list has to be maintained.
         .{ .name = "add_document", .exec = tools.execAddDocument, .tool_def = document_mod.add_document_tool },
         .{ .name = "edit_document", .exec = tools.execEditDocument, .tool_def = document_mod.edit_document_tool },
+        .{ .name = "search_documents", .exec = tools.execSearchDocuments, .tool_def = document_mod.search_documents_tool },
+        // Irreversible. Registered here (so it is dispatchable and appears
+        // in the Settings → Tools checklist) but deliberately absent from
+        // DEFAULT_AGENT_TOOLS below — being reachable is not the same as
+        // being handed to every new agent.
+        .{ .name = "delete_document", .exec = tools.execDeleteDocument, .tool_def = document_mod.delete_document_tool },
 
         // === FILE OPERATIONS ===
         .{ .name = "command", .exec = tools.execCommand, .tool_def = command_tool_mod.command_tool },
@@ -370,6 +382,17 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     // enabling them costs a plain chat nothing.
     document_mod.add_document_tool.function.name,
     document_mod.edit_document_tool.function.name,
+    // Default-on: read-only, and an agent that cannot find the document it
+    // wrote three turns ago has no way to revise it — `edit_document`
+    // replaces the whole body, so finding the row is a prerequisite for
+    // every edit.
+    document_mod.search_documents_tool.function.name,
+    // `delete_document` is deliberately NOT here. It is in
+    // UNIFIED_TOOL_REGISTRY (dispatchable + in the Settings checklist) and
+    // reachable via `search_tool` → `use_tool`, which bypasses the
+    // allowlist. Handing every newly-created agent an irreversible delete
+    // of the user's documents is a different decision from making it
+    // reachable, and it is not one this list should make silently.
 
     // skill tools
     use_skill_mod.use_skill_tool.function.name,
