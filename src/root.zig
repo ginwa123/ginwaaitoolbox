@@ -995,6 +995,11 @@ pub const agent_memories = @import("agentic_loop/agent_memories.zig");
 /// hand-written `SELECT ... FROM documents` is how a scope check drifts
 /// out of sync with its siblings.
 pub const documents_store = @import("agentic_loop/documents_store.zig");
+/// Workspace-scoped secret storage (Migration 101). Every function takes
+/// `workspace_id` as a parameter that appears in the `WHERE` clause, and
+/// `listSecretNames` / `listSecrets` never select the value column — only
+/// `loadSecretValues` does, for dispatch-time substitution.
+pub const secrets_store = @import("agentic_loop/secrets_store.zig");
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // Storage layer for the per-session markdown task plan (savePlan / getPlan / getPlanOpt).
 pub const session_plan = @import("agentic_loop/session_plan.zig");
@@ -1056,6 +1061,10 @@ test {
     // mcp_http above — the `pub const` re-export alone doesn't pull tests.
     _ = @import("agentic_loop/lua_bindings.zig");
     _ = @import("agentic_loop/hooks.zig");
+    // Workspace-scoped secret storage (Migration 101): impl + inline tests
+    // in one file. Same discovery workaround as the Lua hooks above — the
+    // `pub const secrets_store` re-export alone doesn't pull tests in.
+    _ = @import("agentic_loop/secrets_store.zig");
     // Workspace-secret placeholder substitution: a pure module whose inline
     // tests are otherwise invisible to `zig build test` — the same discovery
     // workaround as the Lua hooks above.
