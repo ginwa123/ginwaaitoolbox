@@ -198,6 +198,7 @@ table, the React→Vue mapping, and the "what is NOT banned" list live in
 | Rule | Bans | Fix |
 |---|---|---|
 | `local/no-watch-effect` | `watchEffect()` — implicit deps | `watch(src, cb)`, or `computed()` |
+| `local/no-watch-feedback-loop` | a `watch` that writes back into the value it watches (self-retrigger) | `computed()`, or move the write into the handler |
 | `local/no-derived-state-watch` | a `watch` whose body only assigns computable state | `computed()`, or `toRef()` |
 | `local/no-silent-fallback-catch` | a `catch` that returns `[]`/`null`/`''` with no log, no error ref, no comment | put the failure in the type (`sync/runtime.ts`) |
 | `@typescript-eslint/ban-ts-comment` | `@ts-ignore`, `@ts-nocheck` | fix the type; `@ts-expect-error -- reason` is allowed |
@@ -210,7 +211,7 @@ call at all** before it fires. Do not "fix" a lint error by rewriting a real
 side-effect watcher as `computed`; that deletes the behaviour.
 
 The two ratcheted rules are pinned by `src/apps/desktop/eslint-suppressions.json`
-(113 sites). Fixing a site is good; adding one turns CI red. Regenerate with
+(114 sites). Fixing a site is good; adding one turns CI red. Regenerate with
 `pnpm run lint:banned-baseline` **only after** fixing debt — never to silence
 a new violation. Note that `--suppress-rule` records only `error`-severity
 violations, so those rules must stay at `error`; softening one to `warn`

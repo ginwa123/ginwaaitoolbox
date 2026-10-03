@@ -166,18 +166,37 @@ function calleeName(callee: Node | null): string | null {
 }
 
 /** Every statement in `list` is a `.value =` write, allowing if/else guards. */
+/** Statement list of a branch: a block yields its body, a bare stmt yields itself. */
+function branchStatements(branch: unknown): unknown[] | null {
+  const node = asNode(branch)
+  if (!node) return null
+  if (node.type === 'BlockStatement') return prop(node, 'body') as unknown[]
+  return [branch]
+}
+
+/**
+ * Every statement in `list` is a `.value` write.
+ *
+ * `if` guards are transparent: a body that only assigns INSIDE a guard is
+ * still derived state (`if (newVal) { inputText.value = newVal }` —
+ * FileInput.vue:230). A guard with no `else` must therefore pass, not fail:
+ * treating the absent `alternate` as a violation silently dropped 11 of the
+ * 26 real sites, which is the kind of regression that makes a rule look
+ * enforced while quietly enforcing nothing.
+ */
 function everyStatementIsRefWrite(list: unknown): boolean {
   if (!Array.isArray(list)) return false
   return list.every((stmt) => {
     const node = asNode(stmt)
     if (!node) return false
-    if (node.type === 'ExpressionStatement')
+    if (node.type === 'ExpressionStatement') {
       return isRefWrite(asNode(prop(node, 'expression')) ?? { type: '' })
+    }
     if (node.type === 'IfStatement') {
-      return (
-        everyStatementIsRefWrite(prop(node, 'consequent')) &&
-        everyStatementIsRefWrite(prop(node, 'alternate'))
-      )
+      const consequent = branchStatements(prop(node, 'consequent'))
+      const alternate = branchStatements(prop(node, 'alternate'))
+      if (consequent === null || !everyStatementIsRefWrite(consequent)) return false
+      return alternate === null || everyStatementIsRefWrite(alternate)
     }
     if (node.type === 'BlockStatement') return everyStatementIsRefWrite(prop(node, 'body'))
     if (node.type === 'ReturnStatement') {

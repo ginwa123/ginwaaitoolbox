@@ -54,7 +54,14 @@ export default defineConfigWithVueTs(
       // implicitly, so a later refactor can silently change when it re-runs —
       // it is the Vue spelling of the useEffect anti-pattern.
       'local/no-watch-effect': 'error',
-      // 25 baselined sites.
+      // A watcher that writes back into the value it watches. Vue re-runs a
+      // watcher when a dependency it READS changes, so a self-write schedules
+      // another run — the loop only ends when the write is accidentally
+      // idempotent. Distinct from `no-derived-state-watch`, which allows a
+      // callback containing calls; the feedback loop hides in exactly those
+      // "legitimate side effect" bodies.
+      'local/no-watch-feedback-loop': 'error',
+      // 26 baselined sites.
       'local/no-derived-state-watch': 'error',
       // 87 baselined sites.
       'local/no-silent-fallback-catch': 'error',

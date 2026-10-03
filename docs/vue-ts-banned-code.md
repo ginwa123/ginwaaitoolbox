@@ -19,6 +19,7 @@ enforces it, that is a bug in this document — file it.
 | React doctrine | Vue spelling | Banned? | Enforced by |
 |---|---|---|---|
 | `useEffect(() => setState(derived), [dep])` | `watch(src, (v) => { x.value = v })` | **yes** — use `computed()` | `local/no-derived-state-watch` |
+| `useEffect(() => setCount(count+1), [count])` — infinite rerender | `watch(a, (v) => { a.value = … })` — retriggers itself | **yes** — stop mirroring | `local/no-watch-feedback-loop` |
 | `useEffect` with no dep array (runs every render) | `watchEffect(cb)` — implicit deps | **yes, outright** | `local/no-watch-effect` |
 | Reset state when a prop changes | `watch(() => props.x, () => { draft.value = '' })` | **yes** — use `:key` | `local/no-derived-state-watch` |
 | `catch` that swallows a fetch failure | `catch { return [] }` | **yes** — carry the failure in the type | `local/no-silent-fallback-catch` |
@@ -60,7 +61,49 @@ belongs in the handler that caused it.
 
 ---
 
-## 2. The two error-hiding bans
+## 2. The feedback loop — `watch` writing into what it watches
+
+```ts
+// ❌ BANNED. Vue re-runs a watcher when a dependency it READS changes, so
+//    writing `items` schedules another run. It stops only because the second
+//    write happens to be identical — termination by accident, not design.
+watch(items, (v) => { items.value = [...v, next] })
+
+// ❌ BANNED. Mutating the watched prop feeds the same watcher.
+watch(() => props.row, () => { props.row.busy = true })
+
+// ❌ BANNED. `deep: true` re-runs on ANY nested mutation.
+watch(list, (v) => { v.forEach(i => { i.done = true }) }, { deep: true })
+```
+
+Enforced by `local/no-watch-feedback-loop`. **1 site in this repo**:
+`ChatsList.vue:978`, a `deep: true` watcher that mutates `item.processing` on
+the very array it watches.
+
+```ts
+// ✅ Derive instead of mirroring.
+const withDone = computed(() => list.value.map(i => ({ ...i, done: true })))
+```
+
+This is a **separate rule from `no-derived-state-watch` on purpose.** That
+rule only fires when the callback contains no call at all, which is exactly
+why it allows a mixed body like `watch(a, v => { a.value = f(v); save() })` —
+and that mixed body is where a self-write hides. The `save()` call makes the
+watcher look like a legitimate side effect while the assignment keeps feeding
+itself.
+
+Three things are deliberately *not* flagged, each of which was a false
+positive in the first draft:
+
+| Shape | Why it is allowed |
+|---|---|
+| `watch(() => props.x, v => local.value = v)` | `props` is the dependency, not `x` |
+| `watch(() => vm.name, n => { document.title = n })` | a global is outside the reactivity graph |
+| `watch(list, v => { v.forEach(i => i.x = 1) })` *(no `deep`)* | a nested mutation without `deep` fires no trigger |
+
+---
+
+## 3. The two error-hiding bans
 
 These implement the AGENTS.md rule *"No `try`/`catch` in the desktop app; use
 Effect-TS"*, which was written but not enforced. 441 production `catch`
@@ -116,14 +159,14 @@ ships at `error` with no baseline.
 
 ---
 
-## 3. The ratchet: how pre-existing debt is handled
+## 4. The ratchet: how pre-existing debt is handled
 
 Banning `catch` outright would have failed CI on 441 files, and a ban that
 lands red gets reverted. So the two ratcheted rules run against a **baseline**
 of the violations that already exist:
 
 ```jsonc
-// src/apps/desktop/eslint-suppressions.json  (113 sites, committed)
+// src/apps/desktop/eslint-suppressions.json  (114 sites, committed)
 {
   "src/components/AppLayout.vue": {
     "local/no-derived-state-watch": { "count": 2 },
@@ -159,11 +202,12 @@ the "allows" half is the one that matters.
 
 ---
 
-## 4. Current baseline
+## 5. Current baseline
 
 | Rule | Before | Now | How |
 |---|---|---|---|
 | `local/no-watch-effect` | 0 | **0** | `error`, no baseline needed |
+| `local/no-watch-feedback-loop` | 0 | 1 | baselined, ratcheting |
 | `local/no-derived-state-watch` | 25 | 26 | baselined, ratcheting |
 | `local/no-silent-fallback-catch` | 87 | 87 | baselined, ratcheting |
 | `ban-ts-comment` (`@ts-ignore`) | 0 | **0** | `error`, no baseline needed |
@@ -188,7 +232,7 @@ to assert the compiler rejects it.
 
 ---
 
-## 5. Fixing a baselined violation
+## 6. Fixing a baselined violation
 
 The derived-state fixes are usually one-liners:
 

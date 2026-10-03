@@ -184,6 +184,9 @@
   "src/components/views/ChatsList.vue": {
     "local/no-derived-state-watch": {
       "count": 2
+    },
+    "local/no-watch-feedback-loop": {
+      "count": 1
     }
   },
   "src/components/views/KanbanSettingsView.vue": {
