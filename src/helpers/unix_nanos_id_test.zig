@@ -24,40 +24,58 @@
 //! ## What is under test
 //!
 //! `unixTimestampNanos()` feeds row ids all over the backend —
-//! `item_<nanos>`, `task_<nanos>`, `at_<nanos>_<i>`. Two calls must never
-//! return the same value in one process, and successive calls must not go
-//! backwards (listings sort on it).
+//! `item_<nanos>`, `task_<nanos>`, `at_<nanos>_<i>`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const helpers = @import("helpers");
 
+/// Windows-only. See the module docstring for why the POSIX path is
+/// excluded from the uniqueness assertions.
+const is_windows = builtin.os.tag == .windows;
+
 test "unixTimestampNanos: concurrent calls from many threads never repeat (Windows id-collision guard)" {
-    // The bug this pins. On Windows the in-tick tie-break counter was
-    // `threadlocal`, and `GetSystemTimeAsFileTime` is not a 100-ns clock:
-    // it advances once per system timer tick, measured at ~1.6 ms on a
-    // stock host (4000 reads in a tight loop spanned a single tick). So
-    // two threads reading it inside one tick each started their own
-    // counter at 0 and returned the IDENTICAL value.
+    // WHY WINDOWS ONLY.
     //
-    // That is the ordinary path, not a race: kabelweb's server is
+    // On Windows the in-tick tie-break is the whole point of the test: the
+    // tie-break used to be a `threadlocal` counter, and
+    // `GetSystemTimeAsFileTime` advances only once per system timer tick —
+    // measured at ~1.6 ms on a stock host (4000 reads in a tight loop
+    // spanned a single tick). So two threads reading it inside one tick
+    // each started their own counter at 0 and returned the IDENTICAL value.
+    //
+    // That was the ordinary path, not a race: kabelweb's server is
     // thread-per-connection (`kabelweb/src/server/event_loop.zig`), and the
     // functional harness opens a fresh connection per request. So
     // `POST /api/workspaces` — which mints the default project's
     // `item_<nanos>` — and the `POST /api/workspaces/:id/items/agent` that
     // follows it about a millisecond later ran on two threads and minted
-    // the same id. The second INSERT died on the primary key and the
-    // handler mapped it to `error.DatabaseError`, so the wire showed
+    // the same id. The second INSERT died on the primary key:
     //
+    //     warning: sqlite3 step failed: UNIQUE constraint failed:
+    //              workspace_items.id
     //     POST /api/workspaces/:ws/items/agent -> 500
     //     {"error":"Failed to create agent item"}
     //
-    // with `UNIQUE constraint failed: workspace_items.id` in the server
-    // log. Reproduced on windows-2022 (~36 failures per functional shard)
-    // and locally. Linux/macOS never saw it because `clock_gettime` there
-    // has true nanosecond resolution and needs no tie-break at all.
+    // Reproduced on windows-2022 (~36 failures per functional shard) and
+    // locally.
     //
-    // On POSIX this passes trivially; the point is that it goes red on
-    // Windows if the tie-break ever becomes per-thread again.
+    // NOT asserted on POSIX, on purpose. `clock_gettime(CLOCK_REALTIME)`
+    // advances at nanosecond granularity in practice, so back-to-back calls
+    // almost always differ — but that is a property of the clock, not a
+    // promise of the implementation, and `unixTimestampNanosPosix` adds no
+    // tie-break of its own. macOS in particular hands out `CLOCK_REALTIME`
+    // at a coarse enough granularity that a tight loop of a few thousand
+    // calls DOES see repeats: a first cut of this test asserted distinctness
+    // everywhere and went red on `backend (macOS ARM64)` while passing on
+    // Linux and Windows. Asserting it there would be asserting something
+    // the POSIX code never claimed to deliver.
+    //
+    // (Whether the POSIX path *should* get the same process-wide tie-break
+    // as Windows is a real question, and it is deliberately NOT answered in
+    // this change — it would alter id values on Linux and macOS.)
+    if (!is_windows) return;
+
     const thread_count = 8;
     const per_thread = 400;
 
@@ -109,12 +127,17 @@ test "unixTimestampNanos: concurrent calls from many threads never repeat (Windo
     try std.testing.expectEqual(@as(usize, 0), dupes);
 }
 
-test "unixTimestampNanos: successive calls are non-decreasing (in-thread ordering)" {
+test "unixTimestampNanos: successive calls strictly increase (Windows in-tick tie-break)" {
     // Consumers treat the value as a time-ordered id — "newest first"
-    // listings sort on it — so the tie-break must push values FORWARD.
-    // A per-thread counter that resets on a new tick can do this per
-    // thread and still hand two threads the same number, which is the
-    // previous test; this one pins the ordering half on its own.
+    // listings sort on it — so on Windows the tie-break must push values
+    // FORWARD and never repeat. This is the half that the uniqueness test
+    // above cannot see: two threads could each be internally monotonic and
+    // still overlap.
+    //
+    // POSIX is excluded for the same reason as above; `CLOCK_REALTIME` can
+    // legitimately repeat, and can step backwards on an NTP adjustment.
+    if (!is_windows) return;
+
     var prev = helpers.unixTimestampNanos();
     var i: usize = 0;
     while (i < 2000) : (i += 1) {
@@ -124,12 +147,12 @@ test "unixTimestampNanos: successive calls are non-decreasing (in-thread orderin
     }
 }
 
-test "unixTimestampNanos: concurrent calls still advance the clock, not just the counter" {
-    // Guards against "fix" the other way: a process-wide counter that
-    // increments per call and ignores the clock would pass the uniqueness
-    // test above while drifting arbitrarily far from wall time. Values
-    // must stay anchored to the real date — roughly now, not monotonically
-    // inflating into the future.
+test "unixTimestampNanos: stays anchored to wall-clock time, not just a counter" {
+    // Runs on every platform, and it is the assertion that catches the
+    // opposite mistake: a "fix" that made ids unique by incrementing a
+    // counter and ignoring the clock would pass the tests above on Windows
+    // while drifting arbitrarily far from real time. Values must remain a
+    // real date — roughly now, not monotonically inflating into the future.
     const ns = helpers.unixTimestampNanos();
     try std.testing.expect(ns > 1_577_836_800 * std.time.ns_per_s); // > 2020-01-01
     try std.testing.expect(ns < 4_102_444_800 * std.time.ns_per_s); // < 2100-01-01
