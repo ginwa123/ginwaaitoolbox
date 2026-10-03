@@ -36,6 +36,12 @@ pub const SkillEvalToolRule = core.SkillEvalToolRule;
 // on them would only fragment the cached prefix.
 pub const SkillWriteToolRule = core.SkillWriteToolRule;
 pub const ReadWorkspaceSessionToolRule = core.ReadWorkspaceSessionToolRule;
+// Workspace credentials: the `{{SECRETS:NAME}}` placeholder and the
+// never-echo-the-value rule. Unlike the four unconditional rules above this
+// one is GATED on `list_secrets` being in the resolved tool list, because
+// the tool is injected rather than seeded (see `filterAndMergeTools`), so
+// its presence is not constant across agents the way theirs is.
+pub const SecretsToolRule = core.SecretsToolRule;
 pub const MemoryToolRule = core.MemoryToolRule;
 pub const CrossProjectCwdRule = core.CrossProjectCwdRule;
 

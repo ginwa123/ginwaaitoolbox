@@ -477,7 +477,13 @@ test "execSearchTool: limit/offset page the matches and report the true total" {
         threaded.io(),
         "{\"query\":\"^(list|load|save|search)_\",\"limit\":3,\"offset\":3}",
     );
-    const expect_page2_count = try std.fmt.allocPrint(a, "\"count\":{d}", .{total - 3});
+    const page2_remaining = total - 3;
+    // The page is capped by `limit`, so page 2 holds `min(3, total - 3)`
+    // rows — not always everything that is left. Writing `total - 3` here
+    // passed only while the catalog had six `list_*`/`load_*`/`save_*`/
+    // `search_*` tools, and adding a seventh silently broke the arithmetic
+    // rather than the tool.
+    const expect_page2_count = try std.fmt.allocPrint(a, "\"count\":{d}", .{@min(page2_remaining, @as(usize, 3))});
     try testing.expect(std.mem.indexOf(u8, page2, expect_page2_count) != null);
     try testing.expect(std.mem.indexOf(u8, page2, "\"offset\":3,\"limit\":3") != null);
     try testing.expectEqual(total, try totalOf(a, page2));

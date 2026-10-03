@@ -762,6 +762,8 @@ pub const save_memory = memory;
 pub const load_memory = memory;
 pub const add_mcp_server = @import("modules/agent/tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool
 pub const read_workspace_session_tool = @import("modules/agent/tools/read_workspace_session.zig");
+// Workspace credential discovery: names only, never a value.
+pub const list_secrets = @import("modules/agent/tools/list_secrets.zig");
 /// `add_document` / `edit_document` agent tools (Migration 098). The
 /// module resolves its own workspace from the calling session, so the
 /// tool schema deliberately carries no `workspace_id` parameter.

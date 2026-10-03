@@ -19,6 +19,9 @@ pub const execListMemory = @import("tools_exec_list_memory.zig").execListMemory;
 pub const execSaveMemory = @import("tools_exec_memory.zig").execSaveMemory;
 pub const execLoadMemory = @import("tools_exec_memory.zig").execLoadMemory;
 pub const execReadWorkspaceSession = @import("tools_exec_read_workspace_session.zig").execReadWorkspaceSession;
+// Workspace credential DISCOVERY. The value never leaves the store — this
+// adapter lists names only (see tools_exec_list_secrets.zig).
+pub const execListSecrets = @import("tools_exec_list_secrets.zig").execListSecrets;
 pub const execAddDocument = @import("tools_exec_document.zig").execAddDocument;
 pub const execEditDocument = @import("tools_exec_document.zig").execEditDocument;
 pub const execUseSkill = @import("tools_exec_skills.zig").execUseSkill;
