@@ -142,10 +142,32 @@ class TestWaitPidDead:
             p.kill()
             p.wait()
 
-    def test_returns_true_once_the_child_exits(self) -> None:
+    def test_returns_true_once_the_child_is_reaped(self) -> None:
+        """A pid that is gone reports dead — on every platform.
+
+        The child is REAPED (`p.wait()`) before the probe runs, and that is
+        load-bearing rather than incidental.
+
+        On POSIX an exited-but-unreaped child is a zombie: the pid still
+        exists, so `os.kill(pid, 0)` keeps succeeding and any liveness probe
+        built on it correctly reports "alive" until the parent reaps. This
+        test asserted the opposite on the first run and went red on both
+        `functional Linux` and `functional macOS` while passing on Windows,
+        where there is no zombie state and the process handle signals death
+        immediately.
+
+        The zombie case is also why this is named after reaping. It is NOT a
+        defect: the previous implementation behaved identically on POSIX, and
+        nothing in the harness depends on the difference — `_wait_dead`
+        asks `Popen.poll()`, which reaps, and the orphan reaper only ever
+        looks at children whose parent (the harness) is already dead, so
+        init has reaped them. Recorded here because the asymmetry is
+        surprising enough to get a test wrong once already.
+        """
         p = _spawn_sleeper(seconds=0.1)
-        assert _wait_pid_dead(p.pid, 5.0) is True
         p.wait()
+        assert _wait_pid_dead(p.pid, 1.0) is True
+        assert _pid_is_alive(p.pid) is False
 
     def test_zero_timeout_on_a_live_child_is_false(self) -> None:
         p = _spawn_sleeper()
