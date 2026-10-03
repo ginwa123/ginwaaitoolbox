@@ -37,15 +37,15 @@
 
 | Fact | Evidence |
 |---|---|
-| Highest existing migration is **99** (`Migration099RenameListSkillsTool`). No 100/101/102 exists. | `src/migrations/migration.zig:2046`, struct at `:3782` |
-| `allMigrations` is an array literal ending at `src/migrations/migration.zig:2047`; a new migration is one `pub const MigrationNNNX = struct` + one array entry. | `src/migrations/migration.zig:1790-2047` |
+| Highest existing migration is **100** (`Migration100AddWorkspaceMembers`, PR #781, merged). **101 is the next free number.** | `src/migrations/migration.zig:2051`, struct at `:14779` |
+| `allMigrations` is an array literal ending at `src/migrations/migration.zig:2052`; a new migration is one `pub const MigrationNNNX = struct` + one array entry. | `src/migrations/migration.zig:1790-2052` |
 | **There is NO encryption anywhere in `src/`.** Every `crypto` hit is hashing (bcrypt, sha2, blake3). Zero cipher imports, zero keyring, zero `crypto.random`. This is why plaintext storage (DD2) is consistent rather than novel. The only `encrypt`-named column is `reasoning_encrypted_content`, a pass-through of Anthropic's own opaque token. | `rg -i 'encrypt\|decrypt\|cipher\|aes\|keyring' src/` |
 | **There is NO `secrets` table, route, tool, module, or `{{SECRETS:` token anywhere.** Zero name collisions with the proposed `secrets` / `list_secrets` / `workspace_secrets`. | verified by exhaustive search |
-| The newest workspace-scoped table is `documents` (Migration 098): `workspace_id TEXT NOT NULL`, FK to `workspaces(id)`, **no `user_id`**. | `src/migrations/migration.zig:3732-3741` |
-| Only **five** tables carry a `user_id` (`workspaces`, `sessions`, `worker`, `skill_eval_runs`, `skill_eval_results`). Workspace scoping does not use it. | `src/migrations/migration.zig:4594`, `:4603`, `:5329`, `:5557`, `:5595` |
-| `PRAGMA foreign_keys` is deliberately OFF, so a declared `ON DELETE CASCADE` is documentation only — the workspace-delete path issues the child DELETE itself. | `src/migrations/migration.zig:3713-3716` |
+| The newest workspace-scoped table is `documents` (Migration 098): `workspace_id TEXT NOT NULL`, FK to `workspaces(id)`, **no `user_id`**. | `src/migrations/migration.zig:3737-3746` |
+| Only **five** tables carry a `user_id` (`workspaces`, `sessions`, `worker`, `skill_eval_runs`, `skill_eval_results`). Workspace scoping does not use it. | `src/migrations/migration.zig:4604`, `:4613`, `:5334`, `:5565`, `:5593` |
+| `PRAGMA foreign_keys` is deliberately OFF, so a declared `ON DELETE CASCADE` is documentation only — the workspace-delete path issues the child DELETE itself. | `src/migrations/migration.zig:3718-3721` |
 | Zig 0.16 *does* ship `std.crypto.aes_gcm.Aes256Gcm` (`/usr/lib/zig/std/crypto/aes_gcm.zig:11-12`) — encryption was available and was deliberately declined (DD2), not overlooked. | verified in the toolchain |
-| `getDefaultConfigDir` is cross-platform (APPDATA / Library/Application Support / `.config`) and is the established home for user state. | `src/modules/config/Config.zig:2644-2669` |
+| `getDefaultConfigDir` is cross-platform (APPDATA / Library/Application Support / `.config`) and is the established home for user state. | `src/modules/config/Config.zig:2884-2909` |
 
 ### The dispatch layer — the load-bearing part
 
@@ -60,7 +60,7 @@
 | **LEAK VECTOR — `shell.zig` echoes the substituted command back into the tool result.** `result_to_json` puts `result.command` (the post-substitution dupe) into the `data` payload, so `curl -H "Auth: {{SECRETS:gh}}"` returns the real token to the model. This is the single biggest threat to the feature's promise. | `src/modules/agent/tools/shell.zig:874-881`, `:677`, `:851` |
 | Naive byte substitution into the raw arguments JSON is unsafe: a secret containing `"` terminates the JSON string literal and a secret containing `\` becomes an escape leader. Consumers that re-parse the args — `normalizeParamsJson` (`tools_wrap_output.zig:94`), `parseShellArgs` (`tools_exec_bash_args.zig:115`), `repairToolCallArguments` (`Agent.zig:1785`) — all break or silently degrade to `{"_raw": …}`. | verified all four |
 | `jsonEscapePath` at `handle_tool.zig:1680-1694` escapes only `\` and `"` — insufficient for arbitrary secret values (no control chars, no NUL). | `src/agentic_loop/handle_tool.zig:1680-1694` |
-| `ToolExecContext` has **no `workspace_id`**. Workspace is resolved server-side from `ctx.session_id` via `workspace_scope.resolveWorkspaceId` — the documents tools' established pattern. | `src/agentic_loop/tools.zig:91-142`, `src/agentic_loop/workspace_scope.zig:17` |
+| `ToolExecContext` has **no `workspace_id`**. Workspace is resolved server-side from `ctx.session_id` via `workspace_scope.resolveWorkspaceId` — the documents tools' established pattern. | `src/agentic_loop/tools.zig:92-143`, `src/agentic_loop/workspace_scope.zig:17` |
 | `shell.zig` sets **no `env_map`** on either spawn; the child inherits the server's full environment unmodified. There is no existing env-injection point. | `src/modules/agent/tools/shell.zig:435-452`, `:818-824` |
 | All Zig tests are **inline `test "…"` blocks** — there is not a single `*_test.zig` file in the repo. `handle_tool.zig:1693-1806` is the worked template for a test that builds a real `ToolContext` with in-memory SQLite and calls `dispatchTool` directly. | verified |
 
@@ -72,7 +72,7 @@
 | `buildMessages` receives `db` (`:77`) and `session_id` (`:79`), so a workspace-scoped lookup is available at prompt time. | `src/agentic_loop/prompts_build_messages_for_agent_prompt.zig:77`, `:79` |
 | The repo convention is explicit: catalogues are discovered by **tool call, never pre-listed in the prompt** — "no skills are pre-listed in this prompt" (`core.zig:177`), "Tools you already have are NOT listed by `search_tool`" (`core.zig:160`). | `src/modules/agent/prompts/core.zig:177`, `:160` |
 | Static tool rules are appended unconditionally at `prompts_build_messages_for_agent_prompt.zig:121-136` and live in `core.zig` as `pub const <Name>ToolRule`. | verified |
-| A `DEFAULT_AGENT_TOOLS` list exists at `tools_equipped.zig:331` and seeds new agents only — it does **not** retrofit existing agents. | `src/agentic_loop/tools_equipped.zig:331` |
+| A `DEFAULT_AGENT_TOOLS` list exists at `tools_equipped.zig:343` and seeds new agents only — it does **not** retrofit existing agents. | `src/agentic_loop/tools_equipped.zig:343` |
 
 ### The HTTP + frontend layer
 
@@ -81,9 +81,9 @@
 | `matchRoute` walks `for (self.routes.items)` at `router.zig:614` and returns on first hit. **Note:** the repo's own `AGENTS.md` and two older plans cite `router.zig:182` for this — that line is a closing brace in the current vendored package and is **stale**. Use `:614`. | verified against the vendored package |
 | The documents precedent for a workspace-scoped CRUD resource is complete and copyable: `documents_store.zig`, five `documents_*.zig` handlers, five `mod.zig` re-exports at `:171-175`, five routes at `main.zig:840-844`. | verified |
 | Any route whose path carries `:workspace_id` is **automatically 404-gated** in auth mode by `auth_middleware.zig:74-82`, which calls `canSeeWorkspace` (`auth_common.zig:217`). No per-handler auth code is needed for the workspace check. | verified on `main` at PR #783 time |
-| `GET /api/config/nalar` returns MCP server headers **in cleartext** (`mcp_servers` is `?std.json.Value`, sent "as-is") and sub-agent `api_key` verbatim. There is no redaction layer in the config surface today. | `src/http_handlers/http_response.zig:365`, `:429` |
+| `GET /api/config/nalar` returns MCP server headers **in cleartext** (`mcp_servers` is `?std.json.Value`, sent "as-is") and sub-agent `api_key` verbatim. There is no redaction layer in the config surface today. | `src/http_handlers/http_response.zig:365`, `:434` |
 | **No `/app/:workspaceId/settings` route exists.** `SettingsView.vue` is global (LLM profiles, MCP, tools, memories) and its own tab state is a bare `ref` at `:11`. `/app/:workspaceId` at `router/index.ts:86` is a catch-all that would swallow `/app/ws_1/settings`. | verified |
-| `?section=` is the reserved query key inside the settings shell; `?tab=` is owned by browser tab-mode and must not be reused. | `src/apps/desktop/src/components/NalarSettings.vue:73-77` |
+| `?section=` is the reserved query key inside the settings shell; `?tab=` is owned by browser tab-mode and must not be reused. | `src/apps/desktop/src/components/NalarSettings.vue:84-88` |
 | The frontend already has a masked-value helper (`McpServersSection.vue:18`) — **but it puts the raw value in a `title=` tooltip at `:120` while masking at `:138`.** Do not copy that pattern. | verified |
 | Frontend tests: vitest, `cd src/apps/desktop && npx vitest --run <file>`. `McpServersSection.spec.ts` is the template for a presentational section spec including a masking assertion. | verified |
 | **There is no iOS app and no Android settings screen.** Zero `.swift`/`.xcodeproj` files; the 8 Android `*Screen.kt` files are login/recents/chat/projects/network-inspector. No shared codegen layer. **Mobile is out of scope.** | verified |
@@ -99,6 +99,11 @@
 **Rejected:** adding a `secrets` map to `users.config_json` (the `web_search` plan's no-migration route). It is wrong on three counts: (a) `config_json` is **user**-scoped and has no `workspace_id` — the feature's stated unit is the workspace; (b) the whole blob is returned to the browser by `GET /api/config/nalar` verbatim (`http_response.zig:365`), so a secrets map there would be readable by any authenticated user of the same account with one GET; (c) `Migration099` already treats `config_json` as a raw-string-rewritten blob — mixing a credential store into it invites the next token-rename migration to corrupt it.
 
 **Why a table is right:** the documents precedent (`documents_store.zig`) already proves the pattern: `workspace_id` is a function parameter that appears in the `WHERE` clause, never a value the caller can choose to omit. The who-may-use-it half of that is `auth_common.workspaceVisibilityClause` over `workspace_members` (see Design Decision 11).
+
+> **Rev 2 (2026-10-03, post-merge).** `main` was merged into this branch before
+> implementation, which moved a number of cited line numbers (PR #781 added Migration 100;
+> PR #780 added the `web_search` feature). Every `path:line` below was re-audited against
+> the merged tree, and **Migration 101 was re-verified as free**. No design change from rev 1.
 
 ### 2. No encryption at rest — the value is stored as plaintext `TEXT`
 
@@ -162,7 +167,7 @@ future copy of this feature's description must carry the same caveat.
 
 **Rejected:** injecting the names into the system prompt as a per-session block (the `makeWorkspaceContext` pattern at `prompts_build_messages_for_agent_prompt.zig:188-193`). It breaks the convention the repo states twice — catalogues are discovered by tool call, never pre-listed — and it puts a per-workspace-varying byte range into the cacheable system prefix, which `prompts_build_messages_for_agent_prompt.zig:113-120` explicitly calls out as a cache-fragmentation cost.
 
-**Note on `DEFAULT_AGENT_TOOLS`:** it seeds **new** agents only (`tools_equipped.zig:331`). Existing agents' persisted `agent_tools` rows predate this tool. Same lesson as `Migration099`: the tool must be reachable without every user editing a checklist, so `filterAndMergeTools` (`workflow.zig:2237`) appends it the way it appends MCP and progressive tools — a **server-side injection that bypasses the allowlist**, exactly as `skill_evals` does (documented at `workflow.zig:2243-2250`).
+**Note on `DEFAULT_AGENT_TOOLS`:** it seeds **new** agents only (`tools_equipped.zig:343`). Existing agents' persisted `agent_tools` rows predate this tool. Same lesson as `Migration099`: the tool must be reachable without every user editing a checklist, so `filterAndMergeTools` (`workflow.zig:2237`) appends it the way it appends MCP and progressive tools — a **server-side injection that bypasses the allowlist**, exactly as `skill_evals` does (documented at `workflow.zig:2243-2250`).
 
 ### 7. The model sees the key NAME, which is not a secret
 
@@ -193,7 +198,7 @@ a guarantee — it is one XSS away from exposure, and it is already a live bug s
 
 ### 10. Redaction must be applied to the config GET too, or the feature is half a promise
 
-**Decision:** out of scope for this plan, recorded as a follow-up. `GET /api/config/nalar` today returns MCP header values and sub-agent `api_key`s in cleartext (`http_response.zig:365`, `:429`). That is a **pre-existing** leak in a different feature, not one this plan introduces. Flagging it for the reviewer rather than silently expanding scope.
+**Decision:** out of scope for this plan, recorded as a follow-up. `GET /api/config/nalar` today returns MCP header values and sub-agent `api_key`s in cleartext (`http_response.zig:365`, `:434`). That is a **pre-existing** leak in a different feature, not one this plan introduces. Flagging it for the reviewer rather than silently expanding scope.
 
 ---
 
@@ -236,11 +241,11 @@ CREATE INDEX IF NOT EXISTS idx_workspace_secrets_workspace
 ON workspace_secrets(workspace_id, name)
 ```
 
-Naming follows the established convention: `idx_<table>_<cols>` for plain, `uq_<table>_<cols>` for UNIQUE (see `uq_skill_eval_facts` at `src/migrations/migration.zig:5530`).
+Naming follows the established convention: `idx_<table>_<cols>` for plain, `uq_<table>_<cols>` for UNIQUE (see `uq_skill_eval_facts` at `src/migrations/migration.zig:5535`).
 
 **Migration notes the implementer must honour:**
-- `FOREIGN KEY … ON DELETE CASCADE` is documentation only — `PRAGMA foreign_keys` is off (`migration.zig:3713-3716`). The workspace-delete handler must issue `DELETE FROM workspace_secrets WHERE workspace_id = ?` explicitly, alongside the existing child deletes.
-- One SQL statement per `db.exec` (`sqlite3_prepare_v2` compiles only the first) — `migration.zig:3724-3725`.
+- `FOREIGN KEY … ON DELETE CASCADE` is documentation only — `PRAGMA foreign_keys` is off (`migration.zig:3718-3721`). The workspace-delete handler must issue `DELETE FROM workspace_secrets WHERE workspace_id = ?` explicitly, alongside the existing child deletes.
+- One SQL statement per `db.exec` (`sqlite3_prepare_v2` compiles only the first) — `migration.zig:3729-3730`.
 - Every `NOT NULL` TEXT column is written `COALESCE(NULLIF(?, ''), '')`.
 - The `name` must be validated **before** the INSERT: `SqliteBackend.exec` binds `""` as NULL, which violates `NOT NULL`.
 
@@ -332,7 +337,7 @@ Registered on the `authed` group so `auth_middleware.zig:74-82` applies the work
 
 ### Task 1 — Migration 101 + `secrets_store.zig`
 
-- [ ] Write the failing test (in-memory SQLite, the `setupDb` fixture at `migration.zig:3649`): after `Migration101CreateWorkspaceSecrets.up`, `pragma_table_info('workspace_secrets')` contains all 8 columns.
+- [ ] Write the failing test (in-memory SQLite, the `setupDb` fixture at `migration.zig:3654`): after `Migration101CreateWorkspaceSecrets.up`, `pragma_table_info('workspace_secrets')` contains all 8 columns.
 - [ ] Write the failing test: `uq_workspace_secrets_name` rejects a duplicate name in the same workspace but allows the same name in a **different** workspace.
 - [ ] Write the failing test: `createSecret` with an empty name returns `error.NameRequired` **before** touching the DB (the empty-slice-binds-as-NULL trap).
 - [ ] Write the failing test: `getSecret` with a foreign `workspace_id` returns `error.NotFound`, never another workspace's row.
@@ -451,7 +456,7 @@ Unit tests cannot see route-order shadowing or the empty-slice-binds-as-NULL col
 - **Env-var injection into spawned processes.** `shell.zig` sets no `env_map` today (`:435`, `:818`); adding `NALAR_SECRET_<NAME>` would put every secret into the environment of every child process, which is a strictly larger blast radius than substitution and is not what the request asked for. `{{SECRETS:…}}` inside a `command` string already covers the `export` case.
 - **Role-based secret access (v1).** Membership-only, per reviewer decision 2026-10-03: a `viewer`-role member can rotate any secret in a shared workspace, because `workspaceVisibilityClause` never reads `m.role`. Accepted for v1, consistent with documents. The follow-up is a role predicate in the visibility clause or a `secretsCanBeRead` helper — explicitly NOT a `user_id` column on the row. See Design Decision 11 and Open Question 5.
 - **Secret→tool binding / per-tool allowlists** (which tool may read which secret). Natural follow-up; adds a second table and a second policy layer.
-- **Redacting the existing config surface.** `GET /api/config/nalar` returns MCP header values and sub-agent `api_key`s in cleartext today (`http_response.zig:365`, `:429`). Pre-existing, different feature — recorded as Design Decision 10, not fixed here.
+- **Redacting the existing config surface.** `GET /api/config/nalar` returns MCP header values and sub-agent `api_key`s in cleartext today (`http_response.zig:365`, `:434`). Pre-existing, different feature — recorded as Design Decision 10, not fixed here.
 - **Mobile.** No iOS app exists; Android has no settings screen and no shared codegen.
 - **Cross-workspace secret references.** A placeholder resolves only within the calling session's workspace.
 - **Secret rotation schedules / expiry / versioning.** A PATCH overwrites.
