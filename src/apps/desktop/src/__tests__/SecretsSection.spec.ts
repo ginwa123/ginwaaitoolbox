@@ -92,15 +92,15 @@ describe('SecretsSection', () => {
     })
     const rows = wrapper.findAll('[data-testid="secret-row"]')
     expect(rows).toHaveLength(2)
-    expect(rows[0].text()).toContain('STRIPE_API_KEY')
-    expect(rows[1].text()).toContain('GITHUB_TOKEN')
+    expect(rows[0]?.text()).toContain('STRIPE_API_KEY')
+    expect(rows[1]?.text()).toContain('GITHUB_TOKEN')
     for (const row of rows) {
       expect(row.find('[data-testid="configured-badge"]').exists()).toBe(true)
       expect(row.find('[data-testid="configured-badge"]').text()).toMatch(/configured/i)
     }
     // The row carries the timestamps the server does send.
-    expect(rows[0].text()).not.toBe('STRIPE_API_KEY')
-    expect(rows[0].find('[data-testid="secret-updated-at"]').exists()).toBe(true)
+    expect(rows[0]?.text()).not.toBe('STRIPE_API_KEY')
+    expect(rows[0]?.find('[data-testid="secret-updated-at"]').exists()).toBe(true)
     wrapper.unmount()
   })
 
@@ -211,7 +211,7 @@ describe('SecretsSection', () => {
   it('emits delete with the secret NAME, after the confirm dialog', async () => {
     const wrapper = mountSection({ secrets: [baseSecret], loaded: true })
 
-    await wrapper.findAll('[data-testid="delete-btn"]')[0].trigger('click')
+    await wrapper.findAll('[data-testid="delete-btn"]')[0]?.trigger('click')
     await flushPromises()
     // Nothing is deleted on the first click — the ConfirmDialog is open.
     expect(wrapper.emitted('delete')).toBeUndefined()

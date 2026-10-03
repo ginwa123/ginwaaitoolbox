@@ -108,6 +108,14 @@ function formatTimestamp(value: string): string {
   if (Number.isNaN(parsed.getTime())) return value
   return parsed.toLocaleString()
 }
+
+// The empty state's CTA focuses the name field. Kept as a function in the
+// script block rather than an inline arrow in the template: `document` is not
+// on the component's instance type, so a template expression fails the
+// `vue-tsc --build` type-check that the pre-push hook runs.
+function focusAddName(): void {
+  document.getElementById('secret-name')?.focus()
+}
 </script>
 
 <template>
@@ -228,7 +236,7 @@ function formatTimestamp(value: string): string {
       title="No secrets yet"
       description="Add a credential to let this workspace's agent tools authenticate against your services. You will only ever see the name, never the value."
       cta-label="+ Add secret"
-      :cta-action="() => document.getElementById('secret-name')?.focus()"
+      :cta-action="focusAddName"
     />
 
     <ul v-else-if="props.secrets.length" class="space-y-2" data-testid="secret-list">
