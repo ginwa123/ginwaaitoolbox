@@ -711,6 +711,30 @@ pub fn main(init: std.process.Init) !void {
     try authed.get("/api/workspaces/:id", ai_mod.http_handlers.workspaceGetHandler);
     try authed.put("/api/workspaces/:id", ai_mod.http_handlers.workspaceUpdateHandler);
     try authed.delete("/api/workspaces/:id", ai_mod.http_handlers.workspaceDeleteHandler);
+    // Id-only task PUT — MUST stay ABOVE every `:workspace_id` route below.
+    //
+    // It is deliberately id-only: a chat rename must not have to carry a
+    // workspace/item scope (task.id IS the session id, Migration 052), and
+    // `api.updateTaskSimple` sends only `{"name": ...}`. The `tasks` segment
+    // here is a LITERAL, so the route cannot shadow or be shadowed by the
+    // `:workspace_id/items/...` family — both agree on that segment.
+    //
+    // Registration order is load-bearing for a second reason that has nothing
+    // to do with matching: `matchRoute` walks the table top-down and
+    // kabelweb's `matchPathWithParams` writes each `:param` into the shared
+    // `req.params` map as it walks, WITHOUT unwinding when a later literal
+    // segment fails to match. So a request to
+    // `/api/workspaces/tasks/<id>` first tried
+    // `PUT /api/workspaces/:workspace_id/items/:item_id` and left
+    // `workspace_id = "tasks"` behind in `req.params`. authMiddleware's
+    // per-user choke point then read that leftover, `canSeeWorkspace("tasks")`
+    // was false, and the rename 404'd with `{"error": "Workspace not found"}`
+    // before the handler ever ran — only when `--auth` was on.
+    //
+    // Static assertions for this ordering live in
+    // `http_handlers/task_update.zig`; the behavioural one is
+    // `tests/functional/task_rename_id_route_auth_test.py`.
+    try authed.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
     // Idempotent: returns the workspace's default project, creating it
     // (item_type='agent', path=$HOME) when there is none.
     //
@@ -873,7 +897,6 @@ pub fn main(init: std.process.Init) !void {
     // Plan: docs/superpowers/plans/2026-08-14-kanban-task-create-endpoints.md
     try authed.post("/api/workspaces/:workspace_id/items/:item_id/kanban/tasks", ai_mod.http_handlers.kanbanTasksCreateHandler);
     try authed.post("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksCreateHandler);
-    try authed.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
     // Migration 069 (2026-08-06) removed the filesystem-backed
     // kanban-task attachment endpoints (POST + GET wildcard). Task
     // images now live inline on `workspace_item_tasks.image_urls` as
@@ -993,7 +1016,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Failed to register cleanup_stale_background_process cron: {s}\n", .{@errorName(err)});
     };
 
-    try gs.listenEventLoop(.{.dispatch_mode = .worker_pool});
+    try gs.listenEventLoop(.{ .dispatch_mode = .worker_pool });
 
     // Clean shutdown after listen() returns (shutdown endpoint, SIGINT
     // Ctrl+C, or SIGTERM). The signal path sets `shutdown_requested`

@@ -120,9 +120,7 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
             error.ImageUrlsTooLarge => 413,
             error.InvalidVideoUrls => 400,
             error.VideoUrlsTooLarge => 413,
-            error.CwdTooLong,
-            error.CwdNotAbsolute,
-            error.CwdContainsControlChar => 400,
+            error.CwdTooLong, error.CwdNotAbsolute, error.CwdContainsControlChar => 400,
             error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
@@ -192,8 +190,7 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         var bind_values: std.ArrayList([]const u8) = .empty;
         defer bind_values.deinit(allocator);
 
-        try sql_buf.appendSlice(allocator,
-            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
         try sql_buf.appendSlice(allocator, ", description = ");
         if (desc.len == 0) {
             try sql_buf.appendSlice(allocator, "''");
@@ -231,8 +228,7 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         var bind_values: std.ArrayList([]const u8) = .empty;
         defer bind_values.deinit(allocator);
 
-        try sql_buf.appendSlice(allocator,
-            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
         try sql_buf.appendSlice(allocator, ", tags = ");
         if (validated_tags.len == 0) {
             try sql_buf.appendSlice(allocator, "''");
@@ -273,8 +269,7 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         var bind_values: std.ArrayList([]const u8) = .empty;
         defer bind_values.deinit(allocator);
 
-        try sql_buf.appendSlice(allocator,
-            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
         try sql_buf.appendSlice(allocator, ", image_urls = ");
         if (validated_urls.len == 0) {
             try sql_buf.appendSlice(allocator, "''");
@@ -302,8 +297,7 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         var bind_values: std.ArrayList([]const u8) = .empty;
         defer bind_values.deinit(allocator);
 
-        try sql_buf.appendSlice(allocator,
-            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
         try sql_buf.appendSlice(allocator, ", video_urls = ");
         if (validated_urls.len == 0) {
             try sql_buf.appendSlice(allocator, "''");
@@ -342,8 +336,7 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         var bind_values: std.ArrayList([]const u8) = .empty;
         defer bind_values.deinit(allocator);
 
-        try sql_buf.appendSlice(allocator,
-            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
         try sql_buf.appendSlice(allocator, ", cwd = ");
         if (raw_cwd.len == 0) {
             try sql_buf.appendSlice(allocator, "''");
@@ -375,27 +368,27 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
 
 // ===== Tests merged from task_update_test.zig (2026-09-11 flatten) =====
 // Static regression check for the rename-task cascade.
-// 
+//
 // Why this file exists
 // ────────────────────
 // The frontend workspace-item rename feature depends on the rename
 // HTTP path updating BOTH `workspace_item_tasks.name` AND the linked
 // `sessions.name` (the second update is what triggers the SSE
 // `session.updated` event that the ChatsList listens for).
-// 
+//
 // Without these two source-level contracts, the cascade is silently
 // broken — the rename UI would appear to work, but the chat list
 // would never pick up the new name until manual reload. The bug is
 // hard to spot in a casual read because the old code (the no-cascade
 // `updateWorkspaceItemTask`) is right next to the new code.
-// 
+//
 // The contract is enforced by two static substring checks:
 //   1. The HTTP handler must route name updates through
 //      `llm_history.updateTaskName(...)` (NOT the plain
 //      `ai_mod.workspace_item_tasks.updateWorkspaceItemTask`).
 //   2. `llm_history.updateTaskName` must call `updateSessionName`
 //      so the cascade runs and the SSE broadcast fires.
-// 
+//
 // Why a static check (not a behavioral DB test)?
 // ───────────────────────────────────────────────
 // The project has no precedent for in-process sqlite-backed tests
@@ -407,7 +400,7 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
 // duplicating the migration setup. The two static checks below
 // directly test the bug — they fail if and only if the cascade
 // contract is removed or routed back to the old path.
-// 
+//
 // Plan: docs/plans/2026-06-06-workspace-item-task-rename.md
 
 const testing = std.testing;
@@ -666,5 +659,139 @@ test "task_update maps image_urls validation errors to 400/413" {
             .{HANDLER_PATH},
         );
         return error.ImageUrlsTooLargeStatusMissing;
+    }
+}
+
+// =====================================================================
+// Route-order contract for the id-only task PUT.
+//
+// ## Why a test that reads source
+//
+// The rename bug this pins is invisible to a handler unit test (nothing
+// routes) and to the functional rename test when `--auth` is off (the
+// middleware is the only thing that 404s). It needs BOTH halves:
+//
+//   1. `matchRoute` (kabelweb router.zig) walks the route table in
+//      REGISTRATION order and stops at the first match.
+//   2. `matchPathWithParams` writes each `:param` into the shared
+//      `req.params` map as it walks a pattern and does NOT unwind when a
+//      later LITERAL segment fails to match.
+//
+// So a route registered below `PUT /api/workspaces/:workspace_id/items/:item_id`
+// inherits that route's half-matched `workspace_id` even though the route
+// itself never declares one. `authMiddleware` reads `workspace_id` straight
+// out of `req.params`, `canSeeWorkspace("tasks")` is false, and
+// `PUT /api/workspaces/tasks/<id>` 404'd with
+// `{"error": "Workspace not found"}` — the sidebar's chat rename did
+// nothing but show a toast, and only when `--auth` was on.
+//
+// The ordering therefore has to be asserted on the registration list, the
+// same way `workspace_items_default.zig` asserts its `default-project`
+// route and `run_all_agents.zig` asserts its literal segment.
+// =====================================================================
+
+const ID_ONLY_TASK_ROUTE = ".put(\"/api/workspaces/tasks/:task_id\"";
+const WORKSPACE_SCOPED_PUT = ".put(\"/api/workspaces/:workspace_id/";
+
+/// `main.zig` as COMPILED — `@embedFile` rather than a cwd-relative read,
+/// so the assertions cannot pass by reading nothing from the wrong
+/// directory.
+fn readMainSource(allocator: std.mem.Allocator) ![]u8 {
+    return allocator.dupe(u8, @embedFile("../main.zig"));
+}
+
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, i, needle)) |pos| {
+        n += 1;
+        i = pos + needle.len;
+    }
+    return n;
+}
+
+test "the id-only task PUT route is registered" {
+    const allocator = testing.allocator;
+    const src = try readMainSource(allocator);
+    defer allocator.free(src);
+
+    if (std.mem.indexOf(u8, src, ID_ONLY_TASK_ROUTE) == null) {
+        std.debug.print(
+            "\n!! main.zig does not register {s} !!\n" ++
+                "   api.updateTaskSimple (the chat rename + kanban card rename\n" ++
+                "   path) PUTs /api/workspaces/tasks/<task_id>. Without the\n" ++
+                "   route every rename 404s.\n",
+            .{ID_ONLY_TASK_ROUTE},
+        );
+        return error.IdOnlyTaskRouteNotRegistered;
+    }
+}
+
+test "the id-only task PUT route is registered exactly once" {
+    // A second registration would sit back down among the `:workspace_id`
+    // routes, which is where this bug came from in the first place.
+    const allocator = testing.allocator;
+    const src = try readMainSource(allocator);
+    defer allocator.free(src);
+
+    const n = countOccurrences(src, ID_ONLY_TASK_ROUTE);
+    if (n != 1) {
+        std.debug.print(
+            "\n!! {s} is registered {d} times in main.zig, expected 1 !!\n",
+            .{ ID_ONLY_TASK_ROUTE, n },
+        );
+        return error.IdOnlyTaskRouteRegisteredTwice;
+    }
+}
+
+test "the id-only task PUT route precedes every :workspace_id PUT route" {
+    const allocator = testing.allocator;
+    const src = try readMainSource(allocator);
+    defer allocator.free(src);
+
+    const ours = std.mem.indexOf(u8, src, ID_ONLY_TASK_ROUTE) orelse
+        return error.IdOnlyTaskRouteNotRegistered;
+
+    // The FIRST workspace-scoped PUT is the one that matters: any route
+    // below it is harmless, because matchRoute reaches our route first and
+    // never walks that far. One ABOVE it gets tried first for a rename
+    // request and leaves its half-matched `workspace_id` in `req.params`.
+    if (std.mem.indexOf(u8, src, WORKSPACE_SCOPED_PUT)) |first| {
+        if (first < ours) {
+            const tail_end = std.mem.indexOfScalarPos(u8, src, first + WORKSPACE_SCOPED_PUT.len, '"') orelse src.len;
+            std.debug.print(
+                "\n!! a workspace-scoped PUT is registered at byte {d}, ABOVE the id-only task PUT at byte {d} !!\n" ++
+                    "   {s}{s}\n" ++
+                    "   matchRoute tries routes in registration order and\n" ++
+                    "   matchPathWithParams leaves half-matched params behind, so a\n" ++
+                    "   rename would pick up `workspace_id` = \"tasks\" and 404 with\n" ++
+                    "   {{\"error\": \"Workspace not found\"}} under --auth. Move the\n" ++
+                    "   id-only task PUT above the first :workspace_id PUT.\n",
+                .{ first, ours, WORKSPACE_SCOPED_PUT, src[first + WORKSPACE_SCOPED_PUT.len .. tail_end] },
+            );
+            return error.IdOnlyTaskRouteShadowedByWorkspaceParam;
+        }
+    }
+}
+
+test "the id-only task PUT path keeps `tasks` a literal segment" {
+    // Both anti-shadowing arguments rest on `tasks` being a literal: it is
+    // what keeps the route from colliding with the `:workspace_id/items/...`
+    // family, and what keeps a rename's workspace id out of the URL (the
+    // frontend sends none). A `:param` in that slot would reintroduce the
+    // exact failure this file's tests exist to prevent.
+    const allocator = testing.allocator;
+    const src = try readMainSource(allocator);
+    defer allocator.free(src);
+
+    const bad = ".put(\"/api/workspaces/:workspace_id/tasks/:task_id\"";
+    if (std.mem.indexOf(u8, src, bad) != null) {
+        std.debug.print(
+            "\n!! main.zig registers {s} — the id-only task PUT must not take a workspace id !!\n" ++
+                "   api.updateTaskSimple sends PUT /api/workspaces/tasks/<task_id>;\n" ++
+                "   a workspace-scoped sibling here would 404 every rename.\n",
+            .{bad},
+        );
+        return error.IdOnlyTaskRouteTookWorkspaceParam;
     }
 }

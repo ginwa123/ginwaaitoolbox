@@ -71,6 +71,17 @@ pub fn authMiddleware(
     // cannot act on another user's workspace by raw id.
     //
     // 404, never 403, so a foreign id is indistinguishable from a missing one.
+    //
+    // `req.params` is NOT exclusively the matched route's. kabelweb's
+    // `matchPathWithParams` writes each `:param` into that shared map as it
+    // walks a pattern and does NOT unwind when a later literal segment fails
+    // to match, and `matchRoute` tries routes in registration order. So a
+    // route registered BELOW a `:workspace_id` route inherits that route's
+    // half-matched param and this check 404s a request it has no scope for —
+    // that is exactly how `PUT /api/workspaces/tasks/:task_id` (which
+    // declares no workspace id) came to answer `Workspace not found` for
+    // every chat rename under --auth. Any route that does not declare a
+    // guard param must be registered above the first route that declares it.
     if (req.params.get("workspace_id")) |ws_id| {
         if (!auth_common.canSeeWorkspace(allocator, di.db, ws_id, sess.user_id)) {
             auth_common.freeSessionLookup(allocator, sess);
