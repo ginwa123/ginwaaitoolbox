@@ -1,0 +1,64 @@
+{
+  "profiles_models": {
+    "900ribu": {
+      "model": "gpt-5.1-codex-max",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "sk-or-v1-...",
+      "thinking": "auto",
+      "temperature": "auto",
+      "url_style": "openai"
+    }
+  },
+  "active_profile": "900ribu",
+
+  "mcp_servers": {
+    "context7": {
+      "url": "https://mcp.context7.com/mcp",
+      "headers": { "Authorization": "Bearer ctx7sk-..." }
+    },
+    "graphify": {
+      "url": "http://127.0.0.1:8081/mcp",
+      "headers": {}
+    }
+  },
+
+  "_comment": "web_search is the whole feature. Everything else above is unchanged from your existing config.json.",
+
+  "web_search": {
+    "tinyfish": {
+      "url":  "https://api.search.tinyfish.ai",
+      "key":  "skkkk",
+      "curl": "https://api.search.tinyfish.ai?query=PLACEHOLDER&location=US&language=en -H \"X-API-Key: {key}\" -H \"X-TF-Request-Origin: api\" -H \"X-TF-API-Source: onboarding\"",
+      "description": "Fast general web search. Best for news and anything current. Free tier: 1000 requests/day, then quota errors until midnight UTC."
+    },
+    "brave": {
+      "url":  "https://api.search.brave.com",
+      "key":  "sk-...",
+      "curl": "https://api.search.brave.com/res/v1/web/search?q=PLACEHOLDER&count=10 -H \"X-Subscription-Token: {key}\" -H \"Accept: application/json\"",
+      "description": "Independent index, good for local/regional results and for cross-checking a story TinyFish returned. Independent quota, so it is the fallback when tinyfish is exhausted.",
+      "enabled": true
+    },
+    "searxng": {
+      "url":  "https://search.mydomain.net",
+      "curl": "https://search.mydomain.net/search?q=PLACEHOLDER&format=json",
+      "description": "Self-hosted, unlimited, no third party. Put this one last — it is the fallback of last resort.",
+      "enabled": false
+    }
+  },
+
+  "tools": [
+    "command", "read_file", "write_file", "text_replace", "remove_file",
+    "list_directory", "search", "glob",
+    "web_search", "list_web_search_providers",
+    "present_files", "update_plan", "get_plan", "ask_user"
+  ],
+
+  "notify_on_complete": true,
+  "notify_on_error": false,
+  "web_launch_enabled": true,
+  "model_compaction_size_kb": 100,
+  "max_capacity_token_model": 200000,
+  "compaction_threshold_percent": 80,
+  "retry_delay_ms": 2000,
+  "user_identifier": "0f3c1a2b-4d5e-6f70-8192-a3b4c5d6e7f8"
+}

@@ -202,6 +202,22 @@ pub const LlmConfig = struct {
     /// the creation-time seeds (`tools_equipped.seedDefault*`) and the
     /// workflow's config-default override.
     tools: ?[]const []const u8 = null,
+    /// User-configured web-search providers, keyed by the provider name the
+    /// agent passes as the `provider` tool argument. Owned: the map owns its
+    /// keys and each entry's strings; freed in `deinit`.
+    ///
+    /// `null` is the honest representation of "the `web_search` key is
+    /// absent from config.json" and is the same thing to every reader: no
+    /// providers configured. It is optional rather than an always-present
+    /// map so that adding this key does not force a `.web_search = …` line
+    /// into every one of the 13 existing `LlmConfig{}` literals across 8
+    /// unrelated files (the same reason `tools` is optional).
+    ///
+    /// Read through `agentic_loop/web_search_config.zig`'s per-session
+    /// `resolve`, NOT through `ToolExecContext.config` — in `--auth` mode
+    /// the singleton that `ctx.config` points at never sees what the user
+    /// saved, because the config PUT returns early without swapping it.
+    web_search: ?WebSearchProvidersMap = null,
 
     pub const LoadError = error{
         ConfigFileNotFound,
@@ -464,6 +480,10 @@ pub const LlmConfig = struct {
         /// Typed so a hand-edited non-array value fails whole-config parse
         /// (same failure mode as the other typed fields).
         tools: ?[]const []const u8 = null,
+        /// Configured web-search providers (snake_case). Raw JSON value
+        /// parsed into the typed `WebSearchProvidersMap`; the map owns the
+        /// duped strings because this parse struct borrows.
+        web_search: ?std.json.Value = null,
     };
 
     /// JSON-side parse struct for a single sub-agent entry. Mirrors
@@ -554,6 +574,187 @@ pub const LlmConfig = struct {
     /// Map of MCP server name (e.g. "context7") to its typed configuration.
     /// The map owns the server-name keys and the `McpServerConfig` payloads.
     pub const McpServersMap = std.StringHashMap(McpServerConfig);
+
+    /// One user-configured web-search provider.
+    ///
+    /// `key` and `curl` are kept in SEPARATE fields on purpose: `curl`
+    /// carries the literal `{key}` placeholder where the credential
+    /// belongs, never the credential itself. Everything derived from
+    /// `curl` — the `list_web_search_providers` listing, logs, the
+    /// rendered prompt — is therefore inert by construction. Merging the
+    /// two fields would mean every one of those surfaces needs redaction.
+    ///
+    /// All string fields are owned (allocated with the parent
+    /// `LlmConfig.allocator`) and freed in `freeWebSearchProvidersMap`.
+    pub const WebSearchProviderEntry = struct {
+        /// The host pin. This is the ONLY host whose requests may ever
+        /// carry `key`; it is compared against the host of whatever curl
+        /// the agent sends, before substitution happens.
+        url: []const u8,
+        /// The credential. Optional — a self-hosted provider needs none.
+        /// An absent field means "no credential"; `""` is never a valid
+        /// stored value (see `isUsable`).
+        key: ?[]const u8 = null,
+        /// Request template copied from the provider's own docs, with
+        /// `{key}` where the credential goes.
+        curl: []const u8,
+        /// Free-text note the user writes about when to prefer this
+        /// provider. Optional. `curl` says HOW to call it; this says
+        /// WHEN to use it.
+        description: ?[]const u8 = null,
+        /// Defaults to true, mirroring `McpServerConfig.enabled`.
+        enabled: bool = true,
+
+        /// True when this entry can actually be dispatched: it is
+        /// enabled, has a host pin and a template, and — if it declares a
+        /// credential — that credential is non-empty.
+        ///
+        /// A blank `key` string is treated as absent rather than as a
+        /// credential that happens to be empty, because an empty slice
+        /// is exactly what a JSON round-trip of an unset optional
+        /// produces, and `SqliteBackend.exec` binds `""` as SQL NULL.
+        pub fn isUsable(self: WebSearchProviderEntry) bool {
+            if (!self.enabled) return false;
+            if (self.url.len == 0) return false;
+            if (self.curl.len == 0) return false;
+            if (self.key) |k| {
+                if (k.len == 0) return false;
+            }
+            return true;
+        }
+    };
+
+    /// Map of provider name (e.g. "tinyfish") to its configuration. The
+    /// name is what the agent passes as the `provider` tool argument.
+    pub const WebSearchProvidersMap = std.StringHashMap(WebSearchProviderEntry);
+
+    /// Free every owned string in a `WebSearchProvidersMap`, then the map.
+    pub fn freeWebSearchProvidersMap(map: *WebSearchProvidersMap, allocator: std.mem.Allocator) void {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            const cfg = entry.value_ptr;
+            allocator.free(cfg.url);
+            allocator.free(cfg.curl);
+            if (cfg.key) |k| allocator.free(k);
+            if (cfg.description) |d| allocator.free(d);
+        }
+        map.deinit();
+    }
+
+    /// Parse one provider entry from its JSON object. Returns null (with a
+    /// warning) for a malformed entry rather than aborting the whole map:
+    /// one bad paste must not take every other provider down with it.
+    fn parseWebSearchProviderEntry(
+        allocator: std.mem.Allocator,
+        name: []const u8,
+        value: json.Value,
+    ) !?WebSearchProviderEntry {
+        if (value != .object) {
+            std.log.warn("web_search provider '{s}' is not an object; skipping", .{name});
+            return null;
+        }
+        const obj = value.object;
+
+        // A hand-edited entry with a numeric or null field is a typo, not
+        // a crash. Read each field defensively rather than trusting the
+        // shape the way a typed parse struct would.
+        const url_raw = switch (obj.get("url") orelse json.Value{ .null = {} }) {
+            .string => |s| s,
+            else => {
+                std.log.warn("web_search provider '{s}' has no string `url`; skipping", .{name});
+                return null;
+            },
+        };
+        const curl_raw = switch (obj.get("curl") orelse json.Value{ .null = {} }) {
+            .string => |s| s,
+            else => {
+                std.log.warn("web_search provider '{s}' has no string `curl`; skipping", .{name});
+                return null;
+            },
+        };
+
+        var entry = WebSearchProviderEntry{
+            .url = try allocator.dupe(u8, url_raw),
+            .curl = try allocator.dupe(u8, curl_raw),
+            .key = null,
+            .description = null,
+            .enabled = true,
+        };
+        errdefer {
+            allocator.free(entry.url);
+            allocator.free(entry.curl);
+        }
+
+        // `key` is OPTIONAL — a self-hosted provider has none. An empty
+        // string is normalised to absent here so `isUsable` has a single
+        // rule to check.
+        if (obj.get("key")) |kv| switch (kv) {
+            .string => |s| if (s.len > 0) {
+                entry.key = try allocator.dupe(u8, s);
+            },
+            else => std.log.warn("web_search provider '{s}' has a non-string `key`; treating as absent", .{name}),
+        };
+
+        if (obj.get("description")) |dv| switch (dv) {
+            .string => |s| if (s.len > 0) {
+                entry.description = try allocator.dupe(u8, s);
+            },
+            else => std.log.warn("web_search provider '{s}' has a non-string `description`; ignoring", .{name}),
+        };
+
+        if (obj.get("enabled")) |ev| switch (ev) {
+            .bool => |b| entry.enabled = b,
+            else => std.log.warn("web_search provider '{s}' has a non-bool `enabled`; treating as true", .{name}),
+        };
+
+        return entry;
+    }
+
+    /// Free the owned strings in one provider entry. The name key is NOT
+    /// freed — the map owns it.
+    fn freeWebSearchProviderEntry(cfg: *WebSearchProviderEntry, allocator: std.mem.Allocator) void {
+        allocator.free(cfg.url);
+        allocator.free(cfg.curl);
+        if (cfg.key) |k| allocator.free(k);
+        if (cfg.description) |d| allocator.free(d);
+    }
+
+    /// Parse a full `WebSearchProvidersMap` from the body of `web_search`.
+    pub fn parseWebSearchProvidersMap(
+        allocator: std.mem.Allocator,
+        raw: json.Value,
+    ) !WebSearchProvidersMap {
+        var providers = WebSearchProvidersMap.init(allocator);
+        errdefer freeWebSearchProvidersMap(&providers, allocator);
+
+        if (raw != .object) {
+            std.log.warn("`web_search` is not an object; ignoring", .{});
+            return providers;
+        }
+
+        var it = raw.object.iterator();
+        while (it.next()) |entry| {
+            // A hand-edited file with the same provider name twice keeps
+            // the first entry. JSON parsers hand us both, and silently
+            // letting the last one win would make the pin depend on
+            // document order.
+            if (providers.contains(entry.key_ptr.*)) {
+                std.log.warn("duplicate web_search provider '{s}'; keeping the first", .{entry.key_ptr.*});
+                continue;
+            }
+            const provider = (try parseWebSearchProviderEntry(
+                allocator,
+                entry.key_ptr.*,
+                entry.value_ptr.*,
+            )) orelse continue;
+
+            const key_dup = try allocator.dupe(u8, entry.key_ptr.*);
+            errdefer allocator.free(key_dup);
+            providers.put(key_dup, provider) catch |err| return err;
+        }
+        return providers;
+    }
 
     /// Initialize an `LlmConfig` from disk. When `path` is null (the
     /// default), uses the platform-specific config path returned by
@@ -684,6 +885,7 @@ pub const LlmConfig = struct {
             freeProfilesMap(&config.profiles_models, allocator);
             freeSubAgentsList(config.sub_agents, allocator);
             freeToolsList(config.tools, allocator);
+            if (config.web_search) |*ws| freeWebSearchProvidersMap(ws, allocator);
             if (config.mcpServers_parsed) |*p| p.deinit();
         }
 
@@ -692,6 +894,12 @@ pub const LlmConfig = struct {
         // Null (key absent) stays null; `[]` stays an empty non-null
         // slice so D2's absent-vs-empty distinction survives the parse.
         config.tools = try parseToolsList(allocator, config_json.tools);
+
+        // Web-search providers: absent key = no providers. Parsed from the
+        // borrowed `config_json` tree, so every string is duped.
+        if (config_json.web_search) |ws| {
+            config.web_search = try parseWebSearchProvidersMap(allocator, ws);
+        }
 
         if (config_json.mcp_servers) |mcp| {
             const mcp_str_owned = std.json.Stringify.valueAlloc(allocator, mcp, .{}) catch |err| {
@@ -1383,6 +1591,7 @@ pub const LlmConfig = struct {
         freeProfilesMap(&self.profiles_models, self.allocator);
         freeSubAgentsList(self.sub_agents, self.allocator);
         freeToolsList(self.tools, self.allocator);
+        if (self.web_search) |*ws| freeWebSearchProvidersMap(ws, self.allocator);
 
         if (self.mcpServers_parsed) |*parsed| {
             parsed.deinit();
@@ -1439,11 +1648,42 @@ pub const LlmConfig = struct {
             freeProfilesMap(&config.profiles_models, self.allocator);
             freeSubAgentsList(config.sub_agents, self.allocator);
             freeToolsList(config.tools, self.allocator);
+            if (config.web_search) |*ws| freeWebSearchProvidersMap(ws, self.allocator);
             if (config.mcpServers_parsed) |*p| p.deinit();
         }
 
         // Owned copy of the tools checklist (null stays null).
         config.tools = try parseToolsList(self.allocator, self.tools);
+
+        // Owned copy of the web-search providers. `clone` must deep-copy
+        // rather than share: the config PUT hot-swaps a freshly cloned
+        // LlmConfig into the singleton, and a shared map would leave the
+        // old config's strings dangling after its deinit.
+        if (self.web_search) |src| {
+            var copy_map = WebSearchProvidersMap.init(self.allocator);
+            errdefer freeWebSearchProvidersMap(&copy_map, self.allocator);
+
+            var it = src.iterator();
+            while (it.next()) |entry| {
+                const key_dup = try self.allocator.dupe(u8, entry.key_ptr.*);
+                errdefer self.allocator.free(key_dup);
+                var copy = entry.value_ptr.*;
+                copy.url = try self.allocator.dupe(u8, copy.url);
+                errdefer self.allocator.free(copy.url);
+                copy.curl = try self.allocator.dupe(u8, copy.curl);
+                errdefer self.allocator.free(copy.curl);
+                if (copy.key) |k| {
+                    copy.key = try self.allocator.dupe(u8, k);
+                    errdefer self.allocator.free(copy.key.?);
+                }
+                if (copy.description) |d| {
+                    copy.description = try self.allocator.dupe(u8, d);
+                    errdefer self.allocator.free(copy.description.?);
+                }
+                copy_map.put(key_dup, copy) catch |err| return err;
+            }
+            config.web_search = copy_map;
+        }
 
         if (self.mcpServers_parsed) |existing| {
             const mcp_str_owned = std.json.Stringify.valueAlloc(self.allocator, existing.value, .{}) catch {
@@ -5657,4 +5897,149 @@ test "parseApplyMode maps the known values and is safe on absent input" {
     try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.propose, parseApplyMode("PROPOSE"));
     try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.propose, parseApplyMode(""));
     try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.propose, parseApplyMode("nonsense"));
+}
+
+// ───────────────────── tests: web_search provider config (Task 1) ──────────
+
+/// Parse a `web_search` body the way `init` does, then free it. Returns an
+/// owned map the caller must release with `freeTestProviders`.
+fn parseTestProviders(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+) !LlmConfig.WebSearchProvidersMap {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    return LlmConfig.parseWebSearchProvidersMap(allocator, parsed.value);
+}
+
+fn freeTestProviders(m: *LlmConfig.WebSearchProvidersMap, allocator: std.mem.Allocator) void {
+    LlmConfig.freeWebSearchProvidersMap(m, allocator);
+}
+
+test "web_search: a two-provider map round-trips every string field" {
+    const alloc = std.testing.allocator;
+    var providers = try parseTestProviders(alloc,
+        \\{"tinyfish":{"url":"https://api.search.tinyfish.ai","key":"skkkk",
+        \\  "curl":"https://api.search.tinyfish.ai?query=X -H \"X-API-Key: {key}\"",
+        \\  "description":"Best for news"},
+        \\ "brave":{"url":"https://api.search.brave.com","key":"sk-brave",
+        \\  "curl":"https://api.search.brave.com/res/v1/web/search?q=X","enabled":false}}
+    );
+    defer freeTestProviders(&providers, alloc);
+
+    try std.testing.expectEqual(@as(usize, 2), providers.count());
+
+    const tf = providers.get("tinyfish").?;
+    try std.testing.expectEqualStrings("https://api.search.tinyfish.ai", tf.url);
+    try std.testing.expectEqualStrings("skkkk", tf.key.?);
+    try std.testing.expectEqualStrings("Best for news", tf.description.?);
+    try std.testing.expect(tf.enabled);
+    try std.testing.expect(tf.isUsable());
+
+    const bv = providers.get("brave").?;
+    try std.testing.expect(!bv.enabled);
+    try std.testing.expect(!bv.isUsable());
+}
+
+test "web_search: `key` is optional — a self-hosted provider has none" {
+    const alloc = std.testing.allocator;
+    var providers = try parseTestProviders(alloc,
+        \\{"searxng":{"url":"https://search.example.net",
+        \\  "curl":"https://search.example.net/search?q=X&format=json"}}
+    );
+    defer freeTestProviders(&providers, alloc);
+
+    const sx = providers.get("searxng").?;
+    try std.testing.expectEqual(@as(?[]const u8, null), sx.key);
+    try std.testing.expectEqual(@as(?[]const u8, null), sx.description);
+    // No credential is fine — the provider is still usable.
+    try std.testing.expect(sx.isUsable());
+}
+
+test "web_search: an empty-string key is normalised to absent, never stored" {
+    const alloc = std.testing.allocator;
+    var providers = try parseTestProviders(alloc,
+        \\{"x":{"url":"https://e.com","key":"","curl":"https://e.com?q=X"}}
+    );
+    defer freeTestProviders(&providers, alloc);
+
+    // `SqliteBackend.exec` binds "" as SQL NULL, so a blank credential is
+    // the exact shape that survives a JSON round-trip while meaning unset.
+    // Normalising it here keeps `isUsable` a single rule.
+    try std.testing.expectEqual(@as(?[]const u8, null), providers.get("x").?.key);
+}
+
+test "web_search: an entry missing `url` or `curl` is skipped, siblings survive" {
+    const alloc = std.testing.allocator;
+    var providers = try parseTestProviders(alloc,
+        \\{"no_url":{"key":"k","curl":"https://a.com?q=X"},
+        \\ "no_curl":{"url":"https://b.com","key":"k"},
+        \\ "numeric":{"url":123,"curl":"https://c.com?q=X"},
+        \\ "good":{"url":"https://good.com","key":"k","curl":"https://good.com?q=X"}}
+    );
+    defer freeTestProviders(&providers, alloc);
+
+    // One bad paste must not take every other provider down with it.
+    try std.testing.expectEqual(@as(usize, 1), providers.count());
+    try std.testing.expect(providers.get("good") != null);
+    try std.testing.expect(providers.get("no_url") == null);
+    try std.testing.expect(providers.get("no_curl") == null);
+    try std.testing.expect(providers.get("numeric") == null);
+}
+
+test "web_search: non-string `key`/`description`/`enabled` degrade, not crash" {
+    const alloc = std.testing.allocator;
+    var providers = try parseTestProviders(alloc,
+        \\{"p":{"url":"https://e.com","key":42,
+        \\  "curl":"https://e.com?q=X","description":["a"],"enabled":"yes"}}
+    );
+    defer freeTestProviders(&providers, alloc);
+
+    const p = providers.get("p").?;
+    try std.testing.expectEqual(@as(?[]const u8, null), p.key);
+    try std.testing.expectEqual(@as(?[]const u8, null), p.description);
+    // A non-bool `enabled` means true, mirroring McpServerConfig.
+    try std.testing.expect(p.enabled);
+}
+
+test "web_search: a non-object body yields an empty map, not an error" {
+    const alloc = std.testing.allocator;
+    var providers = try parseTestProviders(alloc, "[1,2,3]");
+    defer freeTestProviders(&providers, alloc);
+    try std.testing.expectEqual(@as(usize, 0), providers.count());
+
+    var empty = try parseTestProviders(alloc, "{}");
+    defer freeTestProviders(&empty, alloc);
+    try std.testing.expectEqual(@as(usize, 0), empty.count());
+}
+
+test "web_search: the config `curl` keeps the literal {key} and never the secret" {
+    const alloc = std.testing.allocator;
+    var providers = try parseTestProviders(alloc,
+        \\{"p":{"url":"https://e.com","key":"SENTINEL_SECRET_DO_NOT_LEAK",
+        \\  "curl":"https://e.com?q=X -H \"X-API-Key: {key}\""}}
+    );
+    defer freeTestProviders(&providers, alloc);
+
+    const p = providers.get("p").?;
+    // The template carries the placeholder...
+    try std.testing.expect(std.mem.indexOf(u8, p.curl, "{key}") != null);
+    // ...and never the credential. This is the property that makes
+    // `list_web_search_providers` safe to hand to the model with no
+    // redaction logic at all.
+    try std.testing.expect(std.mem.indexOf(u8, p.curl, "SENTINEL_SECRET_DO_NOT_LEAK") == null);
+}
+
+test "web_search: `isUsable` rejects an entry the dispatcher cannot run" {
+    const base = LlmConfig.WebSearchProviderEntry{
+        .url = "https://e.com",
+        .curl = "https://e.com?q=X",
+        .key = "k",
+    };
+    try std.testing.expect(base.isUsable());
+
+    try std.testing.expect(!(LlmConfig.WebSearchProviderEntry{ .url = "", .curl = base.curl, .key = "k" }).isUsable());
+    try std.testing.expect(!(LlmConfig.WebSearchProviderEntry{ .url = base.url, .curl = "", .key = "k" }).isUsable());
+    try std.testing.expect(!(LlmConfig.WebSearchProviderEntry{ .url = base.url, .curl = base.curl, .key = "" }).isUsable());
+    try std.testing.expect(!(LlmConfig.WebSearchProviderEntry{ .url = base.url, .curl = base.curl, .key = "k", .enabled = false }).isUsable());
 }

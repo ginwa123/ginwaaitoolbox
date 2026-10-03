@@ -23,7 +23,7 @@ A stale entry here is a red build that names the one file to edit.
 
 from __future__ import annotations
 
-# Mirrors `DEFAULT_AGENT_TOOLS` — 28 names, sorted ASC, matching the
+# Mirrors `DEFAULT_AGENT_TOOLS` — 30 names, sorted ASC, matching the
 # wire order of `GET /api/agents/:agent_id/tools`.
 DEFAULT_AGENT_TOOLS: list[str] = [
     "add_document",
@@ -36,6 +36,7 @@ DEFAULT_AGENT_TOOLS: list[str] = [
     "glob",
     "list_directory",
     "list_sub_agent",
+    "list_web_search_providers",
     "load_memory",
     "present_files",
     "read_file",
@@ -53,6 +54,7 @@ DEFAULT_AGENT_TOOLS: list[str] = [
     "use_tool",
     "used_tools",
     "view_tool",
+    "web_search",
     "write_file",
 ]
 

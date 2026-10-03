@@ -256,3 +256,86 @@ multi-select) with digit shortcuts, an "Other" textarea, Send / Skip, a
 answered / skipped / abandoned / unavailable. The pending card carries the
 whole question in its envelope, so it renders identically live and after a
 reload.
+
+## `list_web_search_providers`
+
+Takes **no arguments**. Lists the web-search providers the user configured,
+each with a ready-to-edit `curl` template. Call it before your first
+`web_search` of a session — the providers are not built into the app, so
+there is nothing to guess from.
+
+It exists because the agent cannot otherwise know which search backends are
+available, and a wrong guess costs a wasted round trip plus a confusing
+error. The tool is default-on, so it is always available.
+
+**Output to LLM:**
+```json
+{"providers": [{"name": "tinyfish", "url": "https://api.search.tinyfish.ai",
+                "description": "Best for news. Free tier: 1000/day.",
+                "curl": "https://api.search.tinyfish.ai?query=PLACEHOLDER&location=US -H \"X-API-Key: {key}\""}]}
+```
+
+`curl` is a **template**: it carries the literal text `{key}` where the
+user's credential goes. The credential itself is never in this response,
+and never in the agent's context at all.
+
+**Frontend rendering:** `ListSearchProviders.vue` — provider name, url,
+description, and the template in a monospace block.
+
+## `web_search`
+
+Performs a real Google-style web search through one of the user's
+configured providers. For the **open internet** — use `search` and `glob`
+for this repository; they are faster, local, and do not spend the user's
+quota.
+
+The request is a curl string you build from the provider's template:
+replace the placeholder with your search text, leave `{key}` exactly where
+it is, and adjust any other parameter you need (`location`, `language`,
+`count`, …). You never see the credential — the backend substitutes it.
+
+**Input** (JSON object):
+- `provider` (required): a provider name exactly as `list_web_search_providers` returned it
+- `curl` (required): the request, built by editing that provider's template
+
+**The backend checks the host.** The request's host must exactly match the
+host the user pinned for that provider, and the check runs **before** the
+key is substituted. A mismatch is refused with `host_mismatch` and the
+credential is not sent. This is deliberate: without it, a prompt injection
+in a page the agent reads could point a credentialed request at a host of
+its choosing.
+
+**GET only.** `-X`, `-d`, `-o` and `--upload-file` are rejected by name —
+silently ignoring `-X POST` would send something other than what you
+asked for while appearing to succeed.
+
+**Output to LLM** on success:
+```json
+{"provider": "tinyfish", "status": 200, "response": { …the provider's own JSON… }}
+```
+
+`response` is passed through **verbatim and untyped**. Every provider has a
+different result shape — TinyFish returns `{results:[…]}`, Brave
+`{web:{results:[…]}}`, Serper `{organic:[…]}`, a self-hosted SearxNG a bare
+`[…]`. Read what came back rather than assuming a schema; there is
+deliberately no normalised result shape.
+
+**Output to LLM** on failure — the envelope carries `error` plus a named
+flag: `configured:false`, `unknown_provider` (with `available`),
+`host_mismatch` (with `pinned_host` and `requested_host`), `invalid_curl`,
+`exhausted` (with `other_providers`), `missing_key_site`,
+`unexpected_key_site`, `unsafe_pinned_url`, `response_too_large`,
+`http_status`, or a bare transport failure.
+
+When a provider's quota is exhausted the error names the **other configured
+providers** — retry with one of those and a curl built from its template.
+
+**Configuring a provider** (Settings → Web Search, or `config.json`): for
+each provider a `url` (the host pin — must be `https`, not
+loopback/private/link-local), a `key` (optional; omit the field rather
+than sending `""`), a `curl` template, an optional `description`, and
+`enabled`. A new provider needs no code change.
+
+**Frontend rendering:** `WebSearch.vue` — a `results`-array convention when
+the provider uses one, otherwise formatted JSON, plus a provider badge and
+the reason flags.

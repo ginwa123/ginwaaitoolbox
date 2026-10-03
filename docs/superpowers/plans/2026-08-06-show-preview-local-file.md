@@ -107,6 +107,9 @@ These are the 4 browser-native formats. AVIF, HEIC, TIFF, BMP, etc. are delibera
 - HTTP-served preview files (new endpoint + token issuance + cleanup) — out of scope per the plan
 - More image formats (AVIF, HEIC, TIFF, BMP) — pre-conversion is fine for v1
 - Image resize / format conversion — server returns file as-is; browser handles display sizing
-- URL-based path (`http://`, `s3://`) — `web_search` / `nalar_browser` already cover URL fetching
+- URL-based path (`http://`, `s3://`) — **stale as of 2026-10-02**: `web_search` is now a
+  real web *search* tool (plan 2026-10-02-web-search-tool.md), not a URL fetcher. The
+  old shim that shelled out to `agent-browser snapshot` is gone. For fetching a URL, use
+  the `command` tool.
 - Adding `path` to the system prompts (`src/modules/agent/prompts.zig`) — the tool's own description (updated here) is what the LLM sees; a follow-up plan can add a prompt-level mention
 - Sandboxing (allow-list of dirs) — same threat model as `read_file`; defer until user asks

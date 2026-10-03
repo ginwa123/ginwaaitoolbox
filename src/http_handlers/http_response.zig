@@ -409,6 +409,11 @@ pub const NalarConfigResponse = struct {
     /// slices — the caller keeps the parsed config alive until the
     /// response is serialized.
     tools: ?[]const []const u8 = null,
+    /// Configured web-search providers, keyed by provider name. The
+    /// credential in each entry is MASKED on the way out (see
+    /// `maskWebSearchProviders`), and `PUT` treats the mask as "unchanged".
+    /// Borrowed — the caller keeps the source alive until serialization.
+    web_search: ?std.json.Value = null,
     /// Skill Evals switch + knobs, echoed so the Settings toggle can
     /// render the current state. Borrowed slices — the caller must keep
     /// the parsed config alive until the response is serialized.

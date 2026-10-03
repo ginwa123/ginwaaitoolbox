@@ -75,6 +75,8 @@ import RemoveSkill from '../tool_outputs/RemoveSkill.vue'
 import RemoveFile from '../tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from '../tool_outputs/SpawnSubAgent.vue'
 import GenerateImage from '../tool_outputs/GenerateImage.vue'
+import WebSearch from '../tool_outputs/WebSearch.vue'
+import ListSearchProviders from '../tool_outputs/ListSearchProviders.vue'
 import SetGitWorktree from '../tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from '../tool_outputs/ReadCompactedMessages.vue'
 import KanbanMove from '../tool_outputs/KanbanMove.vue'
@@ -5080,6 +5082,27 @@ const compactSession = async () => {
                           -->
                           <GenerateImage
                             v-else-if="msg.tool_name === 'generate_image'"
+                            :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                          />
+                          <!--
+                            `web_search` + `list_web_search_providers`.
+                            The provider's answer is UNTYPED passthrough
+                            (D13), so the search card renders one
+                            convention — a top-level `results` array — and
+                            pretty-prints anything else. The listing card
+                            shows each provider's curl TEMPLATE, which
+                            carries `{key}` and never the key itself.
+                          -->
+                          <WebSearch
+                            v-else-if="msg.tool_name === 'web_search'"
+                            :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                          />
+                          <ListSearchProviders
+                            v-else-if="msg.tool_name === 'list_web_search_providers'"
                             :content="innerToolData(msg)"
                             :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"

@@ -4465,6 +4465,41 @@ export interface McpServer {
 }
 
 /**
+ * One entry of the top-level `web_search` map in `config.json` — the
+ * wire shape of a single web-search provider. The map key is the
+ * provider name the agent passes to `web_search`; the agent discovers
+ * the names through `list_web_search_providers`.
+ *
+ * `key` and `description` are OMITTED when absent, never sent as `""` —
+ * a self-hosted provider has no credential and `"key": ""` is not the
+ * same thing to the backend (an empty slice binds as SQL NULL, and
+ * `isUsable` treats it as a declared-but-blank credential).
+ *
+ * `key` may come back MASKED rather than as the secret, so the value the
+ * form holds is not necessarily the credential. Round-tripping it
+ * unchanged is therefore required — replacing it with `""` would blank
+ * the stored secret. See `components/nalar/webSearchProviders.ts`.
+ */
+export interface NalarWebSearchProvider {
+  /** Host pin. The ONLY host whose requests may carry `key`. Must be
+   *  `https` and must not name a loopback, private or link-local host. */
+  url: string
+  /** Credential, stored separately from `curl` so nothing derived from
+   *  the template can leak it. Optional. */
+  key?: string
+  /** Request template copied from the provider's docs, carrying the
+   *  literal text `{key}` where the credential goes. Must contain
+   *  `{key}` when the provider declares a `key`, and must NOT when it
+   *  does not. */
+  curl: string
+  /** Free-text note about when to prefer this provider. Optional. */
+  description?: string
+  /** Defaults to true. `false` keeps the provider configured but hides
+   *  it from `list_web_search_providers`. */
+  enabled?: boolean
+}
+
+/**
  * The Skill Evals block of `config.json`, as the wire carries it
  * (snake_case, matching `SkillEvalsJson` in `Config.zig`).
  *
@@ -4517,6 +4552,17 @@ export interface NalarConfig {
    * replaces the whole list.
    */
   tools?: string[] | null
+  /**
+   * Map of web-search provider name to its configuration — the
+   * top-level `web_search` key in config.json. Keys of this map are the
+   * names the agent passes to `web_search`'s `provider` argument; the
+   * agent discovers them through `list_web_search_providers`.
+   *
+   * `null` / absent = the key is not in config.json. Sent verbatim to
+   * the backend on save; see `NalarWebSearchProvider` for the value
+   * shape and the rules the backend enforces on it.
+   */
+  web_search?: Record<string, NalarWebSearchProvider> | null
   /**
    * @deprecated Per-profile only (plan 2026-09-04-subagents-per-profile).
    * The backend (`GET /api/config/nalar`) always returns `sub_agents: null`

@@ -179,12 +179,6 @@ const renderTool = (content: string, tool_name: string | undefined): string => {
     return `<span class="tool-inline">${tool_name} → ${escapeHtml(dirPath)} (${dirCount} ${plural})</span>`
   }
 
-  if (tool_name === 'web_search') {
-    const mathQuery = content.match(/<query>(.*?)<\/query>/) || content.match(/"(.*?)"/)
-    const query = mathQuery ? mathQuery[1] : null
-    return `<span class="tool-inline">${tool_name} → "${query || 'unknown'}"</span>`
-  }
-
   if (tool_name === 'mcp_context7_query-docs' || tool_name === 'context7') {
     const mathQuery = content.match(/<query>(.*?)<\/query>/)
     const query = mathQuery ? mathQuery[1] : null
@@ -209,11 +203,18 @@ const renderTool = (content: string, tool_name: string | undefined): string => {
     return `<span class="tool-inline">${tool_name} → ${escapeHtml(preview || 'ok')}${suffix}</span>`
   }
 
+  // Bare name: the card is the answer, and a one-line chip cannot hold it.
+  // `web_search` used to preview the query here, but its result is an
+  // untyped provider payload — the provider NAME is the only field this
+  // envelope guarantees, and a chip that reads `web_search → "tinyfish"`
+  // (the first quoted string in the JSON) describes nothing.
   if (
     tool_name === 'search_skills' ||
     tool_name === 'use_skill' ||
     tool_name === 'add_skill' ||
-    tool_name === 'edit_skill'
+    tool_name === 'edit_skill' ||
+    tool_name === 'web_search' ||
+    tool_name === 'list_web_search_providers'
   ) {
     return `<span class="tool-inline">${tool_name}</span>`
   }

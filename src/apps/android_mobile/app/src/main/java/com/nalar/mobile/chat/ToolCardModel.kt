@@ -36,6 +36,17 @@ enum class ToolKind {
     KanbanList,
     PresentFiles,
     GenerateImage,
+    /**
+     * `web_search` and its discovery call.
+     *
+     * No typed body on purpose: the search result is the provider's own JSON,
+     * untyped passthrough (D13), so `ToolBody.Raw` — which pretty-prints
+     * whatever arrived — is the correct rendering, not a fall-through. The
+     * two kinds exist so a card can label the row and take `provider` as its
+     * primary, instead of arriving here as an unknown tool.
+     */
+    WebSearch,
+    ListSearchProviders,
     Worktree,
     SessionReader,
     Progressive,
@@ -570,6 +581,8 @@ object ToolCard {
         toolName == "kanban_list" -> ToolKind.KanbanList
         toolName == "present_files" -> ToolKind.PresentFiles
         toolName == "generate_image" -> ToolKind.GenerateImage
+        toolName == "web_search" -> ToolKind.WebSearch
+        toolName == "list_web_search_providers" -> ToolKind.ListSearchProviders
         toolName == "set_git_worktree" -> ToolKind.Worktree
         toolName == "read_workspace_session" -> ToolKind.SessionReader
         else -> ToolKind.Raw
@@ -889,6 +902,18 @@ object ToolCard {
 
             ToolKind.Mcp -> ToolBody.Mcp(message.content)
 
+            // Both web-search tools carry an UNTYPED provider payload (D13):
+            // TinyFish returns `{results:[...]}`, Brave `{web:{results:[...]}}`,
+            // Serper `{organic:[...]}`, a self-hosted SearxNG a bare `[{...}]`.
+            // There is no shape to destructure without silently discarding the
+            // ones this build has never heard of, so `ToolBody.Raw`
+            // pretty-prints whatever arrived. The two kinds still exist as
+            // distinct cases so `primaryParameterKeys` can label a pending
+            // row with `provider` instead of a path.
+            ToolKind.WebSearch,
+            ToolKind.ListSearchProviders,
+            -> ToolBody.Raw(ToolOutput.fallbackBodyText(data))
+
             // The web's generic fallback shows the diff *whenever* the row
             // carries one, on top of the pill. A tool this client has no
             // renderer for that arrived with `diffview_before`/`after` is
@@ -977,6 +1002,9 @@ object ToolCard {
         ToolKind.KanbanMove -> listOf("task_name", "task_id")
         ToolKind.Worktree -> listOf("path", "branch")
         ToolKind.GenerateImage -> listOf("model", "prompt")
+        // The provider is the only identity a search envelope has, and a
+        // placeholder row carries no result to name it from.
+        ToolKind.WebSearch -> listOf("provider")
         ToolKind.Mcp -> listOf("server", "tool")
         else -> listOf(PATH_KEY)
     }
