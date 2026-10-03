@@ -299,6 +299,7 @@ pub const gitCommitFileDiffHandler = @import("git_commits.zig").gitCommitFileDif
 pub const gitPrCreateHandler = @import("git_pr_create.zig").gitPrCreateHandler;
 pub const gitPrDiffHandler = @import("git_pr_diff.zig").gitPrDiffHandler;
 pub const gitPrStatusHandler = @import("git_pr_status.zig").gitPrStatusHandler;
+pub const gitPrConflictsHandler = @import("git_pr_conflicts.zig").gitPrConflictsHandler;
 
 // Queue messages handlers
 pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;

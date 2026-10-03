@@ -698,6 +698,7 @@ pub fn main(init: std.process.Init) !void {
     try authed.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
     try authed.get("/api/git/pr/status", ai_mod.http_handlers.gitPrStatusHandler);
     try authed.get("/api/git/pr/diff", ai_mod.http_handlers.gitPrDiffHandler);
+    try authed.get("/api/git/pr/conflicts", ai_mod.http_handlers.gitPrConflictsHandler);
     try authed.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
     // File download for the `present_files` agent tool card
     // (PresentFiles.vue). Literal path under a fresh `/api/files/`
