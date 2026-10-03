@@ -11,8 +11,8 @@ Pre-flight (2026-10-03):
 
 | # | Task | State | Commit |
 |---|---|---|---|
-| 1 | Migration 101 + `secrets_store.zig` | todo | — |
-| 2 | `secrets_substitution.zig` (substitute + redact) | todo | — |
+| 1 | Migration 101 + `secrets_store.zig` | **done** | `71a99e08` (+`f6a6b1ca`) |
+| 2 | `secrets_substitution.zig` (substitute + redact) | **done** | `d44ae03f` |
 | 3 | Wire dispatchTool + MCP branch; assert DB keeps placeholder | todo | — |
 | 4 | `list_secrets` tool + registry + allowlist bypass + prompt rule | todo | — |
 | 5 | HTTP handlers + routes | todo | — |
@@ -21,6 +21,23 @@ Pre-flight (2026-10-03):
 | 8 | Docs + PR | todo | — |
 
 Gate for every task: `zig build test` green (plus `vue-tsc` + vitest from Task 6 on).
+
+## Progress log
+
+- Tasks 1 + 2 dispatched in parallel (independent leaf modules). Both landed in
+  the same worktree.
+- Gate after both, plus two fixes found in review: `8/8 steps succeeded;
+  4352/4362 tests passed (10 skipped)`, exit 0. Note: the run emits a spurious
+  `failed command: .../test --listen=-` line immediately BEFORE the success
+  summary — it is not a failure signal. Trust the Build Summary + exit code.
+- 11 tests in `secrets_store.zig`, 15 in `secrets_substitution.zig`.
+- Task 2's module verified pure: imports only `std`; the `handle_tool` /
+  `File` grep hits are all `//!` doc comments.
+- REVIEW FIXES applied to Task 1:
+  1. Dropped `idx_workspace_secrets_workspace` — byte-identical column pair to
+     `uq_workspace_secrets_name`; a unique index already serves the lookup.
+  2. Added the `workspace_secrets` child-delete to `workspace_delete.zig`, which
+     the Task 1 brief had omitted.
 
 ## Non-negotiables (from the plan's Global Constraints)
 
