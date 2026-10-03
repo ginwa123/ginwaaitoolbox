@@ -65,7 +65,9 @@ const MAX_FETCH_DETAIL: usize = 500;
 /// Store a trimmed + capped copy of `msg` into `slot` (best-effort;
 /// leaves `slot` null on empty input or alloc failure so callers can
 /// fall back to the generic hint). Allocs from the request arena.
-fn setFetchDetail(allocator: std.mem.Allocator, slot: *?[]u8, msg: []const u8) void {
+/// `pub` so `git_pr_checks.zig` reuses it rather than growing a second,
+/// subtly different error-detail formatter.
+pub fn setFetchDetail(allocator: std.mem.Allocator, slot: *?[]u8, msg: []const u8) void {
     const trimmed = std.mem.trim(u8, msg, " \n\r\t");
     if (trimmed.len == 0) return;
     const take = @min(trimmed.len, MAX_FETCH_DETAIL);
@@ -369,7 +371,11 @@ fn useCaseWithPrograms(
 /// pointed at. Falling back to the remote is what makes
 /// `GET /api/git/pr/status?path=<gitlab-repo>` answer with a `glab`
 /// lookup instead of a `gh` failure.
-fn resolveProvider(
+///
+/// `pub` so `git_pr_checks.zig` asks the same three questions in the
+/// same order — two endpoints that disagree about which forge a repo
+/// belongs to would show a GitHub user GitLab error text.
+pub fn resolveProvider(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
@@ -922,9 +928,9 @@ fn gitProbeIsEnvHijacked(allocator: std.mem.Allocator, empty_dir: []const u8) bo
 /// `testing.allocator`, so they have to give the copies back.
 fn freeResponse(a: std.mem.Allocator, res: http_response.GitPrStatusResponse) void {
     inline for (.{
-        res.provider,  res.pr_url,       res.title,       res.state,
-        res.status,    res.mergeable,   res.merge_state, res.head_ref,
-        res.base_ref,  res.author,      res.created_at,   res.updated_at,
+        res.provider,  res.pr_url,    res.title,       res.state,
+        res.status,    res.mergeable, res.merge_state, res.head_ref,
+        res.base_ref,  res.author,    res.created_at,  res.updated_at,
         res.merged_at, res.closed_at,
     }) |s| a.free(s);
 }

@@ -771,6 +771,69 @@ pub fn makeGitPrStatusResponse(allocator: std.mem.Allocator, response: GitPrStat
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+// ─── Git PR checks types ──────────────────────────────────────────────────
+// Wire shape for `GET /api/git/pr/checks?path=<repo>[&pr=<n|url>][&provider=]`.
+// One row per CI job, plus the steps inside a failed one — "which job failed"
+// is already on the PR page; "which process or task failed" is not.
+pub const GitPrCheckStep = struct {
+    name: []const u8 = "",
+    /// Position in the job's step list. 0 when the CLI omitted it.
+    number: u32 = 0,
+    /// `success` | `failure` | `cancelled` | `skipped` | `neutral` |
+    /// `timed_out`, or "" while the step runs.
+    conclusion: []const u8 = "",
+    /// `queued` | `in_progress` | `completed`.
+    status: []const u8 = "",
+    started_at: []const u8 = "",
+    completed_at: []const u8 = "",
+};
+
+pub const GitPrCheckEntry = struct {
+    name: []const u8 = "",
+    /// Owning workflow ("ci", "release"). Empty for an app-posted status.
+    workflow: []const u8 = "",
+    /// gh's rollup of `state`: pass | fail | pending | skipping | cancel. The UI
+    /// switches on this; `state` is free-form text.
+    bucket: []const u8 = "",
+    /// Raw forge state, for display and debugging.
+    state: []const u8 = "",
+    /// Deep link to the job. Empty when the status has no web UI.
+    link: []const u8 = "",
+    started_at: []const u8 = "",
+    completed_at: []const u8 = "",
+    /// Steps, for failed / cancelled jobs only (see the handler). Empty is a
+    /// legitimate answer, not a failure.
+    steps: []const GitPrCheckStep = &.{},
+    /// Why `steps` is empty when we tried and failed. Renders inline so "could
+    /// not read the steps" never looks like "there were none".
+    steps_error: []const u8 = "",
+};
+
+pub const GitPrChecksSummary = struct {
+    total: u32 = 0,
+    passed: u32 = 0,
+    failed: u32 = 0,
+    pending: u32 = 0,
+    skipped: u32 = 0,
+    cancelled: u32 = 0,
+};
+
+pub const GitPrChecksResponse = struct {
+    /// Always "github" today — other forges get a 422, not invented rows.
+    provider: []const u8 = "",
+    /// Echoed back so the panel can label itself when `pr` was a branch name.
+    pr_url: []const u8 = "",
+    checks: []const GitPrCheckEntry = &.{},
+    summary: GitPrChecksSummary = .{},
+    /// The run-lookup budget ran out and some failed jobs have no steps. The
+    /// panel says so instead of showing a quietly partial list.
+    steps_truncated: bool = false,
+};
+
+pub fn makeGitPrChecksResponse(allocator: std.mem.Allocator, response: GitPrChecksResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 // ─── Git branches list types ──────────────────────────────────────────────
 // Wire shape for `GET /api/git/branches?path=<repo>`. Consumed by the
 // kanban "New task" dialog's base-branch picker so the user can choose
