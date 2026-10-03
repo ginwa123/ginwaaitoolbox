@@ -37,6 +37,7 @@ import pytest
 from harness import (
     FunctionalHarness,
     REQUIRED_TMP_SUBSTR,
+    _pid_is_alive,
     _reap_orphan_test_pids,  # added by the patch — see test_boot_writes_pidfile
 )
 
@@ -61,21 +62,18 @@ def _spawn_long_lived_child() -> subprocess.Popen[bytes]:
 
 
 def _pid_alive(pid: int) -> bool:
-    """Return True iff ``pid`` exists and we own it (kill -0 succeeds).
+    """Return True iff ``pid`` names a live process.
 
-    NOTE: a zombie process reports alive here (kill -0 succeeds). For
-    the test, we follow kill-with-waitpid (the test runner is the
-    parent) to drain the zombie before asserting "dead".
-
-    Broad ``OSError`` (not just ProcessLookupError): on Windows a
-    dead pid raises ``[WinError 87] The parameter is incorrect``,
-    which must count as dead.
+    Delegates to the harness's own probe rather than repeating an
+    ``os.kill(pid, 0)`` here. That call cannot answer the question on
+    Windows: it raises ``[WinError 87]`` for a pid that never existed (so
+    "dead" happens to be right) but returns cleanly for a pid that has
+    already exited (so a dead nalar reads as alive). The harness now
+    probes with OpenProcess/WaitForSingleObject, and a test that graded
+    the reaper against a different, weaker definition of "alive" would
+    quietly stop testing what ships.
     """
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    return _pid_is_alive(pid)
 
 
 def _pid_state(pid: int) -> str | None:
@@ -105,9 +103,9 @@ def _force_kill_child(child: subprocess.Popen[bytes]) -> None:
     try:
         os.kill(child.pid, sig)
     except OSError:
-        # Already dead (POSIX ESRCH) or Windows [WinError 87] for a
-        # dead pid. Either way there is nothing to kill; swallowing
-        # here keeps finally-blocks from masking the test result.
+        # Already dead (POSIX ESRCH) or Windows [WinError 87]. Either way
+        # there is nothing to kill; swallowing here keeps finally-blocks
+        # from masking the test result.
         pass
 
 
@@ -121,7 +119,7 @@ def _reap_child_zombie(child: subprocess.Popen[bytes], timeout: float = 2.0) -> 
 
     After reap() kills the nalar child, the child becomes a zombie
     (state=Z) until its parent (the test runner, via Popen) calls
-    waitpid. Without this, ``os.kill(pid, 0)`` keeps reporting "alive"
+    waitpid. Without this, a liveness probe keeps reporting "alive"
     even though reap's job is done.
     """
     try:

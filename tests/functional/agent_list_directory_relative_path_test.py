@@ -53,6 +53,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -314,7 +315,22 @@ def test_list_directory_relative_path_does_not_abort_worker(default_nalar_bin: A
             f"tool returned an error envelope instead of a listing: {envelope}"
         )
         expected_dir = str(ws / RELATIVE_PATH)
-        assert envelope["data"]["path"] == expected_dir, (
+        # Compare NORMALISED, and say why.
+        #
+        # The assertion is about "the relative path resolved against the
+        # session cwd", not about which separator character the wire format
+        # uses. `ws / RELATIVE_PATH` goes through pathlib and therefore
+        # yields backslashes on Windows, while the server composes the
+        # resolved path with `/` — so a byte comparison failed on Windows
+        # with `frontend\src` vs `frontend/src` while passing on Linux and
+        # macOS.
+        #
+        # Both spellings are a valid path for the Windows API, so neither side
+        # is wrong and there is nothing here to fix in the product.
+        # `os.path.normpath` is the platform's own answer to "are these the
+        # same path", which is exactly the question being asked.
+        got_dir = os.path.normpath(envelope["data"]["path"])
+        assert got_dir == os.path.normpath(expected_dir), (
             f"relative path must resolve against the SESSION cwd {expected_dir!r}, "
             f"got {envelope['data']['path']!r}"
         )

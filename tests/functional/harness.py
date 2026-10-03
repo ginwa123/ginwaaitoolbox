@@ -52,6 +52,7 @@ import shlex
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -98,6 +99,94 @@ REQUIRED_TMP_SUBSTR = "nalar-func-"
 #: ``SIGTERM`` already maps to TerminateProcess on Windows, so it is
 #: the correct fallback there.
 _SIGKILL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+#: Every environment variable ``boot()`` shadows in the PARENT process.
+#: Only used on Windows — Linux/mac shadow the CHILD env only, leaving the
+#: parent's environment alone.
+#:
+#: Listed explicitly (rather than diffing a snapshot against ``os.environ``)
+#: so the set of things the harness mutates process-globally is greppable.
+#: See ``boot`` / ``teardown`` for why the snapshot has to distinguish
+#: "absent" from "set to the empty string".
+_SHADOWED_ENV_KEYS = (
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+)
+
+
+#: Process-wide baseline for the Windows parent-env shadow.
+#:
+#: A per-harness snapshot is NOT enough when two harnesses overlap. The inner
+#: one snapshots the environment while the outer's shadow is already active, so
+#: its "original" value is the outer's shadowed tempdir -- and once the outer
+#: tempdir is gone, restoring that baseline leaves the parent pointing into a
+#: deleted directory.
+#:
+#: Measured, with two real ``boot()`` harnesses and the outer tearing down
+#: first (both orders now correct):
+#:
+#:     after both teardowns (outer-first)
+#:       DIRTY HOME:       None -> '...\Temp\nalar-func-x94db7s6'  exists=False
+#:       DIRTY USERPROFILE: 'C:\Users\ginwa' -> '...\nalar-func-x94db7s6'  exists=False
+#:       DIRTY APPDATA:    'C:\Users\ginwa\AppData\Roaming'
+#:                         -> '...\nalar-func-x94db7s6\AppData\Roaming'  exists=False
+#:       DIRTY LOCALAPPDATA: ... exists=False
+#:
+#: An ``APPDATA`` pointing at a removed directory is what makes the next nalar
+#: die inside ``Config.zig:getDefaultConfigPath``, before reaching the code the
+#: next test is exercising.
+#:
+#: So every harness restores against the value the environment had before the
+#: OUTERMOST one shadowed it, and the baseline is released when the last one
+#: tears down.
+_ENV_BASELINE: dict[str, str | None] | None = None
+_ENV_BASELINE_OWNERS = 0
+
+
+def acquire_parent_env_baseline() -> dict[str, str | None]:
+    """Register a shadow participant and return the pre-shadow baseline.
+
+    The first caller fixes the baseline; later callers get the same one. Pair
+    every call with :func:`release_parent_env_baseline`.
+    """
+    global _ENV_BASELINE, _ENV_BASELINE_OWNERS
+    if _ENV_BASELINE is None:
+        _ENV_BASELINE = snapshot_parent_env()
+    _ENV_BASELINE_OWNERS += 1
+    return dict(_ENV_BASELINE)
+
+
+def release_parent_env_baseline() -> None:
+    """Drop one shadow participant; clear the baseline when the last leaves."""
+    global _ENV_BASELINE, _ENV_BASELINE_OWNERS
+    if _ENV_BASELINE_OWNERS > 0:
+        _ENV_BASELINE_OWNERS -= 1
+    if _ENV_BASELINE_OWNERS == 0:
+        _ENV_BASELINE = None
+
+
+def snapshot_parent_env() -> dict[str, str | None]:
+    """Exact pre-shadow snapshot of the parent environment.
+
+    ``None`` for a key means "was not set at all", which is different from
+    "was set to the empty string" and has to be represented to make the
+    restore an exact inverse.
+
+    Public because the functional suites that spawn nalar themselves (to
+    pre-write a config.json, or to pass extra flags) construct a
+    ``FunctionalHarness`` by hand instead of calling :meth:`boot`. Without
+    this they had no exact snapshot, defaulted the ``orig_*`` fields to
+    ``""``, and their ``teardown()`` deleted ``USERPROFILE`` / ``APPDATA`` /
+    ``LOCALAPPDATA`` from the parent process — which then broke whichever
+    module ran next.
+    """
+    return {k: os.environ.get(k) for k in _SHADOWED_ENV_KEYS}
 
 #: Port range the harness will scan for a free port. Skip 8081 (the
 #: always-running dev port per project memory). Used by the legacy
@@ -243,6 +332,39 @@ def is_safe_tmp(path: str | os.PathLike[str], orig_home: str | os.PathLike[str])
     return True
 
 
+def _make_tree_writable(root: Path) -> None:
+    """Clear the read-only bit across ``root`` so Windows will let us delete it.
+
+    A read-only file cannot be deleted on Windows. `shutil.rmtree` raises
+
+        PermissionError: [WinError 5] Access is denied:
+          ...\\temp\\nalar-func-8j0gcuas\\branches-repo\\.git\\objects\\08\\585692...
+
+    and the teardown retry loop then sleeps through its entire budget and
+    re-raises, so the tempdir leaks and the test is reported red even though
+    the test itself passed.
+
+    git is the source: it creates loose objects with mode 0444, and any test
+    that makes a real repo in the tempdir (`git_pr_*`, the kanban branch
+    pickers, ...) inherits them. Waiting cannot help, because the attribute is
+    not going to change on its own — the loop was retrying against a permanent
+    condition.
+
+    POSIX has no read-only bit, so this is a no-op there and Linux/macOS
+    teardown is untouched.
+    """
+    if os.name != "nt":
+        return
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+            except OSError:
+                # Already gone, or we cannot touch it. rmtree will report it.
+                pass
+
+
 def harness_path(harness: Any, *parts: str) -> str:
     """Return an absolute path under ``harness``'s isolated tempdir.
 
@@ -313,6 +435,24 @@ class FunctionalHarness:
     pid: int | None = None
     dry_run: bool = False
     _stopped: bool = dataclasses.field(default=False, repr=False)
+    # The Popen handle for the server, kept so liveness can be answered with
+    # `proc.poll()` instead of a hand-rolled platform probe. See
+    # `_wait_dead` for why the hand-rolled version was wrong on Windows.
+    _proc: subprocess.Popen | None = dataclasses.field(default=None, repr=False)
+    # Exact pre-shadow environment snapshot (None == the key was ABSENT) and
+    # the shadowed values we installed. Together they let `teardown` be the
+    # exact inverse of the mutation. See `teardown` for why the orig_*
+    # fields cannot do this. None on a hand-constructed harness.
+    _env_backup: dict[str, str | None] | None = dataclasses.field(
+        default=None, repr=False
+    )
+    _env_shadowed: dict[str, str] = dataclasses.field(
+        default_factory=dict, repr=False
+    )
+    # True when this harness called `acquire_parent_env_baseline()` and so owes
+    # it a matching release. Idempotent teardown must not double-decrement, so
+    # the flag is cleared on first release.
+    _env_owns_baseline: bool = dataclasses.field(default=False, repr=False)
     # Windows original env snapshot (USERPROFILE/APPDATA/LOCALAPPDATA) — empty on POSIX.
     orig_userprofile: str = ""
     orig_appdata: str = ""
@@ -379,6 +519,45 @@ class FunctionalHarness:
         orig_userprofile = os.environ.get("USERPROFILE", "")
         orig_appdata = os.environ.get("APPDATA", "")
         orig_localappdata = os.environ.get("LOCALAPPDATA", "")
+
+        # Exact snapshot of every variable this harness is about to shadow,
+        # distinguishing "was set to X" from "was not set at all".
+        #
+        # The orig_* values above cannot drive the restore, because they are
+        # lossy in two ways that both corrupt the parent environment:
+        #
+        #   * `orig_home` is SYNTHESISED. On Windows HOME is normally unset
+        #     and the line above falls back to USERPROFILE, so `orig_home` is
+        #     a value HOME never held. Restoring it with
+        #     `os.environ["HOME"] = orig_home` ADDS a variable that did not
+        #     exist before.
+        #   * `orig_userprofile` / `orig_appdata` / `orig_localappdata` are
+        #     plain strings, so an originally-absent variable is
+        #     indistinguishable from an empty one, and the restore pops it
+        #     instead of putting back what was there.
+        #
+        # Both were observable. After `http2_tls_test` ran, the parent env had
+        # gained `HOME` and LOST `USERPROFILE`, `APPDATA` and
+        # `LOCALAPPDATA` outright. The next module's nalar then died inside
+        # `Config.zig:getDefaultConfigPath` before reaching the code under
+        # test, which surfaced as a completely unrelated failure
+        # (`server_port_bind_test` asserting on a missing "already in use"
+        # string). Order-dependent, and invisible unless you run the modules
+        # in the unlucky order.
+        #
+        # On Windows this is the PROCESS-WIDE baseline, not a per-harness
+        # snapshot: a per-harness snapshot taken under another harness's shadow
+        # is that shadow, and restoring it leaves the parent pointing into a
+        # deleted tempdir. See `acquire_parent_env_baseline`.
+        #
+        # Only Windows registers: on POSIX nothing is shadowed in the parent,
+        # so there is no baseline to share and `teardown` restores HOME alone.
+        env_owns_baseline = False
+        if os.name == "nt":
+            env_backup = acquire_parent_env_baseline()
+            env_owns_baseline = True
+        else:
+            env_backup = snapshot_parent_env()
 
         # Snapshot XDG envs for isolation and restore. These are used by
         # nalar on Linux for config/state/cache paths (XDG spec). If the
@@ -471,6 +650,29 @@ class FunctionalHarness:
             appdata_local.mkdir(parents=True, exist_ok=True)
             os.environ["APPDATA"] = str(appdata_roaming)
             os.environ["LOCALAPPDATA"] = str(appdata_local)
+        # Record EXACTLY what we installed, so teardown can tell "still ours"
+        # from "someone else's now" and restore precisely. Only Windows
+        # shadows the parent process (Linux/mac keep the parent's env per the
+        # original request), so on POSIX this is empty and teardown falls back
+        # to restoring HOME alone, exactly as it always has.
+        #
+        # Restricted to `_SHADOWED_ENV_KEYS` on purpose. Diffing the WHOLE
+        # environment instead looks equivalent and is a trap: every key we do
+        # not track (`PATH`, `SystemRoot`, `TEMP`, …) has no entry in
+        # `env_backup`, so `env_backup.get(k)` is None, so it compares unequal
+        # to its own current value and lands in `env_shadowed`. Teardown then
+        # "restores" those by popping them, and the parent process loses PATH
+        # and SystemRoot. The damage only shows on the NEXT boot, as
+        # `subprocess.Popen` failing with WinError 267 — which is why the
+        # first harness in a process tears down fine and every one after it
+        # breaks.
+        env_shadowed: dict[str, str] = {}
+        if os.name == "nt":
+            env_shadowed = {
+                k: os.environ[k]
+                for k in _SHADOWED_ENV_KEYS
+                if k in os.environ and os.environ[k] != env_backup.get(k)
+            }
 
         log_path = temp_dir / "nalar.log"
         env = os.environ.copy()
@@ -547,6 +749,10 @@ class FunctionalHarness:
             log_path=log_path,
             pid=proc.pid,
             dry_run=os.environ.get("NALAR_FUNCTIONAL_DRY_RUN") == "1",
+            _proc=proc,
+            _env_backup=env_backup,
+            _env_shadowed=env_shadowed,
+            _env_owns_baseline=env_owns_baseline,
             orig_userprofile=orig_userprofile,
             orig_appdata=orig_appdata,
             orig_localappdata=orig_localappdata,
@@ -653,35 +859,84 @@ class FunctionalHarness:
 
         Idempotent: safe to call twice.
         """
-        # 1. Restore HOME first (so any post-test code sees original env).
-        # HOME is restored on all platforms (Linux/mac keep parent HOME
-        # isolated only via child env, but teardown still ensures original
-        # is back). XDG and Windows vars are restored only on Windows per
-        # user request to not touch Linux/mac.
-        os.environ["HOME"] = self.orig_home
-        if os.name == "nt":
-            for key, orig in (
-                ("XDG_CONFIG_HOME", self.orig_xdg_config_home),
-                ("XDG_STATE_HOME", self.orig_xdg_state_home),
-                ("XDG_DATA_HOME", self.orig_xdg_data_home),
-                ("XDG_CACHE_HOME", self.orig_xdg_cache_home),
-            ):
-                if orig:
-                    os.environ[key] = orig
-                else:
+        # 1. Restore the shadowed variables, as the EXACT inverse of the mutation.
+        #
+        # Two properties, both learned the hard way:
+        #
+        #   EXACT. A key that was ABSENT before must be popped, not set to a
+        #   stand-in. The old code restored `HOME` unconditionally from
+        #   `orig_home`, which on Windows is a value synthesised from
+        #   USERPROFILE because HOME is not set there — so teardown invented a
+        #   HOME that never existed, and popped USERPROFILE / APPDATA /
+        #   LOCALAPPDATA outright because their lossy "" snapshot could not
+        #   tell "absent" from "empty".
+        #
+        #   GUARDED. Only put a key back if it still holds the value THIS
+        #   harness shadowed it to. Two harnesses can be alive at once (a
+        #   module-scoped one plus a per-test one, or a test that boots its
+        #   own), and a blind restore in the wrong teardown order would write
+        #   the inner harness's dead tempdir over the outer one's shadow, or
+        #   pop a variable the other harness legitimately owns. Skipping a key
+        #   we no longer own is what makes the two orders safe.
+        #
+        # Everything else about the shadowing is unchanged, and on Linux/macOS
+        # this still restores only HOME, as before.
+        if self._env_backup is not None:
+            for key, shadowed in self._env_shadowed.items():
+                if os.environ.get(key) != shadowed:
+                    continue  # someone else owns this key now
+                # `self._env_backup` is the PROCESS-WIDE baseline on Windows,
+                # so this restores what the environment held before the
+                # OUTERMOST harness shadowed it - not this harness's own view,
+                # which may itself be another harness's shadow.
+                was = self._env_backup.get(key)
+                if was is None:
                     os.environ.pop(key, None)
-            if self.orig_userprofile:
-                os.environ["USERPROFILE"] = self.orig_userprofile
-            else:
-                os.environ.pop("USERPROFILE", None)
-            if self.orig_appdata:
-                os.environ["APPDATA"] = self.orig_appdata
-            else:
-                os.environ.pop("APPDATA", None)
-            if self.orig_localappdata:
-                os.environ["LOCALAPPDATA"] = self.orig_localappdata
-            else:
-                os.environ.pop("LOCALAPPDATA", None)
+                else:
+                    os.environ[key] = was
+            # HOME is restored on EVERY platform (the old code assigned it
+            # unconditionally) - but exactly, not from the synthesised
+            # `orig_home`. On POSIX nothing is shadowed in the parent, so
+            # this is the whole restore and it behaves as before; on Windows
+            # HOME is already in `_env_shadowed` and was handled above.
+            #
+            # A hand-built harness that never shadowed the parent has nothing
+            # to undo here either, and restoring from ITS snapshot is actively
+            # harmful: that snapshot may have been taken under another
+            # harness's shadow, which would put a deleted tempdir back into
+            # the environment. `_env_shadowed` being empty is the signal.
+            if "HOME" not in self._env_shadowed and self._env_shadowed:
+                was = self._env_backup.get("HOME")
+                if was is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = was
+            elif not self._env_shadowed and os.name != "nt":
+                # POSIX: boot() never shadows the parent, so HOME is the only
+                # key that was ever at risk and it is restored exactly.
+                was = self._env_backup.get("HOME")
+                if was is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = was
+            if self._env_owns_baseline:
+                self._env_owns_baseline = False
+                release_parent_env_baseline()
+        # `_env_backup is None` means this harness was built by hand and never
+        # shadowed the parent -- only `boot()` does that, and it always
+        # snapshots. So there is nothing to undo, and the old fallback here
+        # used to "restore" from the lossy `orig_*` fields, which DELETED
+        # USERPROFILE / APPDATA / LOCALAPPDATA whenever a caller had not
+        # passed them (their default is "").
+        #
+        # That was not hypothetical. `harness_safety_test.py` builds two
+        # harnesses by hand, so after that module ran the parent process had
+        # lost APPDATA outright -- and the next nalar to start refused with
+        # `warning: APPDATA environment variable not set`, dying in
+        # `Config.zig:getDefaultConfigPath` before reaching the code under
+        # test. In a full sweep that surfaced as `server_port_bind_test`
+        # failing on a missing "already in use" string, having passed in
+        # isolation.
 
         # 2. Stop the binary.
         if self.pid is not None and not self._stopped:
@@ -738,6 +993,13 @@ class FunctionalHarness:
                     break
                 except OSError as e:
                     last_exc = e
+                    # Two different failures share this except clause and need
+                    # opposite treatment. A read-only file (git's loose
+                    # objects) will NEVER become deletable by waiting, so
+                    # clear the attribute first; the retry then succeeds on
+                    # the same attempt. A file still being flushed by a dying
+                    # child resolves itself, which is what the sleep is for.
+                    _make_tree_writable(self.temp_dir)
                     time.sleep(1.0)
             if last_exc is not None:
                 raise last_exc
@@ -765,10 +1027,10 @@ class FunctionalHarness:
             the child in its own process group; os.killpg() signals
             the whole group (defends against children that ignore
             SIGTERM).
-          - Windows: there are no process groups. start_new_session
-            maps to CREATE_NEW_PROCESS_GROUP, and TerminateProcess is
-            the only way to kill a child we don't own. We skip the
-            pgid dance and kill by pid directly.
+          - Windows: no killpg exists, so `_signal_group` shells out to
+            `taskkill /T`, which is the equivalent -- it terminates the
+            process AND its descendants. Killing only the pid leaves
+            workers holding `agent.db`, and teardown then cannot delete it.
 
         Teardown budget (was 10s, now 3s) — the slim budget is
         safe because ``/test/shutdown`` exits the process within
@@ -799,61 +1061,54 @@ class FunctionalHarness:
         self._wait_dead(1.0, "post-sigkill")  # best-effort final wait
 
     def _wait_dead(self, timeout: float, label: str = "wait") -> bool:
-        """Return True iff the process exited within ``timeout`` seconds.
+        """Return True iff the server process exited within ``timeout``.
 
-        Uses ``os.waitpid(pid, WNOHANG)`` to detect exit. WNOHANG is
-        the correct call here — ``os.kill(pid, 0)`` returns 0 for
-        zombie processes (the process is dead but the parent hasn't
-        reaped it), so it would falsely report "alive" for a zombie
-        and stall the harness for the full SIGTERM/SIGKILL budget.
+        Asks ``Popen.poll()``, which is the only liveness answer that is
+        correct on all three runners: it uses each platform's native wait
+        (waitpid on POSIX, the process handle on Windows) and reaps the
+        child, so there is no zombie to mistake for a live process.
 
-        ``waitpid(WNOHANG)`` returns:
-          - ``(0, 0)``            — process is still running, no zombie
-          - ``(pid, status)``     — child has exited and we JUST reaped it
-          - raises ``OSError`` (ECHILD) — child doesn't exist (no zombie either)
+        The hand-rolled probe this replaced branched on ``hasattr(os,
+        "waitpid")``, which is **True** on CPython/Windows, and was broken
+        there — it reported a **running** nalar as dead:
 
-        On Windows, ``os.waitpid`` is unavailable; we fall back to
-        ``os.kill(pid, 0)``. The Windows backend doesn't have zombie
-        processes (CreateProcess+wait semantics differ), so the
-        heuristic is sufficient there.
+        ``os.WNOHANG`` does not exist on Windows, so the old
+        ``try: wnohang = os.WNOHANG / except AttributeError: wnohang = 0``
+        silently selected waitpid's **blocking** mode, and
+        ``os.waitpid(pid, 0)`` raised ``ChildProcessError`` for a child
+        Windows was not tracking — which the old code read as "dead, ECHILD".
+        Verified directly on this host against a child that was
+        demonstrably still sleeping:
+
+            waitpid -> ChildProcessError -> claimed DEAD
+
+        So teardown proceeded to ``shutil.rmtree`` with nalar still running
+        and still holding ``agent.db``, every teardown raised
+        ``PermissionError: [WinError 32]`` — after burning the full
+        10 x 1s retry budget, i.e. 10 seconds per test — and the server was
+        never actually killed. Those accumulating servers are what turned a
+        ~2.7 s/test suite (Linux) into ~44 s/test on windows-2022 and pushed
+        all three Windows shards past their timeout.
+
+        The old ``os.kill(pid, 0)`` fallback is no better on Windows, in the
+        other direction: it raises ``WinError 87`` for a pid that does not
+        exist (so "dead" is right there), but returns cleanly for a pid that
+        has already exited (so a dead nalar reads as alive forever). See
+        ``_pid_is_alive`` for the probe that gets both cases right.
         """
         assert self.pid is not None
-        has_waitpid = hasattr(os, "waitpid")
-        # WNOHANG may not exist on some platforms; fall back to 0
-        # (blocking) but we cap the loop with `timeout` so it's not
-        # actually blocking.
-        try:
-            wnohang = os.WNOHANG
-        except AttributeError:
-            wnohang = 0
-        t0 = time.monotonic()
+        proc = self._proc
+        if proc is None:
+            # No handle (constructed by hand rather than by boot()).
+            # Fall back to the pidfile probe, which is Windows-correct.
+            return not _pid_is_alive(self.pid)
         deadline = time.monotonic() + timeout
-        polls = 0
-        while time.monotonic() < deadline:
-            polls += 1
-            if has_waitpid:
-                try:
-                    wpid, _status = os.waitpid(self.pid, wnohang)
-                except ChildProcessError:
-                    # ECHILD — no such process (already reaped and gone)
-                    return True
-                except OSError:
-                    # Some other error — treat as alive and retry
-                    pass
-                else:
-                    if wpid == self.pid:
-                        # We just reaped the zombie — process is really dead
-                        return True
-                    # wpid == 0 means still running, no zombie yet
-            else:
-                # Windows / fallback: kill(pid, 0) returns 0 if alive
-                # (including zombie — but Windows doesn't have those)
-                try:
-                    os.kill(self.pid, 0)
-                except OSError:
-                    return True
+        while True:
+            if proc.poll() is not None:
+                return True
+            if time.monotonic() >= deadline:
+                return False
             time.sleep(0.05)
-        return False
 
     def _signal_group(self, sig: int) -> None:
         """Signal the process group on POSIX, or the pid on Windows.
@@ -874,12 +1129,46 @@ class FunctionalHarness:
             except OSError:
                 pass
         else:
-            # Windows: no killpg. Best effort — SIGTERM (which
-            # Python maps to TerminateProcess for the child).
+            # Windows: `os.kill` terminates exactly ONE process. nalar spawns
+            # children (agent workers, a shell nalar for terminal sessions),
+            # and any child that inherited the SQLite handle keeps
+            # `agent.db` open -- so teardown's rmtree fails with
+            #
+            #   PermissionError: [WinError 32] The process cannot access the
+            #   file because it is being used by another process:
+            #   ...\.config\nalar\agent.db
+            #
+            # for as long as that child lives. Retrying cannot fix it: the
+            # lock is held by a process that is never going to exit on its
+            # own. Measured across three windows-2022 shards of run
+            # `37151287651`, this was the single largest remaining cause of
+            # red -- 7 of the 9 teardown ERRORs, all in
+            # `chat_row_context_menu_ui_test`, which spawns workers.
+            #
+            # `taskkill /T` is the Windows equivalent of `killpg`: it kills the
+            # process AND every descendant. That asymmetry with POSIX (which
+            # does get `killpg`) is the whole bug -- the comment above used to
+            # say "Windows: there are no process groups", which is true of
+            # signalling and false about the consequence.
+            #
+            # `/F` is not extra force: `os.kill(pid, SIGTERM)` already maps to
+            # TerminateProcess on Windows, so there is no graceful variant to
+            # preserve here. The graceful path is `/test/shutdown` above, which
+            # `_stop_binary` tries first.
             try:
-                os.kill(self.pid, sig)
-            except OSError:
-                pass
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self.pid)],
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                # taskkill missing or unusable -- fall back to killing just
+                # the one process, which is what this always did.
+                try:
+                    os.kill(self.pid, sig)
+                except OSError:
+                    pass
 
 
 # ============================================================================
@@ -1036,35 +1325,108 @@ def find_free_port_random(
     )
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """Return True iff ``pid`` names a live process.
+
+    Platform-correct, unlike ``os.kill(pid, 0)``:
+
+    * POSIX: ``kill(pid, 0)`` is the classic probe. ``ESRCH`` means dead.
+    * Windows: ``os.kill(pid, 0)`` cannot answer the question. CPython's
+      Windows ``os.kill`` implements only ``SIGTERM`` / ``CTRL_C_EVENT`` /
+      ``CTRL_BREAK_EVENT``, and signal 0 falls through to the
+      ``OpenProcess`` path — measured on this host (CPython 3.11.9):
+
+          os.kill(os.getpid(), 0)      -> no exception   (alive)   OK
+          os.kill(<live child>, 0)     -> no exception   (alive)   OK
+          os.kill(999999, 0)           -> WinError 87    (dead)    OK
+          os.kill(<exited child>, 0)   -> no exception   (dead)    WRONG
+
+      So a pid that never existed is reported dead, but a pid that has
+      already exited still answers "alive" — the handle lingers. Used as a
+      "has it gone?" test after a kill that is exactly the wrong
+      direction: the waiter never sees the process die.
+
+      So ask the kernel directly: ``OpenProcess(SYNCHRONIZE)`` fails with
+      ``ERROR_INVALID_PARAMETER`` when the pid does not exist, and
+      ``WaitForSingleObject(handle, 0)`` reports ``WAIT_TIMEOUT`` only
+      while the process is still running. A pid we are not permitted to
+      open is reported **alive**: "cannot tell" must never become "dead",
+      or the orphan reaper kills innocent processes.
+
+    Callers must treat this as authoritative. Every previous Windows
+    judgement call here went the wrong way.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _pid_is_alive_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Alive, just not ours to signal.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _pid_is_alive_windows(pid: int) -> bool:
+    """Windows half of `_pid_is_alive`. See that docstring for why."""
+    import ctypes  # local import: only this branch needs it
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    SYNCHRONIZE = 0x00100000
+    WAIT_TIMEOUT = 0x00000102
+    ERROR_ACCESS_DENIED = 5
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # argtypes/restype are load-bearing, not decoration. Without them ctypes
+    # marshals every argument as a 32-bit `c_int`, so the `c_void_p` handle
+    # OpenProcess hands back would be TRUNCATED before it reached
+    # CloseHandle — and a truncated handle is not "this handle or nothing",
+    # it is some other object in this process. One bad reap would close a
+    # file or a socket out from under the test run.
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+
+    handle = kernel32.OpenProcess(
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        err = ctypes.get_last_error()
+        # 87 ERROR_INVALID_PARAMETER: no such pid -> dead.
+        # 5 ERROR_ACCESS_DENIED: exists, owned by someone else -> alive.
+        # Any other error is also "cannot tell", so answer alive: guessing
+        # "dead" here is what made the reaper dangerous.
+        return err == ERROR_ACCESS_DENIED
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _wait_pid_dead(pid: int, timeout: float) -> bool:
     """Return True iff ``pid`` exited within ``timeout`` seconds.
 
-    Uses ``os.kill(pid, 0)`` as a liveness probe. Cross-platform:
-    POSIX and Windows both support the probe. ESRCH ⇒ dead; EPERM ⇒
-    alive-but-not-ours (treated as "dead for our purposes" because we
-    can't signal it anyway).
-
-    Windows note: ``os.kill(dead_pid, 0)`` raises plain ``OSError``
-    (``[WinError 87] The parameter is incorrect``), NOT
-    ``ProcessLookupError`` — so the except clause must be broad
-    ``OSError`` (narrow ``(ProcessLookupError, PermissionError)``
-    lets 87 escape, aborting the orphan-reap loop mid-scan and
-    leaking every tempdir after the first dead pid).
-
-    For subprocess children specifically, prefer ``os.waitpid(WNOHANG)``
-    which also reaps zombies — see ``_stop_binary`` for the richer case.
+    Thin wrapper over `_pid_is_alive` so the orphan reaper cannot
+    reintroduce an ``os.kill(pid, 0)`` probe: on Windows that call
+    reports an EXITED pid as still alive, so the reaper's "wait for it to
+    die" step always timed out and escalated to ``SIGKILL`` — killing a pid
+    that had already been recycled onto an unrelated process.
     """
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            # ProcessLookupError / PermissionError on POSIX;
-            # [WinError 87] on Windows for a dead pid. Either way
-            # the pid is gone (or not ours) — dead for our purposes.
+    while True:
+        if not _pid_is_alive(pid):
             return True
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(0.05)
-    return False
 
 
 def _reap_orphan_test_pids() -> int:
@@ -1114,20 +1476,21 @@ def _reap_orphan_test_pids() -> int:
             continue
         # If the harness python is alive, this test is still in progress —
         # another worker scanning concurrently must NOT kill it.
-        # NOTE: broad OSError (not just ProcessLookupError): on
-        # Windows a dead pid raises [WinError 87], which must count
-        # as "harness dead" or the whole reap loop aborts on the
-        # first orphan (leaking every tempdir after it). The outer
-        # `except Exception` is the backstop for non-OSError probe
-        # failures (e.g. CPython's SystemError when a recycled pid
-        # lands on a protected system process): one bad entry must
-        # never abort the scan — skip it and reap the rest.
+        #
+        # `_pid_is_alive` rather than a bare `os.kill(harness_pid, 0)`.
+        # The old comment here claimed WinError 87 "must count as harness
+        # dead"; the truth is that `os.kill(pid, 0)` cannot answer the
+        # question on Windows at all — see `_pid_is_alive`. Guessing wrong
+        # here made the reaper SIGTERM the nalar pid of a test that was
+        # still running, and (once leaked pids get recycled onto unrelated
+        # processes) could terminate something innocent outright.
+        # `_pid_is_alive` asks the kernel via OpenProcess/
+        # WaitForSingleObject and reports "cannot tell" as alive, so an
+        # unkillable entry is skipped rather than guessed at. The outer
+        # `except Exception` remains the backstop for anything else — one
+        # bad entry must never abort the scan.
         try:
-            try:
-                os.kill(harness_pid, 0)
-            except OSError:
-                pass  # harness is dead — this dir is an orphan
-            else:
+            if _pid_is_alive(harness_pid):
                 continue
             # Harness is dead. Kill the nalar child if alive.
             if nalar_pid and nalar_pid != os.getpid():

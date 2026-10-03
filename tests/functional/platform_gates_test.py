@@ -167,3 +167,77 @@ def test_helpers_honour_an_explicit_platform_argument() -> None:
     assert win and not lin, "Windows must be gated and Linux must not"
     assert mac and not lin, "macOS must be gated and Linux must not"
     assert win != mac, "Windows and macOS gates are identical — one is probably wrong"
+
+
+# ── strict xfail must name the platform it is about ─────────────────────────
+
+
+def test_every_strict_xfail_is_conditional_on_the_platform() -> None:
+    """A ``strict=True`` xfail with no condition breaks the OTHER runners.
+
+    This is not hypothetical. ``mcp_test_test.py`` carries::
+
+        [XPASS(strict)] WINDOWS PRODUCT BUG, not a test limitation...
+        FAILED tests/functional/mcp_test_test.py::test_mcp_test_stdio_empty_args_silent_child_returns_timeout
+
+    on ``ubuntu-24.04`` and on ``macos-15`` — because a bare ``strict=True``
+    applies the marker on every platform, and the test PASSES on Linux and
+    macOS. ``strict`` then converts that pass into a failure, so a marker added
+    to describe a Windows defect took out the two runners that never had it.
+
+    ``strict`` is still the right default: it is what stops an expected
+    failure rotting into a permanent skip. It just has to be paired with a
+    condition that scopes it to the platform the reason names.
+
+    So the rule enforced here: every ``strict=True`` xfail must pass a
+    platform-derived first positional argument. A missing one is reported
+    rather than assumed, because the failure mode is invisible on the platform
+    that wrote the marker.
+    """
+    import ast
+
+    offenders: list[str] = []
+    checked = 0
+    suites = Path(__file__).resolve().parent.parent
+    for suite in SUITES:
+        for path in sorted((suites / suite).glob("*_test.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else func.id
+                    if isinstance(func, ast.Name)
+                    else None
+                )
+                if name != "xfail":
+                    continue
+                kw = {k.arg for k in node.keywords if k.arg}
+                if "strict" not in kw:
+                    continue
+                checked += 1
+                # No positional arg => unconditional => strict applies
+                # everywhere, which is the bug.
+                if not node.args:
+                    offenders.append(
+                        f"{suite}/{path.name}:{node.lineno} xfail(strict=True) "
+                        f"with no platform condition"
+                    )
+                elif isinstance(node.args[0], ast.Constant):
+                    offenders.append(
+                        f"{suite}/{path.name}:{node.lineno} xfail condition is a "
+                        f"constant ({node.args[0].value!r}); it must be derived "
+                        f"from the platform so the marker is scoped to it"
+                    )
+    assert not offenders, (
+        "every strict xfail must scope itself to the platform its reason "
+        "names, or it fails the runners where the test passes:\n  "
+        + "\n  ".join(offenders)
+    )
+    assert checked >= 1, (
+        f"only found {checked} strict xfail(s) — the AST walk is probably not "
+        f"matching anymore, so this guard is vacuous"
+    )

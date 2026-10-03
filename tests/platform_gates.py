@@ -172,6 +172,71 @@ GATES: tuple[Gate, ...] = (
         "select.select() on a subprocess pipe; Windows select() accepts "
         "sockets only",
     ),
+
+    # ── A POSIX shell script cannot be a fake executable on Windows ──────
+    # These modules install a fake `gh` / `glab` (or a `#!/bin/sh` wrapper for
+    # the MCP stdio server) on PATH and let the server spawn it by bare name.
+    # That works on POSIX and cannot work on Windows, for a reason that is a
+    # fact about the platform rather than about these tests:
+    #
+    #   A bare program name handed to CreateProcessW is resolved by appending
+    #   `.exe` and nothing else. `.cmd` and `.bat` are only ever resolved by
+    #   `cmd.exe`, and PATHEXT plays no part.
+    #
+    # Measured on windows-2022 (and reproduced on a Windows dev box) with a
+    # real `.cmd` and a stub `.exe` side by side on PATH, spawned with
+    # shell=False:
+    #
+    #     spawn 'probe_cmd' -> FileNotFoundError [WinError 2]   (NOT resolved)
+    #     spawn 'probe_bat' -> FileNotFoundError [WinError 2]   (NOT resolved)
+    #     spawn 'probe_exe' -> WinError 193 %1 is not a valid Win32 application
+    #                            (RESOLVED and executed; the stub was empty)
+    #
+    # So there is no shim to write: a fake has to be a real PE binary. The
+    # product is fine in production — `gh`/`glab` are `.exe` on Windows and
+    # nalar spawns them the same way it always has.
+    #
+    # COVERAGE COST, stated plainly: five modules stop running on the Windows
+    # cell, so the forge-CLI wiring and the HTTP MCP round trip are no longer
+    # verified there. The portable fix is on the PRODUCT side — resolve the
+    # CLI through PATHEXT on Windows, or accept an injected CLI path from
+    # config — and it belongs in its own change rather than being smuggled in
+    # here to un-skip five test files.
+    Gate(
+        "win32",
+        "git_pr_gitlab_test.py",
+        "installs a fake `gh`/`glab` as a #!/bin/sh script; Windows "
+        "CreateProcess resolves a bare name to .exe only (not .cmd/.bat), "
+        "so a shell script can never serve as the fake",
+    ),
+    Gate(
+        "win32",
+        "git_pr_status_test.py",
+        "installs a fake `gh` as a #!/bin/sh script; Windows CreateProcess "
+        "resolves a bare name to .exe only (not .cmd/.bat), so a shell "
+        "script can never serve as the fake",
+    ),
+    Gate(
+        "win32",
+        "git_pr_status_branch_test.py",
+        "installs a fake `gh` as a #!/bin/sh script; Windows CreateProcess "
+        "resolves a bare name to .exe only (not .cmd/.bat), so a shell "
+        "script can never serve as the fake",
+    ),
+    Gate(
+        "win32",
+        "git_pr_status_crash_test.py",
+        "installs a fake `gh` as a #!/bin/sh script; Windows CreateProcess "
+        "resolves a bare name to .exe only (not .cmd/.bat), so a shell "
+        "script can never serve as the fake",
+    ),
+    Gate(
+        "win32",
+        "mcp_http_test.py",
+        "wraps the MCP stdio server in a #!/bin/sh script that `exec node "
+        "dist/index.js`; Windows CreateProcess resolves a bare name to .exe "
+        "only, so a shell wrapper cannot be spawned",
+    ),
 )
 
 

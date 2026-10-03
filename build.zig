@@ -2809,6 +2809,51 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     b.step("test:helpers:test_path", "Run test_path helper tests")
         .dependOn(&run_test_path_tests.step);
 
+    // `unix_nanos_id_test.zig` is in the standalone `helpers` PACKAGE, so
+    // for the same reason as the two roots above it needs its own test root
+    // to be compiled at all.
+    //
+    // It is a separate file rather than more `test` blocks in
+    // `helpers/mod.zig` because `mod.zig`'s inline tests are unreachable
+    // from every test artifact in this build — and a test that does not run
+    // is indistinguishable from a test that passes. Not a guess: changing
+    // an assertion in `mod.zig` to a deliberately wrong value still gave
+    // `8/8 steps succeeded` from `zig build test`, with an unchanged test
+    // count.
+    //
+    // Two of `mod.zig`'s own test blocks no longer compile against Zig
+    // 0.16 (`.wasm` was removed from `builtin.Os.Tag`, and
+    // `std.process.Child.id` is a `?*anyopaque` handle, not a pid), so
+    // reviving that file wholesale is separate work. This guards the one
+    // property that matters most on its own: `unixTimestampNanos` must not
+    // hand two server threads the same value. That was the
+    // `UNIQUE constraint failed: workspace_items.id` -> HTTP 500 on
+    // windows-2022 when the in-tick tie-break counter was `threadlocal`.
+    //
+    // `link_libc = true` is REQUIRED and only fails on Linux/macOS, so it
+    // is invisible from a Windows dev box. `unixTimestampNanos` reaches
+    // `extern "c" fn clock_gettime` on POSIX (and `extern "kernel32"` on
+    // Windows), and without libc linked the Linux/macOS test binaries
+    // fail to LINK with an undefined `clock_gettime`. The neighbouring
+    // `test_path_tests` root above sets it for the same reason.
+    // Windows will happily link either way, which is why this needs CI's
+    // Linux cell to catch and not the local one.
+    const unix_nanos_id_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/helpers/unix_nanos_id_test.zig"),
+            .target = test_target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "helpers", .module = helpers_mod },
+            },
+        }),
+    });
+    const run_unix_nanos_id_tests = b.addRunArtifact(unix_nanos_id_tests);
+    test_step.dependOn(&run_unix_nanos_id_tests.step);
+    b.step("test:helpers:unix_nanos_id", "Run unixTimestampNanos row-id guard tests")
+        .dependOn(&run_unix_nanos_id_tests.step);
+
     // kabelweb's own suites (server + client) run in the kabelweb
     // repo's CI (github.com/ginwa123/kabelweb), not here — it's an
     // external URL dependency, and a consumer build never runs a

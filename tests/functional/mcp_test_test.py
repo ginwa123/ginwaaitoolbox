@@ -386,6 +386,37 @@ def test_mcp_test_stdio_diagnostic_on_child_death() -> None:
 #   3. a SECOND identical probe also returns (the first failure
 #      `markStale`s the hung child; the retry must kill + respawn
 #      cleanly instead of wedging the registry).
+@pytest.mark.xfail(
+    # THE CONDITION IS LOAD-BEARING, and getting it wrong breaks the other two
+    # runners. `xfail` applies on EVERY platform unless the first positional
+    # argument says otherwise, so a bare `strict=True` here marked the test
+    # xfail on Linux and macOS too -- where it PASSES. strict=True then turns
+    # that pass into `[XPASS(strict)]`, i.e. a FAILURE, and the first CI run
+    # with this marker took out the Linux and macOS cells:
+    #
+    #   [XPASS(strict)] WINDOWS PRODUCT BUG, not a test limitation...
+    #   FAILED tests/functional/mcp_test_test.py::test_mcp_test_stdio_empty_args_silent_child_returns_timeout
+    #
+    # A marker that names Windows must SAY Windows in the condition, or it is
+    # a self-inflicted wound on the platforms it was never about.
+    os.name == "nt",
+    strict=True,
+    reason=(
+        "WINDOWS PRODUCT BUG, not a test limitation. The contract under test is "
+        "documented and holds on Linux/macOS: a silent MCP stdio child answers "
+        "HTTP 200 + {ok:false, error:'MCP server did not respond within 10 "
+        "seconds'} in ~10s. On Windows the endpoint does not answer AT ALL -- "
+        "measured on this dev box: no response after 180s, while the server "
+        "keeps serving /health. Handler lives in src/main.zig (route "
+        "/api/mcp/test); needs its own investigation and fix."
+        "\n\nDeliberately NOT a platform_gates row: that table is for suites "
+        "that cannot RUN on a platform, and its docstring is explicit that "
+        "nothing in it is a product bug. Gating this would hide a real defect."
+        "\n\nstrict=True on purpose: if the product starts honouring the "
+        "timeout on Windows, this turns into a FAILURE telling us to delete "
+        "the marker, so it cannot silently rot into a permanent skip."
+    ),
+)
 def test_mcp_test_stdio_empty_args_silent_child_returns_timeout() -> None:
     """Bare interpreter with no args stays silent → {ok:false} Timeout
     within ~10s per probe, backend stays alive across both probes.
