@@ -46,6 +46,7 @@ pub const execGenerateImage = @import("tools_exec_generate_image.zig").execGener
 pub const execGetDesignContext = @import("tools_exec_get_design_context.zig").execGetDesignContext;
 pub const execPreviewDesignPage = @import("tools_exec_preview_design_page.zig").execPreviewDesignPage;
 pub const execWebSearch = @import("tools_exec_web_search.zig").execWebSearch;
+pub const execListWebSearchProviders = @import("tools_exec_list_web_search_providers.zig").execListWebSearchProviders;
 pub const execGlob = @import("tools_exec_glob.zig").execGlob;
 pub const execSearch = @import("tools_exec_search.zig").execSearch;
 pub const execBash = @import("tools_exec_bash.zig").execBash;

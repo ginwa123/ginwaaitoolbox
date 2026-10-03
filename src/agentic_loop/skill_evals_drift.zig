@@ -97,9 +97,7 @@ fn buildFindings(allocator: std.mem.Allocator, findings: []const Finding) ![]u8 
         defer allocator.free(c);
         const e = try jsonQuoted(allocator, f.evidence);
         defer allocator.free(e);
-        const one = try std.fmt.allocPrint(allocator,
-            "{{\"dimension\":{s},\"severity\":{s},\"claim\":{s},\"evidence\":{s}}}",
-            .{ d, sv, c, e });
+        const one = try std.fmt.allocPrint(allocator, "{{\"dimension\":{s},\"severity\":{s},\"claim\":{s},\"evidence\":{s}}}", .{ d, sv, c, e });
         defer allocator.free(one);
         try out.appendSlice(allocator, one);
     }
@@ -147,6 +145,46 @@ fn looksLikePath(token: []const u8) bool {
     return true;
 }
 
+/// True when a segment is a bare file extension (`.ts`) rather than a real
+/// name. The length bound is what separates the two: the longest extension in
+/// everyday use is four characters, while every dot-directory a repo actually
+/// contains (`.github`, `.zig-cache`, `.nalar`, `.claude`) is longer than that.
+/// Without a bound, `.github` would read as an extension.
+fn isBareExtension(seg: []const u8) bool {
+    if (seg.len < 2 or seg.len > 5) return false;
+    if (seg[0] != '.') return false;
+    for (seg[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c)) return false;
+    }
+    return true;
+}
+
+/// Tokens that are path-SHAPED but are prose, so stat'ing them can only ever
+/// report them missing. Each of these reached the filesystem in production and
+/// came back "this path does not exist any more" — which is how a fact row
+/// ended up claiming eight rot files for a skill whose every reference was fine.
+fn isProsePlaceholder(token: []const u8) bool {
+    var all_single_char = true;
+    var saw_segment = false;
+    var it = std.mem.splitScalar(u8, token, '/');
+    while (it.next()) |seg| {
+        // An absolute path opens with `/`, which yields an empty first segment.
+        // That is an artefact of the split, not evidence of anything.
+        if (seg.len == 0) continue;
+        saw_segment = true;
+        if (seg.len != 1) all_single_char = false;
+        // `.vue/.ts/.mts/.tsx` — a list of file globs, not one location. A
+        // path's OWN extension is short and legitimate (`src/a.zig`), so the
+        // discriminator is a bare extension standing as a whole segment.
+        if (isBareExtension(seg)) return true;
+    }
+    // `N/N`, `X/Y` — the format placeholders in a summary line (`Build Summary:
+    // N/N steps succeeded; X/Y tests passed`). EVERY segment being a single
+    // character is what separates them from a real path: one short segment is
+    // entirely ordinary, as `/home/u/proj/src/a.zig` shows.
+    return all_single_char and saw_segment;
+}
+
 fn shouldSkip(token: []const u8) bool {
     // URLs are not repo paths. Match the scheme delimiter rather than a bare
     // "http" prefix, which would also swallow real files like `http_server.zig`.
@@ -169,8 +207,8 @@ fn shouldSkip(token: []const u8) bool {
 /// Used only to tell an absolute FILE path from a route.
 fn hasKnownExtension(token: []const u8) bool {
     const known = [_][]const u8{
-        ".zig", ".md",   ".ts",  ".vue", ".json", ".toml", ".sh",
-        ".py",  ".yml",  ".yaml", ".sql", ".txt",  ".rs",
+        ".zig", ".md",  ".ts",   ".vue", ".json", ".toml", ".sh",
+        ".py",  ".yml", ".yaml", ".sql", ".txt",  ".rs",
     };
     for (known) |ext| {
         if (std.mem.endsWith(u8, token, ext)) return true;
@@ -190,12 +228,19 @@ pub fn extractPaths(allocator: std.mem.Allocator, body: []const u8) ![][]u8 {
     var it = std.mem.tokenizeAny(u8, body, token_delims);
     while (it.next()) |raw| {
         if (out.items.len >= MAX_REFERENCED_PATHS) break;
-        const token = std.mem.trim(u8, raw, ".,;:");
+        // Trailing `.`/`,`/`;`/`:` is sentence punctuation and must go, but a
+        // LEADING `.` is part of the path: `.` is not in `token_delims`, so
+        // trimming it here turned `.github/workflows/ci.yml` into
+        // `github/workflows/ci.yml`, which then failed to stat and got recorded
+        // as a stale path on a file that was sitting right there. `trimEnd`
+        // keeps every trailing character `trim` used to remove.
+        const token = std.mem.trimEnd(u8, raw, ".,;:");
         if (!looksLikePath(token)) continue;
         if (shouldSkip(token)) continue;
         const base = stripLineSuffix(token);
         if (!looksLikePath(base)) continue;
         if (shouldSkip(base)) continue;
+        if (isProsePlaceholder(base)) continue;
 
         var seen = false;
         for (out.items) |p| {
@@ -698,4 +743,111 @@ test "stripLineSuffix handles a huge line number and a trailing colon" {
     try testing.expectEqualStrings("a/b.zig:", stripLineSuffix("a/b.zig:"));
     // A colon at index 0 is not a line suffix.
     try testing.expectEqualStrings(":12", stripLineSuffix(":12"));
+}
+
+test "a dot-directory path keeps its leading dot instead of being reported as rot" {
+    const alloc = testing.allocator;
+    // Both of these exist in this tree. Trimming the leading `.` turned them
+    // into `github/workflows/ci.yml` and `nalar/skills`, which stat to nothing
+    // and were recorded as "this path does not exist any more" -- a lie about
+    // files that are present. Asserted on the EXTRACTED token rather than only
+    // on missing_count, so a change that quietly stopped checking dotfiles
+    // still fails here instead of passing as "nothing was missing".
+    const body =
+        \\---
+        \\name: dotpath
+        \\description: dotpath
+        \\---
+        \\See .github/workflows/ci.yml:210 and .nalar/skills for the details.
+    ;
+    const paths = try extractPaths(alloc, body);
+    defer freePaths(alloc, paths);
+
+    var saw_github = false;
+    for (paths) |p| {
+        try testing.expect(!std.mem.eql(u8, p, "github/workflows/ci.yml"));
+        try testing.expect(!std.mem.eql(u8, p, "nalar/skills"));
+        if (std.mem.eql(u8, p, ".github/workflows/ci.yml")) saw_github = true;
+    }
+    try testing.expect(saw_github);
+
+    const a = try analyse(alloc, testing.io, ".", body);
+    defer a.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), a.missing_count);
+}
+
+test "a dot-directory path that really is gone is still reported" {
+    const alloc = testing.allocator;
+    // The guard against "fix" meaning "skip anything dot-prefixed": a genuinely
+    // absent dot-path must still reach the missing list, dot intact.
+    const body =
+        \\---
+        \\name: dotgone
+        \\description: dotgone
+        \\---
+        \\See .github/workflows/definitely-not-here.yml
+    ;
+    const a = try analyse(alloc, testing.io, ".", body);
+    defer a.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), a.missing_count);
+    try testing.expectEqualStrings("[\".github/workflows/definitely-not-here.yml\"]", a.missing_paths_json);
+}
+
+test "format placeholders and glob lists in prose are not stale paths" {
+    const alloc = testing.allocator;
+    // All three were recorded as "this path does not exist any more" against a
+    // skill whose every real reference was fine. None is a location: two are
+    // the summary placeholders, one is a list of file globs.
+    const body =
+        \\---
+        \\name: prose
+        \\description: prose
+        \\---
+        \\Read `Build Summary: N/N steps succeeded; X/Y tests passed`.
+        \\The hook formats .vue/.ts/.mts/.tsx with prettier.
+    ;
+    const paths = try extractPaths(alloc, body);
+    defer freePaths(alloc, paths);
+    for (paths) |p| {
+        try testing.expect(!std.mem.eql(u8, p, "N/N"));
+        try testing.expect(!std.mem.eql(u8, p, "X/Y"));
+        try testing.expect(!std.mem.startsWith(u8, p, ".vue/"));
+    }
+
+    const a = try analyse(alloc, testing.io, ".", body);
+    defer a.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), a.missing_count);
+    try testing.expectEqual(Verdict.keep, a.verdict);
+}
+
+test "isProsePlaceholder spares every real dot-directory this repo contains" {
+    // The length bound in `isBareExtension` is the only thing separating a
+    // legitimate dot-directory from prose. These are the names that actually
+    // occur here; move the bound and this is what catches it.
+    for ([_][]const u8{
+        ".github/workflows/ci.yml",
+        ".zig-cache/tmp",
+        ".nalar/hooks/register_hook.lua",
+        "src/apps/desktop",
+        "src/agentic_loop/skill_evals_drift.zig",
+        // An absolute path splits into an empty first segment plus ordinary
+        // ones. The empty segment must not read as a placeholder, and neither
+        // must the single-character `u` in the home directory.
+        "/home/u/proj/src/a.zig",
+    }) |p| {
+        try testing.expect(!isProsePlaceholder(p));
+    }
+    for ([_][]const u8{ "N/N", "X/Y", ".vue/.ts/.mts/.tsx", ".ts" }) |p| {
+        try testing.expect(isProsePlaceholder(p));
+    }
+}
+
+test "trailing sentence punctuation is still stripped from a path token" {
+    // `trimEnd` replaced `trim`, so the trailing behaviour is unchanged --
+    // this is the assertion that says so.
+    const alloc = testing.allocator;
+    const paths = try extractPaths(alloc, "Read src/agentic_loop/skill_evals_drift.zig, then stop.");
+    defer freePaths(alloc, paths);
+    try testing.expectEqual(@as(usize, 1), paths.len);
+    try testing.expectEqualStrings("src/agentic_loop/skill_evals_drift.zig", paths[0]);
 }

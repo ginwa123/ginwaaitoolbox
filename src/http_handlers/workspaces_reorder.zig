@@ -84,8 +84,14 @@ pub fn workspacesReorderHandler(
 
     // Step 3: call the use case.
     const di = try nalarcore.getSingleton();
-    const owner = auth_common.resolveRequestUserId(allocator, di.db, di.auth_enabled, req.headers) catch "";
-    defer if (owner.len > 0) allocator.free(owner);
+    // Used to be `catch ""`. An unresolved owner is `isSharedOwner("")`, which
+    // the visibility clause treats as "see everything" — so a single
+    // allocation failure here silently widened the caller to every workspace
+    // on the instance. Fail closed instead.
+    const owner = auth_common.resolveRequestUserId(allocator, di.db, di.auth_enabled, req.headers) catch {
+        return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) });
+    };
+    defer allocator.free(owner);
 
     const result = reorderWorkspaces(allocator, di.db, ids.items, owner) catch |err| switch (err) {
         error.TooManyIds => return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "ordered_ids too long (max 100)" }) }),
@@ -157,7 +163,7 @@ fn reorderWorkspaces(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteB
         const pos_str = std.fmt.bufPrint(&buf, "{d}", .{new_pos}) catch {
             return error.IntegerTooLarge;
         };
-        db.exec(allocator, "UPDATE workspaces SET position = ?, updated_at = datetime('now') WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"), &.{ pos_str, id_str, owner, owner }) catch {
+        db.exec(allocator, "UPDATE workspaces SET position = ?, updated_at = datetime('now') WHERE id = ? AND " ++ comptime auth_common.workspaceVisibilityClause("workspaces"), &.{ pos_str, id_str, owner, owner }) catch {
             return error.DatabaseUpdateFailed;
         };
         updated_count += 1;
@@ -168,7 +174,7 @@ fn reorderWorkspaces(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteB
 
 // ===== Tests merged from workspaces_reorder_test.zig (2026-09-11 flatten) =====
 // Static regression checks for the workspace-reorder handler.
-// 
+//
 // Why this file exists
 // ────────────────────
 // Drag-and-drop reordering of workspaces depends on:
@@ -184,13 +190,13 @@ fn reorderWorkspaces(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteB
 //      the top.
 //   5. Migration 043 in `migration.zig` adding the `position`
 //      column.
-// 
+//
 // These contracts are enforced by static substring checks
 // (matching the project's `tasks_list_test.zig` pattern), not by
 // spinning up an in-memory DB. If any of these contracts
 // regress, the test fails with a concrete error message that
 // points at the broken file and the missing substring.
-// 
+//
 // Plan: docs/plans/2026-06-12-workspace-drag-and-drop.md
 
 const testing = std.testing;

@@ -95,23 +95,14 @@ pub const List = struct {
 
 // =============================================================================
 // Web Search Tool Types
+//
+// REMOVED 2026-10-02 (plan 2026-10-02-web-search-tool.md, D1). The old
+// `web_search` here was a URL BROWSER — it shelled out to `agent-browser
+// snapshot {url}` and returned raw stdout, with `cwd` existing only to give
+// that shell-out somewhere to run. Its registry entry was commented out and
+// it was absent from `equips()`, so no session could ever call it.
+//
+// The real search tool keeps its own types next to the code that produces
+// them, the way `generate_image.zig` does:
+//   `WebSearchInput` -> src/modules/agent/tools/web_search.zig
 // =============================================================================
-
-pub const WebSearchInput = struct {
-    /// URL to browse
-    url: []const u8 = "",
-    /// Working directory (defaults to /tmp)
-    cwd: ?[]const u8 = "/tmp",
-};
-
-pub const WebSearchResult = struct {
-    success: bool,
-    content: []const u8,
-    exit_code: i32,
-    error_msg: ?[]const u8 = null,
-
-    pub fn deinit(self: *const @This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.content);
-        if (self.error_msg) |msg| allocator.free(msg);
-    }
-};

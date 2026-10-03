@@ -68,7 +68,7 @@ fn useCase(
     // the handler can return a 500 with a useful prefix.
     var rows = db.query(
         allocator,
-        "SELECT id, name, created_at, updated_at FROM workspaces WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
+        "SELECT id, name, created_at, updated_at FROM workspaces WHERE id = ? AND " ++ comptime auth_common.workspaceVisibilityClause("workspaces"),
         &.{ id, owner, owner },
     ) catch |err| {
         // Build a best-effort message. The sqlite3_errmsg is not

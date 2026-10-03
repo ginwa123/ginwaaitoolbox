@@ -2044,6 +2044,11 @@ pub const allMigrations: []const Migration = &.{
     // would silently strip the tool from every existing agent and from every
     // customised checklist.
     .{ .version = Migration099RenameListSkillsTool.version, .name = Migration099RenameListSkillsTool.name, .up = Migration099RenameListSkillsTool.up },
+    // Migration 100 — `workspace_members`: moves workspace ownership off the
+    // single `workspaces.user_id` column onto a many-to-many join table so one
+    // workspace can be shared. Additive; the column stays for one release so
+    // `DROP TABLE workspace_members` is a complete rollback.
+    .{ .version = Migration100AddWorkspaceMembers.version, .name = Migration100AddWorkspaceMembers.name, .up = Migration100AddWorkspaceMembers.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -14761,4 +14766,325 @@ test "Migration098 is registered in allMigrations" {
         if (m.version == Migration098CreateDocuments.version) return;
     }
     return error.Migration098NotRegistered;
+}
+
+// ============================================================================
+// ============================================================================
+// Migration 100 — `workspace_members` (shared workspaces)
+// ============================================================================
+//
+// See docs/plans/2026-10-02-workspace-members-shared-workspaces.md.
+//
+// WHY a join table rather than more columns on `workspaces`
+// ───────────────────────────────────────────────────────
+// `workspaces.user_id` (Migration 077) was doing two unrelated jobs: it
+// recorded the OWNER (1 workspace : 1 user), and its magic values
+// (NULL / '' / 'user_system') recorded "this row is in the shared legacy
+// bucket". Job two is a VISIBILITY property and has nothing to do with job
+// one. Conflating them is what made multi-user impossible — a second user
+// could only be recorded by overwriting the first.
+//
+// The split: `workspace_members` answers "who may see this", and the
+// sentinel member row answers "this is shared". One mechanism, not two, so
+// the two can never disagree. Adding a `user_system` member row to a
+// workspace IS the "make it shared" operation.
+//
+// Shape copied from `user_company_members` (Migration 077)
+// ──────────────────────────────────────────────────────
+// Composite PK for "no duplicate membership" — the ONLY DB-level integrity
+// guarantee available, because `PRAGMA foreign_keys` is deliberately OFF in
+// production and SQLite cannot `ALTER TABLE … ADD CONSTRAINT`.
+// A CHECK-constrained role, `joined_at` + `invited_by` audit columns.
+//
+// Role is STORED but NOT ENFORCED
+// ────────────────────────────────
+// Every member has full access, exactly as before, so this migration changes
+// only who can see a workspace — never what they can do. Enforcement is a
+// separate change because the workspace role set (owner/admin/editor/viewer)
+// is disjoint from the company set (owner/admin/member/guest), and a SQLite
+// CHECK cannot be ALTERed — a wrong choice costs the recreate-table dance
+// later. DEFAULT 'viewer' is least-privilege, so a row written by a path
+// that forgets a role is read-only rather than read-write.
+//
+// Additive on purpose — `workspaces.user_id` is NOT dropped
+// ────────────────────────────────────────────────────────
+// The column stays and keeps being written, so `DROP TABLE
+// workspace_members` plus a revert of the clause helper is a complete,
+// data-loss-free rollback. Dropping it is Migration 101, one release later,
+// once nothing reads it.
+//
+// Idempotency
+// ───────────
+// CREATE TABLE/INDEX IF NOT EXISTS + INSERT OR IGNORE. `INSERT OR IGNORE`
+// matters twice over: re-runs are no-ops, AND a re-run after users start
+// sharing can neither duplicate rows nor reset a role that was deliberately
+// changed. Both properties are asserted in the inline tests below.
+
+pub const Migration100AddWorkspaceMembers = struct {
+    pub const version: u32 = 100;
+    pub const name = "add_workspace_members";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // One tx: the table, its index and the backfill must land together.
+        // Same shape as Migration 077.
+        var tx = try db.begin();
+        defer tx.commitOrRollback() catch {};
+        errdefer tx.rollback() catch {};
+
+        try tx.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS workspace_members (
+            \\    workspace_id TEXT NOT NULL,
+            \\    user_id TEXT NOT NULL,
+            \\    role TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('owner', 'admin', 'editor', 'viewer')),
+            \\    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    invited_by TEXT,
+            \\    PRIMARY KEY (workspace_id, user_id)
+            \\)
+        , &[_][]const u8{});
+
+        // The PK already covers workspace_id -> members (the direction the
+        // visibility EXISTS subquery walks). This covers the other direction:
+        // "which workspaces is this user in".
+        try tx.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_id, workspace_id)", &[_][]const u8{});
+
+        // Backfill. `user_id` is deliberately NOT NULL because
+        // `SqliteBackend.exec` collapses an empty slice to SQL NULL: an empty
+        // owner must hit the sentinel, not blow up the NOT NULL constraint.
+        // The create path gets the same guarantee from
+        // `auth_common.normaliseOwnerId`.
+        //
+        // Every legacy bucket lands on exactly one member row:
+        //   'user_a'    -> ('ws', 'user_a',     'owner')  private to Alice
+        //   'user_system' -> ('ws','user_system','owner')  shared
+        //   NULL / ''   -> ('ws', 'user_system', 'owner')  shared
+        //
+        // Literals, not binds — so the empty-slice-as-NULL rule does not
+        // apply here, and NULL and '' can be told apart.
+        try tx.exec(allocator,
+            \\INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role, joined_at)
+            \\SELECT id, COALESCE(NULLIF(user_id, ''), 'user_system'), 'owner', datetime('now')
+            \\FROM workspaces
+        , &[_][]const u8{});
+
+        try tx.commit();
+
+        // Refresh planner stats so the new index is picked up on pre-existing
+        // databases (mirrors Migrations 041-052 / 070 / 072 / 077).
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
+// Migration 100 — `workspace_members` (shared workspaces) — inline tests
+// ============================================================================
+//
+// See docs/plans/2026-10-02-workspace-members-shared-workspaces.md.
+//
+// The shape these tests pin down is the one a reviewer has to agree with
+// before any code ships, so each case answers one question:
+//
+//   1. Does the table have the shape the design doc promises?
+//   2. Does the backfill map every legacy owner bucket to the right member?
+//   3. Is it replay-safe AND does re-running it destroy live shares?
+//   4. Is it wired into the migration chain at all?
+
+/// Minimal pre-100 schema: just a `workspaces` table carrying `user_id`
+/// exactly as Migration 077 left it. Deliberately NOT `setupOwnerRoots` —
+/// that fixture also builds `sessions` and `worker`, which have nothing to
+/// do with workspace membership and would hide a bug in this table.
+fn setupWorkspaceMembersRoot(ctx: *TestCtx) !void {
+    try ctx.db.exec(testing.allocator, "CREATE TABLE workspaces (id TEXT PRIMARY KEY, user_id TEXT)", &.{});
+}
+
+/// Assert one membership row's user + role. A comparison helper (not a
+/// getter) so no duped value escapes and trips the leak-checking allocator.
+fn expectMember(ctx: *TestCtx, workspace_id: []const u8, user_id: []const u8, expected_role: []const u8) !void {
+    const alloc = testing.allocator;
+    var q = try ctx.db.query(
+        alloc,
+        "SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+        &[_][]const u8{ workspace_id, user_id },
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.MemberRowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings(expected_role, row.values[0]);
+}
+
+fn countMembers(ctx: *TestCtx) !i64 {
+    const alloc = testing.allocator;
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM workspace_members", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.MemberRowMissing;
+    defer row.deinit(alloc);
+    return std.fmt.parseInt(i64, row.values[0], 10);
+}
+
+fn tableDdl(ctx: *TestCtx, table: []const u8) ![]const u8 {
+    const alloc = testing.allocator;
+    var q = try ctx.db.query(
+        alloc,
+        "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type = 'table' AND name = ?",
+        &[_][]const u8{table},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.TableMissing;
+    defer row.deinit(alloc);
+    return alloc.dupe(u8, row.values[0]);
+}
+
+test "Migration100 creates workspace_members with the shape the design promises" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupWorkspaceMembersRoot(&ctx);
+
+    try Migration100AddWorkspaceMembers.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "workspace_members");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    for ([_][]const u8{ "workspace_id", "user_id", "role", "joined_at", "invited_by" }) |want| {
+        var found = false;
+        for (cols) |c| {
+            if (std.mem.eql(u8, c, want)) found = true;
+        }
+        try testing.expect(found);
+    }
+
+    // `user_id` MUST be NOT NULL. `SqliteBackend.exec` collapses an empty
+    // slice to SQL NULL, so an empty owner would blow up the insert instead
+    // of silently creating an orphan member row. The create path normalises
+    // empty -> 'user_system' BEFORE binding (auth_common.normaliseOwnerId).
+    var q = try ctx.db.query(
+        alloc,
+        "SELECT type, \"notnull\" FROM pragma_table_info('workspace_members') WHERE name = 'user_id'",
+        &.{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("TEXT", row.values[0]);
+    try testing.expectEqualStrings("1", row.values[1]);
+
+    // Composite PK (workspace_id, user_id) is the only DB-level "no duplicate
+    // membership" guarantee we have — PRAGMA foreign_keys is deliberately
+    // OFF (see Migration 077's docstring). It shows up as pk=1/pk=2.
+    var qp = try ctx.db.query(
+        alloc,
+        "SELECT name FROM pragma_table_info('workspace_members') WHERE pk > 0 ORDER BY pk",
+        &.{},
+    );
+    defer qp.deinit();
+    const pk1 = (try qp.next()) orelse return error.RowMissing;
+    defer pk1.deinit(alloc);
+    const pk2 = (try qp.next()) orelse return error.RowMissing;
+    defer pk2.deinit(alloc);
+    try testing.expectEqualStrings("workspace_id", pk1.values[0]);
+    try testing.expectEqualStrings("user_id", pk2.values[0]);
+
+    // The role set is CHECK-constrained, and a SQLite CHECK cannot be
+    // ALTERed — so this list is effectively permanent without a table
+    // recreate. Assert the exact set so adding a role is a deliberate act.
+    const ddl = try tableDdl(&ctx, "workspace_members");
+    defer alloc.free(ddl);
+    try testing.expect(std.mem.indexOf(u8, ddl, "CHECK (role IN ('owner', 'admin', 'editor', 'viewer'))") != null);
+
+    // Both directions are indexed: the PK covers workspace_id -> members
+    // (the hot visibility predicate); this covers user_id -> workspaces.
+    var qi = try ctx.db.query(
+        alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_workspace_members_user'",
+        &.{},
+    );
+    defer qi.deinit();
+    const irow = (try qi.next()) orelse return error.RowMissing;
+    defer irow.deinit(alloc);
+    try testing.expectEqualStrings("1", irow.values[0]);
+}
+
+test "Migration100 maps every legacy owner bucket to the right member row" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupWorkspaceMembersRoot(&ctx);
+
+    // All four buckets the pre-100 schema can hold. The empty string is a
+    // SQL literal on purpose: binding "" would arrive as NULL and the two
+    // buckets could not be told apart in this test.
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, user_id) VALUES ('ws_real', 'user_a')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, user_id) VALUES ('ws_sys', 'user_system')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, user_id) VALUES ('ws_null', NULL)", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, user_id) VALUES ('ws_empty', '')", &.{});
+
+    try Migration100AddWorkspaceMembers.up(&ctx.db, alloc);
+
+    // A real owner stays private to them.
+    try expectMember(&ctx, "ws_real", "user_a", "owner");
+    // The three "shared legacy bucket" spellings all collapse to the
+    // sentinel member — which is what keeps an operator's pre-`--auth`
+    // sidebar visible after the migration (user decision 2026-09-25).
+    try expectMember(&ctx, "ws_sys", "user_system", "owner");
+    try expectMember(&ctx, "ws_null", "user_system", "owner");
+    try expectMember(&ctx, "ws_empty", "user_system", "owner");
+
+    // Exactly one member per workspace: the backfill must not ALSO write a
+    // row for a real owner on top of the sentinel.
+    try testing.expectEqual(@as(i64, 4), try countMembers(&ctx));
+}
+
+test "Migration100 is replay-safe and a re-run never clobbers live shares" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupWorkspaceMembersRoot(&ctx);
+
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, user_id) VALUES ('ws_a', 'user_a')", &.{});
+
+    try Migration100AddWorkspaceMembers.up(&ctx.db, alloc);
+    try Migration100AddWorkspaceMembers.up(&ctx.db, alloc);
+
+    // Idempotent on its own: the second run must not duplicate rows.
+    try testing.expectEqual(@as(i64, 1), try countMembers(&ctx));
+
+    // Now the interesting case. Users start sharing, and the owner is
+    // demoted. A re-run of the backfill must NOT undo either edit — this is
+    // what makes it safe to leave a completed migration re-runnable forever.
+    try ctx.db.exec(alloc, "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ('ws_a', 'user_b', 'viewer')", &.{});
+    try ctx.db.exec(alloc, "UPDATE workspace_members SET role = 'viewer' WHERE workspace_id = 'ws_a' AND user_id = 'user_a'", &.{});
+
+    try Migration100AddWorkspaceMembers.up(&ctx.db, alloc);
+
+    try testing.expectEqual(@as(i64, 2), try countMembers(&ctx));
+    try expectMember(&ctx, "ws_a", "user_b", "viewer");
+    // Still 'viewer', NOT reset to 'owner' by the backfill.
+    try expectMember(&ctx, "ws_a", "user_a", "viewer");
+}
+
+test "Migration100 leaves workspaces.user_id alone so rollback still works" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupWorkspaceMembersRoot(&ctx);
+
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, user_id) VALUES ('ws_a', 'user_a')", &.{});
+
+    try Migration100AddWorkspaceMembers.up(&ctx.db, alloc);
+
+    // The column is deliberately NOT dropped. `DROP TABLE workspace_members`
+    // must be a complete undo, and the old code path must keep working
+    // against an untouched workspaces table.
+    try expectOwner(&ctx, "workspaces", "ws_a", "user_a");
+}
+
+test "Migration100 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration100AddWorkspaceMembers.version) return;
+    }
+    return error.Migration100NotRegistered;
 }

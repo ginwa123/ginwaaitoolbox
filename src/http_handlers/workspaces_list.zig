@@ -99,7 +99,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
     // predicate and need no predicate of their own (see plan §Design D1).
     var rows = try db.query(
         alloc,
-        "SELECT id, name, created_at, updated_at FROM workspaces WHERE " ++ comptime auth_common.ownerVisibilityClause("workspaces") ++ " ORDER BY position DESC, created_at DESC",
+        "SELECT id, name, created_at, updated_at FROM workspaces WHERE " ++ comptime auth_common.workspaceVisibilityClause("workspaces") ++ " ORDER BY position DESC, created_at DESC",
         &[_][]const u8{ owner, owner },
     );
     defer rows.deinit();
@@ -358,6 +358,19 @@ fn setupDb() !TestCtx {
         \\  user_id TEXT
         \\)
     , &.{});
+    // Migration 100 moved visibility onto this join table, so the fixture
+    // needs it — the visibility clause's EXISTS subquery resolves against
+    // `workspace_members` and fails outright without the table.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_members (
+        \\  workspace_id TEXT NOT NULL,
+        \\  user_id TEXT NOT NULL,
+        \\  role TEXT NOT NULL DEFAULT 'viewer',
+        \\  joined_at DATETIME,
+        \\  invited_by TEXT,
+        \\  PRIMARY KEY (workspace_id, user_id)
+        \\)
+    , &.{});
     try db.exec(alloc,
         \\CREATE TABLE workspace_items (
         \\  id TEXT PRIMARY KEY,
@@ -383,6 +396,18 @@ fn setupDb() !TestCtx {
         \\  ('i1', 'ws_1', 'kanban', 'K1', '/p/1', 0, datetime('now'), datetime('now')),
         \\  ('i2', 'ws_1', 'folder', 'F1', '', 1, datetime('now'), datetime('now')),
         \\  ('i3', 'ws_2', 'kanban', 'K2', '/p/2', 0, datetime('now'), datetime('now'))
+    , &.{});
+
+    // ws_1..ws_3 are inserted without `user_id`, so they carry the NULL
+    // legacy bucket. Mirror Migration 100's backfill exactly: NULL (and '')
+    // both become a `user_system` member, i.e. the shared bucket. Writing
+    // the members by hand here is deliberate — this fixture bypasses the
+    // migration chain, so it has to reproduce the backfill's OUTPUT.
+    try db.exec(alloc,
+        \\INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role) VALUES
+        \\  ('ws_1', 'user_system', 'owner'),
+        \\  ('ws_2', 'user_system', 'owner'),
+        \\  ('ws_3', 'user_system', 'owner')
     , &.{});
 
     return .{ .db = db, .threaded = threaded };
@@ -449,6 +474,14 @@ test "fetchWorkspacesList: another user's workspace is invisible; the shared leg
         \\  ('ws_sys', 'Sentinel', datetime('now'), datetime('now'), 4, 'user_system')
     , &.{});
 
+    // Same backfill contract: a real owner becomes their own member, the
+    // sentinel row becomes the shared marker.
+    try ctx.db.exec(alloc,
+        \\INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role) VALUES
+        \\  ('ws_b', 'user_b', 'owner'),
+        \\  ('ws_sys', 'user_system', 'owner')
+    , &.{});
+
     // user_a sees the 3 legacy rows + the sentinel row — never ws_b.
     {
         const response = try fetchWorkspacesList(alloc, &ctx.db, false, "user_a");
@@ -488,3 +521,72 @@ test "fetchWorkspacesList: another user's workspace is invisible; the shared leg
     }
 }
 
+test "fetchWorkspacesList: a second member sees a shared workspace it was not created in" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    // A genuinely PRIVATE workspace: owned by user_a and NOT carrying the
+    // `user_system` member — that member IS the shared marker, so a workspace
+    // that has it is already visible to everyone. Using one of the legacy
+    // fixture rows here would prove nothing: user_c can see all of them
+    // before any sharing happens.
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, name, position, user_id) VALUES ('ws_p', 'Private', 20, 'user_a')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ('ws_p', 'user_a', 'owner')", &.{});
+
+    const seesPrivate = struct {
+        fn run(a: std.mem.Allocator, c: *TestCtx, owner: []const u8) !bool {
+            const response = try fetchWorkspacesList(a, &c.db, false, owner);
+            defer freeResponse(response);
+            for (response.workspaces) |ws| {
+                if (std.mem.eql(u8, ws.id, "ws_p")) return true;
+            }
+            return false;
+        }
+    }.run;
+
+    // Boundary: invisible before anyone is added.
+    try testing.expect(!try seesPrivate(alloc, &ctx, "user_c"));
+
+    // Share it with user_c. That single INSERT is the whole feature — no
+    // column on `workspaces` to update, no flag to flip.
+    try ctx.db.exec(alloc, "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ('ws_p', 'user_c', 'editor')", &.{});
+    try testing.expect(try seesPrivate(alloc, &ctx, "user_c"));
+
+    // Revoking takes it away again — sharing is not a one-way door, and
+    // nothing was left behind on the workspace row to keep granting it.
+    try ctx.db.exec(alloc, "DELETE FROM workspace_members WHERE workspace_id = 'ws_p' AND user_id = 'user_c'", &.{});
+    try testing.expect(!try seesPrivate(alloc, &ctx, "user_c"));
+
+    // The owner's own access survives all of that untouched.
+    try testing.expect(try seesPrivate(alloc, &ctx, "user_a"));
+}
+
+test "fetchWorkspacesList: a private workspace stays private even when a sibling is shared" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    // Two workspaces owned by user_a. Only one of them gets shared.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspaces (id, name, position, user_id) VALUES
+        \\  ('ws_a_open', 'Shared out', 10, 'user_a'),
+        \\  ('ws_a_priv', 'Kept private', 11, 'user_a')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_members (workspace_id, user_id, role) VALUES
+        \\  ('ws_a_open', 'user_a', 'owner'),
+        \\  ('ws_a_priv', 'user_a', 'owner'),
+        \\  ('ws_a_open', 'user_d', 'viewer')
+    , &.{});
+
+    const response = try fetchWorkspacesList(alloc, &ctx.db, false, "user_d");
+    defer freeResponse(response);
+
+    var saw_shared = false;
+    for (response.workspaces) |ws| {
+        try testing.expect(!std.mem.eql(u8, ws.id, "ws_a_priv"));
+        if (std.mem.eql(u8, ws.id, "ws_a_open")) saw_shared = true;
+    }
+    try testing.expect(saw_shared);
+}

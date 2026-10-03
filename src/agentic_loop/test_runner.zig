@@ -11,6 +11,11 @@
 
 test {
     // ─── Files with inline tests ──────────────────────────────────────────
+    // web_search_config: per-session provider resolution. Registered because
+    // nothing else in the reachable graph imports it — its whole purpose is
+    // to be called from the two exec adapters, which do not yet exist.
+    _ = @import("web_search_config.zig");
+
     _ = @import("sse.zig");
     _ = @import("llm_history.zig");
     _ = @import("session_skills.zig");

@@ -23,6 +23,23 @@ test {
     // Bash tool cross-platform tests
     _ = @import("tools/bash.zig");
 
+    // web_search_curl: the GET-only example_curl parser. Registered here
+    // because nothing else in the reachable test graph imports it yet —
+    // `web_search.zig` is the only consumer, and `tools_equipped.zig`
+    // reaches its tests only by accident.
+    _ = @import("tools/web_search_curl.zig");
+
+    // web_search_request: host pinning + `{key}` substitution. The only
+    // module in the feature that ever sees a credential, so its tests
+    // matter more than most — registered for the same reason.
+    _ = @import("tools/web_search_request.zig");
+
+    // web_search: execute + untyped passthrough + the tool schemas. Its
+    // inline tests are only reachable if something imports it — root.zig
+    // re-exports it for the registry, which is a `pub const` alias and does
+    // not pull tests into the binary.
+    _ = @import("tools/web_search.zig");
+
     // tools/indexing_semantic_search.zig is NOT registered. Its `search` is
     // still a `!void` placeholder, and the suite that asserted its return
     // value could never have compiled — see the note on its inline block.

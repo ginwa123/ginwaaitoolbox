@@ -92,6 +92,13 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         // 2026-08-28 — add_mcp_server agent tool (Task 5).
         add_mcp_server_mod.add_mcp_server_tool,
         search_skills_mod.search_skills_tool,
+
+        // Web search. `list_web_search_providers` is the discovery half of
+        // the same pattern `search_skills` uses: the agent is told the tool
+        // EXISTS here and learns WHICH providers exist by calling it. Both
+        // names ship together — see the guard test below.
+        web_search_mod.list_web_search_providers_tool,
+        web_search_mod.web_search_tool,
         // list_memory_mod.list_memory_tool,
         save_memory_mod.save_memory_tool,
         load_memory_mod.load_memory_tool,
@@ -303,7 +310,12 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // === LSP TOOLS ===
 
         // === WEB SEARCH TOOLS ===
-        // .{ .name = "web_search", .exec = tools.execWebSearch, .tool_def = web_search_mod.web_search_tool },
+        // 2026-10-02: the old `web_search` here was a URL BROWSER that shelled
+        // out to `agent-browser snapshot` — unreachable and commented out. The
+        // name now means search, and there are TWO tools: the action and the
+        // discovery it depends on. They ship together (see the guard test).
+        .{ .name = "web_search", .exec = tools.execWebSearch, .tool_def = web_search_mod.web_search_tool },
+        .{ .name = "list_web_search_providers", .exec = tools.execListWebSearchProviders, .tool_def = web_search_mod.list_web_search_providers_tool },
 
         // === FILE SEARCH TOOLS ===
         .{ .name = "glob", .exec = tools.execGlob, .tool_def = glob_tool_mod.glob_tool },
@@ -365,6 +377,15 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     add_skill_mod.add_skill_tool.function.name,
     edit_skill_mod.edit_skill_tool.function.name,
     search_skills_mod.search_skills_tool.function.name,
+
+    // Web search. Default-on (D10): an agent that cannot look anything up
+    // is materially less useful, and an unconfigured provider costs nothing
+    // - the tool returns a one-line "no providers configured" message
+    // rather than erroring. The discovery tool ships alongside it, because
+    // an action tool the agent has no way to learn the arguments for is
+    // just as broken as a registry entry with no dispatch.
+    web_search_mod.list_web_search_providers_tool.function.name,
+    web_search_mod.web_search_tool.function.name,
 
     // spawn
     spawn_sub_agent_tool.spawn_sub_agent_tool.function.name,
@@ -805,4 +826,65 @@ test "seed: kanban config absent (null) → legacy defaults + floor" {
         if (std.mem.eql(u8, n, "kanban_move_task")) saw_move = true;
     }
     try testing.expect(saw_list and saw_move);
+}
+
+// ─── registry parity guards (plan 2026-10-02-web-search-tool.md, row 67) ──
+
+// Every tool the LLM is shown must be dispatchable.
+//
+// This test does not exist in the codebase's history, and its absence is
+// why `web_search` sat commented out in the registry while nothing
+// referred to it: the failure mode is a name in `equips()` with no
+// registry entry, which reaches the model and then nowhere. Dispatch
+// misses, `error.UnknownTool` is raised, the placeholder is never
+// replaced — and the UI renders it EXACTLY like a tool that is still
+// running. Nothing looks broken and nothing works.
+//
+// (`//` not `///`: Zig 0.16 refuses to attach a doc comment to a `test`.)
+test "every tool offered to the model resolves to a dispatchable registry entry" {
+    const listed = equips(testing.allocator);
+    defer testing.allocator.free(listed);
+
+    for (listed) |t| {
+        const name = t.function.name;
+        testing.expect(isDispatchableToolName(name)) catch |err| {
+            std.debug.print(
+                "!! '{s}' is offered to the model but has no UNIFIED_TOOL_REGISTRY entry " ++
+                    "-- the model can call it and dispatch will miss (renders as a hung tool)\n",
+                .{name},
+            );
+            return err;
+        };
+    }
+}
+
+// The web-search pair must ship together in all three lists.
+//
+// A discovery tool the model cannot call is dead weight, and an action
+// tool with no way to learn its arguments is just as broken — so neither
+// half is useful alone.
+test "web_search and list_web_search_providers appear in equips, the registry and the defaults" {
+    const names = [_][]const u8{ "web_search", "list_web_search_providers" };
+
+    const listed = equips(testing.allocator);
+    defer testing.allocator.free(listed);
+    for (names) |n| {
+        try testing.expect(isDispatchableToolName(n));
+        var in_equips = false;
+        for (listed) |t| {
+            if (std.mem.eql(u8, t.function.name, n)) in_equips = true;
+        }
+        try testing.expect(in_equips);
+
+        var in_defaults = false;
+        for (DEFAULT_AGENT_TOOLS) |d| {
+            if (std.mem.eql(u8, d, n)) in_defaults = true;
+        }
+        try testing.expect(in_defaults);
+    }
+
+    // The default list is mirrored in the frontend's BUILTIN_DEFAULT_TOOLS;
+    // a divergence there is what the comment at the top of this list warns
+    // about, so assert the seed stays non-empty for both.
+    try testing.expect(DEFAULT_AGENT_TOOLS.len > 0);
 }
