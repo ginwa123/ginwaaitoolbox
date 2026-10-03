@@ -264,15 +264,24 @@ it means "your local merge of these two refs is clean".
 
 ---
 
-## Verification
+## Verification — run 2026-10-03
 
-- [ ] `zig build test` — green, including the new static wiring tests.
-- [ ] `cd src/apps/desktop && pnpm vitest run src/components/views/__tests__/SidebarDiffPanel.prConflict.spec.ts`
-- [ ] `cd src/apps/desktop && pnpm run build` (and delete stray emitted `.js`).
-- [ ] `python3 -m pytest tests/functional/git_pr_conflicts_test.py -v`
+- [x] `zig build test` — 4335/4345 pass, 10 skipped, 0 failed, 0 leaks.
+- [x] `pnpm vitest run src/components/views/__tests__/SidebarDiffPanel.prConflict.spec.ts`
+      — 14/14. Two mutations prove the load-bearing ones fail without the code
+      under test: dropping the `hasPrConflict` guard fails *"never calls the
+      conflicts endpoint when the PR is mergeable"*; forcing
+      `prConflictUnreproduced` to `false` fails *"says \"could not reproduce\""*.
+- [x] `pnpm run build` (`vue-tsc --build` + `vite build`) — clean.
+- [x] `pytest tests/functional/git_pr_conflicts_test.py -v` — 4/4 against the
+      real binary on an isolated port + tmpdir HOME.
+- [x] Whole-suite check: 248/250 in `src/components/views/__tests__/`. The two
+      failures (`ChatView.tool-width`, `SidebarDiffPanel.tabs` "without prUrl
+      the header toggle") are **pre-existing on the base branch** — reproduced
+      with this change stashed.
 - [ ] Manual sanity: attach a PR that is `CONFLICTING`, confirm the badge
-  shows `⚠ Merge conflicts (N)` and the section lists the same N files GitHub
-  does.
+      shows `⚠ Merge conflicts (N)` and the section lists the same N files GitHub
+      does.
 
 ## Out of Scope
 
