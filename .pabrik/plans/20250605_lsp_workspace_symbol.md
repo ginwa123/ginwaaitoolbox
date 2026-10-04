@@ -410,7 +410,7 @@ Follow the same pattern as lsp_definition_test.zig:
 Follow the same pattern as handle_lsp_definition_tool.zig:
 ```zig
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
+const tree1_mod = @import("pabrikcore");
 const agent = tree1_mod.agent;
 const lsp_workspace_symbol_tool = tree1_mod.tool_models.lsp_workspace_symbol;
 

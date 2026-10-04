@@ -1,13 +1,8 @@
 const std = @import("std");
-const helpers = @import("helpers");
-const brand = helpers.brand_paths;
 
 /// App name for config directory. Matches skills.zig and agents.zig.
 pub const APP_NAME = "pabrik";
 
-/// Pre-rebrand app name. Still resolved so a user's existing global memories
-/// keep loading; see helpers/brand_paths.zig.
-pub const LEGACY_APP_NAME = brand.legacy_app_name;
 
 /// Subdirectory name under the per-app config folder.
 pub const MEMORIES_DIR = "memories";
@@ -15,6 +10,7 @@ pub const MEMORIES_DIR = "memories";
 /// Subdirectory name under the per-project local config folder.
 /// Mirrors `LOCAL_SKILLS_DIR = ".pabrik/skills"` in tools/skills.zig.
 pub const LOCAL_MEMORIES_DIR = ".pabrik/memories";
+
 
 /// Concatenate `dir` and `name` into a forward-slash path and return it.
 ///
@@ -109,18 +105,14 @@ pub fn get_global_memories_path(
     environment: *const std.process.Environ.Map,
 ) ?[]const u8 {
     if (environment.get("XDG_CONFIG_HOME")) |xdg_config| {
-        const current = joinPath3(allocator, xdg_config, APP_NAME, MEMORIES_DIR) catch return null;
-        const legacy = joinPath3(allocator, xdg_config, LEGACY_APP_NAME, MEMORIES_DIR) catch return current;
-        return brand.choose(allocator, current, legacy);
+        return joinPath3(allocator, xdg_config, APP_NAME, MEMORIES_DIR) catch null;
     }
 
     if (environment.get("HOME")) |home| {
         // Linux/macOS: ~/.config/<APP>/<MEMORIES_DIR>.
         // On macOS the convention is $HOME/Library/Application Support; keep
         // the Unix-style fallback for now (separate task to detect macOS).
-        const current = joinPath4(allocator, home, ".config", APP_NAME, MEMORIES_DIR) catch return null;
-        const legacy = joinPath4(allocator, home, ".config", LEGACY_APP_NAME, MEMORIES_DIR) catch return current;
-        return brand.choose(allocator, current, legacy);
+        return joinPath4(allocator, home, ".config", APP_NAME, MEMORIES_DIR) catch null;
     }
 
     return null;

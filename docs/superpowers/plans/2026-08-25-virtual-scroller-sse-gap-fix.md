@@ -46,7 +46,7 @@ When an SSE chunk (or a loadMore measurement settle) grows `scrollHeight` while 
 |---|---|
 | `src/apps/desktop/src/components/views/ChatView.vue` | Bug A: deltaTop-aware isAtBottom. Bug B: explicit bottom compute in onContentShift. Bug C: re-validate bottom after endPreserve when was-at-bottom. |
 | `src/apps/desktop/src/components/views/Chats.vue` | Bug B pattern (clamp-delegate) — same 1-line fix. |
-| `src/apps/desktop/src/components/nalar/SubAgentPeekPanel.vue` | Bug B pattern — same 1-line fix. |
+| `src/apps/desktop/src/components/pabrik/SubAgentPeekPanel.vue` | Bug B pattern — same 1-line fix. |
 | `src/apps/desktop/src/__tests__/chatViewContentShiftRestick.spec.ts` | NEW — 5 unit tests for A+B. |
 | `tests/functional_ui/chatview_sse_stick_ui_test.py` | NEW — functional UI reproduction incl. loadMore-during-stream. |
 
@@ -101,7 +101,7 @@ When an SSE chunk (or a loadMore measurement settle) grows `scrollHeight` while 
 ### Task 5 — Functional UI test (wire-level reproduction)
 
 1. Extend `tests/functional_ui/chatview_sse_stick_ui_test.py` (from cherry-pick `fc89f75c`) with a loadMore-during-stream scenario: seed >PAGE_SIZE messages, scroll to top to trigger loadMore mid-stream, then stream SSE chunks → assert no gap (distanceFromBottom < threshold at stream end) and no blank viewport.
-2. Run: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional_ui/chatview_sse_stick_ui_test.py -v` (harness picks a free port ≠ 8081).
+2. Run: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional_ui/chatview_sse_stick_ui_test.py -v` (harness picks a free port ≠ 8081).
 3. Commit: `test: functional UI test for SSE + loadMore gap reproduction`.
 
 ### Task 6 — Full verification + PR

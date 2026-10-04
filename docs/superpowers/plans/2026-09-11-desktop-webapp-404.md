@@ -16,21 +16,21 @@ top-left corner (screenshot in the task).
 Three individually-reasonable decisions compose into the bug:
 
 1. `desktop_app/main.zig` materialised the embedded webapp into a **per-pid
-   temp dir** (`$XDG_RUNTIME_DIR/nalar-desktop-webapp-<pid>`) via
+   temp dir** (`$XDG_RUNTIME_DIR/pabrik-desktop-webapp-<pid>`) via
    `extraction.extract`.
-2. It spawned `nalar --port 8081 --static-dir <that dir>` and never signalled
+2. It spawned `pabrik --port 8081 --static-dir <that dir>` and never signalled
    that daemon on close (deliberate: the desktop is decoupled from the
-   daemon's lifecycle — only `nalar service stop` ends it).
+   daemon's lifecycle — only `pabrik service stop` ends it).
 3. `main.zig` had a `defer` that called `extraction.cleanup`, i.e.
    **`rm -rf` on the dir the still-running daemon is serving**.
 
 Reproduced live on this machine before the fix:
 
 ```
-$ ps -eo pid,ppid,etime,cmd | grep nalar
-3233139  1  02:36:25  /usr/local/bin/nalar --port 8081 \
-                      --static-dir /run/user/1000/nalar-desktop-webapp-3232886
-$ ls -ld /run/user/1000/nalar-desktop-webapp-3232886
+$ ps -eo pid,ppid,etime,cmd | grep pabrik
+3233139  1  02:36:25  /usr/local/bin/pabrik --port 8081 \
+                      --static-dir /run/user/1000/pabrik-desktop-webapp-3232886
+$ ls -ld /run/user/1000/pabrik-desktop-webapp-3232886
 ls: cannot access '...': No such file or directory      # deleted at window close
 
 $ curl -i http://127.0.0.1:8081/
@@ -59,18 +59,18 @@ the next login.
 
 ### A. Persistent, content-addressed webapp dir (`extraction.ensurePersistent`)
 
-- `~/.local/share/nalar/desktop-webapp/<hash>` (Linux, via `$XDG_DATA_HOME`),
-  `~/Library/Application Support/nalar/desktop-webapp/<hash>` (macOS),
-  `%LOCALAPPDATA%\nalar\desktop-webapp\<hash>` (Windows fallback path).
+- `~/.local/share/pabrik/desktop-webapp/<hash>` (Linux, via `$XDG_DATA_HOME`),
+  `~/Library/Application Support/pabrik/desktop-webapp/<hash>` (macOS),
+  `%LOCALAPPDATA%\pabrik\desktop-webapp\<hash>` (Windows fallback path).
 - `<hash>` = Blake3 over the embedded asset set (path + mime + bytes) so an
   unchanged build reuses the same dir (no multi-MiB rewrite per launch, and
   crucially the path handed to an already-running daemon stays valid) while a
   changed build lands in a fresh dir (never mix old and new assets).
 - Crash-safe publish: write to `<hash>.tmp-<pid>`, write
-  `.nalar-webapp-complete` **last**, then rename into place. A concurrent
+  `.pabrik-webapp-complete` **last**, then rename into place. A concurrent
   publisher loses the rename and keeps the winner's byte-identical dir.
 - **Never deleted.** `main.zig` now frees the path but never removes the dir.
-- Windows keeps its `%LOCALAPPDATA%\nalar\html` installed-dir precedence.
+- Windows keeps its `%LOCALAPPDATA%\pabrik\html` installed-dir precedence.
 
 ### B. Attach only to a server that actually serves the app
 
@@ -87,7 +87,7 @@ the next login.
   terminated and `AutoSpawnFailed` is returned instead of opening a 404 window.
 - **Never kills an existing daemon** (the dev server on 8081 is untouched).
 
-### C. Drive-by: `nalar service start|restart` dropped `--static-dir`
+### C. Drive-by: `pabrik service start|restart` dropped `--static-dir`
 
 `main.zig` never forwarded `s.static_dir` into `serviceStart` (so
 `state.json.static_dir` was always `null`), and `parseServiceSubcommand`'s
@@ -110,23 +110,23 @@ edge `desktop_exe` already has.
 | Zig unit | `src/apps/desktop_app/extraction_test.zig` (+4) | dir is stable across calls, reused (sentinel survives), invalidated on asset change, republished after a torn write, zero-asset build still reusable |
 | Zig unit | `src/apps/desktop_app/attach_test.zig` (rewritten, 6) | path-aware mock server; `/health` 200 + `/` 404 is **never** attached to; a working daemon in a state file is; the 404 daemon is skipped and a real spawn happens on a **different** port, verified servable, with the squatter left alive |
 | Zig unit | `src/service/main_service_test.zig` (+2) | `start`/`restart` keep `--static-dir` |
-| Python functional | `tests/functional/desktop_webapp_404_test.py` (3) | real binary: `--static-dir` serves; deleting it behind nalar's back ⇒ `GET /` 404 **while `/health` stays 200**; restoring it serves again; a persistent dir survives a restart; no-static-dir has the same 200/404 shape |
+| Python functional | `tests/functional/desktop_webapp_404_test.py` (3) | real binary: `--static-dir` serves; deleting it behind pabrik's back ⇒ `GET /` 404 **while `/health` stays 200**; restoring it serves again; a persistent dir survives a restart; no-static-dir has the same 200/404 shape |
 
 Zig's test runner fails a run when `std.log.err` fires, so the auto-spawn test
-uses a working fake `nalar` (a small executable python script that binds the
+uses a working fake `pabrik` (a small executable python script that binds the
 `--port` it is given, serves 200 + HTML, and exits on its own after 5 s) rather
 than deliberately failing the spawn — no stray error logs, no leaked process.
 
 ## Verification
 
 - `zig build test:desktop-app -Dno-webapp-rebuild --summary all` → **46/46 pass, 0 error logs**
-- `zig build test install:linux nalar-desktop -Dno-webapp-rebuild --summary all`
+- `zig build test install:linux pabrik-desktop -Dno-webapp-rebuild --summary all`
   → 17/17 steps, **3388/3396 pass (8 skip, 0 fail)**, both binaries link
 - `pytest tests/functional/desktop_webapp_404_test.py` → **3/3 pass**
 - Real-binary end-to-end (isolated `HOME`, port 18099 — never 8081):
-  `--smoke-test` materialises `~/.local/share/nalar/desktop-webapp/<hash>/`
-  with `index.html` + `assets/` + `.nalar-webapp-complete`;
-  then with the real `nalarcore-linux-x86_64`:
+  `--smoke-test` materialises `~/.local/share/pabrik/desktop-webapp/<hash>/`
+  with `index.html` + `assets/` + `.pabrik-webapp-complete`;
+  then with the real `pabrikcore-linux-x86_64`:
   `GET /` → 200, `/index.html` → 200, `/health` → 200;
   after moving the dir away: `GET /` → **404 (Not Found)** and `/health` → 200
   (the reported bug, reproduced); after restoring it: `GET /` → 200.
@@ -146,7 +146,7 @@ three failures was this PR's:
 
 | Job | Failing step | Cause |
 |---|---|---|
-| Windows | `Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)` | **Ours**: `extraction.zig:478` — `win32_dir_apis.MoveFileW(...) != 0`. Win32 `BOOL` is a typed enum (`os.windows.Bool(c_int)`) in Zig 0.16, so comparing it to `0` is a Windows-only compile error (`incompatible types: 'os.windows.Bool(c_int)' and 'comptime_int'`). |
+| Windows | `Install pabrik + pabrik-desktop (Windows, webapp-rebuild disabled)` | **Ours**: `extraction.zig:478` — `win32_dir_apis.MoveFileW(...) != 0`. Win32 `BOOL` is a typed enum (`os.windows.Bool(c_int)`) in Zig 0.16, so comparing it to `0` is a Windows-only compile error (`incompatible types: 'os.windows.Bool(c_int)' and 'comptime_int'`). |
 | Linux | `Functional tests: real-data isolation suites` | **Not ours**: `agent_add_mcp_server_test` (ConnectionReset) + `background_command_completion_test` (ConnectionRefused). `pytest.ini` has no `-n`, so those files (collection order #1 and #8) run *before* this PR's file (#15); both pass locally on the same binary; the same suite passed on macOS in the same run. Flake. |
 | macOS | `UI tests: functional-test-ui` | **Not ours**: `chatview_sse_stick_ui_test.py::test_user_scroll_up_during_stream_is_respected`. The same test fails on `main`'s Linux job in the flatten-refactor run (no changes from this PR). Pre-existing flake. |
 

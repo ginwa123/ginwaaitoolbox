@@ -15,7 +15,7 @@ card surface, no nested scrollbar, native widgets dark — without touching the
 ## Root cause (measured, not guessed)
 
 The exact wire payload was recovered from the real DB
-(`~/.config/nalar/agent.db`, `llm_history` row `1789306073475690430`, session
+(`~/.config/pabrik/agent.db`, `llm_history` row `1789306073475690430`, session
 `task_1789301162387_3`, 3 661 chars): one prose sentence, then a single
 `<html>` block holding an `h2`/`h3`/`p`/`table`/`code` report. The model used
 HTML mode legitimately — the response-formatting prompt offers it.

@@ -235,7 +235,7 @@ class RoomRecentsCache(
          * the value of keeping the old SharedPreferences store's alias is that
          * an upgrade rotates nothing.
          */
-        const val KEY_ALIAS = "nalar_cache_key_v1"
+        const val KEY_ALIAS = "pabrik_cache_key_v1"
     }
 }
 

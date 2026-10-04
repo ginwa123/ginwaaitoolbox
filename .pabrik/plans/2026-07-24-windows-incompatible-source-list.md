@@ -59,9 +59,9 @@ Skipping the affected **test** (`design_io_test.zig`) does not help — `atomicW
 ### Bash fix decision: §3.8 NOT §2.1 — rationale documented in commit `3b8616ac`
 
 Plan §2.1 suggested a file-scope `@compileError("bash is POSIX-only")` for `bash.zig`. I deliberately chose **NOT** to do that because:
-- `tool_registry.zig` has `const bash_tool_mod = nalar_mod.bash_tool;` at module scope (line 15)
+- `tool_registry.zig` has `const bash_tool_mod = pabrik_mod.bash_tool;` at module scope (line 15)
 - `bash.zig::bash_tool` is a `pub const AgentTool{.type = "function", .function = .{.name = "bash", ...}}` of static metadata — compiles fine on Windows
-- A file-scope `@compileError` would block `tool_registry.zig` (and therefore `workflow.zig` and `nalarcore`) from compiling on Windows — much bigger blast radius than just bash.zig
+- A file-scope `@compileError` would block `tool_registry.zig` (and therefore `workflow.zig` and `pabrikcore`) from compiling on Windows — much bigger blast radius than just bash.zig
 
 Per-call OS guards let the tool stay registered (so the LLM sees the bash schema) but the actual spawn returns `error.UnsupportedOS` if invoked on Windows.
 
@@ -90,7 +90,7 @@ These are all small (~50 lines total). Each is a clean commit.
 - **Production code in `src/modules/custom_http_server/src/{main.zig, http_server.zig, http_parser.zig, sse_manager.zig}` was ALREADY Windows-compatible** — the codebase had previously added Winsock `extern "ws2_32"` declarations gated by `if (builtin.os.tag == .windows)` for every socket operation, and comptime `is_windows`/`is_linux` branches in `sse_manager.zig`. Nothing was modified there.
 - **`§2.5 plan suggestion (`std.c.MSG_NOSIGNAL`) is WRONG** — `std.c.MSG_NOSIGNAL` does not exist in `std.c.zig` (verified; `_check` would break Linux). The actual code `const flags: u32 = std.os.linux.MSG.NOSIGNAL;` at `sse_manager.zig:729` is dead code on Windows because it sits inside `if (is_linux)` (a comptime bool). No change needed there.
 - **`std.posix.system` resolves to `std.c` when `-lc` is passed** (confirmed at `/usr/local/lib/zig/std/posix.zig:36-37`). So `socket = posix.system; socket.close(fd)` resolves to `std.c.close(fd)`. This is why `@compileError` warnings in the plan ("`socketpair` POSIX-only") are correct — `std.c.socketpair` is literally `void` on Windows (`std/c.zig:10577-10581`).
-- **Error set gotcha for cross-platform tests**: a test helper with `if (builtin.os.tag == .windows) return error.SkipZigTest;` does NOT make the caller's `defer { _ = posix.system.close(pair[0]); }` blocks safe — Zig eagerly type-checks `defer` blocks even when the function returns early at runtime. Caller must have its own `SkipZigTest` guard. Captured as global memory `~/.config/nalar/memories/zig-skip-zig-test-helper-doesnt-skip-callers-defer-block.md`.
+- **Error set gotcha for cross-platform tests**: a test helper with `if (builtin.os.tag == .windows) return error.SkipZigTest;` does NOT make the caller's `defer { _ = posix.system.close(pair[0]); }` blocks safe — Zig eagerly type-checks `defer` blocks even when the function returns early at runtime. Caller must have its own `SkipZigTest` guard. Captured as global memory `~/.config/pabrik/memories/zig-skip-zig-test-helper-doesnt-skip-callers-defer-block.md`.
 
 ### Strategy for session 3 (DONE)
 
@@ -399,7 +399,7 @@ These files already follow the project's cross-platform patterns and work on Win
 | `src/apps/desktop_app/extraction.zig:139-165` | `tmpDirBase` switch: `XDG_RUNTIME_DIR` / `TMPDIR` / `TEMP` / `TMP` / `C:\Windows\Temp` |
 | `src/apps/desktop_app/platform/linux.zig:67-71` | File-scope `@compileError("platform/linux.zig is only valid on Linux targets")` |
 | `src/apps/desktop_app/main.zig:61-66` | `comptime { if (builtin.os.tag == .linux) { @import("platform/linux.zig"); } }` — avoids triggering the @compileError |
-| `src/apps/desktop_app/platform/windows/nalar_webview.cpp` | Already complete — 560 lines of Win32 + WebView2 |
+| `src/apps/desktop_app/platform/windows/pabrik_webview.cpp` | Already complete — 560 lines of Win32 + WebView2 |
 
 **Test files that are already correctly Windows-skipped (do NOT add guards again):**
 - `src/daemon_test.zig` (7 tests gated)
@@ -445,9 +445,9 @@ timeout 360 zig build
 # 4. Cross-compile Windows type check (per memory `zig-cross-platform-blockers-and-fixes`)
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu \
     -lc \
-    --dep nalarcore \
+    --dep pabrikcore \
     -Mroot=src/root.zig \
-    -Mnalarcore=src/root.zig
+    -Mpabrikcore=src/root.zig
 ```
 
 The fourth command is the ground truth — `zig build install:windows` requires Windows SDK + sqlite3 at link time, but `zig build-obj -fno-emit-bin` type-checks without linking and surfaces every `@compileError` and type-mismatch in seconds.

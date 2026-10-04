@@ -40,8 +40,7 @@ const ai_workflow = pabrikcore.ai_workflow;
 /// mid-process in the future if needed; production binaries never set
 /// the var so the read is a single failed lookup.
 fn gateEnabled() bool {
-    const v = std.c.getenv("PABRIK_TEST_SSE_EMIT") orelse
-        std.c.getenv("NALAR_TEST_SSE_EMIT") orelse return false;
+    const v = std.c.getenv("PABRIK_TEST_SSE_EMIT") orelse return false;
     return std.mem.eql(u8, std.mem.span(v), "1");
 }
 
@@ -159,7 +158,7 @@ test "gate is off by default (no env var)" {
     // intentional (the gate must be opt-in per-process).
     // We can't unset env vars portably in Zig 0.16 tests, so this test
     // only runs when the var is absent.
-    if (std.c.getenv("PABRIK_TEST_SSE_EMIT") == null and std.c.getenv("NALAR_TEST_SSE_EMIT") == null) {
+    if (std.c.getenv("PABRIK_TEST_SSE_EMIT") == null) {
         try std.testing.expect(!gateEnabled());
     }
 }

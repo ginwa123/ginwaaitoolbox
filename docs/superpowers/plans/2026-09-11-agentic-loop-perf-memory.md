@@ -4,7 +4,7 @@
 
 **Goal:** Cut CPU, SQLite work, disk I/O and peak memory of one agent turn by ~60–80% without changing a single byte of the LLM-visible prompt payload, the SSE wire, or the DB schema contract.
 
-**Architecture:** `runAgenticMultiStepnew` (`src/ai_workflow/tui/agentic_loop/workflow.zig:412-1327`) runs one LLM turn per `while (true)` iteration. Today every iteration **re-derives the entire world from scratch**: the whole conversation is re-SELECTed and re-duped (≈27 heap slices/row), the whole ~150 KB system prompt is rebuilt (≈98 KB of `NALAR.md`/`AGENTS.md` read from disk + ≈70 KB of `SKILL.MD` files read to print 2 KB of listings + ~130 SQLite round-trips), the tool table is duplicated twice, and the work heartbeat is written twice. The plan attacks the four places where work is **repeated instead of cached** or **materialised instead of streamed**, plus the two genuine leaks.
+**Architecture:** `runAgenticMultiStepnew` (`src/ai_workflow/tui/agentic_loop/workflow.zig:412-1327`) runs one LLM turn per `while (true)` iteration. Today every iteration **re-derives the entire world from scratch**: the whole conversation is re-SELECTed and re-duped (≈27 heap slices/row), the whole ~150 KB system prompt is rebuilt (≈98 KB of `PABRIK.md`/`AGENTS.md` read from disk + ≈70 KB of `SKILL.MD` files read to print 2 KB of listings + ~130 SQLite round-trips), the tool table is duplicated twice, and the work heartbeat is written twice. The plan attacks the four places where work is **repeated instead of cached** or **materialised instead of streamed**, plus the two genuine leaks.
 
 **Tech Stack:** Zig 0.16.0 (`/usr/bin/zig`, std at `/usr/lib/zig/std`), SQLite via `SqliteBackend` (`sqlite3_*`), `std.Io` (0.16 async I/O), Vue 3 frontend (untouched), pytest functional harness (`tests/functional/harness.py`).
 
@@ -17,7 +17,7 @@
 3. **No DB schema break.** New indexes go through `src/modules/databases/.../migration.zig` as a new numbered migration; additive only.
 4. **Zig 0.16 idioms only:** `std.ArrayList(T).empty` + explicit-allocator calls (`append(allocator, x)`), `std.Io` timestamp/clock APIs (`std.Io.Timestamp.now(io, .real).nanoseconds`), `std.Io.Dir.cwd()`, `rawFree`/`rawAlloc` for vtable work. There is no `std.fs.cwd()`, no `std.Thread.Mutex`.
 5. **Arena discipline (project rule):** never `defer free` memory that came from a request/iteration arena. `defer` *is* required for non-memory resources (SQLite statement handles via `rows.deinit()`, fds, sockets).
-6. **Test floors:** `zig build test --summary all` must keep `0 fail` and `0 leak`. `zig build nalar-desktop --summary all` must stay `N/N steps succeeded`. Frontend untouched, so `pnpm test:unit` is a no-op check.
+6. **Test floors:** `zig build test --summary all` must keep `0 fail` and `0 leak`. `zig build pabrik-desktop --summary all` must stay `N/N steps succeeded`. Frontend untouched, so `pnpm test:unit` is a no-op check.
 7. **Functional verification, not a live server.** Any HTTP/wire behaviour is verified with `tests/functional/` against an isolated tmpdir HOME; never `nohup ... --port 8080` + `curl`. (Port 8081 belongs to the user's running server — never kill it.)
 8. **One commit per task.** Conventional message, `perf(agentic-loop): …` / `fix(agentic-loop): …`.
 9. **Git worktree.** Execute this plan inside a worktree, e.g.
@@ -37,7 +37,7 @@ All claims below were read out of the tree on 2026-09-11. `file:line` are the au
 | B1 | **Full conversation re-read + re-dupe** — 27 columns × 1 `allocator.dupe` per column per row, no `LIMIT`, `LEFT JOIN sessions`, no covering index | `get_llm_histories.zig:27-119` ← `workflow.zig:991` | O(H) rows, ≈27 allocs/row |
 | B2 | **Full prompt rebuild** — 3 disk reads + ~130 SQL round-trips + 2 large concatenations | `prompts_build_messages_for_agent_prompt.zig:77` ← `workflow.zig:1028` | ≈150 KB + ≈130 queries (workspace-bound) |
 | B2a | `getWorkspaceContext` implemented **4×** and called 4× per turn (2 of the 4 impls do a per-sibling-item N+1: 2 queries × ≤20 items) | `llm_history.zig:4089` (called by `pbfap:1222` + `prompts_make_design_context.zig:33`), `prompts_make_workspace_context.zig:101`, `prompts_make_kanban_context.zig:175` | 3+2N ×2, 3 ×1, 3+2N+1 ×1 |
-| B2b | ~98 KB of `NALAR.md` (49 193 B) + `AGENTS.md` (49 282 B) read every turn, each file opened **twice** (probe then read) | `prompts_make_working_directory_context.zig:29,39,47` | ≈98 KB read + ≥6 syscalls |
+| B2b | ~98 KB of `PABRIK.md` (49 193 B) + `AGENTS.md` (49 282 B) read every turn, each file opened **twice** (probe then read) | `prompts_make_working_directory_context.zig:29,39,47` | ≈98 KB read + ≥6 syscalls |
 | B2c | ~70 KB of `SKILL.MD` files read (17 files, each opened+stat'd twice) to emit ≈2 KB of `- **name**: description` lines | `:1710` → `list_skills.zig:47` → `skills.zig:575,547-556,302-323` | ≈70 KB + ≥34 syscalls |
 | B3 | **`equips()` called twice in one expression**, each `allocator.dupe`-ing the 34-tool comptime array (`tools_equipped.zig:65,116`) | `workflow.zig:1735` + `:1736` | 2 × 34-struct dupes + 3 `toOwnedSlice` |
 | B4 | **Worker heartbeat twice** — each is 5 statements (SELECT 1; INSERT worker upsert; INSERT OR IGNORE sessions; UPDATE sessions; UPDATE workspace_item_tasks) + SSE | `touchCheckpointWorkers` `workflow.zig:594` and `updateWorker` `workflow.zig:781` → `update_worker.zig:42,72,100,105,112` | 10 write statements |
@@ -77,7 +77,7 @@ All claims below were read out of the tree on 2026-09-11. `file:line` are the au
 | ID | Metric | Baseline procedure |
 |---|---|---|
 | M-1 | Wall time per iteration (`[CHECKPOINT] LLM responded … duration_ms`) p50/p95 over a scripted 30-turn tool-heavy session | Phase 0 harness |
-| M-2 | Peak RSS of the `nalar` process at end of that session | `/usr/bin/time -v` or `/proc/<pid>/status` VmHWM |
+| M-2 | Peak RSS of the `pabrik` process at end of that session | `/usr/bin/time -v` or `/proc/<pid>/status` VmHWM |
 | M-3 | Prompt bytes + message count per iteration (`[PERF]` line, Phase 0) | Phase 0 harness |
 | M-4 | SQLite statements per iteration (`[PERF]` line) | Phase 0 harness |
 | M-5 | Bytes allocated per iteration under a counting allocator (unit level) | `std.testing` + `CountingAllocator` |
@@ -151,7 +151,7 @@ Expected: **5 failures**. That is the point — commit them **disabled via `if (
 
 **Files:** create `scripts/bench_agentic_loop.sh`; append procedure to `docs/bench/agentic-loop-baseline.md`.
 
-- [ ] Write a script that starts a scratch `nalar` on a free port in **8080..8199 excluding 8081**, with an isolated `HOME`, POSTs a scripted conversation that forces ~30 tool-heavy turns (e.g. repeated `list_directory` + `read_file` on a fixture tree), then prints p50/p95 of the `[CHECKPOINT] LLM responded … duration_ms` lines plus `VmHWM` from `/proc/<pid>/status` at the end. Record the output.
+- [ ] Write a script that starts a scratch `pabrik` on a free port in **8080..8199 excluding 8081**, with an isolated `HOME`, POSTs a scripted conversation that forces ~30 tool-heavy turns (e.g. repeated `list_directory` + `read_file` on a fixture tree), then prints p50/p95 of the `[CHECKPOINT] LLM responded … duration_ms` lines plus `VmHWM` from `/proc/<pid>/status` at the end. Record the output.
 - [ ] **Commit** — `chore(bench): scripted agentic-loop benchmark`.
 
 ---
@@ -272,11 +272,11 @@ Expected: **5 failures**. That is the point — commit them **disabled via `if (
 
 **Files:** create `run_file_cache.zig`; edit `prompts_make_working_directory_context.zig:17-60`; edit `pbfap.zig:136,150` (local/global knowledge listing); wire invalidation into `tools_exec_write_file.zig`, `tools_exec_text_replace.zig`, `tools_exec_remove_file.zig`.
 
-- [ ] **Failing test** — with a counting allocator + a `readFile` counter, `buildMessages` called twice in a row reads `NALAR.md`/`AGENTS.md` **once** (today: twice, each opened twice).
-- [ ] **Fix (a)** — `RunFileCache` keyed by absolute path, value `{ bytes: []const u8, mtime_ns: i128, size: u64 }`, owned by the **parent (run) arena**, created once before the loop and threaded into `buildMessages`. On lookup: `statFile` (or `Dir.statFile`) and compare `(mtime, size)`; on miss/change, re-read. This keeps a self-modifying `NALAR.md` correct (the agent edits it) at the cost of one `stat` per file per turn instead of a full read.
+- [ ] **Failing test** — with a counting allocator + a `readFile` counter, `buildMessages` called twice in a row reads `PABRIK.md`/`AGENTS.md` **once** (today: twice, each opened twice).
+- [ ] **Fix (a)** — `RunFileCache` keyed by absolute path, value `{ bytes: []const u8, mtime_ns: i128, size: u64 }`, owned by the **parent (run) arena**, created once before the loop and threaded into `buildMessages`. On lookup: `statFile` (or `Dir.statFile`) and compare `(mtime, size)`; on miss/change, re-read. This keeps a self-modifying `PABRIK.md` correct (the agent edits it) at the cost of one `stat` per file per turn instead of a full read.
 - [ ] **Fix (b)** — read each file **once**: drop the "probe with `openFileAbsolute` then `readFileAlloc`" double-open at `prompts_make_working_directory_context.zig:39,47` — attempt the read and treat `FileNotFound` as "absent".
-- [ ] **Fix (c)** — invalidation: in the three write tools, after a successful write call `cache.invalidate(abs_path)` (pass the cache through `ToolExecContext` or a thread-local handle — mirror the `mcp_cancel_thunk` thread-local pattern at `workflow.zig:382-400`). A test must prove that writing `NALAR.md` mid-run causes the *next* turn to see the new content even with a warm cache.
-- [ ] **Commit** — `perf(prompt): run-scoped memoized file reads for NALAR.md/AGENTS.md`.
+- [ ] **Fix (c)** — invalidation: in the three write tools, after a successful write call `cache.invalidate(abs_path)` (pass the cache through `ToolExecContext` or a thread-local handle — mirror the `mcp_cancel_thunk` thread-local pattern at `workflow.zig:382-400`). A test must prove that writing `PABRIK.md` mid-run causes the *next* turn to see the new content even with a warm cache.
+- [ ] **Commit** — `perf(prompt): run-scoped memoized file reads for PABRIK.md/AGENTS.md`.
 
 ### Task 2.4 — Skills listing: one scan, frontmatter-only reads, deterministic order
 
@@ -346,7 +346,7 @@ Expected: **5 failures**. That is the point — commit them **disabled via `if (
   ```
   **Why:** the current nesting means (a) any parent allocation after the child's nodes strands the *entire* iteration for the rest of the run (M2 — reachable via a mid-run MCP toggle, `workflow.zig:640,646`), and (b) under `DebugAllocator`, freed bytes get poisoned, which is the only way to catch cross-iteration escapes (M3) instead of shipping latent UB.
 - [ ] **Audit before landing** — grep every value that escapes the iteration: `last_retry_server_detail` (Task 4.2 fixes it), `stream_snapshot` (copies into its own `page_allocator` buffers — safe), `ActiveLoops` (uses the parent-allocated `copy_session_id` — safe). Add `zig build test` under `std.testing.allocator` and watch for *new* use-after-free reports.
-- [ ] **Verify** — full `zig build test --summary all` (0 fail / 0 leak) + `zig build nalar-desktop --summary all`. Compare M-2 before/after; expect a small improvement (the callback-run arena no longer holds the iteration high-water mark).
+- [ ] **Verify** — full `zig build test --summary all` (0 fail / 0 leak) + `zig build pabrik-desktop --summary all`. Compare M-2 before/after; expect a small improvement (the callback-run arena no longer holds the iteration high-water mark).
 - [ ] **Commit** — `perf(agentic-loop): per-iteration arena parented to the run allocator`.
 
 ### Task 4.2 — Fix the cross-iteration retry-detail escape
@@ -448,11 +448,11 @@ Ship PR #1 after Phase 1 (cheap wins), PR #2 after Phase 2 (prompt), PR #3 after
 cd /home/ginwa/ginwaaitoolbox && zig build test --summary all 2>&1 | tail -n 30
 
 # end-to-end build (must be N/N steps succeeded)
-zig build nalar-desktop --summary all 2>&1 | tail -n 5
+zig build pabrik-desktop --summary all 2>&1 | tail -n 5
 
 # functional wire tests for anything touching HTTP/SSE/tools
-zig build install:linux 2>&1 | tail -n 3     # nalar-desktop does NOT rebuild nalarcore-linux-x86_64
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+zig build install:linux 2>&1 | tail -n 3     # pabrik-desktop does NOT rebuild pabrikcore-linux-x86_64
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
   python3 -m pytest tests/functional/command_tool_test.py \
                    tests/functional/mcp_stdio_test.py \
                    tests/functional/background_command_completion_test.py -v

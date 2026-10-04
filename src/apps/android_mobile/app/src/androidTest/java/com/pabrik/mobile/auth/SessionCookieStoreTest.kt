@@ -48,11 +48,11 @@ class SessionCookieStoreTest {
 
         val preferencesFile = File(
             context.applicationInfo.dataDir,
-            "shared_prefs/nalar_auth.xml",
+            "shared_prefs/pabrik_auth.xml",
         )
         assertFalse(preferencesFile.readText().contains("session-token-for-test"))
 
-        context.getSharedPreferences("nalar_auth", Context.MODE_PRIVATE)
+        context.getSharedPreferences("pabrik_auth", Context.MODE_PRIVATE)
             .edit()
             .putString("session_cookie", "tampered-payload")
             .commit()

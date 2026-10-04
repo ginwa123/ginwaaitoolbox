@@ -217,7 +217,7 @@ the *in-chat* ✕ path.
 
 ## 5. Global constraints
 
-- **Never touch port 8081.** A `nalar` instance already runs there
+- **Never touch port 8081.** A `pabrik` instance already runs there
   (`src/apps/desktop/vite.config.ts:44-45` proxies to it). Manual checks use
   `pnpm dev` (5173) or the Vitest/jsdom suite. Never `nohup` a binary + `curl`.
 - **No backend change.** No Zig, no SQL, no HTTP route, no wire payload. `tab` is

@@ -54,7 +54,7 @@
 - **Never shell out to the model's `curl` string.** It is parsed into a template and executed with the `kabelweb` client. Passing a model-authored string to a shell is arbitrary command execution.
 - **Never substitute `{key}` before the host check passes.** Order matters and is the security boundary; see D3.
 - **Cross-platform:** the current shim calls `agent-browser`, which does not exist on Windows.
-- **Verification gates:** `zig build test --summary all`; `(cd src/apps/desktop && pnpm test:unit)` and `pnpm run build`; `zig build install:linux` then `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/web_search_config_test.py -v`.
+- **Verification gates:** `zig build test --summary all`; `(cd src/apps/desktop && pnpm test:unit)` and `pnpm run build`; `zig build install:linux` then `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/web_search_config_test.py -v`.
 
 ## Current State (verified 2026-10-02 in this worktree, `origin/main` @ `25f1ed19`)
 
@@ -67,7 +67,7 @@
 | **It is unreachable.** The registry entry is commented out | `src/agentic_loop/tools_equipped.zig:306` |
 | It is **absent from `equips()`** — the list the LLM is actually shown | `src/agentic_loop/tools_equipped.zig:78` (only the module alias on `:41`) |
 | The exec adapter exists and is wired in | `src/agentic_loop/tools_exec_web_search.zig:12`, re-exported at `src/agentic_loop/tools.zig:48` |
-| `const web_search_mod = nalarcore.web_search;` in the prompt builder is declared and **never referenced** — a dead const | `src/agentic_loop/prompts_build_messages_for_agent_prompt.zig:68` |
+| `const web_search_mod = pabrikcore.web_search;` in the prompt builder is declared and **never referenced** — a dead const | `src/agentic_loop/prompts_build_messages_for_agent_prompt.zig:68` |
 
 **Consequence:** nothing a user does today can produce a `web_search` call, so repurposing the name breaks no live session. `agent-browser snapshot <url>` is a shell command the unified `command` tool runs verbatim, so nothing is lost by deleting the shim.
 
@@ -116,12 +116,12 @@ D3 is the entire defence for that, and it is the one requirement in this plan th
 | JSON parse struct; `tools: ?[]const []const u8 = null` is the shape to mirror | `src/modules/config/Config.zig:466` |
 | LLM profile keys are already plaintext in `config.json` | `src/modules/config/Config.zig:117`, `:288`, `:347` |
 | `McpServerConfig { url, headers, … }` — the existing url+secret shape | `src/modules/config/Config.zig:519-553` |
-| Frontend mirror `NalarConfig.tools?: string[] \| null` | `src/apps/desktop/src/api/index.ts:4519` |
+| Frontend mirror `PabrikConfig.tools?: string[] \| null` | `src/apps/desktop/src/api/index.ts:4519` |
 | Per-user config round-trips through `users.config_json` | `src/modules/config/UserConfigStore.zig:3` |
-| **`GET /api/config/nalar` is an explicit allowlist, and there are TWO of them** | `src/http_handlers/nalar_config_get.zig:59-81` and `:143-174` |
-| `profiles` rides through raw, so LLM keys already reach the browser | `src/http_handlers/nalar_config_get.zig:60`, `:147` |
-| PUT applies keys one at a time, each with its own validator | `src/http_handlers/nalar_config_put.zig:192` (`applyToolsInput`) |
-| Settings sections mount in one place | `src/apps/desktop/src/components/NalarSettings.vue:852`, `:876`, `:884` |
+| **`GET /api/config/pabrik` is an explicit allowlist, and there are TWO of them** | `src/http_handlers/pabrik_config_get.zig:59-81` and `:143-174` |
+| `profiles` rides through raw, so LLM keys already reach the browser | `src/http_handlers/pabrik_config_get.zig:60`, `:147` |
+| PUT applies keys one at a time, each with its own validator | `src/http_handlers/pabrik_config_put.zig:192` (`applyToolsInput`) |
+| Settings sections mount in one place | `src/apps/desktop/src/components/PabrikSettings.vue:852`, `:876`, `:884` |
 | MCP servers section is the url+secret UI precedent | `McpServersSection.vue`, `McpServerModal.vue`, `McpHeadersEditor.vue`, `mcpServers.ts` |
 
 > **Two allowlists, not one.** Editing only the auth-mode branch drops the key silently in non-auth deployments. Task 6 names both.
@@ -234,7 +234,7 @@ Users and models copy complete curl commands from provider docs. `https://… -H
 
 *Guaranteed (testable):* the key appears in no tool result, no error envelope, and no log line. Verification is a sentinel test — the whole path runs with `key = "SENTINEL_SECRET_DO_NOT_LEAK"`, and the assertion is that the string appears in no envelope and in no `std.log` output. Plus a source-contract test forbidding any `allocPrint` in the module that takes the key.
 
-*Not guaranteed by this tool (pre-existing):* `GET /api/config/nalar` passes `profiles` through raw (`nalar_config_get.zig:60`, `:147`), so LLM keys already reach the browser today.
+*Not guaranteed by this tool (pre-existing):* `GET /api/config/pabrik` passes `profiles` through raw (`pabrik_config_get.zig:60`, `:147`), so LLM keys already reach the browser today.
 *Chosen (D11):* mask the search key on GET; treat the mask as "unchanged" on PUT.
 
 **D8 — When the free quota runs out, the MODEL retries on another provider. DECIDED.**
@@ -277,7 +277,7 @@ The model reads that and calls `web_search` again with `provider: "brave"` and B
 *Risk:* `web_search` sits in every new agent's `tools[]` for users who never configure it. **Flagged for the reviewer.**
 
 **D11 — `GET` masks the key; `PUT` treats the mask as "unchanged".**
-`GET /api/config/nalar` returns each `key` as `"sk…7f2"` (first 3 + last 3; a fixed `"••••"` when shorter than 10 chars). `PUT` compares against the mask and keeps the stored value on a match.
+`GET /api/config/pabrik` returns each `key` as `"sk…7f2"` (first 3 + last 3; a fixed `"••••"` when shorter than 10 chars). `PUT` compares against the mask and keeps the stored value on a match.
 *Rejected:* sending the real key like LLM keys do — fewer lines, consistent with today.
 *Why:* the mask is ~20 lines, and it means a devtools panel, a shared screenshot, or a `GET` pasted into a bug report cannot leak a search key. Choosing the weaker option only because the stronger one is inconvenient is how the weaker option becomes permanent.
 *Note:* deliberately **beyond** what LLM keys get today. Widening it to them is a separate change.
@@ -364,7 +364,7 @@ Three consequences worth stating:
 **Naming — DECIDED: `list_web_search_providers`.** The first proposal was `list_web_search`, which reads like *"list the results of a web search"* — the opposite of what the tool does. Adding "provider" fixes that, and the plural is right because one call returns all of them.
 
 **D15 — Resolve the config PER SESSION, never through `ctx.config`.**
-`ToolExecContext.config` (`src/agentic_loop/tools.zig:101`) is the `LlmConfig` **singleton**. In `--auth` mode that singleton never sees what the user saved: the config PUT **returns early** in auth mode — its own comment says *"the global singleton is NOT swapped (config is per-user)"* (`src/http_handlers/nalar_config_put.zig:522-538`, early return at `:535`). `src/agentic_loop/skill_evals_config.zig:6-19` documents this trap in full — the module exists because the Skill Evals toggle read the database while the tool read the singleton, so the checkbox looked like it worked and every call refused.
+`ToolExecContext.config` (`src/agentic_loop/tools.zig:101`) is the `LlmConfig` **singleton**. In `--auth` mode that singleton never sees what the user saved: the config PUT **returns early** in auth mode — its own comment says *"the global singleton is NOT swapped (config is per-user)"* (`src/http_handlers/pabrik_config_put.zig:522-538`, early return at `:535`). `src/agentic_loop/skill_evals_config.zig:6-19` documents this trap in full — the module exists because the Skill Evals toggle read the database while the tool read the singleton, so the checkbox looked like it worked and every call refused.
 
 So `ctx.config.web_search` would be **empty for every auth-mode user**, and the symptom would be a Settings page that saves correctly next to a tool that always says "no providers configured".
 
@@ -487,12 +487,12 @@ Bad key (not exhaustion, D9):
 | **New** | `src/agentic_loop/tools_exec_list_web_search_providers.zig` | Trivial: resolve config, render the provider list, `wrapToolOutput`. Exists so the two tools can be equipped independently, like `tools_exec_document.zig` holds the document pair. |
 | **Edit** | `src/agentic_loop/tools_equipped.zig` | `:306` uncomment + repoint; add to `equips()` `:78`; add to `DEFAULT_AGENT_TOOLS` `:331` (D10). |
 | **Edit** | `src/modules/config/Config.zig` | `WebSearchProvidersMap = std.StringHashMap(WebSearchProviderEntry)` beside `McpServerConfig` (`:519`); `web_search: ?std.json.Value = null` beside `tools` (`:466`); owned field + parse + free. |
-| **Edit** | `src/http_handlers/nalar_config_get.zig` | **Both** allowlist branches (`:59-81`, `:143-174`) get `.web_search`, **masked** (D11). |
-| **Edit** | `src/http_handlers/nalar_config_put.zig` | `applyWebSearchInput` beside `applyToolsInput` (`:192`): validate each `url` is `https` and non-private, mask-preserve keys, hot-reload `di.llm_config`. |
-| **Edit** | `src/apps/desktop/src/api/index.ts` | `web_search?: Record<string, WebSearchProviderEntry> \| null` on `NalarConfig` (`:4519` vicinity). |
-| **New** | `src/apps/desktop/src/components/nalar/WebSearchSection.vue` | Rows: provider name, pinned URL, masked key (`type="password"`), **curl textarea**, enabled toggle. Pattern from `McpServerModal.vue`; the curl textarea is the field users actually paste into. |
-| **Edit** | `src/apps/desktop/src/components/NalarSettings.vue` | Mount beside `McpServersSection` (`:876`); wire the emit into the same save path. |
-| **Edit** | `src/apps/desktop/src/components/nalar/ToolsSection.vue` | `GROUP_BY_TOOL` += `web_search: 'Search'` (`:83`); `BUILTIN_DEFAULT_TOOLS` += `'web_search'` (`:27`) iff D10. |
+| **Edit** | `src/http_handlers/pabrik_config_get.zig` | **Both** allowlist branches (`:59-81`, `:143-174`) get `.web_search`, **masked** (D11). |
+| **Edit** | `src/http_handlers/pabrik_config_put.zig` | `applyWebSearchInput` beside `applyToolsInput` (`:192`): validate each `url` is `https` and non-private, mask-preserve keys, hot-reload `di.llm_config`. |
+| **Edit** | `src/apps/desktop/src/api/index.ts` | `web_search?: Record<string, WebSearchProviderEntry> \| null` on `PabrikConfig` (`:4519` vicinity). |
+| **New** | `src/apps/desktop/src/components/pabrik/WebSearchSection.vue` | Rows: provider name, pinned URL, masked key (`type="password"`), **curl textarea**, enabled toggle. Pattern from `McpServerModal.vue`; the curl textarea is the field users actually paste into. |
+| **Edit** | `src/apps/desktop/src/components/PabrikSettings.vue` | Mount beside `McpServersSection` (`:876`); wire the emit into the same save path. |
+| **Edit** | `src/apps/desktop/src/components/pabrik/ToolsSection.vue` | `GROUP_BY_TOOL` += `web_search: 'Search'` (`:83`); `BUILTIN_DEFAULT_TOOLS` += `'web_search'` (`:27`) iff D10. |
 | **New** | `src/apps/desktop/src/components/tool_outputs/WebSearch.vue` | Ranked results + provider badge. Pattern from `GenerateImage.vue`. |
 | **Edit** | `src/apps/desktop/src/components/tool_outputs/_shared/toolOutputParser.ts` | `parseWebSearch` + `ParsedWebSearch` (pattern from `:738`). |
 | **Edit** | `src/apps/desktop/src/helpers/renderResponse.ts` | Decide inline preview at `:212-220` (recommended: bare name — a query plus 10 results is too wide for a chip). |
@@ -675,12 +675,12 @@ for (cases) |c| {
   Commit: `feat(web-search): list_web_search_providers discovery tool`
 
 - [ ] **Task 7 — Exec adapter + registry + config handlers.**
-  Rewrite `tools_exec_web_search.zig` to read **`web_search_config.resolve(ctx.allocator, ctx.db, ctx.session_id)`, not `ctx.config`** (D15); uncomment and rewrite `tools_equipped.zig:306`; add **both** tool names to the registry, `equips()` (`:78`) and `DEFAULT_AGENT_TOOLS` (`:331`) per D10. **Add two guard tests:** every name in `equips()` resolves to a registry entry (the gap that made this tool invisible), and `web_search` and `list_web_search_providers` appear in all three lists together. Wire `web_search` into **both** `nalar_config_get.zig` branches (`:59-81`, `:143-174`) with masking, and add `applyWebSearchInput` beside `applyToolsInput` (`nalar_config_put.zig:192`).
+  Rewrite `tools_exec_web_search.zig` to read **`web_search_config.resolve(ctx.allocator, ctx.db, ctx.session_id)`, not `ctx.config`** (D15); uncomment and rewrite `tools_equipped.zig:306`; add **both** tool names to the registry, `equips()` (`:78`) and `DEFAULT_AGENT_TOOLS` (`:331`) per D10. **Add two guard tests:** every name in `equips()` resolves to a registry entry (the gap that made this tool invisible), and `web_search` and `list_web_search_providers` appear in all three lists together. Wire `web_search` into **both** `pabrik_config_get.zig` branches (`:59-81`, `:143-174`) with masking, and add `applyWebSearchInput` beside `applyToolsInput` (`pabrik_config_put.zig:192`).
   Verify: `zig build test --summary all`. **Matrix rows 67–68.** The guard must **fail** when `:306` is temporarily re-commented — prove it, because a guard that cannot fail is not a guard.
   Commit: `feat(web-search): register the tool, parity guard test, and config handlers`
 
 - [ ] **Task 8 — Settings section (D11).**
-  `WebSearchSection.vue` — rows of name / URL / masked key / enabled toggle; key input is `type="password"` and a masked value round-trips without blanking the stored key. `NalarConfig.web_search` in `api/index.ts`. Mounted beside `McpServersSection` (`NalarSettings.vue:876`).
+  `WebSearchSection.vue` — rows of name / URL / masked key / enabled toggle; key input is `type="password"` and a masked value round-trips without blanking the stored key. `PabrikConfig.web_search` in `api/index.ts`. Mounted beside `McpServersSection` (`PabrikSettings.vue:876`).
   Verify: `(cd src/apps/desktop && pnpm run build)` clean. **Matrix rows 72–73.**
   Commit: `feat(web-search): Settings → Web Search providers`
 
@@ -691,7 +691,7 @@ for (cases) |c| {
 
 - [ ] **Task 10 — Functional test.**
   `tests/functional/web_search_config_test.py`: PUT a two-provider map, GET it back, assert it round-trips and the keys come back **masked**; assert a `http://` or `169.254.x` `url` is rejected with a 400. This is the layer where empty-slice and route-order failures are visible.
-  Verify: `zig build install:linux && NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/web_search_config_test.py -v` — on a harness port, never 8081.
+  Verify: `zig build install:linux && PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/web_search_config_test.py -v` — on a harness port, never 8081.
   Commit: `test(web-search): config round-trip, key masking, and URL validation on the wire`
 
 - [ ] **Task 11 — Docs + stale-reference sweep.**
@@ -713,7 +713,7 @@ for (cases) |c| {
 | Frontend types | `(cd src/apps/desktop && pnpm run build)` | `vue-tsc` clean; no stray emitted `.js` |
 | Frontend unit | `(cd src/apps/desktop && pnpm test:unit)` | `WebSearch.vue`, `parseWebSearch`, `WebSearchSection.vue`, mask round-trip |
 | Android unit | the `ToolCardModelTest` task | The `ToolKind.WebSearch` mapping |
-| Functional (wire) | `zig build install:linux` then `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/web_search_config_test.py -v` | The map round-trips through the real `PUT`/`GET`, keys come back masked, a bad `url` 400s usefully |
+| Functional (wire) | `zig build install:linux` then `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/web_search_config_test.py -v` | The map round-trips through the real `PUT`/`GET`, keys come back masked, a bad `url` 400s usefully |
 | No-regression | the full set on the branch **and** on `origin/main` | Separates pre-existing failures; CI has an open `fix ci main zig build` card |
 | Manual (human) | add TinyFish with a real key, then ask the agent "search for the latest FIFA World Cup news"; then paste a deliberately mismatched curl and confirm it is refused | The only proof of the live path, and the live proof that the pin holds |
 
@@ -765,7 +765,7 @@ All seven review questions are **closed**. Recorded here so an implementer does 
 | **Credential exfiltration** — a prompt injection rewrites the curl to point at an attacker host while keeping `{key}`, and the backend hands over the real key | **Critical** | **D3 host pinning, enforced before the key is read.** A dedicated negative gate runs exactly this attack and asserts no request is attempted and the sentinel never appears |
 | **CR/LF in a parsed header value** smuggles a second header | High | Task 2 rejects CR/LF in every parsed name and value, at parse time |
 | **The key leaks into `llm_history`** | High | D7's sentinel test + a source-contract test forbidding `allocPrint` over the key + a grep review gate on the diff |
-| **Only one `nalar_config_get.zig` allowlist branch is edited** — works in auth mode, silently drops keys elsewhere | High | Task 6 names both ranges; the functional test asserts the masked key is present on GET |
+| **Only one `pabrik_config_get.zig` allowlist branch is edited** — works in auth mode, silently drops keys elsewhere | High | Task 6 names both ranges; the functional test asserts the masked key is present on GET |
 | **The model emits a malformed curl**, failing searches that a simpler schema would not | Medium | D12's worked example, plus errors that name the fix; Open Question 3 offers the cheaper schema |
 | **The model does not retry on exhaustion**, so the user sees a quota error with no automatic rescue | Medium | D8's `other_providers` names and URLs make the retry constructible; accepted trade-off |
 | **A pinned `url` is itself misconfigured** to a private/loopback host | Medium | D3 step 4 rejects non-`https` and private ranges at both PUT and execution time |

@@ -74,7 +74,7 @@ NOT touched: `src/http_handlers/kanban_tasks_create.zig`, `stores/workspaces.ts`
 ### Task 4 — Functional verification (wire-level, harness only)
 
 - [ ] NEW `tests/functional/kanban_task_create_message_format_test.py` driving the real frontend wire body (`queue_message` preformatted): (a) name-only → exactly `Task : __TaskWhen__Create`; (b) with description → two-line form; (c) toggle on → `+ "\n\n#Notes UseGitWorktree"`; (d) `create_session` regression — old server composition unchanged.
-- [ ] Run with `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/kanban_task_create_message_format_test.py -v`, all pass.
+- [ ] Run with `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/kanban_task_create_message_format_test.py -v`, all pass.
 - [ ] Relevant `pnpm test:unit` green.
 - [ ] Commit.
 

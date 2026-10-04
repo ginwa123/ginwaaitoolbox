@@ -177,5 +177,5 @@ blank in the chat bubble.
 - Commit: `a5855776` (squash candidate)
 - Worktree: `/home/ginwa/ginwaaitoolbox/.worktrees/show-preview-fix-xml-params`
 - Plan: `docs/superpowers/plans/2026-08-06-show-preview-chat-bubble-blank.md`
-- Memory: `.nalar/memories/show-preview-parameters-xml-vs-json-2026-08-06.md`
+- Memory: `.pabrik/memories/show-preview-parameters-xml-vs-json-2026-08-06.md`
 - AGENTS.md changelog entry: `### 2026-08-06: ShowPreview.vue renders blank for HTML — fix XML params parsing`

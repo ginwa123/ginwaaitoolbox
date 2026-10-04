@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Wire Claude extended thinking (Anthropic) and OpenAI reasoning (o1 / o3 / GPT-5 / DeepSeek-R1) end-to-end through config → request body → SSE parse → DB → ChatView, and surface per-profile `thinking_budget_tokens` and `reasoning_effort` knobs plus a Thinking mode selector (Auto / On / Off) in NalarSettings.
+**Goal:** Wire Claude extended thinking (Anthropic) and OpenAI reasoning (o1 / o3 / GPT-5 / DeepSeek-R1) end-to-end through config → request body → SSE parse → DB → ChatView, and surface per-profile `thinking_budget_tokens` and `reasoning_effort` knobs plus a Thinking mode selector (Auto / On / Off) in PabrikSettings.
 
 **Architecture:** Additive, NOT a rewrite. The Anthropic parser already emits `thinking_delta → reasoning_content` (Agent.zig:1605-1608) and writes the Anthropic `thinking: {type: "enabled", budget_tokens}` block in `buildJsonAnthropicRequest` (Agent.zig:1177-1238). The OpenAI parser already reads `delta.reasoning_content` (Agent.zig:1440-1444). `llm_history.reasoning_content` is wired through `insertLLMHistories` (llm_history.zig:130) and surfaced in ChatView (ChatView.vue:1207-1447). What's MISSING is the runtime wire from the profile's `thinking` string to the main-agent's `is_thinking` flag, the OpenAI `reasoning_effort` field on the request body, the `on/off` UI value parsing, the Anthropic `type: "adaptive"` mode, and a per-profile `thinking_budget_tokens` / `reasoning_effort` knob.
 
@@ -11,12 +11,12 @@
 ## Global Constraints
 
 - **No migration** — store the new knobs as nullable columns on `llm_history` (when session-bound) AND as nullable strings/numbers on `LlmProfile` / `SubAgentConfig`. Backend round-trips NULL gracefully (`COALESCE(...)`).
-- **No new HTTP routes** — `PUT /api/config/nalar` already accepts arbitrary profile fields (zig-tested as such); sub-agent configs already accept `thinking` strings. The new fields extend the existing wire shapes.
-- **Backend-first** — every new profile field round-trips through the existing `LlmConfig` parser at `src/modules/config/Config.zig:480-740` and existing `nalar_config_put_parse_test.zig` cases. New parse-fn lives in `src/modules/config/parse_thinking.zig` (separate file for testability, mirroring `parse_compaction_settings.zig` precedent).
-- **Frontend wiring per `desktop-frontend-build` skill** — extend `LlmConfigForm.vue` (NOT `NalarSettings.vue`) because the profile form already lives there. `NalarSettings.vue` only hydrates the form's values.
+- **No new HTTP routes** — `PUT /api/config/pabrik` already accepts arbitrary profile fields (zig-tested as such); sub-agent configs already accept `thinking` strings. The new fields extend the existing wire shapes.
+- **Backend-first** — every new profile field round-trips through the existing `LlmConfig` parser at `src/modules/config/Config.zig:480-740` and existing `pabrik_config_put_parse_test.zig` cases. New parse-fn lives in `src/modules/config/parse_thinking.zig` (separate file for testability, mirroring `parse_compaction_settings.zig` precedent).
+- **Frontend wiring per `desktop-frontend-build` skill** — extend `LlmConfigForm.vue` (NOT `PabrikSettings.vue`) because the profile form already lives there. `PabrikSettings.vue` only hydrates the form's values.
 - **Anthropic adaptive vs enabled** — Anthropic docs now recommend `type: "adaptive"` (model picks its own budget) over `type: "enabled" + budget_tokens` for Sonnet 4.5+. We support BOTH and let `thinking_budget_tokens` fall through to `null` (adaptive mode).
 - **OpenAI reasoning_effort** — only valid for o-series and GPT-5. We pass the field unconditionally for OpenAI-style URLs and let the server reject if unsupported (mirrors how `temperature` is passed unconditionally).
-- **Avoid cross-module struct-member lookup asymmetry** — use fully-qualified nested types (`nalarcore.config.LlmConfig.LlmProfile`), NOT shortcuts like `nalarcore.config.LlmProfile` (lesson from PR #288).
+- **Avoid cross-module struct-member lookup asymmetry** — use fully-qualified nested types (`pabrikcore.config.LlmConfig.LlmProfile`), NOT shortcuts like `pabrikcore.config.LlmProfile` (lesson from PR #288).
 - **Reuse existing SSE event types** — `reasoning_content` already flows through `llm_chunk` SSE events. No new event types needed. No `additionalEventTypes` registration needed.
 - **Test discipline** — every new wire shape gets a `*_test.zig` static-contract test INLINE in the impl file (per the Agent Mode convention post-2026-08-17). NO `_test.zig` files for HTTP handlers (per user preference). Add `bunt` (Vitest) cases for any new frontend form fields.
 
@@ -37,7 +37,7 @@ These are FACT, not work to do. Verify before coding.
 | `llm_history.reasoning_content` column | `src/models/llm_history.zig` | 39, 83, 130, 200 | ✅ exists |
 | `llm_history.is_thinking` column | `src/migrations/migration.zig` | 187 | ✅ exists (migration 011) |
 | ChatView renders `reasoning_content` (kept-but-collapsed) | `src/apps/desktop/src/components/views/ChatView.vue` | 1207-1447 | ✅ exists |
-| UI Thinking selector (Auto / On / Off) | `src/apps/desktop/src/components/nalar/LlmConfigForm.vue` | 124-138 | ✅ exists |
+| UI Thinking selector (Auto / On / Off) | `src/apps/desktop/src/components/pabrik/LlmConfigForm.vue` | 124-138 | ✅ exists |
 | Profile `thinking: []const u8 = "auto"` | `src/modules/config/Config.zig` | 97, 204, 273 | ✅ exists |
 | Sub-agent `thinking` parsed to `?bool` ("auto"→null, "true"→true, "false"→false) | `src/modules/config/Config.zig` | 1247-1253 | ⚠️ partial (no "on"/"off") |
 | `resolveProfileField("thinking", ...)` into main-agent runtime | `src/ai_workflow/tui/agentic_loop/workflow.zig` | 217-245 | ❌ MISSING — only resolves model/base_url/api_key/url_style |
@@ -76,7 +76,7 @@ These are FACT, not work to do. Verify before coding.
 - `src/modules/config/config_test.zig` — add cases for "thinking=on" + budget_tokens + reasoning_effort round-trip (1 new test).
 
 **HTTP config PUT validation:**
-- `src/ai_workflow/tui/http_handlers/nalar_config_put.zig` — validate `thinking_budget_tokens` (u32, >0, <=2_000_000) and `reasoning_effort` (one of "low"/"medium"/"high"/"auto"/""). Reject others with structured error matching the existing `InvalidThresholdPercent` pattern.
+- `src/ai_workflow/tui/http_handlers/pabrik_config_put.zig` — validate `thinking_budget_tokens` (u32, >0, <=2_000_000) and `reasoning_effort` (one of "low"/"medium"/"high"/"auto"/""). Reject others with structured error matching the existing `InvalidThresholdPercent` pattern.
 
 **Sub-agent overrides (extend the spawn path):**
 - `src/ai_workflow/tui/agentic_loop/tools_exec_spawn_sub_agent.zig` — thread `thinking_budget_tokens` + `reasoning_effort` from `ResolvedSubAgent` into `SubAgentOverrides` (lines 471-471).
@@ -84,16 +84,16 @@ These are FACT, not work to do. Verify before coding.
 - `src/ai_workflow/tui/agentic_loop/workflow.zig` — apply them in the `ov.is_thinking` override block at lines 800-808 (≈5 LOC).
 
 **Frontend:**
-- `src/apps/desktop/src/components/nalar/LlmConfigForm.vue` — add two new fields to the `LlmConfig` interface (lines 4-19). Add a second row under the Thinking selector with: `Thinking budget tokens` (number input, visible only when thinking != "off") and `Reasoning effort` (select: low/medium/high/auto). Emit them through `update()`. (≈35 LOC at 124-138 + 280.)
-- `src/apps/desktop/src/components/NalarSettings.vue` — extend the `LlmConfig` defaults block (line 264, 314, 341) to include `thinking_budget_tokens: null` and `reasoning_effort: null`. Extend the `profilesToRecord` mapper (lines 125-140) to surface them.
-- `src/apps/desktop/src/components/nalar/SubAgentModal.vue` — same field additions (search for the 4 instances of the `LlmConfig` literal in NalarSettings.vue and mirror them).
-- `src/apps/desktop/src/components/nalar/ProfilesSection.vue` — surface the budget/effort in the profile-row tooltip / inline summary (search for the `description=` prop usage at line 119).
+- `src/apps/desktop/src/components/pabrik/LlmConfigForm.vue` — add two new fields to the `LlmConfig` interface (lines 4-19). Add a second row under the Thinking selector with: `Thinking budget tokens` (number input, visible only when thinking != "off") and `Reasoning effort` (select: low/medium/high/auto). Emit them through `update()`. (≈35 LOC at 124-138 + 280.)
+- `src/apps/desktop/src/components/PabrikSettings.vue` — extend the `LlmConfig` defaults block (line 264, 314, 341) to include `thinking_budget_tokens: null` and `reasoning_effort: null`. Extend the `profilesToRecord` mapper (lines 125-140) to surface them.
+- `src/apps/desktop/src/components/pabrik/SubAgentModal.vue` — same field additions (search for the 4 instances of the `LlmConfig` literal in PabrikSettings.vue and mirror them).
+- `src/apps/desktop/src/components/pabrik/ProfilesSection.vue` — surface the budget/effort in the profile-row tooltip / inline summary (search for the `description=` prop usage at line 119).
 
 **Tests:**
 - `src/modules/agent/anthropic_request_test.zig` — add cases for "budget_tokens override honored" + "adaptive mode emitted when budget is null and thinking==auto".
 - `src/modules/agent/openai_reasoning_test.zig` (NEW) — inline tests for `buildJsonOpenAIRequest` with reasoning_effort set + null + with tools + without.
 - `src/modules/config/parse_thinking_test.zig` (NEW) — inline tests for `parseThinkingString` (auto/on/off/true/false/empty/garbage) + `parseReasoningEffort` (low/medium/high/auto/empty/garbage).
-- `src/apps/desktop/src/__tests__/nalarConfigFormThinking.spec.ts` (NEW) — Vitest test that renders `LlmConfigForm` with `thinking="on"` and asserts the budget tokens field is visible; with `thinking="off"` asserts it's hidden.
+- `src/apps/desktop/src/__tests__/pabrikConfigFormThinking.spec.ts` (NEW) — Vitest test that renders `LlmConfigForm` with `thinking="on"` and asserts the budget tokens field is visible; with `thinking="off"` asserts it's hidden.
 
 ---
 
@@ -211,7 +211,7 @@ Replace lines 1246-1253:
 
 ```zig
 const parse_thinking = @import("parse_thinking.zig");
-const thinking_mod = nalarcore.parse_thinking_mod;  // re-export pattern; or import directly
+const thinking_mod = pabrikcore.parse_thinking_mod;  // re-export pattern; or import directly
 
 // at the top of the function, replace the inline blk:
 const resolved_thinking: ?bool = try parse_thinking.parseThinkingString(
@@ -220,7 +220,7 @@ const resolved_thinking: ?bool = try parse_thinking.parseThinkingString(
 );
 ```
 
-(And add `parse_thinking` to `src/root.zig` re-exports if needed for the `nalarcore.parse_thinking_mod` shortcut — match whatever convention the existing `parse_compaction_settings.zig` uses. Search for `parse_compaction` first.)
+(And add `parse_thinking` to `src/root.zig` re-exports if needed for the `pabrikcore.parse_thinking_mod` shortcut — match whatever convention the existing `parse_compaction_settings.zig` uses. Search for `parse_compaction` first.)
 
 ### Step 1.5 — Run tests, watch them pass
 
@@ -386,7 +386,7 @@ const effective_is_thinking: ?bool = parse_thinking.parseThinkingString(
 ) catch null;
 ```
 
-(Make sure `parse_thinking` is importable at this module scope — check the existing `@import` lines near line 71 for `nalarcore.X` re-exports and add one for `parse_thinking` if needed.)
+(Make sure `parse_thinking` is importable at this module scope — check the existing `@import` lines near line 71 for `pabrikcore.X` re-exports and add one for `parse_thinking` if needed.)
 
 ### Step 3.2 — Persist on the initial agent-state INSERT
 
@@ -472,10 +472,10 @@ Write `src/ai_workflow/tui/agentic_loop/workflow_thinking_test.zig` (inline with
 
 ```bash
 cd /home/ginwa/ginwaaitoolbox && timeout 60 zig build test --summary all 2>&1 | tail -n 30
-cd /home/ginwa/ginwaaitoolbox && timeout 600 zig build nalar-desktop --summary all 2>&1 | tail -n 30
+cd /home/ginwa/ginwaaitoolbox && timeout 600 zig build pabrik-desktop --summary all 2>&1 | tail -n 30
 ```
 
-Expect: 2+ new passes, 0 failures. nalar-desktop build is the critical CI gate (lesson from PR #288: `zig build test` is more permissive than `zig build nalar-desktop` for cross-module struct lookup).
+Expect: 2+ new passes, 0 failures. pabrik-desktop build is the critical CI gate (lesson from PR #288: `zig build test` is more permissive than `zig build pabrik-desktop` for cross-module struct lookup).
 
 ### Step 3.9 — Commit
 
@@ -633,7 +633,7 @@ The workflow at Task 3 step 3.1 must set `dynamic_agent.thinkingAdaptive = (effe
 
 ```bash
 cd /home/ginwa/ginwaaitoolbox && timeout 60 zig build test --summary all 2>&1 | tail -n 20
-cd /home/ginwa/ginwaaitoolbox && timeout 600 zig build nalar-desktop --summary all 2>&1 | tail -n 30
+cd /home/ginwa/ginwaaitoolbox && timeout 600 zig build pabrik-desktop --summary all 2>&1 | tail -n 30
 ```
 
 Expect: all 6 new tests pass, 0 regressions.
@@ -737,7 +737,7 @@ test "buildJsonOpenAIRequest: reasoning_effort coexists with tools" {
 
 ```bash
 cd /home/ginwa/ginwaaitoolbox && timeout 60 zig build test --summary all 2>&1 | tail -n 20
-cd /home/ginwa/ginwaaitoolbox && timeout 600 zig build nalar-desktop --summary all 2>&1 | tail -n 30
+cd /home/ginwa/ginwaaitoolbox && timeout 600 zig build pabrik-desktop --summary all 2>&1 | tail -n 30
 ```
 
 ### Step 5.7 — Commit
@@ -806,11 +806,11 @@ git commit -m "feat(spawn_sub_agent): thread thinking_budget_tokens + reasoning_
 ## Task 7: HTTP PUT validation for the new fields
 
 **Files:**
-- EDIT: `src/ai_workflow/tui/http_handlers/nalar_config_put.zig` — add the validation calls in the profile loop and the sub-agent loop. Mirror the existing `compaction_threshold_percent` validation (search for `InvalidThresholdPercent`).
+- EDIT: `src/ai_workflow/tui/http_handlers/pabrik_config_put.zig` — add the validation calls in the profile loop and the sub-agent loop. Mirror the existing `compaction_threshold_percent` validation (search for `InvalidThresholdPercent`).
 
 ### Step 7.1 — Find the validation site
 
-Open `nalar_config_put.zig` and find:
+Open `pabrik_config_put.zig` and find:
 - The profile-parse block where `compaction_threshold_percent` is range-checked.
 - The sub-agent-parse block where `compaction_threshold_percent` is range-checked.
 - The error enum (likely `LoadError` re-used or a per-handler error set) — confirm the error name pattern.
@@ -836,7 +836,7 @@ Add `InvalidThinkingBudgetTokens` to the error set if it's local to the handler,
 
 ### Step 7.3 — Add a static-contract test
 
-Create `src/ai_workflow/tui/http_handlers/nalar_config_put_thinking_test.zig` (inline). Three cases:
+Create `src/ai_workflow/tui/http_handlers/pabrik_config_put_thinking_test.zig` (inline). Three cases:
 1. `thinking_budget_tokens: 0` → `error.InvalidThinkingBudgetTokens`
 2. `thinking_budget_tokens: 9_999_999` → same
 3. `reasoning_effort: "super"` → `error.InvalidReasoningEffort`
@@ -844,7 +844,7 @@ Create `src/ai_workflow/tui/http_handlers/nalar_config_put_thinking_test.zig` (i
 ### Step 7.4 — Commit
 
 ```bash
-git add src/ai_workflow/tui/http_handlers/nalar_config_put.zig src/ai_workflow/tui/http_handlers/nalar_config_put_thinking_test.zig
+git add src/ai_workflow/tui/http_handlers/pabrik_config_put.zig src/ai_workflow/tui/http_handlers/pabrik_config_put_thinking_test.zig
 git commit -m "feat(http): validate thinking_budget_tokens + reasoning_effort in config PUT"
 ```
 
@@ -853,7 +853,7 @@ git commit -m "feat(http): validate thinking_budget_tokens + reasoning_effort in
 ## Task 8: Frontend — extend `LlmConfigForm.vue` with the two new fields
 
 **Files:**
-- EDIT: `src/apps/desktop/src/components/nalar/LlmConfigForm.vue` — add `thinking_budget_tokens: number | null` + `reasoning_effort: string | null` to the `LlmConfig` interface (lines 4-19), add the second-row UI.
+- EDIT: `src/apps/desktop/src/components/pabrik/LlmConfigForm.vue` — add `thinking_budget_tokens: number | null` + `reasoning_effort: string | null` to the `LlmConfig` interface (lines 4-19), add the second-row UI.
 
 ### Step 8.1 — Extend the TypeScript interface
 
@@ -925,12 +925,12 @@ Below the Thinking/Temperature/URL style row (after line 165), add a second row 
 
 ### Step 8.3 — Write Vitest tests
 
-`src/apps/desktop/src/__tests__/nalarConfigFormThinking.spec.ts`:
+`src/apps/desktop/src/__tests__/pabrikConfigFormThinking.spec.ts`:
 
 ```ts
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
-import LlmConfigForm from '../components/nalar/LlmConfigForm.vue'
+import LlmConfigForm from '../components/pabrik/LlmConfigForm.vue'
 
 describe('LlmConfigForm Thinking fields', () => {
   it('hides budget + effort fields when thinking=off', () => {
@@ -968,7 +968,7 @@ describe('LlmConfigForm Thinking fields', () => {
 ### Step 8.4 — Run
 
 ```bash
-cd /home/ginwa/ginwaaitoolbox/src/apps/desktop && bun run test:unit -- nalarConfigFormThinking 2>&1 | tail -n 30
+cd /home/ginwa/ginwaaitoolbox/src/apps/desktop && bun run test:unit -- pabrikConfigFormThinking 2>&1 | tail -n 30
 cd /home/ginwa/ginwaaitoolbox/src/apps/desktop && bun run build 2>&1 | tail -n 30
 ```
 
@@ -977,19 +977,19 @@ Expect: 2 passes, 0 failures, vue-tsc clean.
 ### Step 8.5 — Commit
 
 ```bash
-git add src/apps/desktop/src/components/nalar/LlmConfigForm.vue src/apps/desktop/src/__tests__/nalarConfigFormThinking.spec.ts
+git add src/apps/desktop/src/components/pabrik/LlmConfigForm.vue src/apps/desktop/src/__tests__/pabrikConfigFormThinking.spec.ts
 git commit -m "feat(ui): Thinking budget + reasoning effort knobs in LlmConfigForm"
 ```
 
 ---
 
-## Task 9: Frontend — extend NalarSettings + SubAgentModal defaults
+## Task 9: Frontend — extend PabrikSettings + SubAgentModal defaults
 
 **Files:**
-- EDIT: `src/apps/desktop/src/components/NalarSettings.vue` — 4 sites at lines 264, 273, 314, 325, 341, 352 need the two new fields defaulted.
-- EDIT: `src/apps/desktop/src/components/nalar/SubAgentModal.vue` — mirror.
-- EDIT: `src/apps/desktop/src/components/NalarSettings.vue` — extend `profilesToRecord` (lines 125-140) to map the fields from API to form.
-- EDIT: `src/apps/desktop/src/components/NalarSettings.vue` — extend the `profileModal.value.value` literal (line 264) and the `startEditProfile` mapper (line 273).
+- EDIT: `src/apps/desktop/src/components/PabrikSettings.vue` — 4 sites at lines 264, 273, 314, 325, 341, 352 need the two new fields defaulted.
+- EDIT: `src/apps/desktop/src/components/pabrik/SubAgentModal.vue` — mirror.
+- EDIT: `src/apps/desktop/src/components/PabrikSettings.vue` — extend `profilesToRecord` (lines 125-140) to map the fields from API to form.
+- EDIT: `src/apps/desktop/src/components/PabrikSettings.vue` — extend the `profileModal.value.value` literal (line 264) and the `startEditProfile` mapper (line 273).
 
 ### Step 9.1 — Update the 4 `LlmConfig` literal sites
 
@@ -1029,7 +1029,7 @@ Expect: vue-tsc clean, all tests pass.
 ### Step 9.6 — Commit
 
 ```bash
-git add src/apps/desktop/src/components/NalarSettings.vue src/apps/desktop/src/components/nalar/SubAgentModal.vue
+git add src/apps/desktop/src/components/PabrikSettings.vue src/apps/desktop/src/components/pabrik/SubAgentModal.vue
 git commit -m "feat(ui): wire thinking_budget_tokens + reasoning_effort through profile/sub-agent forms"
 ```
 
@@ -1044,15 +1044,15 @@ git commit -m "feat(ui): wire thinking_budget_tokens + reasoning_effort through 
 
 ### Step 10.1 — Use the existing harness
 
-The harness at `tests/functional/harness.py` boots `zig-out/bin/nalarcore-linux-x86_64` against an isolated tmpdir HOME on a free port in 8080-8199 (NEVER 8081). Reuse it.
+The harness at `tests/functional/harness.py` boots `zig-out/bin/pabrikcore-linux-x86_64` against an isolated tmpdir HOME on a free port in 8080-8199 (NEVER 8081). Reuse it.
 
 ### Step 10.2 — Write 4 test cases
 
 ```python
 def test_profile_thinking_off_persists(harness):
     """Profile with thinking='off' round-trips through PUT then GET."""
-    # 1. Create profile via PUT /api/config/nalar with thinking='off'
-    # 2. GET /api/config/nalar → assert profile.thinking == 'off'
+    # 1. Create profile via PUT /api/config/pabrik with thinking='off'
+    # 2. GET /api/config/pabrik → assert profile.thinking == 'off'
     # 3. PUT a 2nd profile with thinking='on' + thinking_budget_tokens=4096
     # 4. GET → assert both profiles persist with correct values
 
@@ -1070,7 +1070,7 @@ def test_profile_reasoning_effort_roundtrip(harness):
 ### Step 10.3 — Run
 
 ```bash
-cd /home/ginwa/ginwaaitoolbox && NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/model_thinking_test.py -v 2>&1 | tail -n 30
+cd /home/ginwa/ginwaaitoolbox && PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/model_thinking_test.py -v 2>&1 | tail -n 30
 ```
 
 Expect: 4 passed.
@@ -1129,11 +1129,11 @@ Expect: zero failures, zero leaks.
 ### Step 12.2 — Run full desktop build
 
 ```bash
-cd /home/ginwa/ginwaaitoolbox && timeout 600 zig build nalar-desktop --summary all 2>&1 | tail -n 30
+cd /home/ginwa/ginwaaitoolbox && timeout 600 zig build pabrik-desktop --summary all 2>&1 | tail -n 30
 cd /home/ginwa/ginwaaitoolbox/src/apps/desktop && bun run build 2>&1 | tail -n 20
 ```
 
-Expect: 0 errors. The zig build nalar-desktop step is the critical CI gate (lesson from PR #288).
+Expect: 0 errors. The zig build pabrik-desktop step is the critical CI gate (lesson from PR #288).
 
 ### Step 12.3 — Run all Vitest
 
@@ -1146,7 +1146,7 @@ Expect: 0 failures.
 ### Step 12.4 — Run all functional tests
 
 ```bash
-cd /home/ginwa/ginwaaitoolbox && NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/ -v 2>&1 | tail -n 30
+cd /home/ginwa/ginwaaitoolbox && PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/ -v 2>&1 | tail -n 30
 ```
 
 Expect: ALL pre-existing tests + 4 new passes, 0 regressions.
@@ -1167,11 +1167,11 @@ The new thinking fields will burn MORE tokens (Anthropic `budget_tokens` + OpenA
 cd /home/ginwa/ginwaaitoolbox && git push origin HEAD
 gh pr create --title "feat: model thinking (Claude extended + OpenAI reasoning) end-to-end" --body-file <(cat <<'EOF'
 ## Summary
-Wires Claude extended thinking (Anthropic) and OpenAI reasoning (o1/o3/GPT-5/DeepSeek-R1) end-to-end through config → request body → SSE parse → DB → ChatView. Adds per-profile `thinking_budget_tokens` (Anthropic) and `reasoning_effort` (OpenAI) knobs, the new `type: "adaptive"` Anthropic mode, and the UI "Thinking budget tokens" + "Reasoning effort" inputs in NalarSettings.
+Wires Claude extended thinking (Anthropic) and OpenAI reasoning (o1/o3/GPT-5/DeepSeek-R1) end-to-end through config → request body → SSE parse → DB → ChatView. Adds per-profile `thinking_budget_tokens` (Anthropic) and `reasoning_effort` (OpenAI) knobs, the new `type: "adaptive"` Anthropic mode, and the UI "Thinking budget tokens" + "Reasoning effort" inputs in PabrikSettings.
 
 ## What changed
 - Backend: 7 files edited, 4 created. New `parse_thinking.zig` module, extended `LlmProfile` + `SubAgentConfig` + `ResolvedSubAgent`, wired `effective_is_thinking` + `thinking_budget_tokens` into `workflow.zig`, added `reasoning_effort` + `thinkingBudgetTokens` + `thinkingAdaptive` fields to `Agent.zig`, added Anthropic adaptive mode + budget override, added OpenAI `reasoning_effort` to request body, added HTTP PUT validation.
-- Frontend: 3 files edited, 1 created. Extended `LlmConfigForm.vue` with the two new fields (visible only when thinking != "off"), updated NalarSettings + SubAgentModal defaults + mappers.
+- Frontend: 3 files edited, 1 created. Extended `LlmConfigForm.vue` with the two new fields (visible only when thinking != "off"), updated PabrikSettings + SubAgentModal defaults + mappers.
 - Tests: 6 inline `*_test.zig` cases + 1 Vitest spec + 1 functional harness test.
 - No migration (uses existing llm_history columns + nullable new fields).
 - No new HTTP routes.
@@ -1181,7 +1181,7 @@ The UI "Thinking" selector (Auto / On / Off) was already wired in `LlmConfigForm
 
 ## Test plan
 - `zig build test --summary all` — baseline 2595+ pass, +13 new
-- `zig build nalar-desktop --summary all` — must pass (PR #288 lesson)
+- `zig build pabrik-desktop --summary all` — must pass (PR #288 lesson)
 - `bun run test:unit` — 2454+ tests pass, +2 new
 - `python3 -m pytest tests/functional/model_thinking_test.py -v` — 4 passed
 - Manual: create a profile with `thinking=on + thinking_budget_tokens=4096` against an Anthropic-style URL; observe thinking tokens; create an OpenAI o1 profile with `reasoning_effort=high`; observe longer latency.
@@ -1199,7 +1199,7 @@ EOF
 Before marking the task complete, ALL of these must be true:
 
 - [ ] `zig build test --summary all` → 0 failures, 0 leaks (Task 12.1)
-- [ ] `zig build nalar-desktop --summary all` → 0 errors (Task 12.2) — **CRITICAL**, this is the CI gate
+- [ ] `zig build pabrik-desktop --summary all` → 0 errors (Task 12.2) — **CRITICAL**, this is the CI gate
 - [ ] `bun run build` (frontend vue-tsc) → 0 errors (Task 12.2)
 - [ ] `bun run test:unit` → 0 failures (Task 12.3)
 - [ ] `python3 -m pytest tests/functional/` → all pre-existing + 4 new pass (Task 12.4)
@@ -1211,11 +1211,11 @@ Before marking the task complete, ALL of these must be true:
 
 ## Pitfalls (worth flagging upfront)
 
-1. **`zig build test` ≠ `zig build nalar-desktop`** — the test build is more permissive about cross-module struct lookup. Always run BOTH. (Lesson from PR #288.)
+1. **`zig build test` ≠ `zig build pabrik-desktop`** — the test build is more permissive about cross-module struct lookup. Always run BOTH. (Lesson from PR #288.)
 2. **`COALESCE(is_thinking, 1)` in `llm_history.zig:2455`** — this is the silent default that's been making main-agent sessions always-think. Task 3 is the only place that breaks this. If the resolve chain there is wrong, no other task will catch it.
 3. **Arena lifetime** — `effective_is_thinking_str` is a borrowed slice from the config; do NOT `defer allocator.free()` on it. Pass it straight into `parseThinkingString` which itself just returns a `?bool` (no allocation).
 4. **The Anthropic `type: "adaptive"` branch is silently ignored by older Claude models** — Sonnet 4.5+ accepts it; Sonnet 3.7 / Opus 4 do not. We accept that risk because the request body also carries the regular `thinking` shape on older models (the `thinkingAdaptive` flag only flips when `profile.thinking == "auto"`).
 5. **OpenAI o1-pro vs o1-mini vs o3-mini** all have different reasoning_effort semantics. We do NOT validate model compatibility — we let the server reject with a 400, which surfaces in `last_error_message` (already wired in `Agent.zig:886`).
 6. **Empty-string vs null handling** — the UI uses `null` for "auto" but a user-typed empty string is treated as `null` (not as an invalid value). `parse_thinking.parseThinkingString` returns `null` for empty input. Both paths converge.
-7. **Profile naming on the `NalarSettings` mapper** — when extending `profilesToRecord`, the field name on the API DTO (`reasoning_effort`) must match the field name on the form DTO (`reasoning_effort`). Both `ApiNalarProfile` and `LlmConfig` use snake_case so this is fine, but verify by grep before wiring.
+7. **Profile naming on the `PabrikSettings` mapper** — when extending `profilesToRecord`, the field name on the API DTO (`reasoning_effort`) must match the field name on the form DTO (`reasoning_effort`). Both `ApiPabrikProfile` and `LlmConfig` use snake_case so this is fine, but verify by grep before wiring.
 8. **Skip the chatview render work** — ChatView already renders `reasoning_content` (line 1207-1447). Do NOT add a new "thinking drawer" — out of scope. The user just asked to wire the feature end-to-end, not redesign the UI.

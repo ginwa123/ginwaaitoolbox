@@ -34,14 +34,14 @@ Everything upstream is reused untouched: the fetch-once MCP cache (`workflow.zig
 - **The agent never mutates `agent_tools` / `agent_kanban_tools`.** `use_tool` writes only `session_progressive_tool`, which is session-scoped. Unchecking a tool in the Tools tab must remain unchecking after the agent runs.
 - **`enabled` is the definition of "not discoverable".** A built-in whose name resolves as enabled for this item is *not* in the catalog — it is already in the LLM's tool list.
 - **Built-ins that are enabled are injected byte-identically to today**, same names, same order.
-- **The three tool names are exactly** `search_tool`, `view_tool`, `use_tool`. Put all three in one new module `src/modules/agent/tools/progressive_tools.zig` imported as `progressive_tools_mod`. Do **not** declare a bare `const search_tool = …` or a `search_tool_mod` alias in `tools_equipped.zig` — `:55` already has `search_tool_mod = nalarcore.search_tool` (the codebase-search tool). Qualified access keeps them distinct.
+- **The three tool names are exactly** `search_tool`, `view_tool`, `use_tool`. Put all three in one new module `src/modules/agent/tools/progressive_tools.zig` imported as `progressive_tools_mod`. Do **not** declare a bare `const search_tool = …` or a `search_tool_mod` alias in `tools_equipped.zig` — `:55` already has `search_tool_mod = pabrikcore.search_tool` (the codebase-search tool). Qualified access keeps them distinct.
 - **`use_tool` must never insert when the tool is already equipped.** Two layers: an explicit check (built-in-enabled, or already in `session_progressive_tool`) returning `inserted=false` with **zero writes**, plus `PRIMARY KEY(session_id, tool_name)` + `INSERT OR IGNORE` at the DB level. Set the persistence signal **only** when the insert actually happened.
 - **Never register an unknown name.** Validate against the catalog first; unknown → `equipped=false`, nothing written.
 - **No import cycles.** The exec adapters live below `workflow.zig`, so they must not import it. All shared logic goes in a leaf module (see the eligibility helper below); anything reaching the DB (the workspace context) goes through `llm_history.zig`, which is already a shared leaf.
 - **Never touch the process on port 8081.** Functional tests use the harness's random port.
 - Per-request arena: `ctx.allocator` is arena-backed — do NOT `defer free` arena slices inside exec adapters.
 - No `// NEW (plan: …)` comments.
-- Verification gates: `zig build test --summary all`, `pnpm test:unit` (from `src/apps/desktop`), `bun run build`, `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/<file> -v` (rebuild with `zig build install:linux` first — `zig build nalar-desktop` does NOT produce `nalarcore-linux-x86_64`).
+- Verification gates: `zig build test --summary all`, `pnpm test:unit` (from `src/apps/desktop`), `bun run build`, `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/<file> -v` (rebuild with `zig build install:linux` first — `zig build pabrik-desktop` does NOT produce `pabrikcore-linux-x86_64`).
 
 ## Current State (verified 2026-09-12 in this worktree)
 
@@ -273,11 +273,11 @@ Unknown name (**no insert**, never fails open):
 
 ### Task 5 — Exec adapters + registry wiring + persistence signal
 
-- [ ] `tools_exec_progressive_tools.zig`. All three need the catalog: `nalarcore.getSingleton()` → `di.getMcpToolsCached(ctx.allocator)` (the same call the workflow makes at `:573-574`), `getProgressiveTools(ctx.session_id)`, the registered set from `tools_equipped.equips`, the eligible base via `tool_eligibility.allowlistFilter(equips, ctx.allowed_tools, ctx.is_sub_agent)`, and `self_item_type` via `llm_history.getWorkspaceContext(ctx.db, ctx.session_id)` for `itemTypeStrip`. Do **not** refetch from MCP servers — the cache is the source of truth and dispatch already matches it.
+- [ ] `tools_exec_progressive_tools.zig`. All three need the catalog: `pabrikcore.getSingleton()` → `di.getMcpToolsCached(ctx.allocator)` (the same call the workflow makes at `:573-574`), `getProgressiveTools(ctx.session_id)`, the registered set from `tools_equipped.equips`, the eligible base via `tool_eligibility.allowlistFilter(equips, ctx.allowed_tools, ctx.is_sub_agent)`, and `self_item_type` via `llm_history.getWorkspaceContext(ctx.db, ctx.session_id)` for `itemTypeStrip`. Do **not** refetch from MCP servers — the cache is the source of truth and dispatch already matches it.
 - [ ] `execUseTool`: catalog lookup → miss = not-found envelope, zero writes → hit = `isProgressiveToolEquipped` check (already `session` ⇒ `inserted=false`, zero writes) → else `saveProgressiveTool`; set `progressive_tool_save` **only when it returned `true`**.
 - [ ] `tools.zig`: `pub const ProgressiveToolSaveInfo = struct { name: []const u8, server_name: []const u8 };` + `progressive_tool_save: ?ProgressiveToolSaveInfo = null` on `ToolExecResult` (`:115-127`).
 - [ ] `handle_tool.zig`: after the `skill_saved` block (`:617-621`), persist `progressive_tool_save` via `saveProgressiveTool`; log-and-continue on failure.
-- [ ] `tools_equipped.zig`: `+const progressive_tools_mod = nalarcore.progressive_tools;`, +3 lines in `equips()`, +3 rows in `UNIFIED_TOOL_REGISTRY()`; `tools.zig` +3 re-exports.
+- [ ] `tools_equipped.zig`: `+const progressive_tools_mod = pabrikcore.progressive_tools;`, +3 lines in `equips()`, +3 rows in `UNIFIED_TOOL_REGISTRY()`; `tools.zig` +3 re-exports.
 - [ ] Static-contract test (copy `tools_exec_list_sub_agent.zig:252-272`): `equips()`, `UNIFIED_TOOL_REGISTRY()` and `tools.zig` all agree the three names exist.
 - [ ] Inline DB test for the validation rule: unknown name writes nothing; first `use_tool` on a **built-in** (`kanban_list`) inserts exactly one row; a second call is `inserted=false` with the table still at one row.
 - [ ] `Commit:` `feat(tools): progressive search/view/use adapters + registry wiring`
@@ -302,7 +302,7 @@ Unknown name (**no insert**, never fails open):
 
 - [ ] `ProgressiveTool.vue` handling all three names: `search_tool` rows with `kind` + `equipped` chips; `view_tool` description + collapsible `<details>` schema; `use_tool` with a clear visual split between `inserted=true` and already-enabled. Reuse `unwrapToolOutput` (`helpers/unwrapToolOutput.ts:62`).
 - [ ] `ProgressiveTool.spec.ts` (9 cases): search rows; builtin vs mcp chip; `equipped=session` chip; empty catalog state; truncated hint; view schema collapsed then expanded; use-inserted; use-already-enabled; unknown + did-you-mean; malformed envelope fallback.
-- [ ] `ChatView.vue`: three `v-else-if` branches (`:3329-3378`, before the generic `v-else` at `:3379`). Mirror in `src/apps/desktop/src/components/nalar/SubAgentPeekPanel.vue` if it has its own chain.
+- [ ] `ChatView.vue`: three `v-else-if` branches (`:3329-3378`, before the generic `v-else` at `:3379`). Mirror in `src/apps/desktop/src/components/pabrik/SubAgentPeekPanel.vue` if it has its own chain.
 - [ ] `pnpm test:unit` + `bun run build`; delete any `.js` files `vue-tsc --build` emits next to `.ts` sources.
 - [ ] `Commit:` `feat(desktop): progressive tool output card`
 
@@ -313,7 +313,7 @@ Unknown name (**no insert**, never fails open):
 - [ ] Test 2 (MCP fetched, not injected): configure the MCP server; assert `mcp_catalog > 0` and `mcp_equipped=0`, and that `merged_count` excludes all `mcp_*` names.
 - [ ] Test 3 (duplicate rejected): insert the same name twice via SQL into the harness tmpdir `agent.db` and assert the PK/`INSERT OR IGNORE` leaves exactly one row — the DB half of the validation rule.
 - [ ] Test 4 (item-type policy holds): with the catalog non-empty, assert `search_tool`'s catalog for a kanban item contains no design names and no `spawn_sub_agent` for a sub-agent session.
-- [ ] Run `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/progressive_tool_test.py -v` after `zig build install:linux`.
+- [ ] Run `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/progressive_tool_test.py -v` after `zig build install:linux`.
 - [ ] `Commit:` `test(functional): progressive tool catalog — built-in equip + MCP not injected`
 
 ### Task 10 — Measurement + PR body
@@ -328,7 +328,7 @@ Unknown name (**no insert**, never fails open):
 - `zig build test --summary all` — green, including the extracted eligibility helpers (behaviour-identical to before), the rewritten `filterAndMergeTools` tests, the migration tests and the static-contract tests.
 - `pnpm test:unit` (from `src/apps/desktop`) — green, including `ProgressiveTool.spec.ts`.
 - `bun run build` — clean.
-- `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/progressive_tool_test.py -v` — 4 passed.
+- `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/progressive_tool_test.py -v` — 4 passed.
 - **Refactor gate:** Task 1 changes no behaviour — every pre-existing `filterAndMergeTools` / `filteringTools` test passes unmodified before Task 6 lands.
 - **No-regression gate:** for an item whose allowlist covers all built-ins and with no MCP configured, the resolved list is identical (names AND order) to pre-change, and `catalog=0` so the three meta-tools are absent.
 - **Discovery gate:** an enabled built-in never appears in `search_tool` results; a not-enabled built-in does, and `use_tool` on it makes it appear in the next resolution.

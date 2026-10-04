@@ -258,6 +258,6 @@ class RoomProjectsCache(
          * leak have to stay separate investigations that can be rotated
          * separately, and project names are their own third kind of thing.
          */
-        const val KEY_ALIAS = "nalar_projects_cache_key_v1"
+        const val KEY_ALIAS = "pabrik_projects_cache_key_v1"
     }
 }

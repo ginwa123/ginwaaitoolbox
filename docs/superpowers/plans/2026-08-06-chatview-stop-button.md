@@ -15,7 +15,7 @@ delay is ticking) has **no way to stop the agent**. The interface
 shows the streaming bubble + a "Queue" button instead of "Send",
 but Queue is for queueing new messages — it does NOT cancel the
 running one. The user has to wait for the agent to finish or
-restart the `nalar` process entirely.
+restart the `pabrik` process entirely.
 
 The backend already has every primitive needed:
 
@@ -384,7 +384,7 @@ pass clean. `zig build test` still passes (no backend changes).
 
 ### Manual smoke test
 
-1. Open a chat with a running agent (use the dev nalar on port 8080).
+1. Open a chat with a running agent (use the dev pabrik on port 8080).
 2. Verify the Stop button appears in the input row.
 3. Click Stop. Verify the spinner appears + button label changes to "Stopping…".
 4. Within ~1 second, the spinner disappears and the button hides.
@@ -403,7 +403,7 @@ pass clean. `zig build test` still passes (no backend changes).
 ## Pitfalls (record during implementation)
 
 Tracked in the per-task memory file at
-`.nalar/memories/chatview-stop-button-2026-08-06.md` with the
+`.pabrik/memories/chatview-stop-button-2026-08-06.md` with the
 "Lessons learned" pattern used by sibling memories. Likely
 candidates:
 

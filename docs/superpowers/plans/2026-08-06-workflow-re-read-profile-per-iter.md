@@ -116,7 +116,7 @@ If the DB read fails (query throws, no row), fall back to `params.selected_profi
 ### What stays unchanged
 
 - `ChatView.vue::selectProfile` — the PUT / chip update / SSE broadcast path is correct (the user wants the DB to update so the workflow can pick it up).
-- `session_update.zig::sessionUpdateHandler` — the PUT endpoint stays (used by NalarSettings "Set active" + KanbanTaskDetailDialog edit).
+- `session_update.zig::sessionUpdateHandler` — the PUT endpoint stays (used by PabrikSettings "Set active" + KanbanTaskDetailDialog edit).
 - `llm_history.zig::updateSessionSelectedProfileModel` — the backend update + SSE broadcast stays.
 - `RequestSession.selected_profile_model` field in `POST /api/llm/session` — the new-message-send path stays.
 - `workflow.zig::resolveProfileField` — the cascade logic stays; we just feed it a live value instead of a snapshot.
@@ -178,15 +178,15 @@ If the DB read fails (query throws, no row), fall back to `params.selected_profi
 
 **Steps:**
 
-- [ ] `timeout 180 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig` — expect clean.
-- [ ] `timeout 180 zig build-obj -fno-emit-bin -target aarch64-macos -lc --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig` — expect clean.
-- [ ] `timeout 240 rm -rf zig-out/bin && zig build` — expect all 3 binaries produced (`nalar`, `nalarcore-linux-x86_64`, `nalar-desktop`, `nalarcli`).
+- [ ] `timeout 180 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig` — expect clean.
+- [ ] `timeout 180 zig build-obj -fno-emit-bin -target aarch64-macos -lc --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig` — expect clean.
+- [ ] `timeout 240 rm -rf zig-out/bin && zig build` — expect all 3 binaries produced (`pabrik`, `pabrikcore-linux-x86_64`, `pabrik-desktop`, `pabrikcli`).
 
 ## Task 5: Live smoke (manual)
 
 **Steps:**
 
-- [ ] Restart the user's `nalar` on port 8082 (don't kill 8081 — that's the user's running instance).
+- [ ] Restart the user's `pabrik` on port 8082 (don't kill 8081 — that's the user's running instance).
 - [ ] Open a chat with the agent running on profile "Default".
 - [ ] Open the profile dropdown, pick "300 ribu" while the agent is mid-run.
 - [ ] Tail `/tmp/agentic_coding.log`. **Confirm**: the next `[CHECKPOINT] loop iter start ... effective_model=...` log line shows the new profile's `model` (not the old one).
@@ -225,9 +225,9 @@ timeout 360 zig build
 
 # 4. Cross-compile smoke (mandatory for SQL helpers)
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # Expect: both clean (no errors)
 
 # 5. Frontend tests (sanity — no Vue changes, but the chip-loading test must still pass)
@@ -252,7 +252,7 @@ timeout 180 bun run build 2>&1 | tail -n 20
 - **The `resolveProfileField` warning at line 569-572 fires on EVERY iteration with a non-empty live profile that's not in `LlmConfig.profiles_models`.** If the user picks a profile mid-run and the backend hasn't loaded it yet (e.g. config swap just happened), the warning fires on the next iteration. That's fine — it's a useful signal.
 - **`copy_selected_profile_model` is still allocated at line 419.** Removing it would cascade through `handle_tool` callers (line 1076) and require a separate change. We keep it as the fallback; per-iteration live value goes to `handle_tool`.
 - **`handle_tool`'s `selected_profile_model` parameter** is propagated to `spawn_sub_agent` via `RunParamsNew.selected_profile_model`. The sub-agent's `runAgenticMultiStepnew` reads `params.selected_profile_model` (its own snapshot) — but since the sub-agent's workflow is fresh, its snapshot IS the live value from the parent. So the live value propagates correctly.
-- **The live-config-re-read at line 564 (`config = nalarcore.getLlmConfig(di.di);`) already picks up `LlmConfigHolder` swaps.** That's the pattern for `active_profile` changes from NalarSettings. The new `selected_profile_model` re-read is the analogous pattern for per-session changes via `PUT /api/llm/session/:id`.
+- **The live-config-re-read at line 564 (`config = pabrikcore.getLlmConfig(di.di);`) already picks up `LlmConfigHolder` swaps.** That's the pattern for `active_profile` changes from PabrikSettings. The new `selected_profile_model` re-read is the analogous pattern for per-session changes via `PUT /api/llm/session/:id`.
 - **No new SSE event needed.** The PUT endpoint already broadcasts `session.updated`. The workflow doesn't need to subscribe to it — the in-loop re-read is simpler and atomic with the LLM call.
 - **No migration needed.** The `sessions.selected_profile_model` column already exists.
 

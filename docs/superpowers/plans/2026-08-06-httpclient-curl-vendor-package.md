@@ -211,7 +211,7 @@ Sketch (full impl in the commit):
 
 ```zig
 //! custom_http_client package — self-contained Zig package that
-//! exposes the libcurl-backed HTTP client used by nalarcore.
+//! exposes the libcurl-backed HTTP client used by pabrikcore.
 //!
 //! Mirrors `src/modules/databases/build.zig`'s pattern: vendored curl
 //! is a per-target prebuilt archive under vendor/curl/<target>/lib/
@@ -335,7 +335,7 @@ pub fn build(b: *std.Build) void {
 ### Step 5 — Update `src/modules/custom_http_client/build.zig.zon`
 
 The current `build.zig.zon` declares `.name = .custom_http_client`
-and `.paths = .{ ..., "src", "README.md", "NALAR.md", "CLAUDE.md" }`.
+and `.paths = .{ ..., "src", "README.md", "PABRIK.md", "CLAUDE.md" }`.
 No changes needed — the `paths` already cover what the package needs.
 Skip this step.
 
@@ -479,25 +479,25 @@ timeout 180 zig build test --summary all
 
 # 2. Build the Linux binary
 timeout 180 zig build install:linux:system
-# Expected: zig-out/bin/nalar produced (cp to /usr/local/bin/nalar
+# Expected: zig-out/bin/pabrik produced (cp to /usr/local/bin/pabrik
 # fails on perms — pre-existing).
 
 # 3. Fresh rebuild
 rm -rf zig-out/bin
 timeout 360 zig build
-# Expected: zig-out/bin/nalar + nalar-desktop + nalarcli produced.
+# Expected: zig-out/bin/pabrik + pabrik-desktop + pabrikcli produced.
 
 # 4. Cross-compile smoke (catches lazy semantic analysis bugs)
 timeout 60 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 timeout 60 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # Expected: clean (no errors). Windows will fail at the link step if
 # vendored curl archive is missing — but the COMPILE step (which is
 # what -fno-emit-bin tests) should succeed.
 
 # 5. CLI smoke
-./zig-out/bin/nalarcli --help
+./zig-out/bin/pabrikcli --help
 # Expected: prints usage.
 
 # 6. Vendor bootstrap (idempotent re-run)
@@ -510,7 +510,7 @@ bash scripts/bootstrap-vendor.sh
 actually linked correctly):
 
 ```bash
-ldd ./zig-out/bin/nalar 2>&1 | grep -i curl
+ldd ./zig-out/bin/pabrik 2>&1 | grep -i curl
 # Expected: NOTHING (libcurl is statically linked via vendored archive)
 # Pre-fix would show: libcurl.so.4 => /usr/lib/x86_64-linux-gnu/libcurl.so.4
 ```
@@ -519,14 +519,14 @@ If `ldd` shows the system libcurl, the `addObjectFile` call inside
 `src/modules/custom_http_client/build.zig` didn't replace the
 `linkSystemLibrary("curl", .{})` properly — recheck Step 7.
 
-### Step 11 — Smoke test with `nalar` running
+### Step 11 — Smoke test with `pabrik` running
 
 Spin up the binary and verify it actually makes an HTTP request
 through the vendored libcurl:
 
 ```bash
 # Use port 8080 (NOT 8081 — that's the user's always-running dev server)
-./zig-out/bin/nalar --port 8080 --static-dir /tmp 2>&1 &
+./zig-out/bin/pabrik --port 8080 --static-dir /tmp 2>&1 &
 PID=$!
 sleep 2
 curl -s http://127.0.0.1:8080/api/health 2>&1
@@ -546,12 +546,12 @@ HTTP path are working end-to-end.
 | `vendor/curl/linux-x86_64/lib/libcurl.a` exists after Step 1 | yes | Script failed silently; re-run with `set -x` |
 | `nm libcurl.a \| grep -c 'T curl_easy_init'` | > 0 | Archive is incomplete |
 | `zig build test --summary all` after refactor | 2189 pass / 6 skip / 12 fail / 1 crash (baseline) | `addObjectFile` broke link — check Step 7 |
-| `zig build` produces all 3 binaries | `nalar` + `nalar-desktop` + `nalarcli` | Static-contract test issue — check `addIncludePath` propagation |
-| `ldd zig-out/bin/nalar \| grep curl` | (empty) | System libcurl still linked — `linkSystemLibrary("curl", ...)` not removed |
+| `zig build` produces all 3 binaries | `pabrik` + `pabrik-desktop` + `pabrikcli` | Static-contract test issue — check `addIncludePath` propagation |
+| `ldd zig-out/bin/pabrik \| grep curl` | (empty) | System libcurl still linked — `linkSystemLibrary("curl", ...)` not removed |
 | `zig build-obj -target x86_64-windows-gnu` | clean (no errors) | Lazy semantic analysis bug — check `addObjectFile` path resolution |
 | `zig build-obj -target aarch64-macos` | clean (no errors) | Same |
 | `bash scripts/build-vendor-curl.sh` (re-run) | "Done. Run 'zig build' to verify" | Idempotency broken — script touched vendored files |
-| `./zig-out/bin/nalar --port 8080` + `curl /api/health` | `{"status":"ok"}` | Vendored curl can't resolve DNS / make sockets — check OS-level includes in the vendored archive |
+| `./zig-out/bin/pabrik --port 8080` + `curl /api/health` | `{"status":"ok"}` | Vendored curl can't resolve DNS / make sockets — check OS-level includes in the vendored archive |
 
 ---
 
@@ -692,7 +692,7 @@ For the agent executing this plan:
       `install:macos*` and `install:windows` depend on it.
 - [ ] Step 9: update AGENTS.md changelog.
 - [ ] Step 10: run full verification matrix from §3 Step 10.
-- [ ] Step 11: smoke test with `nalar` running on port 8080.
+- [ ] Step 11: smoke test with `pabrik` running on port 8080.
 - [ ] Commit with message following the project's
       `feat(build): ...` convention (PR #210 used
       `feat(build): vendor sqlite3 + curl for hermetic cross-platform

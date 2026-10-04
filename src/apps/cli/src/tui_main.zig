@@ -85,7 +85,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Env fallbacks (same names as pabrikcli).
     if (cfg.session_id == null) {
-        if (env.get("PABRIKCLI_SESSION_ID") orelse env.get("NALARCLI_SESSION_ID")) |v| {
+        if (env.get("PABRIKCLI_SESSION_ID")) |v| {
             if (v.len > 0) cfg.session_id = v;
         }
     }
@@ -95,7 +95,7 @@ pub fn main(init: std.process.Init) !void {
     // no explicit value is given — the TUI's project is the shell's cwd.
     if (flag_cwd) |v| {
         cfg.cwd = v;
-    } else if (env.get("PABRIKCLI_CWD") orelse env.get("NALARCLI_CWD")) |v| {
+    } else if (env.get("PABRIKCLI_CWD")) |v| {
         if (v.len > 0) cfg.cwd = v;
     } else {
         // Capture OS cwd via realPathFile with ".". On failure (e.g., cwd deleted),

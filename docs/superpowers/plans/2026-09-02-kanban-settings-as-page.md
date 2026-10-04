@@ -29,7 +29,7 @@ The existing `<CopyKanbanSpecDialog>` and the AppLayout-level `<KanbanColumnEdit
 - **No port 8081**: smoke tests use port 8080.
 - **Behavioural Vue tests use `@vue/test-utils` `mount` with `setActivePinia(createPinia())`** in `beforeEach`. Mock `useRoute` / `useRouter` via `vi.mock('vue-router', ...)` (mirror `useCurrentMainView.spec.ts`).
 - **TDD discipline**: every implementation task starts with a failing test, then minimal code to make it pass, then a commit.
-- **Teleport-based dialog tests** must use `attachTo: document.body` and `document.querySelector(...)` for DOM assertions (not `wrapper.find(...)` for teleported content). See `.nalar/skills/vue-teleport-vitest-document-queryselector/SKILL.MD`.
+- **Teleport-based dialog tests** must use `attachTo: document.body` and `document.querySelector(...)` for DOM assertions (not `wrapper.find(...)` for teleported content). See `.pabrik/skills/vue-teleport-vitest-document-queryselector/SKILL.MD`.
 - **Pure architectural relocation**: no UX changes beyond the dialog → page conversion. The columns UI, memories tab, copy-spec footer, and rename/delete flows are byte-identical in content (just inside a full-page layout instead of a centered modal).
 - **URL is source of truth**: every read goes through `useRoute().query`; every write goes through `router.replace`. No `ref(false)` open/close flags.
 
@@ -49,7 +49,7 @@ The existing `<CopyKanbanSpecDialog>` and the AppLayout-level `<KanbanColumnEdit
 | `src/apps/desktop/src/__tests__/KanbanSettingsDialog.spec.ts` | DELETE | Replaced by `KanbanSettingsView.spec.ts` |
 | `src/apps/desktop/src/__tests__/KanbanSettingsView.spec.ts` | NEW | Behavioural tests for the new page (header, back button, columns tab, memories tab, copy-spec footer, path-driven mount) |
 | `docs/SPEC.md` | EDIT | Add §10.2.1 PR index row; update Kanban layout §3.7 entry |
-| `NALAR.md` | EDIT | Append "### 2026-09-02: kanban settings as dedicated page" changelog entry |
+| `PABRIK.md` | EDIT | Append "### 2026-09-02: kanban settings as dedicated page" changelog entry |
 
 Total: **11 files** (2 NEW, 5 EDIT, 2 DELETE, 2 doc). No backend changes, no migration, no Zig changes.
 
@@ -604,11 +604,11 @@ chore: remove KanbanSettingsDialog (replaced by KanbanSettingsView)
 
 ---
 
-## Task 7: Update `docs/SPEC.md` and `NALAR.md`
+## Task 7: Update `docs/SPEC.md` and `PABRIK.md`
 
 **Files:**
 - `docs/SPEC.md` — EDIT
-- `NALAR.md` — EDIT
+- `PABRIK.md` — EDIT
 
 ### Step 7.1: SPEC.md
 
@@ -620,7 +620,7 @@ Find the "PR index" section (around line 241, where `2026-06-27-kanban-column-de
 
 Find the Kanban layout section (§3.7) and update the entry to reflect "settings is a dedicated page, not a modal".
 
-### Step 7.2: NALAR.md
+### Step 7.2: PABRIK.md
 
 Append a new changelog entry at the bottom of the "Recent changes" section:
 
@@ -666,7 +666,7 @@ Expect: success.
 
 ### Step 8.4: Manual smoke (port 8080, NOT 8081)
 
-1. Start the backend: `zig build nalar-desktop --summary all` (binary at `zig-out/bin/nalarcore-linux-x86_64`).
+1. Start the backend: `zig build pabrik-desktop --summary all` (binary at `zig-out/bin/pabrikcore-linux-x86_64`).
 2. Launch the desktop binary on port 8080.
 3. Open the desktop app, navigate to a workspace with at least one kanban.
 4. Click ⚙ Settings on the kanban header.

@@ -212,7 +212,7 @@ The data-testid is the single point of contact — tests should never depend on 
 1. `cd src/apps/desktop && bun run build` — type-checks pass; no unused-import errors from the new `ref`/`inject`/`Ref` import in `WorkspaceItem.vue`.
 2. `cd src/apps/desktop && bun test src/__tests__/workspaceItemTaskSpinner.spec.ts` — all 4 new tests pass.
 3. `cd src/apps/desktop && bun test` — full frontend suite still green (31 prior tests, no regressions).
-4. Manual smoke (with `bun run dev` and a running `nalar` server on port 8080):
+4. Manual smoke (with `bun run dev` and a running `pabrik` server on port 8080):
    - Open the sidebar, expand a workspace, add a task, click it to open `ChatView`.
    - Send a message that takes a few seconds.
    - Confirm a yellow spinner appears next to the task name in the sidebar's task row, and disappears when the worker emits the `deleted` SSE event.

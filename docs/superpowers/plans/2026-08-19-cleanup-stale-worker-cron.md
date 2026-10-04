@@ -11,7 +11,7 @@
 
 **Architecture:** Pure helper `cleanupStaleWorkers(input) !CleanupResult` does the work; thin `handle(ctx, now_unix) void` wrapper pulls `*ContextIPCTui` from the singleton and calls the helper. Per row: `active_loops.remove()` (idempotent) then `deleteWorker()` (reuses the existing primitive so SSE `action="deleted"` still fires).
 
-**Tech Stack:** Zig 0.16, `nalarcore.ContextIPCTui` singleton (`src/root.zig`), `cronjob_manager` (`src/modules/custom_http_server/src/cronjob_manager.zig`), in-memory `ActiveLoops` (`src/ai_workflow/tui/agentic_loop/ActiveLoops.zig`), existing `deleteWorker` (`src/ai_workflow/tui/agentic_loop/delete_worker.zig`).
+**Tech Stack:** Zig 0.16, `pabrikcore.ContextIPCTui` singleton (`src/root.zig`), `cronjob_manager` (`src/modules/custom_http_server/src/cronjob_manager.zig`), in-memory `ActiveLoops` (`src/ai_workflow/tui/agentic_loop/ActiveLoops.zig`), existing `deleteWorker` (`src/ai_workflow/tui/agentic_loop/delete_worker.zig`).
 
 ## Global Constraints
 
@@ -44,7 +44,7 @@ is an in-memory `StringHashMap(void)` keyed by `session_id`. It is
 
 Both defers run **on normal exit or `error` return**. They do **not** run when:
 
-- the `nalar` process is killed (`kill -9`, OOM, SIGKILL, machine power-off)
+- the `pabrik` process is killed (`kill -9`, OOM, SIGKILL, machine power-off)
 - a panic bubbles past the workflow frame
 - the process is restarted while a workflow is in flight
 - an LLM-call hang exceeds some external timeout that aborts the runtime
@@ -126,7 +126,7 @@ All three take `io: std.Io` and lock `self.mutex` (`std.Io.Mutex`)
 internally.
 
 The singleton holding `db`, `active_loops`, `allocator`, `io`, `logger`,
-`event_bus` is `*nalarcore.ContextIPCTui` (see `src/root.zig:24` for
+`event_bus` is `*pabrikcore.ContextIPCTui` (see `src/root.zig:24` for
 `getSingleton()` — it returns `error.GlobalContextNotInitialized` if not
 set; `src/root.zig:28` for `setSingleton`).
 
@@ -231,7 +231,7 @@ Each task = a commit. Steps are bite-sized (2–5 min each).
 **Files:** `src/schedulers/cleanup_stale_worker_test.zig` (new)
 
 - [ ] Create the test file at `src/schedulers/cleanup_stale_worker_test.zig`
-      with the standard imports (`std`, `nalarcore`, `database.sqlite`,
+      with the standard imports (`std`, `pabrikcore`, `database.sqlite`,
       `testing = std.testing`).
 - [ ] Add `setupDb` helper that opens an in-memory sqlite DB and runs
       `CREATE TABLE worker (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, last_activity_nano INTEGER)`
@@ -279,7 +279,7 @@ Each task = a commit. Steps are bite-sized (2–5 min each).
     `input.logger.?infoFmt(...)`.
 - [ ] Add `pub fn handle(ctx: ?*anyopaque, now_unix: i64) void` that:
   - `_ = ctx;`
-  - `const di = nalarcore.getSingleton() catch return;`
+  - `const di = pabrikcore.getSingleton() catch return;`
   - `var arena = std.heap.ArenaAllocator.init(di.allocator); defer
     arena.deinit();`
   - Calls `cleanupStaleWorkers(.{ ..., .now_unix = now_unix })` and on
@@ -382,7 +382,7 @@ Each task = a commit. Steps are bite-sized (2–5 min each).
 | `git grep -n "cleanup_stale_worker" src/` | matches `main.zig` (3 lines: import, name, fn) + the implementation file (1 file) |
 | `bunx tsc -p src/apps/desktop/tsconfig.json --noEmit` | unchanged (no frontend touch — `deleteWorker` already emits SSE with `action="deleted"`) |
 | `bunx vitest run` | unchanged (no frontend touch) |
-| Manual: kill -9 the running `nalar` while a workflow is mid-loop, restart, wait 1 min | worker row gone from sidebar; new message on that session_id starts a fresh agent |
+| Manual: kill -9 the running `pabrik` while a workflow is mid-loop, restart, wait 1 min | worker row gone from sidebar; new message on that session_id starts a fresh agent |
 
 ---
 

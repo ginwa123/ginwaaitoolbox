@@ -13,7 +13,7 @@
 - **NO static-contract tests** — user rule (2026-07-29). All new tests are behavioural: call `resolveImageContentFromPath` and assert the return; call `executeShowPreviewToString` and assert the envelope. The pre-existing schema-test pattern (`.name = "..."` grep) IS allowed because the file already has 6 of them; we add 1 new schema check for the new `path` property.
 - **Surgical patches only** — don't refactor `show_preview.zig`. Add the new `path` field, the new `resolveImageContentFromPath` helper, and a small cross-validation block in `executeShowPreviewToString`.
 - **MIME detection via magic bytes only** — never trust the file extension. The agent could rename `/etc/passwd` to `passwd.png` and try to preview it; magic-byte sniffing rejects it because the actual bytes don't match PNG/JPEG/GIF/WebP signatures.
-- **Same threat model as `read_file`** — the LLM can read any file the `nalar` process can read. No sandboxing added (would require a separate allow-list work).
+- **Same threat model as `read_file`** — the LLM can read any file the `pabrik` process can read. No sandboxing added (would require a separate allow-list work).
 - **1 MiB cap already covers the data URL output** — `MAX_CONTENT_BYTES = 1024 * 1024` is the cap on the resulting `data:image/...;base64,...` string. Raw files >~750 KB are rejected so the SSE payload stays under the limit.
 - **Cross-platform** — Zig paths work identically on Linux/macOS/Windows. `std.Io.Dir.cwd().readFileAlloc` is cross-platform (works on Windows since Zig 0.16).
 

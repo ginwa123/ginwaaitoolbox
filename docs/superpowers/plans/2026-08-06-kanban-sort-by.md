@@ -103,7 +103,7 @@ The existing ⋮ menu (lines 519-552 of `KanbanColumn.vue`) has Rename + Delete.
 - [ ] `bun run build` (vue-tsc + vite) clean.
 - [ ] `bunx vitest run` → no new failures (existing pre-existing 12 are OK).
 - [ ] `zig build test --summary all` → no new failures (the 2 backend tests in Task 1 still pass).
-- [ ] `zig build` clean — produces `nalar` + `nalar-desktop` binaries.
+- [ ] `zig build` clean — produces `pabrik` + `pabrik-desktop` binaries.
 - [ ] Cross-compile smoke: `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` and `-target aarch64-macos` both pass (no compile errors). This is a frontend-only change; the existing tests already pass these on main.
 - [ ] Live smoke on port 8080 (NOT 8081): open a kanban, click ⋮ on a column, pick "Sort tasks…", choose "Name (A→Z)", confirm cards in that column reorder. Open a second column, pick a different sort, confirm independence. Refresh — sorts reset to Manual (no URL persistence).
 - [ ] **Commit** — `chore(kanban): final verification + cross-platform smoke`

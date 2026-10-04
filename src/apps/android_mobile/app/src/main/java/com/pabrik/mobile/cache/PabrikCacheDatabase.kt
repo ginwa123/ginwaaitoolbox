@@ -70,7 +70,7 @@ abstract class PabrikCacheDatabase : RoomDatabase() {
     abstract fun projectsCacheDao(): ProjectsCacheDao
 
     companion object {
-        const val NAME = "nalar_cache.db"
+        const val NAME = "pabrik_cache.db"
 
         @Volatile
         private var instance: PabrikCacheDatabase? = null

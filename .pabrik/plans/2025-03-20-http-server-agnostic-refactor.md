@@ -19,9 +19,9 @@
 | Finding | Evidence | Action |
 |---------|----------|--------|
 | Kerjabot handlers (485-689) couple to kerjabot modules | `kerjabot_create_session`, `kerjabot_get_session`, `kerjabot_get_list_session` | Extract to `kerjabot_http_handlers.zig` |
-| TUI handlers (394-460) couple to nalarcore session helpers | `tui_check_session_exists`, `session_helpers.getLatestSessionByDir` | Extract to `tui_http_handlers.zig` |
-| Inline `@import("nalarcore")` in handler functions (404, 430) | Runtime import anti-pattern | Remove by using injected interfaces |
-| Top-level imports (3-6) couple to nalarcore | `sqlite`, `kerjabot_*` imports | Remove from http_server.zig |
+| TUI handlers (394-460) couple to pabrikcore session helpers | `tui_check_session_exists`, `session_helpers.getLatestSessionByDir` | Extract to `tui_http_handlers.zig` |
+| Inline `@import("pabrikcore")` in handler functions (404, 430) | Runtime import anti-pattern | Remove by using injected interfaces |
+| Top-level imports (3-6) couple to pabrikcore | `sqlite`, `kerjabot_*` imports | Remove from http_server.zig |
 | SSE ConnectionManager (89-239) is TUI-scoped | Session-based SSE with TUI context | Keep in transport layer (generic) |
 | Global server pattern (245, 248) | `global_server`, `getGlobalSseManager()` | Convert to injectable interface |
 | Hardcoded routes in `runWithConfig` | `HttpRoutes` struct with inline setup | Move to caller via route registration |
@@ -173,17 +173,17 @@ Delete:
 - `streamHandler` (lines 748-777)
 - `sseStreamHandler` (lines 698-746)
 
-- [ ] **Step 6: Remove top-level nalarcore imports**
+- [ ] **Step 6: Remove top-level pabrikcore imports**
 
 Delete lines 3-6:
 ```zig
-const sqlite = @import("nalarcore").sqlite;
-const kerjabot_get_session = @import("nalarcore").kerjabot_get_session;
-const kerjabot_create_session = @import("nalarcore").kerjabot_create_session;
-const kerjabot_get_list_session = @import("nalarcore").kerjabot_get_list_session;
+const sqlite = @import("pabrikcore").sqlite;
+const kerjabot_get_session = @import("pabrikcore").kerjabot_get_session;
+const kerjabot_create_session = @import("pabrikcore").kerjabot_create_session;
+const kerjabot_get_list_session = @import("pabrikcore").kerjabot_get_list_session;
 ```
 
-- [ ] **Step 7: Remove inline `@import("nalarcore")` calls in SSE handlers**
+- [ ] **Step 7: Remove inline `@import("pabrikcore")` calls in SSE handlers**
 
 Delete lines 404, 430 (the inline imports in sessionExistsHandler and getLatestSessionByDirHandler).
 
@@ -374,7 +374,7 @@ git commit --no-edit -m "test(http_server): add transport layer tests"
 
 ### Checkpoints
 
-- [ ] **Checkpoint 1:** `http_server.zig` has ZERO imports from `nalarcore`
+- [ ] **Checkpoint 1:** `http_server.zig` has ZERO imports from `pabrikcore`
 - [ ] **Checkpoint 2:** `http_server.zig` has ZERO handler functions (commandHandler, session*, kerjabot*, stream*)
 - [ ] **Checkpoint 3:** `http_server.zig` only contains transport logic: server init, route registration interface, SSE manager, panic broadcasting
 - [ ] **Checkpoint 4:** All handlers are in separate modules: `tui_handlers.zig`, `kerjabot_handlers.zig`
@@ -385,10 +385,10 @@ git commit --no-edit -m "test(http_server): add transport layer tests"
 
 ## Phase 5: Final Cleanup
 
-- [ ] **Step 1:** Verify no remaining inline `@import("nalarcore")` in handler files
+- [ ] **Step 1:** Verify no remaining inline `@import("pabrikcore")` in handler files
 
 ```bash
-rg '@import\("nalarcore"\)' src/modules/http_server/ --hidden
+rg '@import\("pabrikcore"\)' src/modules/http_server/ --hidden
 ```
 
 Expected: No matches
@@ -396,7 +396,7 @@ Expected: No matches
 - [ ] **Step 2:** Check circular dependencies resolved
 
 ```bash
-rg 'http_server' src/nalarcore --hidden | head -n 20
+rg 'http_server' src/pabrikcore --hidden | head -n 20
 ```
 
 - [ ] **Step 3:** Final build verification

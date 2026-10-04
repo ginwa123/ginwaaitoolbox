@@ -86,7 +86,7 @@ existing `tools_exec_*.zig` migration that moved every exec function out of
 1. `src/root.zig` — add two `pub const` aliases (matches the existing pattern
    at line 338-343 where all design tools are listed).
 2. `src/ai_workflow/tui/mod.zig` — add the two `pub const` aliases that
-   `agentic_loop/tools_equipped.zig` reaches through (`nalarcore.ai_mod.show_preview`).
+   `agentic_loop/tools_equipped.zig` reaches through (`pabrikcore.ai_mod.show_preview`).
 3. `src/ai_workflow/tui/agentic_loop/tools.zig` — add two `pub const exec*`
    re-exports (matches the existing line 33-39 pattern).
 4. `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` — add two module
@@ -180,12 +180,12 @@ frontend already understands.
 
 1. `zig build test --summary all` → all tests pass (existing 2168 + new 14ish)
 2. `zig build install:linux:system` → builds
-3. `rm -rf zig-out/bin && zig build` → both `nalar` + `nalar-desktop` produced
-4. `zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc --dep nalarcore
-   -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig` → clean
-5. `zig build-obj -fno-emit-bin -target aarch64-macos -lc --dep nalarcore
-   -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig` → clean
-6. Live smoke on port 8080: start `nalar` with a fresh $HOME, hit
+3. `rm -rf zig-out/bin && zig build` → both `pabrik` + `pabrik-desktop` produced
+4. `zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc --dep pabrikcore
+   -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig` → clean
+5. `zig build-obj -fno-emit-bin -target aarch64-macos -lc --dep pabrikcore
+   -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig` → clean
+6. Live smoke on port 8080: start `pabrik` with a fresh $HOME, hit
    `POST /api/.../tools/exec` with a `get_design_context` payload, verify
    the response contains the expected XML shape.
 

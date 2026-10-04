@@ -3099,10 +3099,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // Unset (the default) keeps the historical `.venv-func` behavior for
     // local developers. NOTE: this must be read at CONFIG time so the
     // literal path can be baked into the addSystemCommand argv below.
-    // Both spellings are accepted: CI sets this at configure time, so a
-    // rename without the fallback would silently drop the cached venv.
-    const venv_dir_raw = b.graph.environ_map.get("PABRIK_FUNC_VENV_DIR") orelse
-        b.graph.environ_map.get("NALAR_FUNC_VENV_DIR") orelse ".venv-func";
+    const venv_dir_raw = b.graph.environ_map.get("PABRIK_FUNC_VENV_DIR") orelse ".venv-func";
     // Normalize Windows mixed separators (runner.temp is C:\...\ _temp + "/pabrik-ci-venv" → "C:\...\ _temp/pabrik-ci-venv").
     // Use forward slashes internally; Python on Windows handles both.
     const venv_dir = blk: {

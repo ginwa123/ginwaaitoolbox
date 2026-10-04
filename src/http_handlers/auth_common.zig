@@ -9,10 +9,6 @@ const pabrikcore = @import("pabrikcore");
 
 pub const cookie_name = "pabrik_session";
 
-/// The cookie name issued before the rebrand. Still ACCEPTED, never issued:
-/// `Max-Age` is 30 days, so renaming without this would sign every logged-in
-/// user out on upgrade and strand the `auth_sessions` rows behind it.
-pub const legacy_cookie_name = "nalar_session";
 pub const session_max_age_secs: u32 = 30 * 24 * 3600; // 30 days
 
 /// Paths that never require auth even when `--auth` is on.
@@ -31,29 +27,18 @@ pub fn isAuthExempt(path: []const u8) bool {
 pub fn parseSessionToken(headers: anytype) ?[]const u8 {
     const cookie = headers.get("Cookie") orelse headers.get("cookie") orelse return null;
     if (cookie.len == 0) return null;
-    // Both names are read; the current one wins when a client sends both.
-    var found: ?[]const u8 = null;
     var it = std.mem.splitScalar(u8, cookie, ';');
     while (it.next()) |part| {
         const trimmed = std.mem.trim(u8, part, " \t");
-        const val = cookieValueOf(trimmed, cookie_name) orelse
-            cookieValueOf(trimmed, legacy_cookie_name) orelse
-            continue;
+        if (trimmed.len <= cookie_name.len + 1) continue;
+        if (!std.mem.startsWith(u8, trimmed, cookie_name ++ "=")) continue;
+        const val = std.mem.trim(u8, trimmed[cookie_name.len + 1 ..], " \t\"");
+        if (val.len == 0) return null;
         // Basic sanity: opaque hex token we issue is 64 chars.
         // Accept anything non-empty here; DB lookup is the real gate.
-        if (found == null) found = val;
-        if (std.mem.startsWith(u8, trimmed, cookie_name ++ "=")) break;
+        return val;
     }
-    return found;
-}
-
-/// Value of `name=<token>` inside one `Cookie` header part, or null.
-fn cookieValueOf(part: []const u8, name: []const u8) ?[]const u8 {
-    if (part.len <= name.len + 1) return null;
-    if (!std.mem.eql(u8, part[0..name.len], name)) return null;
-    if (part[name.len] != '=') return null;
-    const val = std.mem.trim(u8, part[name.len + 1 ..], " \t\"");
-    return if (val.len == 0) null else val;
+    return null;
 }
 
 /// Hex-encode SHA-256(token) into a 64-char lowercase string.
@@ -350,15 +335,8 @@ pub fn setCookieValue(allocator: std.mem.Allocator, raw_token: []const u8) ![]u8
     return std.fmt.allocPrint(allocator, "{s}={s}; Path=/; HttpOnly; SameSite=Lax; Max-Age={d}", .{ cookie_name, raw_token, session_max_age_secs });
 }
 
-/// Clears BOTH names. A logout that only expired the new one would leave the
-/// legacy cookie in the browser, and `parseSessionToken` would keep honouring it
-/// — the user would appear to still be signed in.
 pub fn clearCookieValue(allocator: std.mem.Allocator) ![]u8 {
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0, {s}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
-        .{ cookie_name, legacy_cookie_name },
-    );
+    return std.fmt.allocPrint(allocator, "{s}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0", .{cookie_name});
 }
 
 // =====================================================================

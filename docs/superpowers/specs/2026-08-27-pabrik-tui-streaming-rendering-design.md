@@ -1,8 +1,8 @@
-# `nalar-tui` streaming rendering — design
+# `pabrik-tui` streaming rendering — design
 
 ## Goal
 
-Make `nalar-tui`'s chat stream render the way the Vue frontend renders
+Make `pabrik-tui`'s chat stream render the way the Vue frontend renders
 chat: tool outputs as compact styled cards (tool name + primary field +
 status badge) instead of raw `<tool>...</tool>` envelopes, and assistant
 thinking hidden instead of dumped as `<think>...</think>` text.
@@ -321,9 +321,9 @@ Approximate coverage per file:
 ## Verification
 
 - `zig build test:tui --summary all` — all green, 0 leak.
-- `zig build install:tui` — `zig-out/bin/nalar-tui` builds.
+- `zig build install:tui` — `zig-out/bin/pabrik-tui` builds.
 - Manual smoke (with the dev server running on 8081):
-  - `nalar-tui --server http://localhost:8081` — chat renders, Enter
+  - `pabrik-tui --server http://localhost:8081` — chat renders, Enter
     sends a message, Ctrl-C exits cleanly.
   - Type `hai` — observe `▶ load_memory  ...  ✓` then `▶ update_activity  ...  ✓` then the assistant's plain-text reply (no raw `<think>` block visible).
   - Confirm the same `<tool>` envelope does NOT appear three times

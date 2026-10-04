@@ -345,16 +345,11 @@ const win32_apis = if (builtin.os.tag == .windows) struct {
 /// from `daemonize` immediately (it IS the daemon).
 const PABRIK_DAEMON_CHILD: [:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("PABRIK_DAEMON_CHILD");
 
-/// Pre-rebrand sentinel. A daemon spawned by the previous build exports this
-/// instead, so a new `service stop` re-parented from it must still recognise
-/// the child and not double-fork.
-const LEGACY_PABRIK_DAEMON_CHILD: [:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("NALAR_DAEMON_CHILD");
 
 fn daemonizeWindows(allocator: std.mem.Allocator) DaemonError!void {
     // 1. If PABRIK_DAEMON_CHILD is set, we ARE the spawned daemon. Just
     //    return; the caller is the daemon process.
-    const sentinel = (getEnvVarW(allocator, PABRIK_DAEMON_CHILD) catch null) orelse
-        (getEnvVarW(allocator, LEGACY_PABRIK_DAEMON_CHILD) catch null);
+    const sentinel = getEnvVarW(allocator, PABRIK_DAEMON_CHILD) catch null;
     if (sentinel) |val| {
         defer allocator.free(val);
         if (val.len > 0) {

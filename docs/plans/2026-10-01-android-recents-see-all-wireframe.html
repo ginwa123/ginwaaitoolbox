@@ -7,7 +7,7 @@
 <style>
   /* Page chrome inherits the host theme. Only the *device screens* are painted,
      because the subject of this mockup is the app, which is dark by design
-     (src/apps/android_mobile/app/src/main/java/com/nalar/mobile/ui/Color.kt).
+     (src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/ui/Color.kt).
      Tokens and classes are lifted from
      docs/plans/2026-09-27-android-sidebar-projects-wireframe.html so the two
      wireframes can be read side by side. */
@@ -284,7 +284,7 @@
       <div class="drawer">
         <div class="ws"><div><div class="eyebrow">Workspace</div><div class="name">agentic coding</div></div><span class="caret">▾</span></div>
         <div class="newchat"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
-        <div class="banner rel"><span class="no">B</span>Showing saved data · Could not reach nalar<span class="retry">Retry</span></div>
+        <div class="banner rel"><span class="no">B</span>Showing saved data · Could not reach pabrik<span class="retry">Retry</span></div>
         <div class="sec-h"><span class="chev">▾</span> Recent</div>
         <div class="row chat"><span class="lbl">fix zig build test</span></div>
         <div class="seeall"><span class="lbl" style="visibility:hidden">See all chats</span><span class="chev">›</span></div>
@@ -356,7 +356,7 @@
     <td>Route</td>
     <td><code>chats/{workspaceId}</code>, a <b>sibling</b> of <code>chat/{sessionId}</code> — not
         nested under it, or Back from a chat would pop the list. Deep link
-        <code>nalar://chats/{workspaceId}</code>. One id, not two: <code>/api/session?workspace_id=…</code>
+        <code>pabrik://chats/{workspaceId}</code>. One id, not two: <code>/api/session?workspace_id=…</code>
         needs only the workspace, unlike the project's nested item endpoints.</td>
   </tr>
   <tr>

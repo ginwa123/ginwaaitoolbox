@@ -4,7 +4,6 @@ const json = std.json;
 const Io = std.Io;
 const LLMModels = @import("../agent/LLMModels.zig");
 const helpers = @import("helpers");
-const brand = helpers.brand_paths;
 const parse_thinking = @import("parse_thinking.zig");
 
 /// Skill Evals — the agent evaluates the skills it actually used.
@@ -2882,9 +2881,9 @@ fn generateRandomAgentName(allocator: std.mem.Allocator) ![]u8 {
     return allocator.dupe(u8, &out_buf);
 }
 
-/// The platform's app directory for `app_name` (config, memories, skills,
-/// agents, hooks — everything the app owns per OS account).
-fn appDirFor(allocator: std.mem.Allocator, environment: *std.process.Environ.Map, app_name: []const u8) LlmConfig.LoadError![]const u8 {
+pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.process.Environ.Map) LlmConfig.LoadError![]const u8 {
+    const app_name = "pabrik";
+
     switch (builtin.os.tag) {
         .windows => {
             const appdata = environment.get("APPDATA") orelse {
@@ -2929,26 +2928,6 @@ fn appDirFor(allocator: std.mem.Allocator, environment: *std.process.Environ.Map
             return std.fs.path.join(allocator, &[_][]const u8{ home, ".config", app_name });
         },
     }
-}
-
-pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.process.Environ.Map) LlmConfig.LoadError![]const u8 {
-    const current = try appDirFor(allocator, environment, brand.app_name);
-    if (brand.exists(current)) return current;
-
-    // Pre-rebrand installs keep their config.json, memories, skills, agents
-    // and hooks under the old directory name. Falling back to it here is what
-    // makes an upgrade look like an upgrade instead of a fresh install; a
-    // fresh install still writes to the current name, because the legacy
-    // directory does not exist to fall back to.
-    const legacy = appDirFor(allocator, environment, brand.legacy_app_name) catch {
-        return current;
-    };
-    if (!brand.exists(legacy)) {
-        allocator.free(legacy);
-        return current;
-    }
-    allocator.free(current);
-    return legacy;
 }
 
 pub fn getDefaultConfigPath(allocator: std.mem.Allocator, environment: *std.process.Environ.Map) LlmConfig.LoadError![]const u8 {

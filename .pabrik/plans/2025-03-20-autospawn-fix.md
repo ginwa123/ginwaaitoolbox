@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix the dotnet autospawn to reliably start the nalar backend on port 8080 without killing nalar on port 8081.
+**Goal:** Fix the dotnet autospawn to reliably start the pabrik backend on port 8080 without killing pabrik on port 8081.
 
-**Architecture:** The C# autospawn implementation uses fork/daemon/exec to start `/usr/local/bin/nalar --port 8080` as a daemon. The current implementation has silent failures in daemon() and execvp() calls, and uses HttpClient which has connection pooling issues. We'll fix by: (1) using raw sockets for backend checks, (2) improving error reporting, (3) adding setsid() for proper daemonization, and (4) increasing wait times.
+**Architecture:** The C# autospawn implementation uses fork/daemon/exec to start `/usr/local/bin/pabrik --port 8080` as a daemon. The current implementation has silent failures in daemon() and execvp() calls, and uses HttpClient which has connection pooling issues. We'll fix by: (1) using raw sockets for backend checks, (2) improving error reporting, (3) adding setsid() for proper daemonization, and (4) increasing wait times.
 
 **Tech Stack:** C# (.NET), P/Invoke to libc (fork, setsid, daemon, execv), raw POSIX sockets
 
@@ -15,20 +15,20 @@
 ### What We Set Out to Discover
 1. Where is the autospawn logic?
 2. Why does it fail with "Connection refused" on port 8080?
-3. Is the nalar binary broken?
+3. Is the pabrik binary broken?
 
 ### Findings per Agent
 
 | Agent | Target | Answer | Confidence | Key Evidence |
 |-------|--------|--------|------------|--------------|
 | find-autospawn | C# Program.cs | Found autospawn in BackendManager class, lines 86-198 | high | Lines 142-167 show fork/daemon/execvp |
-| check-ports | System ports | Port 8080 is FREE, 8081 occupied by nalar | high | `ss -tlnp` shows nalar on 8081 |
-| test-nalar-startup | nalar binary | nalar works correctly on 8080 | high | curl returns 200, no errors |
+| check-ports | System ports | Port 8080 is FREE, 8081 occupied by pabrik | high | `ss -tlnp` shows pabrik on 8081 |
+| test-pabrik-startup | pabrik binary | pabrik works correctly on 8080 | high | curl returns 200, no errors |
 | read-csharp-spawner | Program.cs full | daemon/exec failures are silent | high | Lines 162-164, 169-171 exit silently |
 | read-zig-spawner | backend.zig | Zig uses execl() + realpath, C# uses execv() | high | Lines 10, 71 in Zig vs lines 63, 66 in C# |
 
 ### Hypothesis Verdict
-**CONFIRMED with specifics:** The nalar binary works fine. The problem is in the C# autospawn logic:
+**CONFIRMED with specifics:** The pabrik binary works fine. The problem is in the C# autospawn logic:
 1. daemon() failure exits silently (parent thinks success)
 2. execvp() failure exits silently (parent thinks success)  
 3. HttpClient connection caching causes spurious failures
@@ -95,7 +95,7 @@ Add after IsBackendRunning (around line 106):
 private static string? ResolveBackendPath()
 {
     // Try to resolve the real path of the backend binary
-    var path = "/usr/local/bin/nalar";
+    var path = "/usr/local/bin/pabrik";
     
     // Method 1: Try realpath first
     var resolved = realpath(path, IntPtr.Zero);
@@ -118,7 +118,7 @@ private static string? ResolveBackendPath()
 
 Replace:
 ```csharp
-var backendPath = "/usr/local/bin/nalar";
+var backendPath = "/usr/local/bin/pabrik";
 if (!File.Exists(backendPath))
 {
     if (verbose) AnsiConsole.MarkupLine($"[red]Backend not found at {backendPath}[/]");
@@ -131,7 +131,7 @@ With:
 var backendPath = ResolveBackendPath();
 if (backendPath == null)
 {
-    if (verbose) AnsiConsole.MarkupLine("[red]Backend not found at /usr/local/bin/nalar[/]");
+    if (verbose) AnsiConsole.MarkupLine("[red]Backend not found at /usr/local/bin/pabrik[/]");
     return false;
 }
 if (verbose) AnsiConsole.MarkupLine($"[dim]Using backend: {backendPath}[/]");
@@ -267,7 +267,7 @@ if (NativeMethods.daemon(1, 0) != 0)
     Environment.Exit(1);
 }
 
-// Execute nalar
+// Execute pabrik
 var argv = new List<IntPtr>();
 argv.Add(Marshal.StringToHGlobalAnsi(backendPath));  // argv[0] = program name
 argv.Add(Marshal.StringToHGlobalAnsi("--port"));
@@ -450,7 +450,7 @@ if (!isRunning)
             AnsiConsole.MarkupLine("[red]  Binary NOT found![/]");
         
         // Check what process is on port (if any)
-        AnsiConsole.MarkupLine("[dim]  Note: If nalar is on port 8081, you're querying the wrong port[/]");
+        AnsiConsole.MarkupLine("[dim]  Note: If pabrik is on port 8081, you're querying the wrong port[/]");
     }
 }
 ```
@@ -477,11 +477,11 @@ git commit -m "fix(tuicsharp): improve wait times and add diagnostic output"
 - [ ] **Step 1: Test the autospawn flow**
 
 ```bash
-# First, make sure no nalar on 8080
+# First, make sure no pabrik on 8080
 ss -tlnp | grep 8080 || echo "Port 8080 is free"
 
 # Kill any existing test instance
-pkill -f "nalar.*8080" 2>/dev/null || true
+pkill -f "pabrik.*8080" 2>/dev/null || true
 
 # Wait a moment
 sleep 1
@@ -492,28 +492,28 @@ cd src/apps/tuicsharp && dotnet run -q "show me your current working directory"
 
 Expected output: Should successfully connect and respond (no "Connection refused")
 
-- [ ] **Step 2: Verify nalar on 8081 is untouched**
+- [ ] **Step 2: Verify pabrik on 8081 is untouched**
 
 ```bash
 ss -tlnp | grep 8081
-ps aux | grep nalar | grep -v grep
+ps aux | grep pabrik | grep -v grep
 ```
 
-Expected: nalar on 8081 is still running
+Expected: pabrik on 8081 is still running
 
-- [ ] **Step 3: Verify nalar started on 8080**
+- [ ] **Step 3: Verify pabrik started on 8080**
 
 ```bash
 ss -tlnp | grep 8080
 curl -s http://127.0.0.1:8080/api/session | head -n 5
 ```
 
-Expected: nalar listening on 8080, curl returns 200
+Expected: pabrik listening on 8080, curl returns 200
 
 - [ ] **Step 4: Cleanup test instance**
 
 ```bash
-pkill -f "nalar.*8080" 2>/dev/null || true
+pkill -f "pabrik.*8080" 2>/dev/null || true
 ```
 
 - [ ] **Step 5: Final commit with all changes**
@@ -553,8 +553,8 @@ git commit -m "fix(tuicsharp): comprehensive autospawn fixes
 
 ### After Chunk 5 (Final)
 - [ ] `dotnet run -q "..."` succeeds without "Connection refused"
-- [ ] nalar on 8081 is NOT killed
-- [ ] nalar starts successfully on 8080
+- [ ] pabrik on 8081 is NOT killed
+- [ ] pabrik starts successfully on 8080
 
 ---
 
@@ -566,16 +566,16 @@ If Chunk 3 (pipe-based error reporting) is too complex or causes issues:
 - Pipe error reporting is nice-to-have for better debugging
 
 If the issue persists after all chunks:
-- Check if systemd is managing a nalar instance that conflicts
+- Check if systemd is managing a pabrik instance that conflicts
 - Check if SELinux or AppArmor is blocking the exec
-- Check if the nalar binary has the execute bit set
+- Check if the pabrik binary has the execute bit set
 
 ---
 
 ## Open Questions
 
-1. **Should we use systemd to manage nalar instead of manual fork/daemon?** — Current approach works but systemd would be more robust
+1. **Should we use systemd to manage pabrik instead of manual fork/daemon?** — Current approach works but systemd would be more robust
 2. **Should the default port be configurable?** — Currently hardcoded to 8080
-3. **Should we support multiple nalar instances?** — Currently only one instance supported
+3. **Should we support multiple pabrik instances?** — Currently only one instance supported
 
 These are out of scope for this fix but worth noting for future improvements.

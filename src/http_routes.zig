@@ -241,17 +241,6 @@ fn registerConfigRoutes(authed: *Group) !void {
     try authed.put("/api/config/pabrik", ai_mod.http_handlers.pabrikConfigPutHandler);
     try authed.delete("/api/config/pabrik/profiles/:name", ai_mod.http_handlers.pabrikConfigProfileDeleteHandler);
 
-    // DEPRECATED aliases: the same three handlers under their pre-rebrand
-    // paths. They exist because the desktop webapp is served BY this server,
-    // so a cached bundle from the previous release can legitimately still be
-    // talking to the new one — and because the mobile client may not have been
-    // updated yet. Safe to register alongside the current paths: `/api/config/`
-    // has no `:param` sibling, so matchRoute's first-hit walk cannot shadow
-    // either name here.
-    try authed.get("/api/config/nalar", ai_mod.http_handlers.pabrikConfigGetHandler);
-    try authed.put("/api/config/nalar", ai_mod.http_handlers.pabrikConfigPutHandler);
-    try authed.delete("/api/config/nalar/profiles/:name", ai_mod.http_handlers.pabrikConfigProfileDeleteHandler);
-
     // OS notification test endpoint — fires a real OS notification so
     // the user can verify their system can display them.
     try authed.post("/api/notify/test", ai_mod.http_handlers.notifyTestHandler);

@@ -819,20 +819,7 @@ fn dispatchCreateAdmin(
 /// to `~/.local/share/pabrik/tls` (POSIX) or `%LOCALAPPDATA%\pabrik\tls` (Windows).
 /// Deliberately NOT the config dir: it is state, not configuration.
 fn tlsDataDir(allocator: std.mem.Allocator, env: *const std.process.Environ.Map) ![]const u8 {
-    const current = try tlsDataDirFor(allocator, env, "pabrik");
-    // Reusing the pre-rebrand certificate directory keeps the same self-signed
-    // cert across the upgrade. Generating a fresh one would force the user to
-    // re-trust the host in every browser that already trusted it.
-    const legacy = tlsDataDirFor(allocator, env, "nalar") catch return current;
-    if (!helpers.brand_paths.exists(current) and helpers.brand_paths.exists(legacy)) {
-        allocator.free(current);
-        return legacy;
-    }
-    allocator.free(legacy);
-    return current;
-}
-
-fn tlsDataDirFor(allocator: std.mem.Allocator, env: *const std.process.Environ.Map, app_name: []const u8) ![]const u8 {
+    const app_name = "pabrik";
     if (comptime @import("builtin").os.tag == .windows) {
         const base = env.get("LOCALAPPDATA") orelse return error.NoDataDir;
         return std.fs.path.join(allocator, &.{ base, app_name, "tls" });

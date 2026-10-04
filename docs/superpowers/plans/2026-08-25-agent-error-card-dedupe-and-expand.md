@@ -62,7 +62,7 @@ agentError.value = null              // cleared on non-error full event / sessio
 </div>
 ```
 
-The `:key="agentError.id"` is important — when a new `is_error` event overwrites `agentError.value` with a different id, Vue tears down and re-mounts the card, which resets any internal state and forces a re-render of the parsed computeds (in case the content shape changes from `[Retry N/M]` → `[Agent Nalar System error]` bail). Without the key, Vue would patch props in place and you could see stale parsed fields for one frame.
+The `:key="agentError.id"` is important — when a new `is_error` event overwrites `agentError.value` with a different id, Vue tears down and re-mounts the card, which resets any internal state and forces a re-render of the parsed computeds (in case the content shape changes from `[Retry N/M]` → `[Agent Pabrik System error]` bail). Without the key, Vue would patch props in place and you could see stale parsed fields for one frame.
 
 ### 3) `AgentErrorCard.spec.ts`
 
@@ -103,12 +103,12 @@ The other 7 tests (headline parsing, retry chip extraction, delay extraction, se
 - **Component unit test:** `bun run test:unit __tests__/AgentErrorCard.spec.ts` — 8/8 pass.
 - **Full unit suite:** `bun run test:unit` — 282 files / 2671 tests pass (was 281 files / 2663 baseline; +1 file change, tests relabeled).
 - **Type-check:** `npx vue-tsc --build --force` — clean.
-- **No backend / Zig rebuild.** Backend unchanged → no need to boot `nalar` and exercise SSE; this is a pure-frontend state-shape change.
+- **No backend / Zig rebuild.** Backend unchanged → no need to boot `pabrik` and exercise SSE; this is a pure-frontend state-shape change.
 - **Functional UI test:** N/A — would need to script an SSE error storm which isn't worth the harness cost for a 3-file surgical change. Manual smoke test (see below).
 
 ## Manual smoke test
 
-Build the desktop binary, open a chat session. From the chat header pick a provider/profile that returns 429 on demand. Send a user message. Watch the chat: ONE card appears (not 10) ticking `1/10 → 2/10 → ...` if the provider eventually recovers — card disappears as soon as the first non-error `full` event lands. If it goes all the way to `[Agent Nalar System error] workflow halted after 10 consecutive retries`, the bail variant renders on the same card.
+Build the desktop binary, open a chat session. From the chat header pick a provider/profile that returns 429 on demand. Send a user message. Watch the chat: ONE card appears (not 10) ticking `1/10 → 2/10 → ...` if the provider eventually recovers — card disappears as soon as the first non-error `full` event lands. If it goes all the way to `[Agent Pabrik System error] workflow halted after 10 consecutive retries`, the bail variant renders on the same card.
 
 ---
 

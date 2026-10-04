@@ -112,7 +112,7 @@ Model each handler 1:1 on its `agent_knowledge_*` sibling (same error-set + two 
   - delete → `{ok: true}`, GET bundle no longer lists it
   - reorder `[b, a]` → GET bundle returns positions reflecting the new order
   - GET bundle includes `system_prompts: []` for a fresh agent
-- [ ] 2.9 Run `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/agent_system_prompt_test.py -v` — all PASS.
+- [ ] 2.9 Run `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/agent_system_prompt_test.py -v` — all PASS.
 - [ ] 2.10 Commit: `git commit -m "agent_system_prompt CRUD handlers + routes + functional tests"`
 
 ## Task 3 — Prompt injection: `makeAgentSystemPrompt`
@@ -175,7 +175,7 @@ Model each handler 1:1 on its `agent_knowledge_*` sibling (same error-set + two 
 ## Task 5 — End-to-end verification + docs
 
 - [ ] 5.1 Full backend suite: `zig build test --summary all` — 0 fail, 0 leaks.
-- [ ] 5.2 Full functional suite: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/ -v` — no regressions (new file passes, existing files untouched).
+- [ ] 5.2 Full functional suite: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/ -v` — no regressions (new file passes, existing files untouched).
 - [ ] 5.3 Frontend: `npx vitest run` + type-check + build — all green.
 - [ ] 5.4 Manual smoke (optional, only if the user wants it): run the desktop app, open an Agent, add a system prompt, start a New Chat, ask the model to echo its persona — confirm the prompt content appears. (Do NOT touch port 8081.)
 - [ ] 5.5 Update this plan's checkboxes; final commit if any fixups; push branch + open PR for human review.
@@ -188,5 +188,5 @@ Model each handler 1:1 on its `agent_knowledge_*` sibling (same error-set + two 
 - **Route shadowing:** `/system_prompt/reorder` before `/system_prompt/:prompt_id`.
 - **No SSE** — consistent with knowledge handlers; frontend uses optimistic updates + GET bundle.
 - **`agents.id == workspace_item_id`** (spec D3) — the prompt builder keys the SELECT on the workspace_item_id string.
-- **Vitest + Teleport:** dialog tests need `attachTo: document.body` + `document.querySelector` assertions (see `.nalar/skills/vue-teleport-vitest-document-queryselector`).
+- **Vitest + Teleport:** dialog tests need `attachTo: document.body` + `document.querySelector` assertions (see `.pabrik/skills/vue-teleport-vitest-document-queryselector`).
 - **Fresh worktree:** `bun install --frozen-lockfile` in `src/apps/desktop` before vitest.

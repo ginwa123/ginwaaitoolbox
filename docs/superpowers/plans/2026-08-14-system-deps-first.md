@@ -193,7 +193,7 @@ if (probe.use_system) {
 ```
 
 **Acceptance**: `zig build test` passes; `zig build` produces a working
-`zig-out/bin/nalarcore-linux-x86_64`.
+`zig-out/bin/pabrikcore-linux-x86_64`.
 
 **Test**: `zig build test --summary all` — 2198 pass, 6 skip (existing
 baseline).
@@ -343,11 +343,11 @@ ls -la src/modules/databases/vendor/sqlite3/ 2>&1
 # Expected: directories empty or missing.
 
 # 3. The binary should still RUN.
-./zig-out/bin/nalarcore-linux-x86_64 --help 2>&1 | head -n 5
+./zig-out/bin/pabrikcore-linux-x86_64 --help 2>&1 | head -n 5
 # Expected: usage message.
 
 # 4. ldd should show system libcurl, not vendored.
-ldd zig-out/bin/nalarcore-linux-x86_64 | grep -i curl
+ldd zig-out/bin/pabrikcore-linux-x86_64 | grep -i curl
 # Expected: "libcurl.so.4 => /usr/lib/libcurl.so.4" (NOT the vendored one).
 
 # 5. Tests still pass.

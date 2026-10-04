@@ -1,12 +1,12 @@
-# Fix nalar-tui cwd mismatch — implementation plan
+# Fix pabrik-tui cwd mismatch — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `nalar-tui` sends the shell's actual working directory as `cwd_session` so the agent operates in the user's project folder instead of the empty sandbox `~/.local/share/nalar/data/apps/session-...`.
+**Goal:** `pabrik-tui` sends the shell's actual working directory as `cwd_session` so the agent operates in the user's project folder instead of the empty sandbox `~/.local/share/pabrik/data/apps/session-...`.
 
 **Architecture:** Capture the OS cwd once at TUI startup (via `std.Io.Dir.cwd().realPathAlloc`), store it in `App.Config`/`App`, thread it through `transport.buildSendBody` → `POST /api/llm/session` as `cwd_session`. Backend already honors `cwd_session` when non-empty (see `session_create.zig:160-167`); no backend change needed. Add an optional `--cwd` flag to override the auto-detected value.
 
-**Tech Stack:** Zig 0.16 (`std.Io`, `std.fs.path`, `custom_http_client`), `nalar-tui` TUI module (`src/apps/cli/src/tui/`), existing `session_create` fallback chain.
+**Tech Stack:** Zig 0.16 (`std.Io`, `std.fs.path`, `custom_http_client`), `pabrik-tui` TUI module (`src/apps/cli/src/tui/`), existing `session_create` fallback chain.
 
 ## Global Constraints
 
@@ -19,7 +19,7 @@
 
 ## Context — Root Cause
 
-**User report (2026-09-02):** Launching `nalar-tui` from `~/D/Archive.tar` (or any project dir) then asking "project apa iniii?" makes the agent answer "masih kosong total" and `list_directory` shows it inspected `/home/ginwa/.local/share/nalar/data/apps/session-1788360596665` (0 entries) instead of the shell's cwd.
+**User report (2026-09-02):** Launching `pabrik-tui` from `~/D/Archive.tar` (or any project dir) then asking "project apa iniii?" makes the agent answer "masih kosong total" and `list_directory` shows it inspected `/home/ginwa/.local/share/pabrik/data/apps/session-1788360596665` (0 entries) instead of the shell's cwd.
 
 **Why:**
 
@@ -28,7 +28,7 @@
    try w.writeAll(",\"allowed_tools\":\"all\",\"cwd_session\":\"\"," ++ ...
    ```
 2. `src/apps/cli/src/tui_main.zig:110-133` — `sendAndTrack` calls `transport.postSend(allocator, &http_client, server, session_id, msg_text)` with no cwd argument; `App` has no cwd field at all.
-3. Backend `src/ai_workflow/tui/http_handlers/session_create.zig:159-201` — when `cwd_session == ""` and `session_id` has no `workspace_item_tasks` row (true for every TUI session — `session-1788360596665` is not a kanban task id), `resolveCwdFromTaskOrItem` returns `""` and the handler falls back to `createSandbox(...)` → `~/.local/share/nalar/data/apps/<session_id>`. That sandbox is empty by design.
+3. Backend `src/ai_workflow/tui/http_handlers/session_create.zig:159-201` — when `cwd_session == ""` and `session_id` has no `workspace_item_tasks` row (true for every TUI session — `session-1788360596665` is not a kanban task id), `resolveCwdFromTaskOrItem` returns `""` and the handler falls back to `createSandbox(...)` → `~/.local/share/pabrik/data/apps/<session_id>`. That sandbox is empty by design.
 4. The agent's system prompt then renders `cwd = sandbox` and every `list_directory`/`read_file`/`glob` tool call is scoped there — the user's real project is invisible.
 
 **Desktop is not affected:** `src/apps/desktop/src/api/index.ts:1311` and `AppLayout.vue:2646` thread `workspace_item.path` as `cwd_session` for kanban chats. TUI has no equivalent.
@@ -46,7 +46,7 @@
 | `src/apps/cli/src/tui_main.zig` | EDIT | Capture OS cwd at startup, populate `Config.cwd`, pass to `postSend`; add `--cwd` flag + env fallback |
 | `src/apps/cli/src/tui/tdd_round2_test.zig` | EDIT | Update `buildSendBody` call sites (new arg) + add cwd-specific tests |
 | `src/apps/cli/src/tui/transport_test.zig` (if exists) or inline tests in `transport.zig` | EDIT | Add `cwd_session` round-trip tests |
-| `docs/superpowers/plans/2026-09-02-fix-nalar-tui-cwd-mismatch.md` | NEW | This plan |
+| `docs/superpowers/plans/2026-09-02-fix-pabrik-tui-cwd-mismatch.md` | NEW | This plan |
 
 No backend, migration, or desktop changes.
 
@@ -145,11 +145,11 @@ No backend, migration, or desktop changes.
   - Add `--cwd <path>` flag parsing alongside `--server`/`--session`/`--profile` (lines 48-69). Store in `var flag_cwd: ?[]const u8 = null`.
   - After env fallbacks (line 71-77), resolve `effective_cwd`:
     ```zig
-    // Priority: --cwd flag > NALARCLI_CWD env > OS cwd > "" (sandbox fallback)
+    // Priority: --cwd flag > PABRIKCLI_CWD env > OS cwd > "" (sandbox fallback)
     var effective_cwd: []const u8 = "";
     if (flag_cwd) |v| {
         effective_cwd = v;
-    } else if (env.get("NALARCLI_CWD")) |v| {
+    } else if (env.get("PABRIKCLI_CWD")) |v| {
         if (v.len > 0) effective_cwd = v;
     } else {
         // Capture OS cwd. Use realPathAlloc to get absolute path.
@@ -175,7 +175,7 @@ No backend, migration, or desktop changes.
 - [ ] Manual smoke test (no live server needed for wire check):
   ```bash
   zig build install:tui
-  ./zig-out/bin/nalar-tui --help | grep -q "\-\-cwd" && echo "help ok"
+  ./zig-out/bin/pabrik-tui --help | grep -q "\-\-cwd" && echo "help ok"
   # Verify buildSendBody with cwd produces correct JSON (already unit-tested)
   ```
 - [ ] Commit: `fix(tui): capture OS cwd at startup and send as cwd_session`
@@ -193,9 +193,9 @@ No backend, migration, or desktop changes.
 - [ ] Add regression test that documents the bug:
   ```zig
   test "buildSendBody: non-empty cwd is sent as cwd_session (regression: tui always sent empty)" {
-      // Before the fix, nalar-tui always sent cwd_session="" even when
+      // Before the fix, pabrik-tui always sent cwd_session="" even when
       // launched from a project directory. The agent then fell back to
-      // createSandbox → ~/.local/share/nalar/data/apps/session-... (empty).
+      // createSandbox → ~/.local/share/pabrik/data/apps/session-... (empty).
       // This test locks in that a non-empty cwd reaches the wire.
       const body = try transport.buildSendBody(testing.allocator, "session-1", "hi", "/home/ginwa/my-project");
       defer testing.allocator.free(body);
@@ -219,19 +219,19 @@ No backend, migration, or desktop changes.
 - [ ] Write `tests/functional/tui_cwd_test.py` using `tests/functional/harness.py` (isolated tmp HOME, free port, no 8081):
   ```python
   def test_tui_cwd_reaches_backend(harness):
-      # Simulate what nalar-tui now does: POST with cwd_session="/tmp/my-proj"
+      # Simulate what pabrik-tui now does: POST with cwd_session="/tmp/my-proj"
       # Verify the session row's cwd is "/tmp/my-proj" (not sandbox)
       # and that GET /api/llm/session/:id/messages shows the cwd in the system prompt
       # (or at least that the session's cwd column is correct).
   def test_tui_empty_cwd_falls_back_to_sandbox(harness):
       # POST with cwd_session="" → session cwd should be sandbox path
-      # (contains ".local/share/nalar/data/apps")
+      # (contains ".local/share/pabrik/data/apps")
   ```
   - Use `harness.post("/api/llm/session", json={"session_id": "session-test-123", "queue_message": "hi", "cwd_session": "/tmp/proj", ...})`
   - Query `GET /api/llm/session/test-123` or check DB via `harness.db_query` if available; otherwise verify via the session list endpoint.
   - Keep the test minimal — the harness already isolates HOME and port.
-- [ ] Run `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/tui_cwd_test.py -v` — expect 2 pass.
-- [ ] Run `zig build test --summary all` + `zig build nalar-desktop --summary all` — no regressions.
+- [ ] Run `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/tui_cwd_test.py -v` — expect 2 pass.
+- [ ] Run `zig build test --summary all` + `zig build pabrik-desktop --summary all` — no regressions.
 - [ ] Commit: `test(functional): tui cwd reaches backend as cwd_session`
 
 ---
@@ -240,9 +240,9 @@ No backend, migration, or desktop changes.
 
 ### Steps
 
-- [ ] Update `src/apps/cli/README.md` (if it has a nalar-tui section) to mention `--cwd` and the auto-detected cwd behavior.
-- [ ] Verify `NALAR.md` or `AGENTS.md` doesn't need a changelog entry (optional — the plan's commit history is the changelog).
-- [ ] Run `zig build nalar-desktop --summary all` and `pnpm test:unit` (if frontend touched — it isn't) to confirm no cross-cutting break.
+- [ ] Update `src/apps/cli/README.md` (if it has a pabrik-tui section) to mention `--cwd` and the auto-detected cwd behavior.
+- [ ] Verify `PABRIK.md` or `AGENTS.md` doesn't need a changelog entry (optional — the plan's commit history is the changelog).
+- [ ] Run `zig build pabrik-desktop --summary all` and `pnpm test:unit` (if frontend touched — it isn't) to confirm no cross-cutting break.
 - [ ] Final `git log --oneline -10` review — 5-6 commits, each with a clear message.
 
 ---
@@ -253,7 +253,7 @@ No backend, migration, or desktop changes.
 - **Arena lifetime:** `init.arena.allocator()` lives for the whole process, so a slice allocated there is valid for `App`'s lifetime. But `App.deinit` will `free` its duped copy — don't double-free the arena slice. Either (a) let `App.init` dupe and keep the arena slice alive (harmless leak, arena dies on exit) or (b) have `tui_main` dupe into a separate allocation. Option (a) is simpler.
 - **Empty cwd vs sandbox:** `""` is a valid sentinel meaning "use sandbox". Don't normalize `""` to `"."` or `"/"` — the backend's `if (cwd_session.len > 0)` check depends on empty meaning "no override".
 - **Absolute path check:** `std.fs.path.isAbsolute("")` is false, so the `if (effective_cwd.len > 0 and !isAbsolute(...))` guard correctly leaves `""` as sandbox fallback. Don't add a separate `effective_cwd.len == 0` branch that tries to make it absolute.
-- **Resuming sessions:** If the user runs `nalar-tui --session session-old` from a different directory, the new cwd will be sent for the next message. This changes the session's effective cwd for that run. That's intentional — the user's current shell location is the best signal. If we want to preserve the original session's cwd on resume, we'd need to `GET /api/llm/session/:id` first and only send cwd when the session is new. V1 keeps it simple: always send current cwd. A follow-up can add "only send cwd on session creation" if users report surprise.
+- **Resuming sessions:** If the user runs `pabrik-tui --session session-old` from a different directory, the new cwd will be sent for the next message. This changes the session's effective cwd for that run. That's intentional — the user's current shell location is the best signal. If we want to preserve the original session's cwd on resume, we'd need to `GET /api/llm/session/:id` first and only send cwd when the session is new. V1 keeps it simple: always send current cwd. A follow-up can add "only send cwd on session creation" if users report surprise.
 
 ---
 
@@ -261,8 +261,8 @@ No backend, migration, or desktop changes.
 
 - [ ] `zig build test:tui --summary all` — all TUI unit tests pass (including new cwd tests)
 - [ ] `zig build test --summary all` — full backend suite passes (no regressions)
-- [ ] `zig build nalar-desktop --summary all` — desktop build still succeeds
-- [ ] `NALAR_BIN=... python3 -m pytest tests/functional/tui_cwd_test.py -v` — 2/2 pass (cwd reaches backend, empty falls back to sandbox)
-- [ ] Manual: `zig build install:tui && ./zig-out/bin/nalar-tui --help` shows `--cwd` flag
-- [ ] Manual: launch `nalar-tui` from a temp dir with a real backend, send "list files in cwd", verify agent lists the temp dir's contents (not the sandbox)
+- [ ] `zig build pabrik-desktop --summary all` — desktop build still succeeds
+- [ ] `PABRIK_BIN=... python3 -m pytest tests/functional/tui_cwd_test.py -v` — 2/2 pass (cwd reaches backend, empty falls back to sandbox)
+- [ ] Manual: `zig build install:tui && ./zig-out/bin/pabrik-tui --help` shows `--cwd` flag
+- [ ] Manual: launch `pabrik-tui` from a temp dir with a real backend, send "list files in cwd", verify agent lists the temp dir's contents (not the sandbox)
 

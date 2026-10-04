@@ -35,7 +35,7 @@ surface from the hand-curated `.md` files (both stay).
 
 1. **Lead** — when to use these tools (don't re-ask user, don't re-derive facts).
 2. **Surface distinction** — FTS5-backed agent-managed notes, vs. `.md` files in
-   `~/.config/nalar/memories/` (auto-injected as `## Global Knowledge`).
+   `~/.config/pabrik/memories/` (auto-injected as `## Global Knowledge`).
 3. **TWO TOOLS** — `save_memory` UPSERT by id, `load_memory` FTS5 search with
    snippets + `with_content` opt-in.
 4. **WIRE FORMAT — 3 contracts stay in sync** — `tags` is a single string
@@ -93,14 +93,14 @@ timeout 180 zig build test --summary all
 # Expect: 2 new pass, baseline preserved (was 2350, expect 2353+ pass; 6 skip; 5 fail pre-existing)
 
 timeout 240 bash -c 'rm -rf zig-out/bin && zig build'
-# Expect: 3 binaries produced (nalar, nalarcore-linux-x86_64, nalar-desktop; nalarcli)
+# Expect: 3 binaries produced (pabrik, pabrikcore-linux-x86_64, pabrik-desktop; pabrikcli)
 
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # Expect: clean (the section body is plain text)
 
 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # Expect: clean
 ```
 

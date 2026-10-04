@@ -33,7 +33,7 @@
         "RecentsDrawerContent"
       ],
       "deepLinks": [
-        "nalar://chat/{sessionId}"
+        "pabrik://chat/{sessionId}"
       ],
       "isStart": false,
       "line": 760,
@@ -58,7 +58,7 @@
         "RecentsChatsScreen"
       ],
       "deepLinks": [
-        "nalar://chats/{workspaceId}"
+        "pabrik://chats/{workspaceId}"
       ],
       "isStart": false,
       "line": 910,
@@ -84,7 +84,7 @@
         "ProjectSummary"
       ],
       "deepLinks": [
-        "nalar://project/{workspaceId}/{itemId}"
+        "pabrik://project/{workspaceId}/{itemId}"
       ],
       "isStart": false,
       "line": 969,
@@ -108,7 +108,7 @@
         "NetworkInspectorScreen"
       ],
       "deepLinks": [
-        "nalar://network"
+        "pabrik://network"
       ],
       "isStart": false,
       "line": 1048,
@@ -130,7 +130,7 @@
         "NetworkRecordDetailScreen"
       ],
       "deepLinks": [
-        "nalar://network/record/{recordId}"
+        "pabrik://network/record/{recordId}"
       ],
       "isStart": false,
       "line": 1058,
@@ -156,15 +156,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 195,
-          "note": "NalarRoutes.SHELL"
+          "note": "PabrikRoutes.SHELL"
         }
       ],
       "source": "graph",
       "target": "app",
       "trigger": "back",
-      "via": "NalarRoutes.SHELL"
+      "via": "PabrikRoutes.SHELL"
     },
     {
       "hoistedFrom": "openInspector",
@@ -176,15 +176,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 419,
-          "note": "NalarRoutes.NETWORK"
+          "note": "PabrikRoutes.NETWORK"
         }
       ],
       "source": "app",
       "target": "network",
       "trigger": "the network inspector button",
-      "via": "NalarRoutes.NETWORK"
+      "via": "PabrikRoutes.NETWORK"
     },
     {
       "hoistedFrom": "openChats",
@@ -196,15 +196,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 460,
-          "note": "NalarRoutes.chats(workspaceId)"
+          "note": "PabrikRoutes.chats(workspaceId)"
         }
       ],
       "source": "app",
       "target": "chats/{workspaceId}",
       "trigger": "the drawer's “See all chats” row",
-      "via": "NalarRoutes.chats(workspaceId)"
+      "via": "PabrikRoutes.chats(workspaceId)"
     },
     {
       "hoistedFrom": "openChats",
@@ -216,15 +216,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 460,
-          "note": "NalarRoutes.chats(workspaceId)"
+          "note": "PabrikRoutes.chats(workspaceId)"
         }
       ],
       "source": "chat/{sessionId}",
       "target": "chats/{workspaceId}",
       "trigger": "the drawer's “See all chats” row",
-      "via": "NalarRoutes.chats(workspaceId)"
+      "via": "PabrikRoutes.chats(workspaceId)"
     },
     {
       "hoistedFrom": "projectActions",
@@ -236,15 +236,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 476,
-          "note": "NalarRoutes.project(workspaceId, itemId)"
+          "note": "PabrikRoutes.project(workspaceId, itemId)"
         }
       ],
       "source": "app",
       "target": "project/{workspaceId}/{itemId}",
       "trigger": "a project's “See all chats” row",
-      "via": "NalarRoutes.project(workspaceId, itemId)"
+      "via": "PabrikRoutes.project(workspaceId, itemId)"
     },
     {
       "hoistedFrom": "projectActions",
@@ -256,15 +256,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 476,
-          "note": "NalarRoutes.project(workspaceId, itemId)"
+          "note": "PabrikRoutes.project(workspaceId, itemId)"
         }
       ],
       "source": "chat/{sessionId}",
       "target": "project/{workspaceId}/{itemId}",
       "trigger": "a project's “See all chats” row",
-      "via": "NalarRoutes.project(workspaceId, itemId)"
+      "via": "PabrikRoutes.project(workspaceId, itemId)"
     },
     {
       "hoistedFrom": "LaunchedEffect(createdChats)",
@@ -276,15 +276,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 511,
-          "note": "NalarRoutes.chat(sessionId)"
+          "note": "PabrikRoutes.chat(sessionId)"
         }
       ],
       "source": "graph",
       "target": "chat/{sessionId}",
       "trigger": "a chat this app just created",
-      "via": "NalarRoutes.chat(sessionId)"
+      "via": "PabrikRoutes.chat(sessionId)"
     },
     {
       "hoistedFrom": "switchChat",
@@ -296,15 +296,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 533,
-          "note": "NalarRoutes.chat(chatId)"
+          "note": "PabrikRoutes.chat(chatId)"
         }
       ],
       "source": "chat/{sessionId}",
       "target": "chat/{sessionId}",
       "trigger": "switching chat from the sidebar",
-      "via": "NalarRoutes.chat(chatId)"
+      "via": "PabrikRoutes.chat(chatId)"
     },
     {
       "hoistedFrom": null,
@@ -316,15 +316,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 724,
-          "note": "NalarRoutes.chat(sessionId)"
+          "note": "PabrikRoutes.chat(sessionId)"
         }
       ],
       "source": "app",
       "target": "chat/{sessionId}",
       "trigger": "opening a chat from a list",
-      "via": "NalarRoutes.chat(sessionId)"
+      "via": "PabrikRoutes.chat(sessionId)"
     },
     {
       "hoistedFrom": null,
@@ -336,15 +336,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 962,
-          "note": "NalarRoutes.chat(sessionId)"
+          "note": "PabrikRoutes.chat(sessionId)"
         }
       ],
       "source": "chats/{workspaceId}",
       "target": "chat/{sessionId}",
       "trigger": "opening a chat from a list",
-      "via": "NalarRoutes.chat(sessionId)"
+      "via": "PabrikRoutes.chat(sessionId)"
     },
     {
       "hoistedFrom": null,
@@ -356,15 +356,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 1015,
-          "note": "NalarRoutes.chat(sessionId)"
+          "note": "PabrikRoutes.chat(sessionId)"
         }
       ],
       "source": "project/{workspaceId}/{itemId}",
       "target": "chat/{sessionId}",
       "trigger": "opening a chat from a list",
-      "via": "NalarRoutes.chat(sessionId)"
+      "via": "PabrikRoutes.chat(sessionId)"
     },
     {
       "hoistedFrom": null,
@@ -376,15 +376,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 1054,
-          "note": "NalarRoutes.recordDetail(recordId)"
+          "note": "PabrikRoutes.recordDetail(recordId)"
         }
       ],
       "source": "network",
       "target": "network/record/{recordId}",
       "trigger": "opening a captured network record",
-      "via": "NalarRoutes.recordDetail(recordId)"
+      "via": "PabrikRoutes.recordDetail(recordId)"
     },
     {
       "hoistedFrom": "ResumeLastPosition",
@@ -396,15 +396,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 1216,
-          "note": "NalarRoutes.chat(sessionId)"
+          "note": "PabrikRoutes.chat(sessionId)"
         }
       ],
       "source": "graph",
       "target": "chat/{sessionId}",
       "trigger": "navigating",
-      "via": "NalarRoutes.chat(sessionId)"
+      "via": "PabrikRoutes.chat(sessionId)"
     },
     {
       "hoistedFrom": null,
@@ -416,15 +416,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 760,
-          "note": "nalar://chat/{sessionId}"
+          "note": "pabrik://chat/{sessionId}"
         }
       ],
       "source": "__deeplink__",
       "target": "chat/{sessionId}",
-      "trigger": "`adb shell am start -a android.intent.action.VIEW -d nalar://chat/{sessionId}`",
-      "via": "nalar://chat/{sessionId}"
+      "trigger": "`adb shell am start -a android.intent.action.VIEW -d pabrik://chat/{sessionId}`",
+      "via": "pabrik://chat/{sessionId}"
     },
     {
       "hoistedFrom": null,
@@ -436,15 +436,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 910,
-          "note": "nalar://chats/{workspaceId}"
+          "note": "pabrik://chats/{workspaceId}"
         }
       ],
       "source": "__deeplink__",
       "target": "chats/{workspaceId}",
-      "trigger": "`adb shell am start -a android.intent.action.VIEW -d nalar://chats/{workspaceId}`",
-      "via": "nalar://chats/{workspaceId}"
+      "trigger": "`adb shell am start -a android.intent.action.VIEW -d pabrik://chats/{workspaceId}`",
+      "via": "pabrik://chats/{workspaceId}"
     },
     {
       "hoistedFrom": null,
@@ -456,15 +456,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 969,
-          "note": "nalar://project/{workspaceId}/{itemId}"
+          "note": "pabrik://project/{workspaceId}/{itemId}"
         }
       ],
       "source": "__deeplink__",
       "target": "project/{workspaceId}/{itemId}",
-      "trigger": "`adb shell am start -a android.intent.action.VIEW -d nalar://project/{workspaceId}/{itemId}`",
-      "via": "nalar://project/{workspaceId}/{itemId}"
+      "trigger": "`adb shell am start -a android.intent.action.VIEW -d pabrik://project/{workspaceId}/{itemId}`",
+      "via": "pabrik://project/{workspaceId}/{itemId}"
     },
     {
       "hoistedFrom": null,
@@ -476,15 +476,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 1048,
-          "note": "nalar://network"
+          "note": "pabrik://network"
         }
       ],
       "source": "__deeplink__",
       "target": "network",
-      "trigger": "`adb shell am start -a android.intent.action.VIEW -d nalar://network`",
-      "via": "nalar://network"
+      "trigger": "`adb shell am start -a android.intent.action.VIEW -d pabrik://network`",
+      "via": "pabrik://network"
     },
     {
       "hoistedFrom": null,
@@ -496,15 +496,15 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 1058,
-          "note": "nalar://network/record/{recordId}"
+          "note": "pabrik://network/record/{recordId}"
         }
       ],
       "source": "__deeplink__",
       "target": "network/record/{recordId}",
-      "trigger": "`adb shell am start -a android.intent.action.VIEW -d nalar://network/record/{recordId}`",
-      "via": "nalar://network/record/{recordId}"
+      "trigger": "`adb shell am start -a android.intent.action.VIEW -d pabrik://network/record/{recordId}`",
+      "via": "pabrik://network/record/{recordId}"
     },
     {
       "hoistedFrom": "goBackToPreviousOrShell",
@@ -516,7 +516,7 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 760,
           "note": "BackHandler { goBack() }"
         }
@@ -536,7 +536,7 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 910,
           "note": "onBack = goBack"
         }
@@ -556,7 +556,7 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 969,
           "note": "onBack = goBack"
         }
@@ -576,7 +576,7 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 1048,
           "note": "onBack = goBack"
         }
@@ -596,7 +596,7 @@
       "resolved": true,
       "sites": [
         {
-          "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+          "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
           "line": 1058,
           "note": "onBack = goBack"
         }
@@ -607,32 +607,8 @@
       "via": "goBackToPreviousOrShell"
     }
   ],
-  "errorCount": 2,
+  "errorCount": 0,
   "findings": [
-    {
-      "code": "deep_link_not_in_manifest",
-      "detail": "`navDeepLink` declares nalar://chats/{workspaceId}, but AndroidManifest.xml has no <data android:scheme=\"nalar\" android:host=\"chats\">. `adb shell am start -a android.intent.action.VIEW -d nalar://chats/{workspaceId}` resolves to no activity, and it does so silently.",
-      "severity": "error",
-      "site": {
-        "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-        "line": 910,
-        "note": "CHATS"
-      },
-      "subject": "chats/{workspaceId}",
-      "title": "`nalar://chats/{workspaceId}` is not claimed by the manifest"
-    },
-    {
-      "code": "deep_link_not_in_manifest",
-      "detail": "`navDeepLink` declares nalar://project/{workspaceId}/{itemId}, but AndroidManifest.xml has no <data android:scheme=\"nalar\" android:host=\"project\">. `adb shell am start -a android.intent.action.VIEW -d nalar://project/{workspaceId}/{itemId}` resolves to no activity, and it does so silently.",
-      "severity": "error",
-      "site": {
-        "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
-        "line": 969,
-        "note": "PROJECT"
-      },
-      "subject": "project/{workspaceId}/{itemId}",
-      "title": "`nalar://project/{workspaceId}/{itemId}` is not claimed by the manifest"
-    },
     {
       "code": "cyclic_navigation",
       "detail": "5 of the 13 navigations lead back to somewhere they came from, so the back stack can grow past the number of destinations the reader has visited. 1 of those 5 already replace rather than push (`popUpTo` + `launchSingleTop`); the rest are drill-downs and deliberate switches, so this is a number to watch rather than a defect.",
@@ -646,7 +622,7 @@
       "detail": "Every screen it renders is a leaf of the navigation graph: there is no `navigate` call inside it. Expected for a detail screen, wrong for anything meant to be a hub.",
       "severity": "info",
       "site": {
-        "file": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+        "file": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
         "line": 1058,
         "note": "RECORD_DETAIL"
       },
@@ -695,13 +671,15 @@
   },
   "meta": {
     "generatedBy": "tools/navgraph/build.py",
-    "gitSha": "46e43fc1",
+    "gitSha": "9b861e07",
     "manifestFile": "src/apps/android_mobile/app/src/main/AndroidManifest.xml",
     "manifestHosts": {
       "chat": 53,
-      "network": 43
+      "chats": 58,
+      "network": 43,
+      "project": 59
     },
-    "navFile": "src/apps/android_mobile/app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt",
+    "navFile": "src/apps/android_mobile/app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt",
     "startDestination": "app"
   },
   "rawBackCalls": [],

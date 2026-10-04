@@ -15,7 +15,7 @@
 - `tools` is REQUIRED per sub-agent: missing field, empty array, or any element `"all"` (case-sensitive, trimmed) is a parse error. No `"all"` passthrough, no omit-means-all.
 - Explorer-code (read-only code exploration: `read_file`, `glob`, `search`, `web_search`) shares parent cwd, NO new worktree needed — shares parent cwd. Writer/editor (any `write_file`, `text_replace`, `remove_file`, `bash` that writes, `set_git_worktree`) MUST be told explicitly in `instruction` to create its own worktree via `set_git_worktree`, work there, then return a summary and optionally push — and `set_git_worktree` MUST be in its explicit `tools` list.
 - Existing tests that omit `tools` must be updated in the same commit (they become invalid input).
-- Verify with Zig unit tests + isolated functional harness test (wire payload), never `nohup nalar + curl`.
+- Verify with Zig unit tests + isolated functional harness test (wire payload), never `nohup pabrik + curl`.
 
 ## Steps
 

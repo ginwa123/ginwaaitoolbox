@@ -6,7 +6,7 @@
 
 **Goal:** Enhance `FilePickerDialog` (the modal used by every "pick a folder" flow — Add Project, Add Kanban, Add Memory, Add Design, Per-Task Cwd, Create Worktree parent dir, the "Set project root" banner) with a **Recent** tab that surfaces the user's previously picked folders — most-recent first, with relative timestamps ("now", "2h", "yest"), a manual pin/star so the user's "lifetime" projects stay at the top, and zero-friction rebuild of the existing **Browse** tree UX. The two views are mutually exclusive tabs in the same modal — the toolbar becomes the tabstrip.
 
-**Architecture:** A new `useRecentFolders` Pinia store (in `src/apps/desktop/src/stores/recentFolders.ts`) owns the persistent list. Persistence is `localStorage` keyed at `nalar-folder-picker-recent:v1` (JSON-encoded array, same pattern as the existing `workspaces.ts` keys — see `STORAGE_KEY_WORKSPACE_EXPANDED` at line 223). The store exposes `addRecent(path)`, `removeRecent(path)`, `togglePin(path)`, `list()` (sorted by `pinned desc, lastUsedAt desc`), and a `lastUsedAt` map so the UI can render the "now / 2h / yest / 3d" chip via the existing `formatRelativeTime` helper (`src/apps/desktop/src/helpers/relativeTime.ts`). The dialog gets a top tabstrip (`Recent` / `Browse`) replacing the "view" role the toolbar implicitly held. Recent mode renders a flat list of cards (folder icon, name, full path, time, pin). Browse mode is the existing two-pane tree + content layout, untouched. On `select` (either tab), the store records the path. Header text becomes `Select Per-Task Cwd` — same as today. Title is unchanged.
+**Architecture:** A new `useRecentFolders` Pinia store (in `src/apps/desktop/src/stores/recentFolders.ts`) owns the persistent list. Persistence is `localStorage` keyed at `pabrik-folder-picker-recent:v1` (JSON-encoded array, same pattern as the existing `workspaces.ts` keys — see `STORAGE_KEY_WORKSPACE_EXPANDED` at line 223). The store exposes `addRecent(path)`, `removeRecent(path)`, `togglePin(path)`, `list()` (sorted by `pinned desc, lastUsedAt desc`), and a `lastUsedAt` map so the UI can render the "now / 2h / yest / 3d" chip via the existing `formatRelativeTime` helper (`src/apps/desktop/src/helpers/relativeTime.ts`). The dialog gets a top tabstrip (`Recent` / `Browse`) replacing the "view" role the toolbar implicitly held. Recent mode renders a flat list of cards (folder icon, name, full path, time, pin). Browse mode is the existing two-pane tree + content layout, untouched. On `select` (either tab), the store records the path. Header text becomes `Select Per-Task Cwd` — same as today. Title is unchanged.
 
 **Tech Stack:** Vue 3.5 + TypeScript + Pinia 2 + Vitest. No new dependencies. The relative-time chip reuses the existing `formatRelativeTime` helper from `src/apps/desktop/src/helpers/relativeTime.ts` (already used by `ChatsList.vue` and `WorkspaceItemTaskCard.vue`).
 
@@ -35,7 +35,7 @@ Today every "pick a folder" modal in the desktop app opens with an empty tree. T
 | ID | Decision | Why | Alternative rejected |
 |----|----------|-----|----------------------|
 | D1 | **Two-tab layout: Recent / Browse.** Recent is the default tab on dialog open. The existing tree + content two-pane lives under Browse. | The user almost always wants the recent list first. The tree is a power-user affordance for "navigate somewhere I haven't picked yet". | One merged view (recents at top of the tree) — confusing because the path the user picked is rarely in the same branch they were browsing. |
-| D2 | **New Pinia store** `useRecentFolders` (not a module-level Map). Persistence: `localStorage` key `nalar-folder-picker-recent:v1`. | Matches the `useSettingsStore` / `useDesignHistoryStore` pattern already in the codebase. Pinia gives us devtools + reactive automatic dedupe-by-path. The `:v1:` suffix lets us bump the schema later without nuking user data. | Module-level ref — same anti-pattern as `recentLocalMutations` in `workspaces.ts:384` ("why a module-level Map (NOT a Pinia ref): the SSE handler reads it"). The data here is user-facing, not glue. |
+| D2 | **New Pinia store** `useRecentFolders` (not a module-level Map). Persistence: `localStorage` key `pabrik-folder-picker-recent:v1`. | Matches the `useSettingsStore` / `useDesignHistoryStore` pattern already in the codebase. Pinia gives us devtools + reactive automatic dedupe-by-path. The `:v1:` suffix lets us bump the schema later without nuking user data. | Module-level ref — same anti-pattern as `recentLocalMutations` in `workspaces.ts:384` ("why a module-level Map (NOT a Pinia ref): the SSE handler reads it"). The data here is user-facing, not glue. |
 | D3 | **List shape: `{ path, lastUsedAt, pinned? }[]`** where `lastUsedAt` is a Unix-ms timestamp. Dedupe by `path` (latest `lastUsedAt`, `pinned` is sticky). | `pinned` is independent of `lastUsedAt` — the user can pin a project they're not using today. Re-ordering is `pinned desc, lastUsedAt desc`. | Sort by lastUsedAt only — pinned items drift down. Or `pinned desc, path alpha` — pinned items overflow when there are many. |
 | D4 | **Pin = sticky ⭐**, render via inline SVG (matches `kanban-folder-picker-style` plan which replaced the 📂 emoji in the cwd picker button with an inline SVG). Toggle by clicking the star: pin → unpin → pin. | Star is the universal "favorite" affordance. Click toggles (no separate edit mode). | Right-click context menu → "Pin" — overkill for a single-click action. |
 | D5 | **Cap = 12 entries** (matches the screenshot's "Recent 12" badge). On insert, dedupe by path, then trim to 12. The trim drops the OLDEST non-pinned entry first; pinned entries are exempt from eviction. | Without a cap, the list grows unbounded. Pinned entries are the user's "lifetime" config — never auto-removed. | Cap = 50 — too many visible rows. Cap = 5 — not enough recent-context. |
@@ -45,7 +45,7 @@ Today every "pick a folder" modal in the desktop app opens with an empty tree. T
 | D9 | **No new props on `FilePickerDialog`.** The `Recent` tab is conditional on the caller setting `enableRecentHistory?: boolean` (default `true`, opt-out). Older callers (none today, but see R6) that don't want the tab can pass `false`. | Per the upgrade-everything-at-once principle from the existing `2026-08-13-folder-picker-select-button-current-folder.md` plan (D7: "No new props"). The one opt-out keeps the door open if a future caller wants the legacy behaviour. | Always-on — already all callers want it. |
 | D10 | **Time chip text uses the existing `formatRelativeTime`**; the path display uses the existing monospace + truncate pattern. The whole row is a single `<button>` for accessibility (Tab-able, Enter to select). | Mirrors the existing `file-picker-item-*` content rows. | Separate `<button>` + `<span>` — breaks keyboard nav. |
 | D11 | **Browse tab's existing layout is unchanged.** The two-pane tree + content + breadcrumb + search + address bar all stay. The tabstrip is added at the top of the toolbar (or above the two-pane body — see D12). | Minimal diff. The user can keep using the existing Browse UX if their need is "I need to navigate to a folder I haven't picked yet". | Redesign Browse — out of scope. |
-| D12 | **Tabstrip placement:** a thin row immediately below the existing breadcrumb/address bar (which lives below the header). Two buttons: `Recent <count-badge>` and `Browse`. Active tab is underlined violet (`var(--color-violet)`) — same pattern as `NalarTabStrip.vue`. | The toolbar (search + hidden + refresh) is content-pane-only and should stay above the content pane under Browse. The tabstrip is a SINGLE thing that switches the body, so it sits above the body. | Move the tabstrip into the header — header is already crowded (emoji + title + close). |
+| D12 | **Tabstrip placement:** a thin row immediately below the existing breadcrumb/address bar (which lives below the header). Two buttons: `Recent <count-badge>` and `Browse`. Active tab is underlined violet (`var(--color-violet)`) — same pattern as `PabrikTabStrip.vue`. | The toolbar (search + hidden + refresh) is content-pane-only and should stay above the content pane under Browse. The tabstrip is a SINGLE thing that switches the body, so it sits above the body. | Move the tabstrip into the header — header is already crowded (emoji + title + close). |
 | D13 | **Toolbar visibility under Browse stays.** Under Recent, the toolbar (search + hidden + refresh) is **hidden** because it doesn't apply to a flat list. This is consistent with the screenshot (which shows the toolbar under Browse but not under Recent). | Reduces noise on the Recent tab. | Show the toolbar on both — wastes vertical space. |
 | D14 | **Recent rows show the full path** (e.g. `/home/me/ginwaaitoolbox`), not just the basename. The screenshot shows the folder name big (e.g. `ginwaaitoolbox`) and the path small (e.g. `/home/me/ginwaaitoolbox`). | The path is the canonical id; the user uses it to disambiguate. The basename is the friendly label. | Show only the basename — collides for siblings. |
 | D15 | **Recent mode disables the **Up** button + the tree pane** (Recent is a flat list, not a tree). The header still shows the title + close button. | The user is in Recent mode, not Browse. | Hide all navigation — confusing; let the user switch tabs. |
@@ -66,7 +66,7 @@ Today every "pick a folder" modal in the desktop app opens with an empty tree. T
 ## Global Constraints
 
 - **Cross-platform**: every change MUST work on Linux, macOS, AND Windows. The frontend is a Vite + Vue 3 SPA; no platform-specific code.
-- **No static-contract tests**: ALL tests are behavioural. See `~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md`.
+- **No static-contract tests**: ALL tests are behavioural. See `~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md`.
 - **TDD discipline**: every implementation step starts with a failing test, then minimal code to make it pass, then a commit.
 - **`bun run build` IS the type-check**: every frontend commit must pass `bun run build`; `bunx vitest run` alone does NOT catch type errors.
 - **No `dist/` or `.js` cruft**: `vue-tsc --build` emits `.js` files alongside `src/**/*.ts` (see `vue-tsc-build-emits-js-files` skill). Delete them before `git status`.
@@ -124,7 +124,7 @@ src/apps/desktop/src/
 | R14 | **The dialog's `closeOnSelect` prop already governs close behaviour.** | D16 reuses it. |
 | R15 | **The new tabstrip is rendered conditionally on `enableRecentHistory`.** | D9. The default is `true`. The tabstrip is always rendered when the dialog is open. |
 | R16 | **The `file-picker-toolbar` (search + hidden + refresh) is hidden on the Recent tab.** | D13. The currently-displayed toolbar is wrapped in a `v-if="activeTab === 'browse'"`. |
-| R17 | **The tabstrip uses `var(--color-violet)` for the underline** — same as the existing `NalarTabStrip.vue`. | Reuse the existing CSS variable. |
+| R17 | **The tabstrip uses `var(--color-violet)` for the underline** — same as the existing `PabrikTabStrip.vue`. | Reuse the existing CSS variable. |
 | R18 | **The Recent tab badge "N"** (the count of recent folders) updates reactively when the store mutates. | Computed `recentCount` from `useRecentFoldersStore()`. |
 | R19 | **Toggling a pin while a row is selected** — does it clear the selection? | No. The pin is a UI affordance; the row stays selected. The "Selected:" footer still shows the path. |
 | R20 | **The user's first time on the new system** — the localStorage is empty. The Recent tab is empty. The empty-state CTA is "Open Browse". | D7. |
@@ -210,7 +210,7 @@ Create the file with this content:
  *   - togglePin(path) — flips pinned, re-sort
  *   - removeRecent(path) — explicit remove (used when the user wants to forget)
  *   - list() — sorted by pinned desc, then lastUsedAt desc
- *   - Persistence: localStorage key 'nalar-folder-picker-recent:v1'
+ *   - Persistence: localStorage key 'pabrik-folder-picker-recent:v1'
  *
  * Persistence is the interesting part — the store hydrates from localStorage
  * on init, and writes back on every mutation (debounced 200ms via the
@@ -236,7 +236,7 @@ describe('useRecentFoldersStore — basics', () => {
 
   it('hydrates from localStorage on first read', () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/a', lastUsedAt: 1000, pinned: true },
         { path: '/home/me/b', lastUsedAt: 500, pinned: false },
@@ -361,7 +361,7 @@ describe('useRecentFoldersStore — basics', () => {
     store.addRecent('/home/me/foo')
     // localStorage write is debounced 200ms — wait for the timer.
     await new Promise((r) => setTimeout(r, 250))
-    const raw = localStorage.getItem('nalar-folder-picker-recent:v1')
+    const raw = localStorage.getItem('pabrik-folder-picker-recent:v1')
     expect(raw).not.toBeNull()
     const entries = JSON.parse(raw!)
     expect(entries).toEqual([
@@ -406,7 +406,7 @@ Create the file with this content:
  * entries (pinned entries are exempt from the cap), and sorted by
  * `pinned desc, lastUsedAt desc`.
  *
- * Persistence: localStorage key `nalar-folder-picker-recent:v1`. The `:v1`
+ * Persistence: localStorage key `pabrik-folder-picker-recent:v1`. The `:v1`
  * suffix lets us bump the schema later without nuking user data. Writes
  * are debounced 200ms (matches the pattern in `useDesignHistory.ts`'s
  * `useDebounceFn`).
@@ -418,7 +418,7 @@ Create the file with this content:
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-const STORAGE_KEY = 'nalar-folder-picker-recent:v1'
+const STORAGE_KEY = 'pabrik-folder-picker-recent:v1'
 const CAP = 12
 const WRITE_DEBOUNCE_MS = 200
 
@@ -562,7 +562,7 @@ Owns the persistent list of folders the user has picked via the
 FilePickerDialog modal. List is deduped by path, capped at 12
 entries (pinned entries exempt from the cap), and sorted by
 pinned desc, lastUsedAt desc. Persistence via localStorage key
-nalar-folder-picker-recent:v1 with a 200ms debounce.
+pabrik-folder-picker-recent:v1 with a 200ms debounce.
 
 No backend changes. No caller changes (the store is unused so
 far — the FilePickerDialog wires it up in the next commit).
@@ -632,7 +632,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
   it('renders a row for each recent entry', async () => {
     // Seed the store via the persistence key.
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/a', lastUsedAt: Date.now() - 1000, pinned: false },
         { path: '/home/me/b', lastUsedAt: Date.now() - 60_000, pinned: true },
@@ -652,7 +652,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
 
   it('clicking a recent row emits select and closes (closeOnSelect: true)', async () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/picked', lastUsedAt: Date.now() - 1000, pinned: false },
       ]),
@@ -668,7 +668,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
 
   it('clicking a recent row records the path in the store', async () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/picked', lastUsedAt: Date.now() - 1000, pinned: false },
       ]),
@@ -680,7 +680,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
     await flushPromises()
     // The store should have the path with a fresh lastUsedAt.
     await new Promise((r) => setTimeout(r, 250)) // wait for the 200ms debounce
-    const raw = localStorage.getItem('nalar-folder-picker-recent:v1')
+    const raw = localStorage.getItem('pabrik-folder-picker-recent:v1')
     const entries = JSON.parse(raw!)
     const entry = entries.find((e: any) => e.path === '/home/me/picked')
     expect(entry).toBeTruthy()
@@ -690,7 +690,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
 
   it('clicking the star toggles the pin (no select emitted)', async () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/foo', lastUsedAt: Date.now() - 1000, pinned: false },
       ]),
@@ -702,7 +702,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
     await flushPromises()
     expect(wrapper.emitted('select')).toBeFalsy()
     await new Promise((r) => setTimeout(r, 250))
-    const raw = localStorage.getItem('nalar-folder-picker-recent:v1')
+    const raw = localStorage.getItem('pabrik-folder-picker-recent:v1')
     const entries = JSON.parse(raw!)
     expect(entries[0].pinned).toBe(true)
   })
@@ -724,7 +724,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
 
   it('the tab count badge shows the number of recent entries', async () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/a', lastUsedAt: Date.now() - 1000, pinned: false },
         { path: '/home/me/b', lastUsedAt: Date.now() - 2000, pinned: false },
@@ -751,7 +751,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
   it('relative-time chip shows now / 2h / yest / 3d via formatRelativeTime', async () => {
     const now = Date.now()
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/now', lastUsedAt: now - 30_000, pinned: false },
         { path: '/home/me/2h', lastUsedAt: now - 2 * 60 * 60_000, pinned: false },
@@ -853,7 +853,7 @@ Insert a NEW tabstrip section between the breadcrumb (ends ~line 847) and the ex
           <!--
             Tab strip (Recent / Browse). Sits between the breadcrumb and
             the toolbar. Active tab is underlined violet (matches
-            NalarTabStrip.vue). The default tab is `recent` for the user's
+            PabrikTabStrip.vue). The default tab is `recent` for the user's
             primary flow. The toolbar (search + hidden + refresh) is
             visible only under Browse — Recent has no use for it.
           -->
@@ -1262,7 +1262,7 @@ Find the most recent 2026-08-14 entry in `docs/SPEC.md` (or any recent entry) an
 Find the most recent `### ` block in `AGENTS.md`. Append a new block above it:
 
 ```markdown
-- **FilePickerDialog — Recent tab + tabstrip + pin** (2026-08-14): The shared folder picker now opens on a Recent tab showing the user's previously picked folders (most recent first, pinned at top). A new tabstrip separates the Recent tab from the existing Browse tree. Each Recent row has a folder icon, basename, full path, relative time chip (reuses `formatRelativeTime`: now / 2h / yest / 3d / ...), and a star button that toggles pin. Selecting a Recent row emits the same `select` event as Browse; the store records the path on every select. The Recent tab is opt-out via `enableRecentHistory: false` (default `true`). No caller changes — every existing caller gets the new tab. The toolbar (search + hidden + refresh) is hidden under Recent. New `useRecentFoldersStore` Pinia store at `src/apps/desktop/src/stores/recentFolders.ts` with localStorage persistence (`nalar-folder-picker-recent:v1`, 12-entry cap, pinned entries exempt from eviction, 200ms debounced writes). 12 store tests + 10 dialog tests in `FilePickerDialog.spec.ts`. Branch: `worktree/folder-picker-recent-history`. Plan: `docs/superpowers/plans/2026-08-14-folder-picker-recent-history.md`.
+- **FilePickerDialog — Recent tab + tabstrip + pin** (2026-08-14): The shared folder picker now opens on a Recent tab showing the user's previously picked folders (most recent first, pinned at top). A new tabstrip separates the Recent tab from the existing Browse tree. Each Recent row has a folder icon, basename, full path, relative time chip (reuses `formatRelativeTime`: now / 2h / yest / 3d / ...), and a star button that toggles pin. Selecting a Recent row emits the same `select` event as Browse; the store records the path on every select. The Recent tab is opt-out via `enableRecentHistory: false` (default `true`). No caller changes — every existing caller gets the new tab. The toolbar (search + hidden + refresh) is hidden under Recent. New `useRecentFoldersStore` Pinia store at `src/apps/desktop/src/stores/recentFolders.ts` with localStorage persistence (`pabrik-folder-picker-recent:v1`, 12-entry cap, pinned entries exempt from eviction, 200ms debounced writes). 12 store tests + 10 dialog tests in `FilePickerDialog.spec.ts`. Branch: `worktree/folder-picker-recent-history`. Plan: `docs/superpowers/plans/2026-08-14-folder-picker-recent-history.md`.
 ```
 
 ### Step 4.3 — Full verification sweep

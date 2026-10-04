@@ -4,7 +4,7 @@
 
 **Goal:** Fix two related MCP stdio bugs reported together:
 1. **Agent doesn't see MCP tools** — Settings → Edit MCP server → Test shows "Connected — 10 tools discovered" (graphify), but the agent says "No `mcp_graphify_*` tools are currently exposed — only the default tools (bash, read_file, ...) are available."
-2. **Backend SEGV on large payload** — When MCP is enabled and a tool returns ~120 KB (graph data), the backend crashes: `DEBUG_HANDLER: req.body.len=120533` → `SEGV (signal 11)` → `run exe nalar failure (139)`.
+2. **Backend SEGV on large payload** — When MCP is enabled and a tool returns ~120 KB (graph data), the backend crashes: `DEBUG_HANDLER: req.body.len=120533` → `SEGV (signal 11)` → `run exe pabrik failure (139)`.
 
 Both bugs are in the stdio transport path. HTTP transport is unaffected.
 
@@ -135,14 +135,14 @@ def test_agent_sees_hello_world_stdio_tools(harness):
     harness.put_config({
         "mcp_servers": {"hello": {"command": hello_bin, "args": []}}
     })
-    harness.restart_nalar()
+    harness.restart_pabrik()
     session_id = harness.create_session(ws, "test")
     harness.send_message(session_id, "what tools do you have? do you have mcp_hello tools?")
     response = harness.wait_for_assistant(session_id, timeout=30)
     assert "mcp_hello" in response.lower()
 ```
 
-Run: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/mcp_stdio_agent_tools_test.py -v`
+Run: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/mcp_stdio_agent_tools_test.py -v`
 
 Expected: FAIL (reproduces bug). If it passes, the bug is already fixed or the test harness is wrong.
 
@@ -196,7 +196,7 @@ Edit `prompts_build_messages_for_agent_prompt.zig:607 fetchToolsFromServerStdio`
    ```zig
    // 1. Send initialize
    const init_body = try std.fmt.allocPrint(allocator,
-       \\{{"jsonrpc":"2.0","id":"1","method":"initialize","params":{{"protocolVersion":"2024-11-05","capabilities":{{}},"clientInfo":{{"name":"nalar","version":"0.0.1"}}}}}}
+       \\{{"jsonrpc":"2.0","id":"1","method":"initialize","params":{{"protocolVersion":"2024-11-05","capabilities":{{}},"clientInfo":{{"name":"pabrik","version":"0.0.1"}}}}}}
    , .{});
    defer allocator.free(init_body);
    // Send as NDJSON
@@ -238,7 +238,7 @@ Edit `handle_mcp_tool.zig:190 callViaStdio` similarly:
 
 ```bash
 zig build test --summary all  # unit tests still pass
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/mcp_stdio_agent_tools_test.py -v  # now PASSES
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/mcp_stdio_agent_tools_test.py -v  # now PASSES
 ```
 
 Commit: `git add -A && git commit -m "fix(mcp): stdio agent tools now do handshake + NDJSON + retry (Bug 1)"`
@@ -280,12 +280,12 @@ if (req.body.len > 1024 * 1024) { // 1MB cap for session_create
 Build with debug symbols and reproduce:
 
 ```bash
-zig build -Doptimize=Debug nalar --summary all
+zig build -Doptimize=Debug pabrik --summary all
 # Run with the large payload that crashes
 # When it SEGVs, use addr2line or llvm-symbolizer:
-addr2line -e zig-out/bin/nalar 0x1f32e00 0x1f32faf ...
+addr2line -e zig-out/bin/pabrik 0x1f32e00 0x1f32faf ...
 # Or run under gdb:
-gdb --args ./zig-out/bin/nalar --port 8080
+gdb --args ./zig-out/bin/pabrik --port 8080
 # Then: run, trigger crash, bt
 ```
 
@@ -328,7 +328,7 @@ def test_large_mcp_tool_result_no_crash(harness):
             }
         }
     })
-    harness.restart_nalar()
+    harness.restart_pabrik()
     session_id = harness.create_session(ws, "test large")
     # Call a tool that returns large data
     harness.send_message(session_id, "call the large tool and show me the result")
@@ -338,7 +338,7 @@ def test_large_mcp_tool_result_no_crash(harness):
     assert response is not None
 ```
 
-Run: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/mcp_large_payload_test.py -v`
+Run: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/mcp_large_payload_test.py -v`
 
 Commit: `git add -A && git commit -m "fix(mcp): handle large tool results without SEGV (Bug 2)"`
 
@@ -392,13 +392,13 @@ Commit: `git add -A && git commit -m "feat(mcp): surface MCP discovery failures 
 ### Task 5 — Final verification
 
 **Files:**
-- `NALAR.md` (EDIT — changelog)
+- `PABRIK.md` (EDIT — changelog)
 
 #### Step 5.1 — Run all tests
 
 ```bash
 zig build test --summary all  # 3000+ tests, 0 fail
-zig build nalar-desktop --summary all  # 21/21 steps OK
+zig build pabrik-desktop --summary all  # 21/21 steps OK
 python3 -m pytest tests/functional/mcp_stdio_agent_tools_test.py tests/functional/mcp_large_payload_test.py -v  # both pass
 python3 -m pytest tests/functional/mcp_stdio_test.py tests/functional/mcp_http_test.py -v  # existing MCP tests still pass
 ```
@@ -407,8 +407,8 @@ python3 -m pytest tests/functional/mcp_stdio_test.py tests/functional/mcp_http_t
 
 ```bash
 # Configure graphify as the user did
-cat ~/.config/nalar/config.json | jq .mcp_servers
-# Start nalar, create a session, ask "what mcp tools do you have?"
+cat ~/.config/pabrik/config.json | jq .mcp_servers
+# Start pabrik, create a session, ask "what mcp tools do you have?"
 # Verify the agent lists all 10 graphify tools
 # Call one: "query the graph for X"
 # Verify no crash, response is correct
@@ -416,7 +416,7 @@ cat ~/.config/nalar/config.json | jq .mcp_servers
 
 #### Step 5.3 — Changelog
 
-Append to `NALAR.md`:
+Append to `PABRIK.md`:
 
 ```markdown
 ### 2026-09-02: Fix MCP stdio agent tools not listing + SEGV on large payload
@@ -449,7 +449,7 @@ Commit: `git add -A && git commit -m "docs: changelog for MCP stdio fix"`
 ## Verification
 
 - [ ] `zig build test --summary all` — 0 failures
-- [ ] `zig build nalar-desktop --summary all` — 21/21 steps OK
+- [ ] `zig build pabrik-desktop --summary all` — 21/21 steps OK
 - [ ] `python3 -m pytest tests/functional/mcp_stdio_agent_tools_test.py -v` — agent sees graphify tools
 - [ ] `python3 -m pytest tests/functional/mcp_large_payload_test.py -v` — no crash on 120KB
 - [ ] `python3 -m pytest tests/functional/mcp_stdio_test.py tests/functional/mcp_http_test.py -v` — no regressions

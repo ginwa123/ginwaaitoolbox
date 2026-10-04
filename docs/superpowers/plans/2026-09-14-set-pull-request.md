@@ -8,7 +8,7 @@
 
 **Spec:** this document IS the spec (kanban card `rightsidebar inside chatview component`, planning review 2026-09-14).
 
-**Worktree:** `/home/ginwa/.config/nalar/.worktrees/set-pull-request-plan-1789416600000` on branch `worktree/set-pull-request-plan-1789416600000`.
+**Worktree:** `/home/ginwa/.config/pabrik/.worktrees/set-pull-request-plan-1789416600000` on branch `worktree/set-pull-request-plan-1789416600000`.
 
 **Base:** `origin/main` (post-#495 squash `eb56dd05`, post-#500 rebase).
 
@@ -137,4 +137,4 @@
 3. **Session-list `pr_url`?** Same gap as `git_worktree_cwd` (list endpoint lacks it). Needed only if a non-ChatView UI shows PR state — confirm not needed.
 4. **glab availability?** `gh` is already assumed on PATH; `glab` becomes a second soft dependency (degraded mode when absent). Acceptable, or vendor both?
 5. **Diff size cap?** 1MB cap proposed; huge PRs truncate with a `<truncated>` marker — acceptable for a review sidebar?
-6. **Auth for private repos?** Relies on `gh`/`glab` auth state on the host (same as `gh pr create` today). No token handling in nalar — confirm.
+6. **Auth for private repos?** Relies on `gh`/`glab` auth state on the host (same as `gh pr create` today). No token handling in pabrik — confirm.

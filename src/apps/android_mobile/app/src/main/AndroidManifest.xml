@@ -51,6 +51,12 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="pabrik" android:host="chat" />
+                <!-- `chats` and `project` are declared by the nav graph, so
+                     they are claimed here too — without this the deep link
+                     resolves to no activity while the graph looks
+                     deep-linkable. -->
+                <data android:scheme="pabrik" android:host="chats" />
+                <data android:scheme="pabrik" android:host="project" />
             </intent-filter>
         </activity>
 

@@ -88,7 +88,7 @@ Surgical patch to `KanbanTaskDetailDialog.vue`:
 
 - `Task` interface uses `is_auto_retry_until_stop: '0'|'1'`, NOT `isUnattended` (vue-tsc caught this on first pass).
 - Selector prefix `kanban-task-detail-image-` matches the gallery wrapper, the popup overlay, and the popup img — the test uses `:not([data-testid*="popup"]):not([data-testid$="gallery"])` to scope to thumbnails only.
-- `vue-tsc --build` (without `noEmit:true`) emits .js files alongside .ts — clean these before committing (per `.nalar/skills/vue-tsc-build-emits-js-files`).
+- `vue-tsc --build` (without `noEmit:true`) emits .js files alongside .ts — clean these before committing (per `.pabrik/skills/vue-tsc-build-emits-js-files`).
 - `vitest.config.ts` doesn't pick up worktree's `node_modules` automatically; symlink the main repo's `node_modules` into the worktree (`ln -s /home/ginwa/ginwaaitoolbox/src/apps/desktop/node_modules .worktrees/.../src/apps/desktop/node_modules`) before running vitest.
 
 ## Related work

@@ -73,7 +73,7 @@ class PrefsBaseUrlStore(context: Context) : BaseUrlStore {
     }
 
     private companion object {
-        const val PREFERENCES_NAME = "nalar_server"
+        const val PREFERENCES_NAME = "pabrik_server"
         const val KEY_BASE_URL = "base_url"
     }
 }

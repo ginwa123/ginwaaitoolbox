@@ -67,7 +67,7 @@ The tool follows the existing 5-file pattern (same as `set_design_page`, `show_p
 | `src/modules/agent/tools/generate_image_test.zig` | Behavioural tests (JSON body shape, base64 decode, save-to-disk round-trip, error envelope) + static source-check wiring tests |
 | `src/ai_workflow/tui/agentic_loop/tools_exec_generate_image.zig` | Thin `execGenerateImage(ctx, tc) -> ToolExecResult` wrapper that parses JSON input → calls impl → wraps the XML envelope via `wrapToolOutput` |
 | (existing) `src/ai_workflow/tui/agentic_loop/tools_exec_save_image_to_disk.zig` | NOT NEEDED — saving is internal to `execute_generate_image` |
-| (existing) `custom_http_client` | Used to POST the JSON body and receive the JSON response (libcurl-backed, already imported by `nalarcore`) |
+| (existing) `custom_http_client` | Used to POST the JSON body and receive the JSON response (libcurl-backed, already imported by `pabrikcore`) |
 
 ### Wire integration (5 edits)
 
@@ -91,7 +91,7 @@ The chat-history tool-output component renders the `<generate_image>` envelope a
 
 | ID | Decision | Why | Alternative rejected |
 |----|----------|-----|----------------------|
-| D1  | **Save the image to disk** at `<cwd>/generated_images/img_<unix_ms>_<index>.<ext>` and return the path in the envelope. | (1) Base64 PNGs from DALL-E 3 are 1-5 MB — blowing past the existing 1 MiB cap in `show_preview`'s `content` field. (2) URLs from `response_format=url` expire after ~60 min — not durable for the "I want to revisit this image later" case. (3) Saves are durable across reloads (the `cwd` is part of the session). (4) The existing `show_preview` tool already accepts `path` → reads + MIME-sniffs + base64-encodes on demand. | Return base64 inline only — fails on large images. Return URL only — fails on the "user wants to keep this" case. Save to a global `~/.cache/nalar/` dir — out of the user's workspace, the LLM can't see it via `read_file` without an absolute path the user didn't expect. |
+| D1  | **Save the image to disk** at `<cwd>/generated_images/img_<unix_ms>_<index>.<ext>` and return the path in the envelope. | (1) Base64 PNGs from DALL-E 3 are 1-5 MB — blowing past the existing 1 MiB cap in `show_preview`'s `content` field. (2) URLs from `response_format=url` expire after ~60 min — not durable for the "I want to revisit this image later" case. (3) Saves are durable across reloads (the `cwd` is part of the session). (4) The existing `show_preview` tool already accepts `path` → reads + MIME-sniffs + base64-encodes on demand. | Return base64 inline only — fails on large images. Return URL only — fails on the "user wants to keep this" case. Save to a global `~/.cache/pabrik/` dir — out of the user's workspace, the LLM can't see it via `read_file` without an absolute path the user didn't expect. |
 | D2  | **Default `model="dall-e-3"`** (best quality). Also accept `dall-e-2` (cheaper, allows n>1) and `gpt-image-1` (the newer model). | OpenAI recommends DALL-E 3 for new use cases. The user can downgrade for cost or n>1 needs. | Hard-code DALL-E 3 — limits the user. Default DALL-E 2 — worse out-of-the-box. |
 | D3  | **Default `response_format="b64_json"`** so we can decode + save to disk in one step. The LLM can opt into `"url"` if they want (and we just write the URL to disk as text — practical joke). | b64_json is the only way to get raw bytes we can persist. | Default `"url"` — useless for the tool's purpose. |
 | D4  | **Use the active profile's `base_url` and `api_key`** (passed via `ToolExecContext`). Same flow as `Agent.zig` uses for chat completion. Endpoint: `<base_url>/images/generations` (where `base_url` already includes `/v1`). | No new config. If the user has OpenAI configured for chat, they have it for image gen. Self-hosted DALL-E-compatible servers (e.g. local dall-e-3-style proxies) work out of the box. | Add `image_api_key` + `image_base_url` to `LlmConfig` — over-engineered; the same key works. Hard-code `https://api.openai.com/v1` — breaks self-hosted setups. |
@@ -119,7 +119,7 @@ The chat-history tool-output component renders the `<generate_image>` envelope a
 - **TDD discipline**: every implementation step starts with a failing test, then minimal code to make it pass, then a commit.
 - **Cross-platform**: every change must work on Linux, macOS, AND Windows. The tool calls OpenAI's HTTPS endpoint via libcurl and writes files via `std.Io.File`.
 - **No static-contract tests for behavioural behaviour** — user rule (2026-07-29). The static checks here are ONLY for "did this name land in the source code" wiring tests, matching the existing `show_preview_test.zig` grandfathered static tests.
-- **No new dependencies** — `custom_http_client` is already wired in via `nalarcore`, the existing `wrapToolOutput` helper exists, the existing `AgentTool` schema struct exists.
+- **No new dependencies** — `custom_http_client` is already wired in via `pabrikcore`, the existing `wrapToolOutput` helper exists, the existing `AgentTool` schema struct exists.
 - **Surgical patches** — don't refactor anything outside the new files + the 5 wire-up edits.
 - **No DB migration** — pure backend feature.
 - **No port 8081** — smoke tests use port 8080.
@@ -228,7 +228,7 @@ These exercise the pure-data helpers (`buildJsonRequestBody`, `parseImageRespons
 zig build test --summary all 2>&1 | tail -n 30
 ```
 
-Expect: file-not-found errors for `generate_image.zig` references in `tools_equipped.zig` (because `tools_equipped.zig` imports `nalarcore.generate_image` which doesn't exist yet — we'll add the import in Task 2). To make this cleaner, **the wire-up edits in Task 2 are part of "the implementation lands"**; for now, write the test file in isolation and confirm it fails because `src/modules/agent/tools/generate_image.zig` doesn't exist (the test runner will refuse to compile if the file is `@import`ed but missing).
+Expect: file-not-found errors for `generate_image.zig` references in `tools_equipped.zig` (because `tools_equipped.zig` imports `pabrikcore.generate_image` which doesn't exist yet — we'll add the import in Task 2). To make this cleaner, **the wire-up edits in Task 2 are part of "the implementation lands"**; for now, write the test file in isolation and confirm it fails because `src/modules/agent/tools/generate_image.zig` doesn't exist (the test runner will refuse to compile if the file is `@import`ed but missing).
 
 Commit: `test: add generate_image tool tests (red)`.
 
@@ -426,7 +426,7 @@ pub const execGenerateImage = @import("tools_exec_generate_image.zig").execGener
 Add the module import near line 53:
 
 ```zig
-const generate_image_mod = nalarcore.generate_image;
+const generate_image_mod = pabrikcore.generate_image;
 ```
 
 Add the tool to the `tools_list` slice in `equips()` (somewhere alphabetical, between `glob_tool` and `load_memory_mod`):
@@ -457,13 +457,13 @@ Commit: `feat(tools): register generate_image in agent tool registry`.
 
 ```zig
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const generate_image_mod = nalarcore.generate_image;
+const agent = pabrikcore.agent;
+const generate_image_mod = pabrikcore.generate_image;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execGenerateImage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -549,7 +549,7 @@ zig build test --summary all 2>&1 | tail -n 20
 
 Expect: baseline test count + ~31 new generate_image tests, all passing.
 
-Manual smoke test (requires a real OpenAI key in `~/.config/nalar/config.json`):
+Manual smoke test (requires a real OpenAI key in `~/.config/pabrik/config.json`):
 
 ```sh
 # In the desktop app: open a chat and ask the agent
@@ -581,7 +581,7 @@ Commit: `test: verify all generate_image tests pass` (only if any fix-ups were n
 ## Open questions for the user
 
 1. **Default `model`** — `dall-e-3` (good quality, $0.04/image) is the recommendation. Alternative: `dall-e-2` ($0.02/image, allows n>1) or `gpt-image-1` ($0.04-$0.25 depending on size/quality). Plan defaults to dall-e-3; change if you'd rather.
-2. **Save location** — plan saves to `<cwd>/generated_images/`. Alternative: a global dir like `~/.cache/nalar/generated_images/<session_id>/` (avoids polluting the user's workspace but makes the image "invisible" to other agents). Plan: per-cwd, because the cwd is the session's working dir and the user explicitly opted into image gen there.
+2. **Save location** — plan saves to `<cwd>/generated_images/`. Alternative: a global dir like `~/.cache/pabrik/generated_images/<session_id>/` (avoids polluting the user's workspace but makes the image "invisible" to other agents). Plan: per-cwd, because the cwd is the session's working dir and the user explicitly opted into image gen there.
 3. **`revised_prompt` visibility** — DALL-E 3 silently rewrites prompts. Plan includes the revised_prompt in the output so the agent can see what was actually used. Alternative: hide it (less verbose but lies about what the model saw).
 4. **Cleanup** — generated images stay on disk forever (user can manually `bash rm`). Alternative: auto-clean after N days (over-engineered for v1).
 

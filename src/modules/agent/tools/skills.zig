@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const pabrikcore = @import("pabrikcore");
 const helpers = @import("helpers");
-const brand = helpers.brand_paths;
 
 /// Maximum size for skills.md file (100KB)
 const MAX_SKILLS_SIZE: usize = 100 * 1024;
@@ -10,9 +9,6 @@ const MAX_SKILLS_SIZE: usize = 100 * 1024;
 /// App name for config directory
 const APP_NAME = "pabrik";
 
-/// Pre-rebrand app name. Still resolved so globally-installed skills from an
-/// earlier version keep loading; see helpers/brand_paths.zig.
-const LEGACY_APP_NAME = brand.legacy_app_name;
 
 /// Cross-platform `/`-separator path concat. See memories.zig's `joinPath`
 /// for the rationale — `std.fs.path.join` produces OS-native separators
@@ -60,7 +56,7 @@ fn joinPath4(allocator: std.mem.Allocator, a: []const u8, b: []const u8, c: []co
     return out;
 }
 
-/// Local skills directory
+/// Project-local skills directory (also the value quoted in tool descriptions)
 const LOCAL_SKILLS_DIR = ".pabrik/skills";
 
 /// Skills file name inside each skill folder
@@ -490,9 +486,7 @@ pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []const Skill
 pub fn get_global_skills_path_from_env(allocator: std.mem.Allocator, environment: *const std.process.Environ.Map) ?[]const u8 {
     // Try XDG_CONFIG_HOME first
     if (environment.get("XDG_CONFIG_HOME")) |xdg_config| {
-        const current = joinPath3(allocator, xdg_config, APP_NAME, "skills") catch return null;
-        const legacy = joinPath3(allocator, xdg_config, LEGACY_APP_NAME, "skills") catch return current;
-        return brand.choose(allocator, current, legacy);
+        return joinPath3(allocator, xdg_config, APP_NAME, "skills") catch return null;
     }
 
     // Fall back to platform-specific defaults
@@ -500,9 +494,7 @@ pub fn get_global_skills_path_from_env(allocator: std.mem.Allocator, environment
         // Linux/macOS: ~/.config/<APP>/skills. On macOS the convention
         // is $HOME/Library/Application Support; keep the Unix-style
         // fallback for now (separate task to detect macOS).
-        const current = joinPath4(allocator, home, ".config", APP_NAME, "skills") catch return null;
-        const legacy = joinPath4(allocator, home, ".config", LEGACY_APP_NAME, "skills") catch return current;
-        return brand.choose(allocator, current, legacy);
+        return joinPath4(allocator, home, ".config", APP_NAME, "skills") catch null;
     }
 
     return null;

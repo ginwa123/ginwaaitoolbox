@@ -1,6 +1,5 @@
 const std = @import("std");
 const Io = std.Io;
-const brand = @import("brand_paths.zig");
 
 /// Resolve `~/.config/pabrik/agent.db`, creating the directory tree with
 /// `mkdir -p` semantics if it does not yet exist.
@@ -47,27 +46,12 @@ pub fn getDbPath(allocator: std.mem.Allocator, io: std.Io, environment: *std.pro
         return error.FailedToGetHome;
     }
 
-    // The database is the one thing a rebrand cannot recreate: every session,
-    // workspace, kanban card and credential lives in it. An install that
-    // predates the rename has `agent.db` under the legacy directory name, so
-    // prefer the new directory only once it exists — otherwise the upgraded
-    // app would start with an empty database and silently orphan the old one.
-    const current_dir = try std.fs.path.join(allocator, &[_][]const u8{
+    const config_dir = try std.fs.path.join(allocator, &[_][]const u8{
         home,
         ".config",
-        brand.app_name,
+        "pabrik",
     });
-    const legacy_dir = try std.fs.path.join(allocator, &[_][]const u8{
-        home,
-        ".config",
-        brand.legacy_app_name,
-    });
-    const current_db = try std.fs.path.join(allocator, &[_][]const u8{ current_dir, "agent.db" });
-    const legacy_db = try std.fs.path.join(allocator, &[_][]const u8{ legacy_dir, "agent.db" });
-    const use_legacy = !brand.exists(current_db) and brand.exists(legacy_db);
-    const config_dir = if (use_legacy) legacy_dir else current_dir;
-    defer allocator.free(current_dir);
-    defer allocator.free(legacy_dir);
+    defer allocator.free(config_dir);
 
     // mkdir -p semantics: open HOME as a Dir and createDirPath the rest.
     // If the directory already exists (e.g. when LlmConfig.init's
@@ -79,7 +63,7 @@ pub fn getDbPath(allocator: std.mem.Allocator, io: std.Io, environment: *std.pro
         return err;
     };
     defer home_dir.close(io);
-    home_dir.createDirPath(io, ".config/" ++ brand.app_name) catch |err| {
+    home_dir.createDirPath(io, ".config/pabrik") catch |err| {
         std.log.err("Failed to create config directory {s}: {s}", .{ config_dir, @errorName(err) });
         return err;
     };
@@ -89,8 +73,6 @@ pub fn getDbPath(allocator: std.mem.Allocator, io: std.Io, environment: *std.pro
         "agent.db",
     });
     defer allocator.free(db_path);
-    defer allocator.free(current_db);
-    defer allocator.free(legacy_db);
 
     return try allocator.dupeZ(u8, db_path);
 }

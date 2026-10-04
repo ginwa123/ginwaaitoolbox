@@ -695,7 +695,7 @@ the same Room database; the storage rules are in "The offline caches" below.
 
 Three things are cached so a cold boot or an offline launch paints real content
 instead of a spinner, and all three live in **one Room database**
-(`nalar_cache.db`) as five tables:
+(`pabrik_cache.db`) as five tables:
 
 | Table                  | Holds                                       | Namespaced by          |
 | ---------------------- | ------------------------------------------- | ---------------------- |

@@ -2,7 +2,6 @@ const std = @import("std");
 const schemas = @import("schemas.zig");
 const pabrikcore = @import("pabrikcore");
 const helpers = @import("helpers");
-const brand = helpers.brand_paths;
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
@@ -25,31 +24,19 @@ const agents = struct {
         // Try to find agent in .pabrik/agents/<agent_name>/PABRIK.md
         const LOCAL_AGENTS_DIR = ".pabrik/agents";
         const AGENT_FILE_NAME = "PABRIK.md";
-        const LEGACY_AGENT_FILE_NAME = "NALAR.md";
 
         // Get current working directory
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
         const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch return null;
         const cwd = cwd_buf[0..cwd_len];
 
-        // Build path: cwd/.pabrik/agents/<agent_name>/PABRIK.md, falling back
-        // to the pre-rebrand filename when that is the one on disk.
-        const current_path = std.fs.path.join(allocator, &[_][]const u8{
+        // Build path: cwd/.pabrik/agents/<agent_name>/PABRIK.md
+        const agent_path = std.fs.path.join(allocator, &[_][]const u8{
             cwd,
             LOCAL_AGENTS_DIR,
             agent_name,
             AGENT_FILE_NAME,
         }) catch return null;
-        const legacy_path = std.fs.path.join(allocator, &[_][]const u8{
-            cwd,
-            LOCAL_AGENTS_DIR,
-            agent_name,
-            LEGACY_AGENT_FILE_NAME,
-        }) catch {
-            defer allocator.free(current_path);
-            return null;
-        };
-        const agent_path = brand.choose(allocator, current_path, legacy_path);
         defer allocator.free(agent_path);
 
         // Try to open and read the file
@@ -66,7 +53,6 @@ const agents = struct {
     pub fn listAgents(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map) []AgentInfo {
         _ = environment;
         // Placeholder implementation - will be replaced when agents.zig is available
-        const LOCAL_AGENTS_DIR = ".pabrik/agents";
 
         // Get current working directory
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -76,7 +62,7 @@ const agents = struct {
         // Build path: cwd/.pabrik/agents
         const agents_path = std.fs.path.join(allocator, &[_][]const u8{
             cwd,
-            LOCAL_AGENTS_DIR,
+            ".pabrik/agents",
         }) catch return &[_]AgentInfo{};
         defer allocator.free(agents_path);
 

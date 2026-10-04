@@ -152,7 +152,7 @@ class RoomAuthMeCache(
     private companion object {
         // Distinct from the session-cookie and sidebar-cache aliases: this holds
         // an identity, which is a third kind of thing to rotate independently.
-        const val KEY_ALIAS = "nalar_auth_me_key_v1"
+        const val KEY_ALIAS = "pabrik_auth_me_key_v1"
     }
 }
 

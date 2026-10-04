@@ -36,7 +36,7 @@ Every commit lands on `worktree/llm-history-inspector`. Open a PR from that bran
 ## Architecture
 
 ```
-SettingsView.vue (sidebar: Nalar | Skills | Memories | [NEW] LLM History)
+SettingsView.vue (sidebar: Pabrik | Skills | Memories | [NEW] LLM History)
         │
         └── LlmHistorySettings.vue  (new)
                 ├── SessionPicker  (searchable, paginated GET /api/sessions)
@@ -81,7 +81,7 @@ Alternative considered and rejected: storing the raw request body at call time i
 - **Storage:** `src/ai_workflow/tui/agentic_loop/llm_history.zig` — `getMessages`, `getSessionListWithCursor`, `saveMessage`, `SessionMessage`, `TUIHistory`. `llm_history` table holds one row per chat turn (role, response_content, tool_calls_json, reasoning_content, etc.). No request-body column.
 - **Builders:** `src/modules/agent/Agent.zig` — `buildJsonAnthropicRequest`, `buildJsonOpenAIRequest`, `buildJsonResponsesRequest` (all `![]u8`, arena-backed, take `AgentCall{messages, tools, temperature, max_tokens}` + `stream: bool`). `AgentCall.messages` is `[]AgentMessage` (role enum + content + tool_calls + reasoning_content + content_parts).
 - **Message assembly:** `src/ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig` + `workflow.zig` — system prompt is assembled from `agent_knowledge`, `agent_system_prompt`, `workspace_context`, `skills`, `plan`, etc., then `transform_llm_history_to_agent_message` converts DB rows to `AgentMessage[]`. The inspector should reuse this assembly (or a simplified version) so the chain matches what the LLM actually sees.
-- **Settings UI:** `src/apps/desktop/src/components/views/SettingsView.vue` — 240px sidebar + content panel, 3 tabs (nalar/skills/memories) via `activeSettingsTab` ref. `NalarSettings.vue`, `SkillsSettings.vue`, `MemoriesSettings.vue` are the tab bodies. Add a 4th tab the same way.
+- **Settings UI:** `src/apps/desktop/src/components/views/SettingsView.vue` — 240px sidebar + content panel, 3 tabs (pabrik/skills/memories) via `activeSettingsTab` ref. `PabrikSettings.vue`, `SkillsSettings.vue`, `MemoriesSettings.vue` are the tab bodies. Add a 4th tab the same way.
 - **HTTP handlers:** `src/ai_workflow/tui/http_handlers/` — ~60 handlers, each `pub fn useCase(allocator, db, ...)`. Registered in `src/main.zig` via `router.addRoute`. Follow the existing `session_messages_get.zig` pattern for the new endpoint.
 - **Config / profiles:** `src/modules/config/Config.zig` — `LlmConfig` with `profiles: StringHashMap(LlmProfile)` (each has `model`, `base_url`, `url_style`, `thinking`, `reasoning_effort`, etc.). `resolveSessionProfile` picks the effective profile for a session.
 - **Frontend API:** `src/apps/desktop/src/api/index.ts` — `createSseClient`, `additionalEventTypes`, typed `api.*` helpers. Add `api.getLlmHistory(sessionId)` there.
@@ -126,7 +126,7 @@ Alternative considered and rejected: storing the raw request body at call time i
 
 - [ ] **1.1 New handler `src/ai_workflow/tui/http_handlers/llm_history_inspector.zig`**
   - `pub fn useCase(allocator, db, session_id) !LlmHistoryInspectorResponse` — pure function, no DI globals (takes `db` + `session_id`, returns struct). Testable with in-memory SQLite.
-  - **MUST reuse `Agent.zig` builders verbatim** — the handler imports `nalarcore.agent.Agent` and calls the same 3 methods `Agent.callStreaming` calls. No duplicated serialization. See Architecture diagram above.
+  - **MUST reuse `Agent.zig` builders verbatim** — the handler imports `pabrikcore.agent.Agent` and calls the same 3 methods `Agent.callStreaming` calls. No duplicated serialization. See Architecture diagram above.
   - Steps inside `useCase`:
     1. Validate `session_id` non-empty (400 if empty).
     2. Load `sessions` row to get `selected_profile_model` + `model` fallback.
@@ -151,7 +151,7 @@ Alternative considered and rejected: storing the raw request body at call time i
   - Session with reasoning_content → chain includes reasoning, Responses body has `reasoning` item.
 
 - [ ] **1.4 Functional test `tests/functional/llm_history_inspector_test.py`**
-  - Boots real `nalar` binary via `harness.py` (isolated tmpdir HOME, free port ≠ 8081).
+  - Boots real `pabrik` binary via `harness.py` (isolated tmpdir HOME, free port ≠ 8081).
   - Creates a workspace + session + 2 messages via the existing `POST /api/llm/session` or direct DB seed.
   - `GET /api/llm/history/:session_id` → assert 200, chain length, curl strings contain expected endpoints, no raw api_key in body.
   - Also test the 404 and 400 cases.
@@ -194,11 +194,11 @@ Alternative considered and rejected: storing the raw request body at call time i
 - [ ] **3.3 Run verification**
   ```bash
   zig build test --summary all
-  zig build nalar-desktop --summary all
+  zig build pabrik-desktop --summary all
   pnpm test:unit
-  NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/llm_history_inspector_test.py -v
+  PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/llm_history_inspector_test.py -v
   ```
-- [ ] **3.4 Manual smoke** — start `nalar` on a non-8081 port, create a session with a few turns (including a tool call), open Settings → LLM History, pick the session, verify chain + all 3 curl tabs + copy buttons.
+- [ ] **3.4 Manual smoke** — start `pabrik` on a non-8081 port, create a session with a few turns (including a tool call), open Settings → LLM History, pick the session, verify chain + all 3 curl tabs + copy buttons.
 
 ---
 
@@ -215,7 +215,7 @@ Alternative considered and rejected: storing the raw request body at call time i
 ## Verification
 
 - `zig build test --summary all` — 0 failures, 0 leaks (new handler tests + existing suite).
-- `zig build nalar-desktop --summary all` — 21/21 steps OK.
+- `zig build pabrik-desktop --summary all` — 21/21 steps OK.
 - `pnpm test:unit` — all specs pass (new `LlmHistorySettings.spec.ts` + updated `SettingsView.spec.ts`).
 - `pytest tests/functional/llm_history_inspector_test.py -v` — happy path + 404 + 400 + redaction.
 - Manual: Settings → LLM History → pick session → chain visible → 3 curl tabs → copy works.

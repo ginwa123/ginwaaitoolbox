@@ -8,7 +8,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give the nalar SPA an opt-out **tab mode**: a browser-style tab strip above the content area where each tab keeps one target open — a chat session, a kanban board, a design page, an agent / routine item, a workspace task, or Settings — with close buttons, middle-click close, drag reordering, keyboard shortcuts, "reopen last closed", per-window persistence across reloads, and open-in-background. The feature is frontend-only: no Zig, SQL, or HTTP change.
+**Goal:** Give the pabrik SPA an opt-out **tab mode**: a browser-style tab strip above the content area where each tab keeps one target open — a chat session, a kanban board, a design page, an agent / routine item, a workspace task, or Settings — with close buttons, middle-click close, drag reordering, keyboard shortcuts, "reopen last closed", per-window persistence across reloads, and open-in-background. The feature is frontend-only: no Zig, SQL, or HTTP change.
 
 **Architecture:**
 
@@ -26,7 +26,7 @@
 ## Global Constraints
 
 - **No backend change.** No Zig, no SQL, no route work. `?tab=` is client-only and must never be forwarded to the API. The one place URL params are copied into a generated URL is `helpers/buildTaskUrlQuery.ts:107-109`, which goes through `pickBreadcrumbFromQuery` (`helpers/buildItemIdWithChat.ts:69`; the whitelist — `workspaceId`, `itemId`, `pageId`, `sorts` — is documented at `:60`), so `tab` cannot leak. **Re-verify this after Task 3**: `search(pattern: "tab")` inside `helpers/buildTaskUrlQuery.ts` and `helpers/buildItemIdWithChat.ts` must stay at zero hits.
-- **Never touch the process on port 8081.** The dev server proxies to it (`src/apps/desktop/vite.config.ts:44-45`); a `nalar` instance is already running there. Do not start, stop or restart anything on 8081. Manual checks use `pnpm dev` (5173).
+- **Never touch the process on port 8081.** The dev server proxies to it (`src/apps/desktop/vite.config.ts:44-45`); a `pabrik` instance is already running there. Do not start, stop or restart anything on 8081. Manual checks use `pnpm dev` (5173).
 - **No python/functional harness work in this plan.** Nothing on the wire changes: the SPA fallback prefix `/app` (`src/main.zig:384-392`) already serves `index.html` for any query string, so `?tab=` needs no server support. The gates are Vitest + `vue-tsc`/`vite build` + the manual checklist in `## Verification`. If a task ever does need a wire assertion, use `tests/functional/harness.py` (free port 8080..8199, isolated `HOME`) — never `curl` a live binary.
 - **Editing rules.** No `// NEW (plan: …)` comments — say *why*, never *when*. `vue-tsc --build` emits stray `.js` next to `.ts` sources; delete them before committing (`git status --porcelain` must not list `*.js` under `src/`).
 - **Defensive load for every persisted value.** Corrupt or older `localStorage` must never throw; fall back to a single fresh `home` tab. Precedent: `stores/navigation.ts:49-71` (parse-or-default, clamped numbers).
@@ -81,13 +81,13 @@
 |---|---|---|
 | Persistence convention: Pinia store + localStorage shadow, no central helper | `stores/recentFolders.ts:15-17` | `Mirrors the useDesignHistory / useSettings pattern of "app-local state with a localStorage shadow".` |
 | `localStorage`, never `sessionStorage`, is used today | search `sessionStorage` in `src/` | zero hits |
-| A tab-ish strip exists but is a controlled, fixed-list component | `components/nalar/NalarTabStrip.vue:25-29,70-73` | `const tabs: ReadonlyArray<{id: TabId; label: string}>` / violet `0.5` underline |
+| A tab-ish strip exists but is a controlled, fixed-list component | `components/pabrik/PabrikTabStrip.vue:25-29,70-73` | `const tabs: ReadonlyArray<{id: TabId; label: string}>` / violet `0.5` underline |
 | No `components/ui/`, no dropdown/menu primitive; menus are hand-rolled | `components/kanban/KanbanSortMenu.vue:110` | `document.addEventListener('keydown', handle…)` pattern |
 | Session renames already arrive over SSE with the name attached | `helpers/sseBus.ts:25,215` + `api/index.ts:3046-3070` | `session: SessionEvent` / `sessions: (e) => forward('session', e)` / `interface SessionEvent { action: 'created'\|'updated'\|'deleted'\|'reordered'; id: string; name: string; … }` |
 | The bus is a singleton with idempotent install | `helpers/sseBus.ts:129-160` | `let _instance: SseBus \| null = null` / `if (_instance) return _instance` |
 | Lazy session lookup exists for a title fallback | `api/index.ts:1643` | `export async function getSession(sessionId: string): Promise<Session \| null>` |
 | A per-window id concept exists in the SSE channel, but is internal | `helpers/sseTabChannel.ts:119-121` | `function randomTabId() { return \`t_${Math.random().toString(36).slice(2, 10)}\` }` |
-| **No desktop-vs-web detection flag exists** — so browser-reserved chords cannot be gated | search `isDesktop\|__NALAR\|webMode` in `src/` | only `window.__nalarLogCtx` (`App.vue:78`) and `window.__designLogger` (`helpers/designLogger.ts:338`) |
+| **No desktop-vs-web detection flag exists** — so browser-reserved chords cannot be gated | search `isDesktop\|__PABRIK\|webMode` in `src/` | only `window.__pabrikLogCtx` (`App.vue:78`) and `window.__designLogger` (`helpers/designLogger.ts:338`) |
 | Test layout: Vitest + jsdom, 15 s timeout, `src/__tests__/` + colocated specs | `src/apps/desktop/vitest.config.ts:23-28` | `environment: 'jsdom'`, `setupFiles: ['./src/__tests__/setup.ts']` |
 | The regression net for this change is big | `src/__tests__/AppLayout.*.spec.ts` | 15 files incl. `AppLayout.simplifyUrl`, `AppLayout.urlPersist`, `AppLayout.chatClickUrlOverwrite`, `AppLayout.taskClickUrlOverwrite` |
 
@@ -98,12 +98,12 @@
 1. **A tab stores the router target (`{ path, query }`), not a new view enum.** Rejected: a `TabKind` enum with its own render switch — it would duplicate `currentView` (`AppLayout.vue:904-942`) and immediately drift. Consequence: `kind` is a *display hint only* (icon + close tooltip), recomputed best-effort at open time.
 2. **One `watch(route.fullPath)` funnel instead of editing every navigation call site.** Rejected: teaching `Sidebar.vue:331-437,992`, `ChatsList.vue:306-338`, `ChatView.vue:349` and four `AppLayout.handleNavigate` branches about tabs — bigger diff, and every future navigation path silently escapes the tab bar. The funnel means a new view type added later *automatically* becomes tabbable.
 3. **Single-pane rendering; no `<KeepAlive>`.** Rejected: keeping N views alive, because it requires first making six singletons per-tab: `navigation.activeChatId`/`activeTaskId` (`stores/navigation.ts:18-22`), `workspaces.activeWorkspaceItemId` (`stores/workspaces.ts:481`), `kanbanSse.activeWorkspaceId` (`stores/kanbanSse.ts:48`), `designSse.activeWorkspaceId` (`stores/designSse.ts:50`), the `active-chat-id` localStorage mirror (`stores/navigation.ts:7-9`), and `ChatView`'s global `router.replace` (`ChatView.vue:349`). Single-pane keeps the blast radius to the tab layer and still gives the user "my chat is still there when I come back", because the resume path (`ChatView.vue:2639-2647`) and per-session scroll key already exist.
-4. **Persistence keyed by a per-window id.** `sessionStorage['nalar-window-id']` (a fresh random id per browser tab / webview) scopes `localStorage['nalar-tabs:v1:<windowId>']`. Rejected: one global tab list — two app windows would fight last-writer-wins, and closing the app in window B would clobber window A's set. Also rejected: storing the list in `sessionStorage` directly (it would not survive a reload in some hosts, and it makes the set un-inspectable). This is the first `sessionStorage` use in the repo (verified zero today) — justified because "per browser window" is exactly `sessionStorage`'s semantics.
+4. **Persistence keyed by a per-window id.** `sessionStorage['pabrik-window-id']` (a fresh random id per browser tab / webview) scopes `localStorage['pabrik-tabs:v1:<windowId>']`. Rejected: one global tab list — two app windows would fight last-writer-wins, and closing the app in window B would clobber window A's set. Also rejected: storing the list in `sessionStorage` directly (it would not survive a reload in some hosts, and it makes the set un-inspectable). This is the first `sessionStorage` use in the repo (verified zero today) — justified because "per browser window" is exactly `sessionStorage`'s semantics.
 5. **Tab activation uses `router.replace`.** Rejected: per-tab history stacks (a real browser's Back goes back *inside* the tab) — that needs a per-tab history store and a rewrite of every navigation read; deferred to a follow-up, listed in `## Out of Scope`. With `replace`, Back/Forward remain "navigate inside the active tab" because plain navigation still uses `push`.
 6. **Keyboard shortcuts live in the `Shift+Alt` namespace, with the familiar chords registered opportunistically.** In the web target the browser owns `Ctrl/Cmd+T`, `Ctrl/Cmd+W`, `Ctrl/Cmd+1..9` and Chromium also swallows `Ctrl+Tab`; a page cannot override them. So the *documented, testable* map is `Shift+Alt+…`, and `Ctrl+Tab`/`Ctrl+Shift+Tab`/`Ctrl+W`/`Ctrl+T` are registered as best-effort for the desktop webview (GTK `webview` does not reserve them). Rejected: `Ctrl/Cmd+…` as the primary map (dead in the web target, and there is no desktop detection flag to branch on — verified).
 7. **Composer drafts are kept in memory, per window, and not persisted.** Switching tabs remounts `FileInput` (`FileInput.vue:53`), so a draft would be lost on every tab switch — that would ship as a bug on day one. But drafts are unsent user text; writing them to disk is a privacy/cleanup cost that today's behaviour does not have (a reload loses them anyway), so the draft map is in-memory in the tabs store, cleared on successful submit, and survives closing+reopening the tab within the session.
 8. **A user-facing toggle, default ON.** `enabled === false` must be a perfect rollback: strip hidden, funnel no-ops, `?tab=` stripped. Default ON because a hidden feature gets no review; the toggle is the escape hatch if a regression slips through.
-9. **A new `TabBar.vue`; `NalarTabStrip.vue` is left alone.** `NalarTabStrip` is a *controlled* component over a compile-time `ReadonlyArray` with its own settings-scoped storage key (`NalarTabStrip.vue:4,25-29,34-39`); extending it to closable/draggable/dynamic tabs would put the Settings page (which `NalarSettings.spec.ts` asserts on) at risk for zero reuse gain. The visual language (violet underline, `--color-*` / `--semantic-*` vars) is copied instead.
+9. **A new `TabBar.vue`; `PabrikTabStrip.vue` is left alone.** `PabrikTabStrip` is a *controlled* component over a compile-time `ReadonlyArray` with its own settings-scoped storage key (`PabrikTabStrip.vue:4,25-29,34-39`); extending it to closable/draggable/dynamic tabs would put the Settings page (which `PabrikSettings.spec.ts` asserts on) at risk for zero reuse gain. The visual language (violet underline, `--color-*` / `--semantic-*` vars) is copied instead.
 10. **Titles are resolved at render time, not frozen at open time.** Resolution order: live store lookup for workspace items (`workspacesStore`) → the tab's last known title (snapshot from the navigation argument, or `SessionEvent.name`) → lazy `api.getSession()` for a chat tab opened from a deep link → a kind-based fallback label. Live updates come from the existing `session` SSE channel (`sseBus.ts:215`, `SessionEvent.name`) and from `ChatsList`'s already-loaded list. Rejected: a title field written once at open time — the auto-rename-on-first-message cascade would leave stale labels in the strip.
 11. **Closing a tab never stops an agent.** The backend session and its agentic loop are independent of the UI; the tab is a pointer. The close tooltip says so, and Task 3 asserts no API call is made on close. Rejected: "close = stop session" (destroys work, and contradicts the existing `tabs.touched` / staleness model).
 12. **Open-in-background from the sidebar.** `Ctrl/Cmd+click` and middle-click on a chat row or workspace item create (or focus) a tab **without** activating it and without touching the URL. This is the one feature that needs explicit per-call-site wiring, because "don't navigate" cannot be expressed through the funnel. Rejected: skipping it — browser muscle memory makes `Ctrl+click` a very likely first user action.
@@ -156,9 +156,9 @@ Returns `false` (funnel no-ops, URL untouched, exactly today's behaviour) for:
 ### 4. Storage schema
 
 ```
-sessionStorage['nalar-window-id']            = 'w_7c1a9e02'
-localStorage['nalar-tabs-enabled']           = 'true' | 'false'          // global preference, not per window
-localStorage['nalar-tabs:v1:<windowId>']     = JSON.stringify({
+sessionStorage['pabrik-window-id']            = 'w_7c1a9e02'
+localStorage['pabrik-tabs-enabled']           = 'true' | 'false'          // global preference, not per window
+localStorage['pabrik-tabs:v1:<windowId>']     = JSON.stringify({
   v: 1,
   active: 'tab_k3f9a1',
   tabs: [
@@ -203,7 +203,7 @@ Rules: handlers `preventDefault()` **only** when they actually act; all of them 
 | `src/apps/desktop/src/components/views/ChatView.vue` | EDIT | Pass `draftKey="chat:<sessionId>"` to `<FileInput>` (`:3601`). Nothing else in this file changes. |
 | `src/apps/desktop/src/components/views/ChatsList.vue` | EDIT | Publish loaded chat names to the tabs store (title feed); `Ctrl/Cmd+click` + middle-click → `tabs.openInBackground`; `createChat` opens/focuses a tab. |
 | `src/apps/desktop/src/components/shell/Sidebar.vue` | EDIT | Same modifier-click handling for workspace items + task rows; single-click keeps emitting `navigate` (the funnel does the rest). |
-| `src/apps/desktop/src/components/NalarSettings.vue` | EDIT | "Browser-style tabs" toggle in the General tab, bound to `tabsStore.enabled`; when turning it off, strip `tab=` from the current URL. |
+| `src/apps/desktop/src/components/PabrikSettings.vue` | EDIT | "Browser-style tabs" toggle in the General tab, bound to `tabsStore.enabled`; when turning it off, strip `tab=` from the current URL. |
 | `src/apps/desktop/src/__tests__/tabTarget.spec.ts` | NEW | Pure-helper table tests (keys, exclusions, storage validation, corrupt input). |
 | `src/apps/desktop/src/__tests__/tabsStore.spec.ts` | NEW | Store behaviour: open/dedupe/close neighbour rules/never-empty/reorder/persistence round-trip/corrupt-load/drafts/`setChatTitle`/`reopenLastClosed`. |
 | `src/apps/desktop/src/__tests__/TabBar.spec.ts` | NEW | Component: render, active styling, click, middle-click, close button, `+`, drag reorder, close-menu items, overflow scroll, hidden when disabled. |
@@ -213,7 +213,7 @@ Rules: handlers `preventDefault()` **only** when they actually act; all of them 
 | `docs/tabs.md` | NEW | User+engineer doc: what tab mode is, the URL/`?tab=` contract, the shortcut map and its browser-reserved caveat, the storage schema, how to turn it off. Structure mirrors `docs/sse-tab-sharing.md`. |
 | `docs/superpowers/plans/2026-09-13-tab-mode-like-a-browser.md` | THIS FILE | The plan. |
 
-**Not touched:** any `.zig` file, `src/main.zig`, `router/index.ts` (no new route is needed — `?tab=` rides the existing `/app` route and the SPA fallback), `stores/navigation.ts`, `stores/workspaces.ts`, `stores/kanbanSse.ts`, `stores/designSse.ts`, `NalarTabStrip.vue`, `helpers/sseBus.ts`, `helpers/sseTabChannel.ts`. If implementation finds itself needing to edit one of these, stop and re-read the corresponding Design Decision — the plan deliberately avoids them.
+**Not touched:** any `.zig` file, `src/main.zig`, `router/index.ts` (no new route is needed — `?tab=` rides the existing `/app` route and the SPA fallback), `stores/navigation.ts`, `stores/workspaces.ts`, `stores/kanbanSse.ts`, `stores/designSse.ts`, `PabrikTabStrip.vue`, `helpers/sseBus.ts`, `helpers/sseTabChannel.ts`. If implementation finds itself needing to edit one of these, stop and re-read the corresponding Design Decision — the plan deliberately avoids them.
 
 ---
 
@@ -223,7 +223,7 @@ Rules: handlers `preventDefault()` **only** when they actually act; all of them 
 
 - [ ] Write `__tests__/tabTarget.spec.ts` **first**, table-driven: `tabKeyOf` for every row of the Wire Contract §2 table (incl. `itemId: 'item_Y/chat/task_W'` → `ws:W:item_Y`, and `pageId` inclusion); `tabKeyOf` ignores `tab` and `sorts`; `shouldTabify` false for `gitfile`/`skill`/`code-editor`/`delete-chat` and true for `chat`/`workspace`/`settings`/absent view; `stripTabParam` / `withTabParam` round-trip; `parseTabList` on `null`, `''`, `'{'`, `'{}'`, `'{"v":99,…}'`, an entry missing `id`, an entry whose `query` is an array → always a valid single-`home` list, never a throw.
 - [ ] Implement `helpers/tabTarget.ts`: no Vue, no Pinia, no vue-router imports — only `parseItemIdWithChat` from `helpers/buildItemIdWithChat.ts`. Keep every exported function total (no throwing).
-- [ ] Implement `helpers/windowId.ts`: read `sessionStorage['nalar-window-id']`, else create `w_<10 random base36>`, write it, return it; on a throwing storage (quota/private mode) fall back to a module-level id so the session still works.
+- [ ] Implement `helpers/windowId.ts`: read `sessionStorage['pabrik-window-id']`, else create `w_<10 random base36>`, write it, return it; on a throwing storage (quota/private mode) fall back to a module-level id so the session still works.
 - [ ] Add a `windowId.spec.ts` case (or fold into `tabTarget.spec.ts`) covering: first call creates + persists, second call returns the same value, a throwing `sessionStorage` returns a stable in-memory id.
 - [ ] Confirm the Global-Constraints leak check: `tab` does not appear in `helpers/buildTaskUrlQuery.ts` / `helpers/buildItemIdWithChat.ts`.
 - [ ] `Commit:` `feat(tabs): pure tab-target helpers + per-window id`
@@ -239,7 +239,7 @@ Rules: handlers `preventDefault()` **only** when they actually act; all of them 
 ### Task 3 — The strip (`components/shell/TabBar.vue`)
 
 - [ ] Write `__tests__/TabBar.spec.ts` **first** against a real Pinia store (`setActivePinia(createPinia())`, pattern from `__tests__/navigation.spec.ts:2-6`): renders one `role="tab"` per open tab with `aria-selected` only on the active one; title truncation keeps the tab accessible (`title` attr = full title); clicking a tab calls `activate`; clicking its close button removes it and does not `activate` it first; middle-click (`auxclick`, `button === 1`) closes; the `+` button opens a `home` tab; the right-click menu offers Close / Close others / Close to the right and each maps to the right action; drag: `dragstart` on index 1 + `drop` on index 3 calls `reorder(1, 3)`; nothing renders when `enabled === false`; `data-testid` hooks exist (`tab-item-<id>`, `tab-close-<id>`, `tab-new`, `tab-bar`).
-- [ ] Implement the component. First child of `<main>`, `shrink-0`, height `h-9`, `border-b` `--color-border`, background `--semantic-content-bg`, violet `0.5` underline on the active tab (copied from `NalarTabStrip.vue:70-73` — no component is imported from there).
+- [ ] Implement the component. First child of `<main>`, `shrink-0`, height `h-9`, `border-b` `--color-border`, background `--semantic-content-bg`, violet `0.5` underline on the active tab (copied from `PabrikTabStrip.vue:70-73` — no component is imported from there).
 - [ ] Overflow: `overflow-x-auto` with a hidden scrollbar; `watch(activeTabId)` → `activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' })`; a `wheel` handler translates vertical delta into horizontal scroll and calls `preventDefault()` only when it actually scrolled.
 - [ ] Close-menu: hand-rolled absolutely-positioned div + a `document` click/keydown listener removed on unmount (pattern: `components/kanban/KanbanSortMenu.vue:110`).
 - [ ] Assert in the spec that closing a tab performs **no** API call (spy on the api module) — the "closing a tab never stops an agent" decision.
@@ -271,8 +271,8 @@ Rules: handlers `preventDefault()` **only** when they actually act; all of them 
 
 ### Task 7 — Settings toggle + live titles
 
-- [ ] Write `__tests__/tabsSettingsToggle.spec.ts` **first**: `NalarSettings` renders a "Browser-style tabs" toggle bound to `tabsStore.enabled`; flipping it off persists `'false'` and strips `tab=` from the current URL; flipping it back on restores the strip.
-- [ ] Add the toggle to the General tab (`NalarSettings.vue:52,569` area, `NalarTabStrip` untouched) and the `?tab=` cleanup in the toggle handler.
+- [ ] Write `__tests__/tabsSettingsToggle.spec.ts` **first**: `PabrikSettings` renders a "Browser-style tabs" toggle bound to `tabsStore.enabled`; flipping it off persists `'false'` and strips `tab=` from the current URL; flipping it back on restores the strip.
+- [ ] Add the toggle to the General tab (`PabrikSettings.vue:52,569` area, `PabrikTabStrip` untouched) and the `?tab=` cleanup in the toggle handler.
 - [ ] Add the title feed: in the tabs store's `init()` subscribe to `bus.on('session', …)` (`helpers/sseBus.ts:25,215`) and on `action === 'created' | 'updated'` with a non-empty `name` call `setChatTitle(id, name)` for any open `chat:` tab; unsubscribe on teardown. Add a spec case driving `__dispatchSseBus('session', {...})` (harness hook at `helpers/sseBus.ts:456`).
 - [ ] In `ChatsList.vue`, after `loadChats` succeeds, publish `{id, name}` pairs to `tabsStore.setChatTitle` in one pass. Spec: a renamed session updates an open tab's displayed title.
 - [ ] `Commit:` `feat(tabs): tab-mode setting and live tab titles`
@@ -290,7 +290,7 @@ Rules: handlers `preventDefault()` **only** when they actually act; all of them 
 - [ ] `pnpm --dir src/apps/desktop test` twice: once on the base commit (record the baseline failure list) and once with the change. **No new failures.** Record both lists in the PR body.
 - [ ] `pnpm --dir src/apps/desktop run build` clean; then `git status --porcelain` shows no stray `*.js` under `src/apps/desktop/src` (delete any that `vue-tsc --build` emitted).
 - [ ] Manual dev checklist on `pnpm dev` (5173) — every line, on both a fresh `HOME`-less web URL and the desktop webview if available: open 6 tabs across chat / kanban / design / agent / settings; reload → same list, same active tab; close the active tab → right neighbour activates; close the last tab → `home`; drag-reorder survives a reload; middle-click closes; `Shift+Alt+T/W/Z/arrows/1..9`; `Ctrl+click` a sidebar chat → background tab; type in tab A → switch to B → back to A → text still there; start a long agent run → switch away → back → streaming content resumed, not restarted; toggle the setting off → strip gone and behaviour identical to `d540b617`.
-- [ ] Write `docs/tabs.md` (mirrors `docs/sse-tab-sharing.md`): what tab mode is, the `?tab=` contract, the key map **with** the browser-reserved caveat, the storage schema + the "how do I reset my tabs" answer (`localStorage.removeItem('nalar-tabs:v1:<windowId>')`), and the toggle.
+- [ ] Write `docs/tabs.md` (mirrors `docs/sse-tab-sharing.md`): what tab mode is, the `?tab=` contract, the key map **with** the browser-reserved caveat, the storage schema + the "how do I reset my tabs" answer (`localStorage.removeItem('pabrik-tabs:v1:<windowId>')`), and the toggle.
 - [ ] Open the PR (plan-only PRs in this repo are docs-only; this one is a normal feature PR): branch `worktree/tab-mode-like-a-browser-1789300444735`, base `main`.
 - [ ] `Commit:` `docs(tabs): document tab mode` then open the PR with the task table, the decision list, and both test baselines in the body.
 
@@ -303,10 +303,10 @@ Rules: handlers `preventDefault()` **only** when they actually act; all of them 
 - [ ] **Each task has bite-sized steps** (test → implement → verify → commit).
 - [ ] **User has reviewed the plan** before execution begins.
 - [ ] **No-regression gate (the important one):** `pnpm --dir src/apps/desktop test` — full suite. Baseline recorded on `d540b617` *before* the first change; the post-change run must introduce **zero** new failures. All 15 `AppLayout.*.spec.ts` files must pass, in particular `AppLayout.simplifyUrl`, `AppLayout.urlPersist`, `AppLayout.chatSuffixRoundTrip`, `AppLayout.sortUrlRoundTrip`, `AppLayout.chatClickUrlOverwrite`, `AppLayout.taskClickUrlOverwrite`.
-- [ ] **Toggle-off gate:** with `nalar-tabs-enabled = 'false'`, the URL never gains `tab=`, `[data-testid="tab-bar"]` never renders, and the 15 AppLayout specs pass unchanged. This is the rollback proof.
+- [ ] **Toggle-off gate:** with `pabrik-tabs-enabled = 'false'`, the URL never gains `tab=`, `[data-testid="tab-bar"]` never renders, and the 15 AppLayout specs pass unchanged. This is the rollback proof.
 - [ ] **Type/build gate:** `pnpm --dir src/apps/desktop run build` (runs `vue-tsc --build` in parallel with `vite build`); no stray `.js` in `git status`.
 - [ ] **New spec files** all present and green: `tabTarget`, `tabsStore`, `TabBar`, `AppLayout.tabs`, `tabDraft`, `useTabShortcuts`, `tabsSettingsToggle`.
-- [ ] **Persistence gate:** seed `localStorage['nalar-tabs:v1:<windowId>']` with (a) valid 3-tab JSON + reload, (b) `'{'`, (c) `'{"v":1,"tabs":[{"id":1}]}'`, (d) `'{"v":99}'`. (a) restores exactly; (b)–(d) fall back to one `home` tab with **no** console exception.
+- [ ] **Persistence gate:** seed `localStorage['pabrik-tabs:v1:<windowId>']` with (a) valid 3-tab JSON + reload, (b) `'{'`, (c) `'{"v":1,"tabs":[{"id":1}]}'`, (d) `'{"v":99}'`. (a) restores exactly; (b)–(d) fall back to one `home` tab with **no** console exception.
 - [ ] **Second-window gate:** opening the app in a second browser tab yields an independent tab list (its own `sessionStorage` window id) while the SSE leader election (`helpers/sseTabChannel.ts`) still converges to one connection — this feature must not disturb the existing 6-connection fix.
 - [ ] **Port gate:** nothing in the run touched port 8081; manual checks used 5173 only.
 - [ ] **No wire gate needed, stated explicitly:** no Zig file changed, so `zig build test` is not a gate for this plan; no python functional test is required because no HTTP route, request body or SSE payload changes.
@@ -318,7 +318,7 @@ Rules: handlers `preventDefault()` **only** when they actually act; all of them 
 - **Per-tab navigation history** (a real browser's Back goes back *inside* the tab). Needs a per-tab history store and a rework of every `route` read; deferred behind Decision 5.
 - **Multiple simultaneously live views** (`<KeepAlive>`, split panes, side-by-side chats). Blocked on the six singletons in Decision 3.
 - **Native OS windows / multi-window tabs.** The shell creates exactly one webview (`src/apps/desktop_app/webview_lib.zig:119-126`, single `webview_create`) and `webview_run` blocks the main loop (`:18-20`); multi-window is a separate plan.
-- **Moving the existing sidebar-adjacent tabstrips** (`NalarTabStrip`, `RightSidebar`, `FilePickerDialog`) onto the new strip — Decision 9.
+- **Moving the existing sidebar-adjacent tabstrips** (`PabrikTabStrip`, `RightSidebar`, `FilePickerDialog`) onto the new strip — Decision 9.
 - **Tab groups, pinning, tab search, session restore across app restarts** (only the strip persists, not the app's LLM sessions — that already lives server-side).
 - **SSE per-tab connection handling** — already solved by `docs/sse-tab-sharing.md` (one leader connection per browser profile); this plan must not regress it, and asserts that in the second-window gate.
 - **Backend/tab-state persistence** (a `ui_state` table). Verified absent today (`ui_state|open_tabs|window_state|session_state` → zero hits); keeping tab state client-side is Decision 4.
@@ -399,7 +399,7 @@ and the python harness were correctly not run):
    middle click). Kanban task *cards* keep their existing click behaviour —
    they need the same emit threaded through `WorkspaceItemTaskRow`, left as a
    follow-up rather than widening this diff.
-6. **`NalarSettings.spec.ts` gained `setActivePinia(createPinia())`** — the
+6. **`PabrikSettings.spec.ts` gained `setActivePinia(createPinia())`** — the
    settings orchestrator now reads the tabs store for the new toggle, which is
    a real dependency of the component, not a test workaround.
 7. **TabBar has no `api` import at all**, so "closing a tab never stops an

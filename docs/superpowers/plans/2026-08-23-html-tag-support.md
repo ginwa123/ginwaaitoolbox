@@ -150,7 +150,7 @@ Real-Chromium E2E in `tests/functional_ui/` (the suite's whole point: jsdom can'
 - [ ] T4.2 Seed-shape notes: use `DbSeed.seed_assistant_message(conn, sid, text=...)` with the raw tagged string as `response_content` — identical to how production stores LLM output (tags included); timestamps via `DbSeed.baseline_timestamps(count=2)`; reuse `_open_chatview` + `_wait_for_text` patterns from `chatview_ui_test.py`.
 - [ ] T4.3 Run:
   ```bash
-  NALAR_BIN=./zig-out/bin/nalar pytest tests/functional_ui/chatview_html_tag_ui_test.py -v
+  PABRIK_BIN=./zig-out/bin/pabrik pytest tests/functional_ui/chatview_html_tag_ui_test.py -v
   ```
   All 5 pass. Backend port comes from harness pool (8080, 8082–8199 — never 8081).
 - [ ] T4.4 Update `tests/functional_ui/README.md` "Covered scenarios" list (+1 entry pointing at the new file).
@@ -168,7 +168,7 @@ Real-Chromium E2E in `tests/functional_ui/` (the suite's whole point: jsdom can'
 
 - [ ] T5.1 Frontend: `cd src/apps/desktop && bun run lint:check && bun run type-check && bun run test && npm run build` — all green.
 - [ ] T5.2 Backend: `zig build test --summary all` — all green, no leaks.
-- [ ] T5.3 Functional UI: `NALAR_BIN=./zig-out/bin/nalar pytest tests/functional_ui/ -v` — full suite green including the new html-tag file.
+- [ ] T5.3 Functional UI: `PABRIK_BIN=./zig-out/bin/pabrik pytest tests/functional_ui/ -v` — full suite green including the new html-tag file.
 - [ ] T5.4 Manual smoke (optional, port 8080 only — NEVER 8081): send a chat message asking for a simple HTML button; confirm iframe renders clickable button; confirm legacy markdown messages unchanged.
 - [ ] T5.5 Commit any stragglers; push branch `worktree/html-tag-support`; open PR referencing this plan.
 

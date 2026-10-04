@@ -356,7 +356,7 @@ fn walkDirRecursive(
         const name = entry.name;
 
         if (std.mem.eql(u8, name, ".git")) continue;
-        if (name[0] == '.' and name[1] == 'n' and std.mem.startsWith(u8, name, ".pabrik")) continue;
+        if (std.mem.startsWith(u8, name, ".pabrik")) continue;
 
         const full_path = try std.fs.path.join(allocator, &.{ dir_path, name });
 

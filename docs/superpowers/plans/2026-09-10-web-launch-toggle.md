@@ -18,7 +18,7 @@
 
 **Prod never runs `pnpm run dev`.** `pnpm run dev` (= bare `vite`, default port `5173`, proxies `/api → http://localhost:8081`) is dev-only (`src/apps/desktop/vite.config.ts`, `package.json:7`).
 
-Prod path is: `pnpm build → dist/ → codegen embeds bytes into `webapp_assets.zig` → `nalar-desktop` extracts to temp `nalar-desktop-webapp-<pid>/` → `nalar` backend (`GinwaServer` on `127.0.0.1:8081`) serves API + static fallback (`/app → index.html`) → native webview opens `http://127.0.0.1:<port>/` (`src/apps/desktop_app/main.zig`, `src/main.zig:232`, `attach.zig`). Frontend uses **relative** `/api/*` + one `EventSource(/api/events)` (`api/index.ts:6,3257`), so the *same bytes* work in webview and in any browser with zero frontend fork.
+Prod path is: `pnpm build → dist/ → codegen embeds bytes into `webapp_assets.zig` → `pabrik-desktop` extracts to temp `pabrik-desktop-webapp-<pid>/` → `pabrik` backend (`GinwaServer` on `127.0.0.1:8081`) serves API + static fallback (`/app → index.html`) → native webview opens `http://127.0.0.1:<port>/` (`src/apps/desktop_app/main.zig`, `src/main.zig:232`, `attach.zig`). Frontend uses **relative** `/api/*` + one `EventSource(/api/events)` (`api/index.ts:6,3257`), so the *same bytes* work in webview and in any browser with zero frontend fork.
 
 **Consequence:** "launch a web" does NOT mean spawning Vite. It means making the *already-served* same-origin UI reachable from a system browser, on a random loopback port, with a toggle to start/stop it.
 
@@ -38,21 +38,21 @@ If true isolation (desktop on 8081 + browser on random *simultaneously, separate
 
 ### 3b. Where the toggle lives (copy existing patterns, no new route family)
 
-**Frontend — extend `NalarGeneralSection`, don't make a new section** (206 lines, the file to copy):
+**Frontend — extend `PabrikGeneralSection`, don't make a new section** (206 lines, the file to copy):
 
-- `NalarGeneralSettings` gains one key, e.g. `web_launch_enabled: boolean` (naming TBD — alternatives `browser_mode_enabled`; pick one, stick to it).
+- `PabrikGeneralSettings` gains one key, e.g. `web_launch_enabled: boolean` (naming TBD — alternatives `browser_mode_enabled`; pick one, stick to it).
 - Checkbox row copied from the notify row: `<input type="checkbox" data-testid="toggle-web-launch" :checked="model.web_launch_enabled" @change="model = {...model, web_launch_enabled: checked}" />` + label "Launch web (browser mode)" + helper "Serve this same UI in your system browser on a random local port."
 - When ON, a sub-row appears: readonly URL pill (`http://127.0.0.1:<port>/`) + Open + Copy buttons + "port changes each launch" hint. URL comes from a new status endpoint (§4), NOT from config.
-- Parent `NalarSettings.vue`: extend `generalSettings` default (`?? false`), `syncFromConfig`, `syncToConfig` (always write so dirty-pill fires), `NalarConfig` interface in `api/index.ts:3736-3818`. Save rides the existing bulk `PUT /api/config/nalar` — no new save path (same as MCP `enabled` toggle precedent, plan `2026-09-09-mcp-server-toggle.md`).
-- Spec: extend `NalarGeneralSection.spec.ts` (mount + click toggle → assert `update:modelValue` payload; URL pill hidden when off / shown when on with mocked status).
+- Parent `PabrikSettings.vue`: extend `generalSettings` default (`?? false`), `syncFromConfig`, `syncToConfig` (always write so dirty-pill fires), `PabrikConfig` interface in `api/index.ts:3736-3818`. Save rides the existing bulk `PUT /api/config/pabrik` — no new save path (same as MCP `enabled` toggle precedent, plan `2026-09-09-mcp-server-toggle.md`).
+- Spec: extend `PabrikGeneralSection.spec.ts` (mount + click toggle → assert `update:modelValue` payload; URL pill hidden when off / shown when on with mocked status).
 
 **Backend config — plain bool, no migration** (copy `notify_on_complete` pattern, `Config.zig`):
 
 1. `LlmConfig.web_launch_enabled: bool = false` (+ doc comment citing firing sites).
 2. `LlmConfigJson` mirror same default (missing key = false; legacy `config.json` byte-identical).
 3. `init` hydrate + `clone()` copy (else `setLlmConfig` swap drops it).
-4. `nalar_config_put.zig:ConfigInput.web_launch_enabled: ?bool = null` + `if (input.web_launch_enabled) |v| config_json.web_launch_enabled = v;` (absent preserves).
-5. `nalar_config_get.zig` always emit.
+4. `pabrik_config_put.zig:ConfigInput.web_launch_enabled: ?bool = null` + `if (input.web_launch_enabled) |v| config_json.web_launch_enabled = v;` (absent preserves).
+5. `pabrik_config_get.zig` always emit.
 6. Tests: static-contract greps + functional GET-defaults/PUT-roundtrip (copy `tests/functional/notify_on_error_test.py:_put_general_settings`).
 
 **Live-apply:** like notify flags, the bool is read per-use from `di.llm_config`; no cache teardown needed (unlike MCP `markStale`/`evict` — there is no child pool here). The PUT tail (`setLlmConfig` atomic swap) already makes mid-run reads see the new value.
@@ -89,7 +89,7 @@ Why `[40000,60000]` and not OS-ephemeral (`bind port 0` → `getsockname`)? Ephe
 **Option A (recommended): browser mode = same daemon, toggle is a flag + URL.**
 - Toggle ON: `POST /api/web/start` → if server already running, return its URL (after ensuring it was started with a random port when the flag was set at spawn time); frontend shows pill.
 - Toggle OFF: `POST /api/web/stop` → clear flag, pill hides; **server keeps running** (desktop unaffected). Simplest, zero shutdown races, zero DB risk. "Stop" means "stop advertising/opening browser", not "kill server".
-- Restart semantics: if flag is ON at `nalar service start`, spawn picks a random port (not 8081); if OFF, current behavior (8081) unchanged. Document that turning ON then restarting moves the desktop webview too (it reads `state.json`, so it follows automatically).
+- Restart semantics: if flag is ON at `pabrik service start`, spawn picks a random port (not 8081); if OFF, current behavior (8081) unchanged. Document that turning ON then restarting moves the desktop webview too (it reads `state.json`, so it follows automatically).
 
 **Option B: toggle owns the listener (start/stop binds).**
 - ON binds (or restarts onto) random port; OFF restarts back onto 8081 or shuts down an extra listener. Matches the mental model "toggle launches a web" most literally, but costs restart races (in-flight SSE/LLM streams drop), `shutdown()` wake-`accept` dance (`http_server.zig:1038-1064`), and state-file churn. Only choose if review insists OFF must kill the port.
@@ -117,13 +117,13 @@ Edge cases to lock in tests: rapid ON→OFF→ON (idempotent start/stop, no doub
 
 - **Zig unit + static-contract** (`zig build test --summary all` must stay green): picker range/reserved/exhaustion; `Config` bool parse/hydrate/clone/omit-when-absent; route-order (literal before `:param`); `state.json` records picked port.
 - **Functional (real wire, harness, never live-curl)** — new `tests/functional/web_launch_toggle_test.py` on an isolated tmpdir HOME + free port (never 8081): GET-defaults (`enabled=false`, `running` reflects spawn), PUT-roundtrip (`enabled` true/false), `POST /api/web/start` returns `http://127.0.0.1:<40000-60000>/` reachable via `/health`, `POST /api/web/stop` clears, rapid toggle idempotent. Copy `mcp_server_toggle_test.py` (3 tests) + `notify_on_error_test.py` patterns.
-- **Frontend vitest** (`pnpm test:unit`): extended `NalarGeneralSection.spec.ts` (toggle flips payload; pill hidden/shown; Open/Copy call `window.open`/clipboard with the status URL).
+- **Frontend vitest** (`pnpm test:unit`): extended `PabrikGeneralSection.spec.ts` (toggle flips payload; pill hidden/shown; Open/Copy call `window.open`/clipboard with the status URL).
 - **Manual:** desktop ON → browser URL works side-by-side; OFF → pill hides, desktop unaffected; restart with ON → both follow new random port; close desktop → browser tab still live (documented).
 
 ## 10. File touch-list (estimate, Phase 1)
 
-- Backend (6-8 edits, 1 new): `Config.zig` (field+parse+hydrate+clone) + `nalar_config_put/get.zig` (wire) + new `web_status/start/stop` handlers + `main.zig`/`main_service.zig`/`cli.zig`/`state_file.zig` (port-0 → picker → record) + new `web_port.zig` picker + `test_runner.zig` registrations.
-- Frontend (4 edits): `NalarGeneralSection.vue` (toggle + pill), `NalarSettings.vue` (sync), `api/index.ts` (type + 3 wrappers), `NalarGeneralSection.spec.ts`.
+- Backend (6-8 edits, 1 new): `Config.zig` (field+parse+hydrate+clone) + `pabrik_config_put/get.zig` (wire) + new `web_status/start/stop` handlers + `main.zig`/`main_service.zig`/`cli.zig`/`state_file.zig` (port-0 → picker → record) + new `web_port.zig` picker + `test_runner.zig` registrations.
+- Frontend (4 edits): `PabrikGeneralSection.vue` (toggle + pill), `PabrikSettings.vue` (sync), `api/index.ts` (type + 3 wrappers), `PabrikGeneralSection.spec.ts`.
 - Tests: 1 new functional file + Zig inline tests. No migration (config.json, not SQLite), no new SSE event, no build.zig chain change, no Vite change.
 
 ## 11. Review questions (please answer before `in progress`)
@@ -135,7 +135,7 @@ Edge cases to lock in tests: rapid ON→OFF→ON (idempotent start/stop, no doub
 5. Confirm **loopback-only** (no LAN) for Phase 1.
 
 ---
-*Research sources: `src/apps/desktop_app/main.zig`, `attach.zig`, `cli.zig`, `extraction.zig`; `src/main.zig`, `src/service/main_service.zig`, `state_file.zig`; `src/modules/custom_http_server/src/http_server.zig`, `router.zig`; `src/modules/config/Config.zig`, `nalar_config_put/get.zig`; `src/apps/desktop/src/components/NalarSettings.vue`, `nalar/NalarGeneralSection.vue`, `api/index.ts`, `vite.config.ts`; `tests/functional/harness.py`, `tests/functional_ui/ui_harness.py`; prior plans `2026-09-09-mcp-server-toggle.md`.*
+*Research sources: `src/apps/desktop_app/main.zig`, `attach.zig`, `cli.zig`, `extraction.zig`; `src/main.zig`, `src/service/main_service.zig`, `state_file.zig`; `src/modules/custom_http_server/src/http_server.zig`, `router.zig`; `src/modules/config/Config.zig`, `pabrik_config_put/get.zig`; `src/apps/desktop/src/components/PabrikSettings.vue`, `pabrik/PabrikGeneralSection.vue`, `api/index.ts`, `vite.config.ts`; `tests/functional/harness.py`, `tests/functional_ui/ui_harness.py`; prior plans `2026-09-09-mcp-server-toggle.md`.*
 
 ---
 ## 12. Build notes (filled in after implementation, task_1789052626064_0)
@@ -143,7 +143,7 @@ Edge cases to lock in tests: rapid ON→OFF→ON (idempotent start/stop, no doub
 - **Single endpoint, not three.** Shipped only `GET /api/web/status`
   (`web_status.zig`, raw-JSON like `notify_test.zig`). Lifecycle A needs
   no server-side start/stop action — the flag is owned by
-  `PUT /api/config/nalar`, so `POST /api/web/start|stop` would have been
+  `PUT /api/config/pabrik`, so `POST /api/web/start|stop` would have been
   dead code. Frontend flow: toggle → PUT → status → auto-open.
 - **`--port 0` resolves via `web_port.pickFreePort(io)`** (xorshift64*
   seeded from `Io.Clock.now`, NOT `std.time.nanoTimestamp` — doesn't
@@ -158,7 +158,7 @@ Edge cases to lock in tests: rapid ON→OFF→ON (idempotent start/stop, no doub
   activated the 3 `config_test.zig` web-launch tests). Counts proved it:
   3192/3200 before registration → 3203/3211 after (+11). Static-contract
   grep tests lock both registrations.
-- **Frontend mock-shape lesson:** `NalarSettings.spec.ts` payloads had to
+- **Frontend mock-shape lesson:** `PabrikSettings.spec.ts` payloads had to
   gain `web_launch_enabled: false` — the always-write `syncToConfig`
   diffs against the snapshot, so a legacy-shaped mock (key absent)
   flashes dirty=true on load. Same reason the `vi.mock('../api')`

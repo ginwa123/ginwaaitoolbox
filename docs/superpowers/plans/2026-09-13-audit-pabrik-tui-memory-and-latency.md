@@ -1,12 +1,12 @@
-# Audit: `nalar-tui` memory leak + typing/scrolling latency (rev 1)
+# Audit: `pabrik-tui` memory leak + typing/scrolling latency (rev 1)
 
-**Goal:** explain why `nalar-tui` leaks memory and why typing / mouse-wheel
+**Goal:** explain why `pabrik-tui` leaks memory and why typing / mouse-wheel
 scrolling feels slow, prove both with measurements, and fix the root causes.
 
 **Status:** root-caused, fixed, and re-measured. Fixes + regression gates are in
 this PR; §7 lists what is deliberately left out.
 
-**Component:** `nalar-tui` — `src/apps/cli/src/tui/`, `src/apps/cli/src/tui_main.zig`,
+**Component:** `pabrik-tui` — `src/apps/cli/src/tui/`, `src/apps/cli/src/tui_main.zig`,
 binary target `install:tui`. Zig 0.16, Bubble-Tea-style (`Model.update(Msg) → Cmd`,
 `Model.view() → Frame`), single-threaded, poll-based streaming.
 
@@ -34,7 +34,7 @@ After the fixes (200×50 terminal, same pty harness):
 
 ## 2. How it was measured
 
-`nalar-tui` refuses to start unless stdin is a TTY, and both symptoms only exist
+`pabrik-tui` refuses to start unless stdin is a TTY, and both symptoms only exist
 at the terminal layer, so the probe drives the real binary inside a pty and samples
 `/proc/<pid>/status`:
 
@@ -258,8 +258,8 @@ AFTER   fake backend: user + assistant + wrapped line + tool card all render,
 
 ```bash
 zig build test:tui --summary all          # 169/169 pass
-zig build install:tui                     # produces zig-out/bin/nalar-tui
-python3 tests/functional/tui_perf_probe.py --binary zig-out/bin/nalar-tui
+zig build install:tui                     # produces zig-out/bin/pabrik-tui
+python3 tests/functional/tui_perf_probe.py --binary zig-out/bin/pabrik-tui
 #   idle 4 KB/s · 0.4 KB/key · p50 1.1 ms · PASS
 /home/ginwa/ginwaaitoolbox/.venv-func/bin/python -m pytest tests/functional/tui_perf_test.py -v
 #   3 passed
@@ -290,7 +290,7 @@ consecutive turns** in one session and asserts both turns render (F7).
 4. **Idle redraws** — the tick redraws even when nothing changed (1 % CPU, a few
    bytes to the terminal per tick). A dirty flag would make idle free; not needed
    for the reported symptoms.
-5. **`nalarcli`'s `main.zig:21` uses the same process arena.** It is a short-lived
+5. **`pabrikcli`'s `main.zig:21` uses the same process arena.** It is a short-lived
    CLI, so it does not have this bug in practice, but it is the same trap.
 6. **`VMIN=0/VTIME=1` remains a latent 100 ms trap for any future code path that
    reads stdin without polling first.**
@@ -304,5 +304,5 @@ consecutive turns** in one session and asserts both turns render (F7).
   scratch list; that list is freed in `Viewport.deinit`.
 * The TUI is POSIX-only (it already used `std.posix.termios`); `poll` and
   `TIOCGWINSZ` are Unix APIs, and Windows does not build the TUI today.
-* The pty gate is skipped in CI (CI installs only the `nalar` binary); run it
+* The pty gate is skipped in CI (CI installs only the `pabrik` binary); run it
   locally after `zig build install:tui`.

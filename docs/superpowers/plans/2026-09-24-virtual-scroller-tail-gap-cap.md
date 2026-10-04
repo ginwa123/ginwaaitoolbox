@@ -37,7 +37,7 @@ An earlier attempt (PR #355) clamped the sizer to `topSpacer + realContentHeight
 - [x] New spec `virtualScrollerTailGap.spec.ts` (7 tests): cap value, custom gap, `0` disables, latch release away from the tail, fresh re-record on window shift, fail-open on an un-laid-out window, never inflates above the model. Verified to FAIL when the cap default is set to 0.
 - [x] Full frontend unit suite: 3816 passed / 35 failed — the same 35 pre-existing failures (ChatView.*, workspacesStore*, FilePicker*, …) reproduce on a clean checkout with this file stashed, i.e. no new failures.
 - [x] `vue-tsc --noEmit -p tsconfig.app.json` clean; `oxlint`/`eslint` clean on the touched files.
-- [x] Playwright probe `tests/functional_ui/chatview_tail_gap_probe_test.py` on a real 700-message chat (Vite + nalar + Chromium): reachable blank ≤ maxTailGap at the bottom, tail rows still rendered, and 12 × 60px steps inside the tail region track scrollTop 1:1 (no jump/hole).
+- [x] Playwright probe `tests/functional_ui/chatview_tail_gap_probe_test.py` on a real 700-message chat (Vite + pabrik + Chromium): reachable blank ≤ maxTailGap at the bottom, tail rows still rendered, and 12 × 60px steps inside the tail region track scrollTop 1:1 (no jump/hole).
 - [x] Existing `tests/functional_ui/chatview_scroll_popin_probe_test.py` (3 tests, incl. SSE streaming + up-scroll into unmeasured head) still green.
 
 ## Out of scope

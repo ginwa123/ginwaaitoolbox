@@ -858,7 +858,7 @@ Create `src/ai_workflow/tui/handle_lsp_references_tool.zig`:
 
 ```zig
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
+const tree1_mod = @import("pabrikcore");
 const agent = tree1_mod.agent;
 const lsp_references_tool = tree1_mod.tool_models.lsp_references;
 
@@ -1176,4 +1176,4 @@ This implementation adds a new `lsp_references` tool that:
 
 ---
 
-**Plan complete and saved to `.nalar/plans/20250115_lsp_references_implementation.md`. Ready to execute?**
+**Plan complete and saved to `.pabrik/plans/20250115_lsp_references_implementation.md`. Ready to execute?**

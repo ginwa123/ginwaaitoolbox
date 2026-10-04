@@ -1,10 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-// NALAR.md stays in the list: the file was renamed by the rebrand, but every
-// existing checkout still has its build commands in the old name, and dropping
-// it would silently end context-loading for all of them.
-const memory_files = [_][]const u8{ "PABRIK.md", "NALAR.md", "CLAUDE.md", "AGENTS.md" };
+const memory_files = [_][]const u8{ "PABRIK.md", "CLAUDE.md", "AGENTS.md" };
 
 /// Build a working-directory context by concatenating the contents of
 /// `PABRIK.md`, `CLAUDE.md`, and `AGENTS.md` in the given `cwd`.

@@ -5,7 +5,7 @@
 
 ## Symptom
 
-User reported right-click in the desktop app (`nalar-desktop`) shows the
+User reported right-click in the desktop app (`pabrik-desktop`) shows the
 **WEBVIEW's default context menu** (Back, Forward, Stop, Reload, Open
 Frame in New Window, Inspect Element) instead of the **app's custom
 context menu** rendered by Vue components.
@@ -49,10 +49,10 @@ the right-click event reaches the page's JavaScript, where Vue's
   items added, defaults suppressed, the page's `@contextmenu` handlers
   get the event.
 
-### 2. macOS (WKWebView) — `src/apps/desktop_app/platform/macos/nalar_webview.mm`
+### 2. macOS (WKWebView) — `src/apps/desktop_app/platform/macos/pabrik_webview.mm`
 
-- Add a `WKUIDelegate` (`NalarUIDelegate`) to the existing
-  `NalarAppDelegate`-managed `WKWebViewConfiguration`.
+- Add a `WKUIDelegate` (`PabrikUIDelegate`) to the existing
+  `PabrikAppDelegate`-managed `WKWebViewConfiguration`.
 - Implement `webView:requestContextMenu:menuForElement:initiator:` to
   return `nil` (suppress the default menu). This is the public API
   (macOS 13.3+, iOS 16.4+); the deprecated `setMenuProvider` /
@@ -61,7 +61,7 @@ the right-click event reaches the page's JavaScript, where Vue's
   for it; macOS dev tools are typically accessed via Safari's Web
   Inspector via `wkwebview-devtools` private flag).
 
-### 3. Windows (WebView2) — `src/apps/desktop_app/platform/windows/nalar_webview.cpp`
+### 3. Windows (WebView2) — `src/apps/desktop_app/platform/windows/pabrik_webview.cpp`
 
 - Register `add_ContextMenuRequested` handler on the `ICoreWebView2`.
 - In the handler, call `args->put_Handled(TRUE)` to suppress the default
@@ -94,9 +94,9 @@ open the menu. This is already covered by existing tests
 ### 5. Cross-compile smoke
 
 - `zig build-obj -fno-emit-bin -target x86_64-windows-gnu` — confirms
-  the C++ `nalar_webview.cpp` compiles.
+  the C++ `pabrik_webview.cpp` compiles.
 - `zig build-obj -fno-emit-bin -target aarch64-macos` — confirms the
-  Objective-C++ `nalar_webview.mm` compiles.
+  Objective-C++ `pabrik_webview.mm` compiles.
 - `zig build test` on Linux — confirms all the Zig tests still pass.
 
 ## Out of scope
@@ -116,9 +116,9 @@ open the menu. This is already covered by existing tests
 - `src/apps/desktop_app/platform/linux.zig` — move `context-menu`
   signal connection outside the `enable_developer_extras` block,
   always return `1` (TRUE) to suppress the default menu.
-- `src/apps/desktop_app/platform/macos/nalar_webview.mm` — add
+- `src/apps/desktop_app/platform/macos/pabrik_webview.mm` — add
   `WKUIDelegate` implementation that suppresses the default menu.
-- `src/apps/desktop_app/platform/windows/nalar_webview.cpp` — add
+- `src/apps/desktop_app/platform/windows/pabrik_webview.cpp` — add
   `add_ContextMenuRequested` handler that sets `put_Handled(TRUE)`.
 
 **New test (1):**
@@ -131,8 +131,8 @@ open the menu. This is already covered by existing tests
 1. `zig build test --summary all` — 100% pass (no new failures).
 2. Cross-compile `zig build-obj -fno-emit-bin -target X` for Windows
    and macOS — both clean.
-3. Live smoke: build `zig-out/bin/nalar-desktop` on Linux, start it
-   pointing at the running nalar backend, click into a design page
+3. Live smoke: build `zig-out/bin/pabrik-desktop` on Linux, start it
+   pointing at the running pabrik backend, click into a design page
    with a kanban preview iframe, right-click anywhere — the browser
    menu should NOT appear. The page's `@contextmenu` handlers should
    fire when right-clicking on design elements / layer rows.

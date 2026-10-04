@@ -212,7 +212,7 @@ Frontend (feature gap, not a bug):
 - [ ] **5.2 Run the full verification suite:**
   ```bash
   zig build test --summary all 2>&1 | tail -n 5
-  NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+  PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
     python3 -m pytest tests/functional/kanban_task_image_urls_test.py -v
   cd src/apps/desktop && bun run test:run && bun run typecheck
   ```

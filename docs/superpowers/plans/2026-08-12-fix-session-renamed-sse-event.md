@@ -365,8 +365,8 @@ Create `src/ai_workflow/tui/http_handlers/session_event_type_test.zig`. Follow t
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const pabrikcore = @import("pabrikcore");
+const text_normalize = pabrikcore.helpers.text_normalize;
 
 const SSE_ON_EVENT_SEND_SESSION_PATH =
     "src/ai_workflow/tui/agentic_loop/sse_on_event_send_session.zig";
@@ -602,7 +602,7 @@ After both commits land, verify the fix in a real desktop build:
    ```
 2. Start the server on a non-8081 port:
    ```bash
-   ./zig-out/bin/nalar --port 8080 &
+   ./zig-out/bin/pabrik --port 8080 &
    ```
 3. Run the desktop frontend against port 8080 (the build/dev config already supports the override; check `src/apps/desktop/.env` or the vite proxy config for how `VITE_API_PORT` is read).
 4. Open the sidebar, click `+ Add Item → Standard Chat` on a workspace item.

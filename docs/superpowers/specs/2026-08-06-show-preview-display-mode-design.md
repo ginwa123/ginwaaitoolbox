@@ -30,7 +30,7 @@ Vue Test Utils, localStorage (existing pattern). No Zig changes
 | Decision | Why |
 |---|---|
 | **User-controlled toggle, NOT LLM-controlled `display_mode` param** | User request: "let user click, if want to show preview, it will show on preview if inline it will inline, like diffview, between split or unified". Mirrors the existing `DiffView` split/unified toggle — UX-driven, not LLM-driven. |
-| **Mode persists across reloads via localStorage** | Standard project pattern (e.g. `nalar-preview-panel-width`, `kanban-column-width`, chat scroll restoration). Key: `nalar-preview-display-mode`. |
+| **Mode persists across reloads via localStorage** | Standard project pattern (e.g. `pabrik-preview-panel-width`, `kanban-column-width`, chat scroll restoration). Key: `pabrik-preview-display-mode`. |
 | **Default mode is `side`** | Matches current behavior — every existing user keeps what they have today. Backwards compatible. |
 | **Extract `<PreviewContentRenderer>` shared component** | Two consumers (PreviewSidePanel + ShowPreview). DRY: avoids duplicating the 5-branch rendering logic and the HTML-escape / iframe-sandbox / marked() pipeline. |
 | **Side panel auto-hides when mode=`inline`** | The side panel's purpose is to show previews; when previews render inline, hiding the panel reclaims the screen. Implemented via the existing `previewPanelDismissed` flag (set to `true` when switching to inline). |
@@ -193,7 +193,7 @@ Then extract from PreviewSidePanel (pure relocation — PreviewSidePanel mounts 
 ## Pitfalls
 
 - **Don't lose the existing auto-collapse behavior** — the side panel's collapse/dismiss flags are already used to manage the panel. The new `mode` is orthogonal: `mode='side'` + `collapsed=true` = user collapsed panel; `mode='side'` + `dismissed=true` = user dismissed panel. `mode='inline'` = auto-dismiss (overlay). Don't conflate.
-- **localStorage key collision** — `nalar-preview-display-mode` is new, not used anywhere. Verify by grep.
+- **localStorage key collision** — `pabrik-preview-display-mode` is new, not used anywhere. Verify by grep.
 - **Vue reactivity** — `setMode` must update the reactive ref, not just localStorage. Subsequent reads of `mode.value` in computed properties must re-evaluate.
 - **Mounting `<PreviewContentRenderer>` inside `<ShowPreview>` doesn't affect the side panel** — when `mode === 'side'`, ShowPreview stays in its current minimal-card form. When `mode === 'inline'`, the rich content renders ONLY in the chat bubble (not duplicated in the side panel).
 - **Click handler differences** — in inline mode, clicking the header should NOT call `openPreviewForMessage` (the content is already visible). The new test `ShowPreview.vue` should lock this in.

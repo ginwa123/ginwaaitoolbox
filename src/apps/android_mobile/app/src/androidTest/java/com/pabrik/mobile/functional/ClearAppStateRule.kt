@@ -39,7 +39,7 @@ import org.junit.rules.ExternalResource
  *
  * `PabrikCacheDatabase.get()` is a process-wide singleton holding an open
  * connection, and it survives from one test to the next. Deleting
- * `nalar_cache.db` would therefore leave that connection pointing at an
+ * `pabrik_cache.db` would therefore leave that connection pointing at an
  * unlinked inode: the wipe would look like it worked and change nothing, and
  * the next test would read the previous test's rows out of a file that no
  * longer exists. `clear()` on each cache issues a real `DELETE`, so the rows

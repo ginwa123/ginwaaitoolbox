@@ -63,6 +63,7 @@ from typing import Sequence
 #: The Gradle project the graph describes.
 ANDROID_PROJECT = Path("src") / "apps" / "android_mobile"
 
+
 #: Where every navigation decision is made: the routes, the `NavHost`, every
 #: `navigate()` call site, and the one back helper they all go through.
 NAV_GRAPH_SOURCE = (

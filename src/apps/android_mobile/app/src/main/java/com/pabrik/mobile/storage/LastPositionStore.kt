@@ -167,7 +167,7 @@ class PrefsLastPositionStore(context: Context) : LastPositionStore {
     }
 
     private companion object {
-        const val PREFERENCES_NAME = "nalar_position"
+        const val PREFERENCES_NAME = "pabrik_position"
         const val UNSCOPED = "unscoped"
     }
 }

@@ -165,7 +165,7 @@ Net latency would be unchanged, and the fix would look like it did nothing.
 | Decision | Value | Why |
 |---|---|---|
 | Where does the cancel check live? | **In `Agent.callStreaming`'s SSE loop**, via a `cancel_fn` on `AgentCall` | `StreamCallback` returns `void` (`Agent.zig:923`), so `stream_callback` cannot signal cancel. `StreamingContext` (`workflow.zig:108`) has no function pointer, and `Agent.zig` must not import workflow's DB helpers (cycle). A `?*const fn () bool` thunk keeps the dependency direction workflow → agent — same shape as the existing `mcp_cancel_thunk` (`workflow.zig:381-407`). |
-| Transport of the cancel signal | **Keep the DB flag as the source of truth** (Phase A). Add an in-memory token only for the stalled-park case (Phase B2) | The stop handler and the workflow share one process (`session_stop.zig:44` uses `nalarcore.getSingleton()`), so an atomic is valid — but the DB write must stay: `workflow.zig:695`, `retry_delay_ms.zig:92` and the MCP thunk all read it. |
+| Transport of the cancel signal | **Keep the DB flag as the source of truth** (Phase A). Add an in-memory token only for the stalled-park case (Phase B2) | The stop handler and the workflow share one process (`session_stop.zig:44` uses `pabrikcore.getSingleton()`), so an atomic is valid — but the DB write must stay: `workflow.zig:695`, `retry_delay_ms.zig:92` and the MCP thunk all read it. |
 | Do we abort the HTTP transfer? | **Yes** — call `stream.cancel()` as soon as cancel is detected | Otherwise `deinit`'s join waits on the queue to fill (§2.1). |
 | What does the UI do on Stop? | **Keep the current design** — no optimistic flip; the UI settles when `worker_deleted` arrives | `ChatView.vue:2953-2957` deliberately documents this, and with Phase A+B that event now lands within ~1 chunk. Avoids the flicker race the comment describes, and avoids the "chunks keep arriving after we said stopped" clamping problem. |
 | Stall case (reasoning pause, zero bytes)? | **Phase B2, recommended but separable** | While parked in `futexWaitTimeout` there is nothing the Agent can poll. Needs kabelweb to wake the consumer on `cancel()`. |
@@ -452,7 +452,7 @@ Nothing else settles the transcript.
 
 ## 8. Verification
 
-**Per the repo rules, no `nohup ./nalar --port 8080` + `curl`.** Use the
+**Per the repo rules, no `nohup ./pabrik --port 8080` + `curl`.** Use the
 functional harness (`tests/functional/harness.py`) — it picks a free port in
 8080..8199, isolates `HOME` to a tmpdir, and tears down. **Never touch port 8081.**
 

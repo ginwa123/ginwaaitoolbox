@@ -146,9 +146,9 @@ timeout 360 bash -c 'rm -rf zig-out/bin && zig build'
 # Cross-compile smoke (mandatory — the new SQL helpers can be hidden
 # by lazy analysis without these)
 timeout 60 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 timeout 60 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 
 # Frontend
 cd src/apps/desktop

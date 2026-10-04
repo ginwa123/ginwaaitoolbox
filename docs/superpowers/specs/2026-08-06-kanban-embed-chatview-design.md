@@ -225,7 +225,7 @@ Decision: **(a)** — move it into the store. The store already owns `activeTask
 - **No new endpoint.** No API changes.
 - **No new stores.** Only one computed moves from AppLayout into the workspaces store.
 - **No new tests files for the backend** (none touched).
-- **Smoke test on a real running `nalar` instance** (port 8080, not 8081) — open a kanban, click a task, confirm chatview appears; drag the resize handle, confirm width changes; close the chat, confirm board fills the main area.
+- **Smoke test on a real running `pabrik` instance** (port 8080, not 8081) — open a kanban, click a task, confirm chatview appears; drag the resize handle, confirm width changes; close the chat, confirm board fills the main area.
 
 ---
 
@@ -244,9 +244,9 @@ rm -rf zig-out/bin && timeout 360 zig build
 
 # 4. Cross-compile smoke (Windows + macOS)
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 
 # 5. Frontend type-check
 cd src/apps/desktop

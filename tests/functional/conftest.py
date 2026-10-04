@@ -66,10 +66,19 @@ def _resolve_pabrik_bin() -> Path:
       5. ``./zig-out/bin/pabrikcore-macos-x86_64`` (Mac Intel)
     """
     candidates: list[Path] = []
-    env_bin = os.environ.get("PABRIK_BIN")
+    env_bin = os.environ.get("PABRIK_BIN") or os.environ.get("PABRIK_BIN")
     if env_bin:
         candidates.append(Path(env_bin))
     candidates.extend([
+        Path("./zig-out/bin/pabrik"),
+        Path("./zig-out/bin/pabrik.exe"),
+        Path("./zig-out/bin/pabrikcore-linux-x86_64"),
+        Path("./zig-out/bin/pabrikcore-macos-aarch64"),
+        Path("./zig-out/bin/pabrikcore-macos-x86_64"),
+        Path("./zig-out/bin/pabrikcore-windows-x86_64"),
+        Path("./zig-out/bin/pabrikcore-windows-x86_64.exe"),
+        # Pre-rebrand artifact names, probed after the current ones so a
+        # developer who has not rebuilt since the rename still gets a binary.
         Path("./zig-out/bin/pabrik"),
         Path("./zig-out/bin/pabrik.exe"),
         Path("./zig-out/bin/pabrikcore-linux-x86_64"),

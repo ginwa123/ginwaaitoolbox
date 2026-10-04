@@ -74,8 +74,18 @@ pub fn resolve(
         // `dir\pabrik.exe` is sitting right there. Concatenating
         // `pabrik` + `.exe` ourselves and passing the single
         // `dir\pabrik.exe` to `path.join` sidesteps the bug.
-        if (try probeServiceBinary(allocator, self_dir)) |found| return found;
-    }
+        const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+        const base_name = if (exe_suffix.len > 0)
+            std.fmt.allocPrint(allocator, "pabrik{s}", .{exe_suffix}) catch return null
+        else
+            allocator.dupe(u8, "pabrik") catch return null;
+        defer allocator.free(base_name);
+        const candidate = std.fs.path.join(allocator, &.{ self_dir, base_name }) catch return null;
+        if (fileExists(candidate)) {
+            return candidate; // hand off ownership
+        }
+        allocator.free(candidate);
+    }    }
 
     // 3. $PATH lookup. PATH separator is OS-specific: `:` on
     //    Linux/macOS, `;` on Windows. We pick the separator by
@@ -97,34 +107,18 @@ pub fn resolve(
     // `.exe` ourselves before passing to `path.join`, otherwise
     // `path.join` splits on `/` and produces `dir/pabrik/.exe`.
     const path_separator: u8 = if (builtin.os.tag == .windows) ';' else ':';
+    const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+    const base_name = if (exe_suffix.len > 0)
+        std.fmt.allocPrint(allocator, "pabrik{s}", .{exe_suffix}) catch return null
+    else
+        allocator.dupe(u8, "pabrik") catch return null;
+    defer allocator.free(base_name);
     var it = std.mem.tokenizeScalar(u8, path_env, path_separator);
     while (it.next()) |dir| {
-        if (try probeServiceBinary(allocator, dir)) |found| return found;
-    }
-    return null;
-}
-
-/// Look for the backend binary in `dir`, current name first, then the
-/// pre-rebrand name.
-///
-/// The legacy name is probed because the desktop shell is installed
-/// separately from the service: a `pabrik-desktop` on an upgraded box is
-/// routinely paired with a `nalar` service binary that is still on $PATH from
-/// the previous install. Failing to find it surfaces as `PabrikNotFound` on
-/// stderr — invisible when the shell was launched from a desktop icon.
-fn probeServiceBinary(allocator: std.mem.Allocator, dir: []const u8) !?[]u8 {
-    const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
-    for ([_][]const u8{ "pabrik", "nalar" }) |base| {
-        // Concatenate the suffix ourselves — see the long note at the call
-        // site: `path.join` would split `dir/pabrik/.exe` into a directory
-        // named `pabrik` containing a file `.exe`.
-        const name = if (exe_suffix.len > 0)
-            try std.fmt.allocPrint(allocator, "{s}{s}", .{ base, exe_suffix })
-        else
-            try allocator.dupe(u8, base);
-        defer allocator.free(name);
-        const candidate = try std.fs.path.join(allocator, &.{ dir, name });
-        if (fileExists(candidate)) return candidate; // hand off ownership
+        const candidate = std.fs.path.join(allocator, &.{ dir, base_name }) catch continue;
+        if (fileExists(candidate)) {
+            return candidate;
+        }
         allocator.free(candidate);
     }
     return null;
@@ -254,19 +248,14 @@ pub fn findInstalledWebapp(
 ) ?[]u8 {
     if (builtin.os.tag != .windows) return null;
 
-    // 1. %LOCALAPPDATA%\<app>\html\index.html — both the current and the
-    //    pre-rebrand directory, because Install-Pabrik.ps1 writes to a
-    //    per-app folder that an already-installed app still has under the old
-    //    name until the user re-runs the installer.
+    // 1. %LOCALAPPDATA%\pabrik\html\index.html
     if (std.c.getenv("LOCALAPPDATA")) |appdata_z| {
         const appdata = std.mem.sliceTo(appdata_z, 0);
-        for ([_][]const u8{ "pabrik", "nalar" }) |app| {
-            const probe = std.fs.path.join(allocator, &.{ appdata, app, "html", "index.html" }) catch null;
-            if (probe) |p| {
-                defer allocator.free(p);
-                if (fileExists(p)) {
-                    return std.fs.path.join(allocator, &.{ appdata, app, "html" }) catch null;
-                }
+        const probe = std.fs.path.join(allocator, &.{ appdata, "pabrik", "html", "index.html" }) catch null;
+        if (probe) |p| {
+            defer allocator.free(p);
+            if (fileExists(p)) {
+                return std.fs.path.join(allocator, &.{ appdata, "pabrik", "html" }) catch null;
             }
         }
     }
@@ -286,13 +275,11 @@ pub fn findInstalledWebapp(
     // 3. Legacy webapp/ fallbacks (pre-rename). Removed once all installs migrate.
     if (std.c.getenv("LOCALAPPDATA")) |appdata_z| {
         const appdata = std.mem.sliceTo(appdata_z, 0);
-        for ([_][]const u8{ "pabrik", "nalar" }) |app| {
-            const probe = std.fs.path.join(allocator, &.{ appdata, app, "webapp", "index.html" }) catch null;
-            if (probe) |p| {
-                defer allocator.free(p);
-                if (fileExists(p)) {
-                    return std.fs.path.join(allocator, &.{ appdata, app, "webapp" }) catch null;
-                }
+        const probe = std.fs.path.join(allocator, &.{ appdata, "pabrik", "webapp", "index.html" }) catch null;
+        if (probe) |p| {
+            defer allocator.free(p);
+            if (fileExists(p)) {
+                return std.fs.path.join(allocator, &.{ appdata, "pabrik", "webapp" }) catch null;
             }
         }
     }

@@ -222,7 +222,7 @@ The third failure mode is rare (the session_create handler is robust) but the fa
 | NEW  | `src/apps/desktop/src/__tests__/KanbanView.createAndRun.spec.ts` | Behavioural: host calls `addTask` then `moveTaskToColumn` then `sendChatMessage` in correct order; navigates only on `status: 'queued'`; partial-success toast on failed send |
 | NEW  | `src/apps/desktop/src/__tests__/workspacesStoreRunAgent.spec.ts` | Behavioural: `runAgentOnNewTask` forwards `queueMessage`, `cwd`, `isAutoRetryUntilStop` correctly |
 | EDIT | `docs/SPEC.md` | Add §3.7 entry; §10.2.1 PR index row |
-| EDIT | `NALAR.md` | Append "### 2026-08-06: kanban create-task-run-agent" changelog entry |
+| EDIT | `PABRIK.md` | Append "### 2026-08-06: kanban create-task-run-agent" changelog entry |
 
 Total: **8 files** (3 NEW, 5 EDIT). No backend changes. No migration. No Zig changes.
 

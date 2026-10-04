@@ -85,7 +85,7 @@ The pre-existing "parameters include query, tags, limit, offset, with_content" t
 ## Verification
 
 - `zig build test --summary all` → **2448 pass, 6 skip, 0 fail** (baseline ~2401 → +47 includes 5 new tests + other recent-test additions on main)
-- `zig build nalar-desktop --summary all` → **10/10 steps succeeded**
+- `zig build pabrik-desktop --summary all` → **10/10 steps succeeded**
 - TDD discipline followed: tests added before implementation, compile errors confirmed at the schema level before the implementation patch (5 `.id = "..."` struct-initializer errors), all 5 + the updated schema test pass after the patch.
 
 ## What was NOT done (intentional)

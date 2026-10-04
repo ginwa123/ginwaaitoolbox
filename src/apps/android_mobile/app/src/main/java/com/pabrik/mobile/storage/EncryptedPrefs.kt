@@ -61,8 +61,8 @@ class EncryptedPrefs(
     }
 
     companion object {
-        const val PREFERENCES_NAME = "nalar_auth"
+        const val PREFERENCES_NAME = "pabrik_auth"
         const val PAYLOAD_KEY = "session_cookie"
-        const val KEY_ALIAS = "nalar_session_key_v1"
+        const val KEY_ALIAS = "pabrik_session_key_v1"
     }
 }

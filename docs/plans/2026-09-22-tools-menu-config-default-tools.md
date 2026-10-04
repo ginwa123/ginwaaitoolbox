@@ -2,14 +2,14 @@
 
 Date: 2026-09-22
 Task: `new menu name tools` (task_1790096028573_1)
-Worktree: `/home/ginwa/.config/nalar/.worktrees/new-menu-name-tools-1790096026633`
+Worktree: `/home/ginwa/.config/pabrik/.worktrees/new-menu-name-tools-1790096026633`
 Status: planning — for human review before any implementation
 
 Wireframe: [`docs/plans/2026-09-22-tools-menu-wireframe.html`](./2026-09-22-tools-menu-wireframe.html)
 
 ## 1. Goal
 
-Add a **Tools** tab in Nalar Settings, beside **MCP Servers**
+Add a **Tools** tab in Pabrik Settings, beside **MCP Servers**
 (`General | Profiles | MCP Servers | Tools`). `config.json` gains a
 top-level array `"tools": ["read_file", …]` — the **default tool
 checklist** the agent uses:
@@ -19,7 +19,7 @@ checklist** the agent uses:
 
 The frontend renders the array as a checkbox list built from the real
 tool registry (name + description), riding the existing Settings
-save bar / `PUT /api/config/nalar`.
+save bar / `PUT /api/config/pabrik`.
 
 Scope: planning + wireframe only in this task. No implementation until
 the human approves.
@@ -28,29 +28,29 @@ the human approves.
 
 ### 2.1 Settings tabs (frontend)
 
-- Tab strip: `src/apps/desktop/src/components/nalar/NalarTabStrip.vue:6,25-30`
+- Tab strip: `src/apps/desktop/src/components/pabrik/PabrikTabStrip.vue:6,25-30`
   — `type TabId = 'general'|'profiles'|'mcp'` + literal `tabs` array.
-- Orchestrator: `src/apps/desktop/src/components/NalarSettings.vue:53`
-  (`type Tab`), `:593` (`<NalarTabStrip v-model="activeTab" />`),
+- Orchestrator: `src/apps/desktop/src/components/PabrikSettings.vue:53`
+  (`type Tab`), `:593` (`<PabrikTabStrip v-model="activeTab" />`),
   MCP list state `:100`, hydrate `:144`, serialize via `syncToConfig()`
   `:175-203`, deep watch `:230-240`, section mount `:658-666`.
-- Save flow: `composables/useNalarConfig.ts` (snapshot-diff `dirty`) →
-  sticky `NalarSaveBar` (mounted `NalarSettings.vue:690-697`) →
-  `PUT /api/config/nalar` with the **whole config object**
-  (`api/index.ts:4238-4244`). Load: `GET /api/config/nalar` (`:4230`).
+- Save flow: `composables/usePabrikConfig.ts` (snapshot-diff `dirty`) →
+  sticky `PabrikSaveBar` (mounted `PabrikSettings.vue:690-697`) →
+  `PUT /api/config/pabrik` with the **whole config object**
+  (`api/index.ts:4238-4244`). Load: `GET /api/config/pabrik` (`:4230`).
 - ⚠️ Active tab is **not URL-synced** today — it lives in
-  `localStorage['nalar-settings-active-tab']`
-  (`NalarTabStrip.vue:8,34-43`), violating the repo's
+  `localStorage['pabrik-settings-active-tab']`
+  (`PabrikTabStrip.vue:8,34-43`), violating the repo's
   "every view switch must update the browser URL" rule.
   Canonical pattern to copy: `KanbanSettingsView.vue:68-105`
   (`?section=` computed + `router.replace`). Query key **must be
   `section`, never `tab`** — `?tab=` is owned by browser tab-mode
   (`helpers/tabTarget.ts:281-293`, `stores/tabs.ts:437`).
 - Reusable primitives (no Toggle/Checkbox component exists — copy the
-  inline patterns): checkbox row `NalarGeneralSection.vue:118-133`,
+  inline patterns): checkbox row `PabrikGeneralSection.vue:118-133`,
   pill toggle `McpServersSection.vue:84-97`, `+ Add`-style button
   `McpServersSection.vue:36-41`, `EmptyState.vue`, `ConfirmDialog.vue`,
-  section header `NalarGeneralSection.vue:100-106`. Palette/tokens in
+  section header `PabrikGeneralSection.vue:100-106`. Palette/tokens in
   `style.css:4-77`; Tailwind utilities + inline `var(…)` colors; no i18n.
 - Tool catalog endpoint **already exists**: `GET /api/agent-tools/registry`
   → `[{name, description}]` (`src/http_handlers/agent_tools_registry.zig:60`,
@@ -58,14 +58,14 @@ the human approves.
 
 ### 2.2 config.json (backend)
 
-- Path: `$HOME/.config/nalar/config.json` (Linux; `Config.zig:2445-2482`).
+- Path: `$HOME/.config/pabrik/config.json` (Linux; `Config.zig:2445-2482`).
 - Parse struct `LlmConfigJson` (`Config.zig:291-341`) — every field has
   a default, `ignore_unknown_fields = true`.
 - Endpoints (merge semantics — read file, apply only fields present in body):
   | Route | Handler | Structs to touch |
   |---|---|---|
-  | `GET /api/config/nalar` | `nalar_config_get.zig:12` | read `ConfigJson` `:114`, response `NalarConfigResponse` (`http_response.zig:356`) |
-  | `PUT /api/config/nalar` | `nalar_config_put.zig:27` | `ConfigInput` `:494`, write-struct `ConfigJson` `:610` |
+  | `GET /api/config/pabrik` | `pabrik_config_get.zig:12` | read `ConfigJson` `:114`, response `PabrikConfigResponse` (`http_response.zig:356`) |
+  | `PUT /api/config/pabrik` | `pabrik_config_put.zig:27` | `ConfigInput` `:494`, write-struct `ConfigJson` `:610` |
 - ⚠️ **PUT strips undeclared keys**: it re-serializes from its own
   write-struct, so any field missing there is erased from disk on the
   next Settings save. Adding `tools` must touch **all four** structs
@@ -162,9 +162,9 @@ request-body allowed_tools
    - `Config.zig:291` `LlmConfigJson`: `tools: ?[]const []const u8 = null`
      (typed — consistent with existing typed fields; `?std.json.Value`
      is the tolerant alternative but pushes re-parsing into every consumer).
-   - `nalar_config_get.zig:114` read struct + `http_response.zig:356`
-     `NalarConfigResponse`: `tools: ?[]const []const u8 = null`.
-   - `nalar_config_put.zig:494` `ConfigInput` + `:610` write struct:
+   - `pabrik_config_get.zig:114` read struct + `http_response.zig:356`
+     `PabrikConfigResponse`: `tools: ?[]const []const u8 = null`.
+   - `pabrik_config_put.zig:494` `ConfigInput` + `:610` write struct:
      optional = "no change", present = whole-list replace (mirrors
      `mcp_servers` semantics `:342-363`); validate names → 400
      `InvalidToolName`.
@@ -182,19 +182,19 @@ request-body allowed_tools
    `allowlistFilter` treats exact `"none"` as empty set; agent override
    emits `"none"` for zero enabled rows; wire the `[]` config paths to it.
 5. No DB migration (config-only), no new route (reuses GET/PUT
-   `/api/config/nalar` + existing `GET /api/agent-tools/registry`).
+   `/api/config/pabrik` + existing `GET /api/agent-tools/registry`).
 
 ## 6. Frontend changes
 
-1. `NalarTabStrip.vue` — `TabId += 'tools'`; append
+1. `PabrikTabStrip.vue` — `TabId += 'tools'`; append
    `{ id: 'tools', label: 'Tools' }` after `mcp`.
-2. `NalarSettings.vue` — `Tab += 'tools'`; `toolsList = ref<string[]>()`;
+2. `PabrikSettings.vue` — `Tab += 'tools'`; `toolsList = ref<string[]>()`;
    hydrate in `syncFromConfig()` from `c.tools`; serialize in
-   `syncToConfig()`; add to the deep watch array so `NalarSaveBar` /
+   `syncToConfig()`; add to the deep watch array so `PabrikSaveBar` /
    `PUT` dirty-tracking works; mount new `ToolsSection`.
-3. **NEW** `components/nalar/ToolsSection.vue` — description paragraph +
+3. **NEW** `components/pabrik/ToolsSection.vue` — description paragraph +
    `All / None` actions + grouped checklist rows
-   (checkbox-row pattern from `NalarGeneralSection.vue:118-133`):
+   (checkbox-row pattern from `PabrikGeneralSection.vue:118-133`):
    catalog from `GET /api/agent-tools/registry`; client-side grouping by
    a static `name → category` map (frontend-only, fallback bucket
    `Other`); special pills: `main-agent only` on
@@ -219,13 +219,13 @@ request-body allowed_tools
 - **Functional (python harness)** — any HTTP/wire claim graduates here
   (`tests/functional/harness.py`, free port 8080-8199, **never 8081**,
   isolated tmpdir HOME, no live-server `curl`):
-  - `GET /api/config/nalar` → `tools` key present after PUT;
+  - `GET /api/config/pabrik` → `tools` key present after PUT;
   - Settings-save cycle (the exact whole-config PUT body the frontend
     sends) does **not** erase `tools`;
   - plain-chat session created with config `tools` set → wire
     `tools[]` equals the checklist (design/chat fallback fires);
   - config `[]` → empty wire set (D3) vs absent → legacy defaults.
-- **Vitest**: `NalarTabStrip.spec.ts` + `NalarSettings.spec.ts` currently
+- **Vitest**: `PabrikTabStrip.spec.ts` + `PabrikSettings.spec.ts` currently
   assert the exact 3-tab set — update to 4; new `ToolsSection.spec.ts`
   (render from registry, toggle → emits, hydration from config); URL
   round-trip spec (click → `?section=tools`; mount-with-query → active),

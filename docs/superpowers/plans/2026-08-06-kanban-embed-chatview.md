@@ -17,9 +17,9 @@
 ## Global Constraints
 
 - **Cross-platform**: every feature MUST work on Linux, macOS, AND Windows (per project rule AGENTS.md §"Top-line mandate"). Verify with `zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc ...` and `... -target aarch64-macos -lc ...` at the end of the plan.
-- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` / `indexOf(u8, source, ...)` patterns anywhere — see `~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md`.
-- **No port 8081**: smoke tests use port 8080 (the always-running dev nalar on 8081 is off-limits).
-- **Behavioural Vue tests use `@vue/test-utils` `mount`** with `setActivePinia(createPinia())` in `beforeEach`. Mock fetch via `vi.fn()` returning `{ ok, status, json, text }` shape (see `.nalar/memories/nalar-frontend-patterns.md` §"`apiFetch` mock helpers need `text()` method").
+- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` / `indexOf(u8, source, ...)` patterns anywhere — see `~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md`.
+- **No port 8081**: smoke tests use port 8080 (the always-running dev pabrik on 8081 is off-limits).
+- **Behavioural Vue tests use `@vue/test-utils` `mount`** with `setActivePinia(createPinia())` in `beforeEach`. Mock fetch via `vi.fn()` returning `{ ok, status, json, text }` shape (see `.pabrik/memories/pabrik-frontend-patterns.md` §"`apiFetch` mock helpers need `text()` method").
 - **TDD discipline**: every implementation task starts with a failing test, then minimal code to make it pass, then a commit.
 - **Pure relocation**: no UX changes beyond what this plan specifies. The resize behavior, localStorage key, `:key` strategies, and event flow upward are preserved exactly.
 
@@ -859,9 +859,9 @@ Expect: builds successfully.
 ```bash
 cd /home/ginwa/ginwaaitoolbox
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig 2>&1 | tail -n 20
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig 2>&1 | tail -n 20
 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig 2>&1 | tail -n 20
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig 2>&1 | tail -n 20
 ```
 
 Expect: both compile clean (no errors).
@@ -877,13 +877,13 @@ Expect: builds successfully.
 
 ### Step 6.8: Manual smoke (port 8080)
 
-The dev `nalar` runs on port 8081 — leave it alone. Spin up a fresh instance on port 8080 for smoke:
+The dev `pabrik` runs on port 8081 — leave it alone. Spin up a fresh instance on port 8080 for smoke:
 
 ```bash
-# Start nalar on port 8080 in the background (use a tmp HOME)
-TMPHOME=$(mktemp -d /tmp/nalar-smoke-XXXX)
-HOME="$TMPHOME" /home/ginwa/ginwaaitoolbox/zig-out/bin/nalar --port 8080 --static-dir /home/ginwa/ginwaaitoolbox/src/apps/desktop/dist &
-NALAR_PID=$!
+# Start pabrik on port 8080 in the background (use a tmp HOME)
+TMPHOME=$(mktemp -d /tmp/pabrik-smoke-XXXX)
+HOME="$TMPHOME" /home/ginwa/ginwaaitoolbox/zig-out/bin/pabrik --port 8080 --static-dir /home/ginwa/ginwaaitoolbox/src/apps/desktop/dist &
+PABRIK_PID=$!
 sleep 3
 
 # Wait for health
@@ -896,7 +896,7 @@ done
 # (For automated smoke, the existing tests/functional/kanban_lifecycle_test.py covers this.)
 
 # Cleanup
-kill $NALAR_PID
+kill $PABRIK_PID
 rm -rf "$TMPHOME"
 ```
 

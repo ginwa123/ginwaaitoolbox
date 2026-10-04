@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the per-row yellow spinner circle that currently floats next to each chat name in the sidebar (`ChatsList.vue:467-475`) with a thin **per-session** animated slider that sits at the bottom edge of that chat's row in the sidebar. The slider shows only when the LLM worker for that session is running (`processingState[sessionId] === true`). All sessions are independent: one session processing shows its slider while every other session sits idle. **No global bottom-of-window bar** and **no duplicate slider inside `ChatView` or `SubAgentPeekPanel`** — the sidebar row IS the indicator for "this session is working", and adding the same indicator elsewhere signals the same fact twice for the same session (one of those signals is redundant by design — see the design memory at `~/.config/nalar/.../design-no-redundant-loading-indicators`).
+**Goal:** Replace the per-row yellow spinner circle that currently floats next to each chat name in the sidebar (`ChatsList.vue:467-475`) with a thin **per-session** animated slider that sits at the bottom edge of that chat's row in the sidebar. The slider shows only when the LLM worker for that session is running (`processingState[sessionId] === true`). All sessions are independent: one session processing shows its slider while every other session sits idle. **No global bottom-of-window bar** and **no duplicate slider inside `ChatView` or `SubAgentPeekPanel`** — the sidebar row IS the indicator for "this session is working", and adding the same indicator elsewhere signals the same fact twice for the same session (one of those signals is redundant by design — see the design memory at `~/.config/pabrik/.../design-no-redundant-loading-indicators`).
 
 **Architecture:**
 
@@ -69,7 +69,7 @@ Three pieces, two new files:
 | `src/apps/desktop/src/components/SessionSlider.spec.ts` | NEW | Behavioural tests (hidden when not processing, visible when processing, multiple sessions independent, reduced-motion fallback) |
 | `src/apps/desktop/src/components/views/ChatsList.vue` | EDIT | Replace the yellow spinner `<div>` at lines 467-475 with `<SessionSlider :session-id="item.id" />`; remove the obsolete local `processing` field rendering (the slider reads `processingState[item.id]` itself, so the `navItem.processing` watcher at lines 130-140 becomes dead — clean it up) |
 | `docs/SPEC.md` | EDIT | Add §3.6 per-session slider section; update UI §3 sidebar section |
-| `NALAR.md` | EDIT | Append "### 2026-08-29: per-session LLM loading slider" changelog entry |
+| `PABRIK.md` | EDIT | Append "### 2026-08-29: per-session LLM loading slider" changelog entry |
 
 Total: **5 files** (2 NEW, 1 EDIT, 2 docs). No backend changes, no migration, no Zig changes. Even smaller than the original plan — no ChatView mount, no peek panel mount, just the one indicator in the one place the user already looks at for the sidebar sessions.
 
@@ -371,7 +371,7 @@ git commit -m "feat(desktop): SessionSlider per-session LLM loading indicator"
 
 ## Task 2: Wire `SessionSlider` into `ChatsList` rows (replace the spinner)
 
-> **Note:** This is the ONLY consumer of `SessionSlider`. We intentionally do NOT mount it in `ChatView` (above the input) or `SubAgentPeekPanel` — the sidebar row already shows the same signal for the same session, and duplicating it would be confusing (two sliders moving on the same screen for one worker). See the design memory at `~/.config/nalar/.../design-no-redundant-loading-indicators` if you want the full rationale. The peek panel keeps its OWN internal status indicator (idle / loading / streaming / complete / error), which is about sub-agent progress — a different scope.
+> **Note:** This is the ONLY consumer of `SessionSlider`. We intentionally do NOT mount it in `ChatView` (above the input) or `SubAgentPeekPanel` — the sidebar row already shows the same signal for the same session, and duplicating it would be confusing (two sliders moving on the same screen for one worker). See the design memory at `~/.config/pabrik/.../design-no-redundant-loading-indicators` if you want the full rationale. The peek panel keeps its OWN internal status indicator (idle / loading / streaming / complete / error), which is about sub-agent progress — a different scope.
 
 **Why:** This is the biggest user-visible change — the sidebar's per-row yellow spinner becomes a sliding yellow bar at the row's bottom edge. Sessions are independent: only the rows whose sessions are processing show a slider.
 
@@ -481,7 +481,7 @@ git commit -m "feat(desktop): wire ChatsList rows to SessionSlider"
 
 **Files:**
 - `docs/SPEC.md` — EDIT
-- `NALAR.md` — EDIT
+- `PABRIK.md` — EDIT
 
 ### Step 3.1: docs/SPEC.md
 
@@ -512,7 +512,7 @@ animates `translateX(-100%) → 100%` on a 1.4 s loop while
   indicator elsewhere would double-deal the same signal.
 ```
 
-### Step 3.2: NALAR.md
+### Step 3.2: PABRIK.md
 
 Append a new "### 2026-08-29: per-session LLM loading slider" entry under the "Recent changes" section. Format mirrors the other entries (one-line **What landed**, **Files**, **Verification**, **Plan**).
 
@@ -520,7 +520,7 @@ Append a new "### 2026-08-29: per-session LLM loading slider" entry under the "R
 
 ```bash
 cd /home/ginwa/ginwaaitoolbox
-git add docs/SPEC.md NALAR.md
+git add docs/SPEC.md PABRIK.md
 git commit -m "docs: per-session LLM slider — SPEC §3.6 + changelog entry"
 ```
 

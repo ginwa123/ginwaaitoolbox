@@ -285,18 +285,14 @@ def test_audit_has_no_raw_back_call_in_the_real_graph(graph) -> None:
 def test_audit_acknowledges_the_unreachable_deep_links(graph) -> None:
     """Record what the audit currently reports about the manifest.
 
-    `pabrik://chats/…` and `pabrik://project/…` are declared as `navDeepLink`
-    patterns with no matching `<intent-filter>` in `AndroidManifest.xml`, so
-    `adb shell am start -d pabrik://chats/…` resolves to no activity and nothing
-    in the app reports it.
-
-    This test pins the *known* gap so it cannot be forgotten. When the manifest
-    gains those two filters, delete them from this set — the assertions below
-    then hold with an empty `unclaimed`, and the audit page goes clean.
+    A `navDeepLink` pattern with no matching `<intent-filter>` in
+    `AndroidManifest.xml` resolves to no activity, and nothing in the app
+    reports it. Every pattern the nav graph declares — under BOTH the current
+    `pabrik://` scheme and the pre-rebrand `pabrik://` alias — must be claimed.
     """
-    known_unclaimed = {"chats", "project"}
+    known_unclaimed = set()
     host_of = {
-        destination.template: re.match(r"pabrik://([^/]+)", pattern).group(1)
+        destination.template: re.match(r"(?:pabrik|pabrik)://([^/]+)", pattern).group(1)
         for destination in graph.destinations
         for pattern in destination.deep_links
     }
@@ -311,7 +307,7 @@ def test_audit_acknowledges_the_unreachable_deep_links(graph) -> None:
         match.group(1)
         for destination in graph.destinations
         for pattern in destination.deep_links
-        if (match := re.match(r"pabrik://([^/]+)", pattern))
+        if (match := re.match(r"(?:pabrik|pabrik)://([^/]+)", pattern))
     }
 
     assert unclaimed <= known_unclaimed, (

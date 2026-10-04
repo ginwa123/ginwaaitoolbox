@@ -49,7 +49,7 @@ The shared `FilePickerDialog` is the modal used by every "pick a folder" flow in
 ## Global Constraints
 
 - **Cross-platform**: every change MUST work on Linux, macOS, AND Windows. The frontend is a Vite + Vue 3 SPA; no platform-specific code.
-- **No static-contract tests**: ALL tests are behavioural. See `~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md`.
+- **No static-contract tests**: ALL tests are behavioural. See `~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md`.
 - **TDD discipline**: every implementation step starts with a failing test, then minimal code to make it pass, then a commit.
 - **`bun run build` IS the type-check**: every frontend commit must pass `bun run build`; `bunx vitest run` alone does NOT catch type errors.
 - **No `dist/` or `.js` cruft**: `vue-tsc --build` emits `.js` files alongside `src/**/*.ts` (see `vue-tsc-build-emits-js-files` skill). Delete them before `git status`.
@@ -540,7 +540,7 @@ Both must be green. No `vue-tsc` errors, no failing tests.
 
 ### Step 3.2 — Manual smoke (port 8080)
 
-1. Start the backend: `./zig-out/bin/nalar --port 8080` (the project rule says **never use port 8081**).
+1. Start the backend: `./zig-out/bin/pabrik --port 8080` (the project rule says **never use port 8081**).
 2. Start the frontend: `cd src/apps/desktop && bun run dev` (Vite picks its own port).
 3. Open the app. Trigger each folder picker one by one and verify the new behaviour:
    - **Add Project** (`AddItemDialog` → "Choose folder" → `FilePickerDialog`):

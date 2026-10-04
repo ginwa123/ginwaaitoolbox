@@ -1,8 +1,8 @@
-# `nalar-tui` streaming rendering — implementation plan
+# `pabrik-tui` streaming rendering — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `nalar-tui`'s chat stream render in the Vue frontend's
+**Goal:** Make `pabrik-tui`'s chat stream render in the Vue frontend's
 style (tool cards + hidden thinking) instead of dumping raw
 `<tool>...</tool>` envelopes and `<think>...</think>` blocks, and
 replace the yellow input-cursor background with a foreground-only caret.
@@ -502,10 +502,10 @@ This is a behaviour change, so write the failing tests FIRST.
 
 ### Task 6 — End-to-end smoke
 
-- [ ] **Build.** `zig build install:tui`. Confirm `zig-out/bin/nalar-tui`
+- [ ] **Build.** `zig build install:tui`. Confirm `zig-out/bin/pabrik-tui`
       is produced.
 - [ ] **Smoke (manual).** With the dev server on `:8081`, run
-      `nalar-tui --server http://localhost:8081`. Type `hai`. Confirm:
+      `pabrik-tui --server http://localhost:8081`. Type `hai`. Confirm:
       - `> hai` renders as a green/bold prompt.
       - Tool rows render as `▶ load_memory  user preferences language  ✓`
         (no raw `<tool>` envelope text visible).
@@ -523,7 +523,7 @@ This is a behaviour change, so write the failing tests FIRST.
 
 - [ ] Push branch: `git push origin HEAD`.
 - [ ] Open a PR with title
-      `feat(cli): render nalar-tui stream like Vue — tool cards, hidden
+      `feat(cli): render pabrik-tui stream like Vue — tool cards, hidden
        thinking, no yellow cursor`.
 - [ ] PR body bullets:
       - TDD — every behaviour has a failing test that drives the impl.
@@ -557,7 +557,7 @@ This is a behaviour change, so write the failing tests FIRST.
 ## Verification (run before opening PR)
 
 - [ ] `zig build test:tui --summary all` → 0 fail, 0 leak.
-- [ ] `zig build install:tui` → `zig-out/bin/nalar-tui` produced.
+- [ ] `zig build install:tui` → `zig-out/bin/pabrik-tui` produced.
 - [ ] Manual smoke against `http://localhost:8081` (see Task 6).
 - [ ] `git log --oneline` shows one commit per task (5 task commits +
       docs/optional commit).

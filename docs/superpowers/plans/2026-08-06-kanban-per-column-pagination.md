@@ -9,7 +9,7 @@
 ## Global Constraints
 
 - **Cross-platform:** Every change must compile on Linux + macOS + Windows. Cross-compile check after the backend + store changes.
-- **Back-compat:** Live `nalar` on port 8081 must remain untouched. Use port 8080 for local smoke.
+- **Back-compat:** Live `pabrik` on port 8081 must remain untouched. Use port 8080 for local smoke.
 - **SSE parity:** SSE-driven refetch (the kanban SSE handler that re-fetches tasks when a remote mutation happens) must clear the per-column pagination state for the affected column and refetch from page 1.
 - **Search parity:** `?q=` must still filter across all columns (server-side filter stays on the items endpoint).
 - **Per-column sort parity:** Per-column sort still gets forwarded on `loadMoreTasksForColumn` (the cursor is tied to the sort order).
@@ -230,8 +230,8 @@
 **Steps:**
 - [ ] `zig build test --summary all` — Linux Zig pass.
 - [ ] `zig build install:linux:system` — Linux build.
-- [ ] `zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig` — Windows target.
-- [ ] `zig build-obj -fno-emit-bin -target aarch64-macos -lc --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig` — macOS target.
+- [ ] `zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig` — Windows target.
+- [ ] `zig build-obj -fno-emit-bin -target aarch64-macos -lc --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig` — macOS target.
 - [ ] `bun run build` — frontend type-check.
 - [ ] `bunx vitest run` — full test suite.
 

@@ -28,12 +28,6 @@ pub const env_server = "PABRIKCLI_SERVER";
 pub const env_session = "PABRIKCLI_SESSION_ID";
 pub const env_profile = "PABRIKCLI_PROFILE";
 
-// Pre-rebrand spellings. These are documented CLI contract, not internal
-// wiring — wrapper scripts and CI steps set them — so they stay readable.
-pub const legacy_env_server = "NALARCLI_SERVER";
-pub const legacy_env_session = "NALARCLI_SESSION_ID";
-pub const legacy_env_profile = "NALARCLI_PROFILE";
-
 /// Look up an env var. Returns null if unset or empty.
 fn getEnvOrNull(environment: *const std.process.Environ.Map, key: []const u8) ?[]const u8 {
     const v = environment.get(key) orelse return null;
@@ -51,17 +45,11 @@ pub fn load(
     flag_session: ?[]const u8,
     flag_profile: ?[]const u8,
 ) !Config {
-    const server_src = flag_server orelse
-        getEnvOrNull(environment, env_server) orelse
-        getEnvOrNull(environment, legacy_env_server) orelse default_server;
+    const server_src = flag_server orelse getEnvOrNull(environment, env_server) orelse default_server;
     const cfg = Config{
         .server = try allocator.dupe(u8, server_src),
-        .session_id = flag_session orelse
-            getEnvOrNull(environment, env_session) orelse
-            getEnvOrNull(environment, legacy_env_session),
-        .profile = flag_profile orelse
-            getEnvOrNull(environment, env_profile) orelse
-            getEnvOrNull(environment, legacy_env_profile),
+        .session_id = flag_session orelse getEnvOrNull(environment, env_session),
+        .profile = flag_profile orelse getEnvOrNull(environment, env_profile),
     };
     return cfg;
 }

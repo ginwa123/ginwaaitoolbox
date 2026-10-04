@@ -89,16 +89,16 @@ This is an output from background command (pid 12345, command `timeout 10 make t
 ### Task 4 — Functional end-to-end (wire proof)
 
 - [ ] Write `tests/functional/background_command_completion_test.py` (harness pattern): create session, INSERT `session_background_process` row with dead PID (e.g. 999999999) + real log file content, trigger tick (call the cron tick via API or wait ≤70s? Prefer direct: invoke the same code path the cron runs — if no HTTP trigger exists, seed + sleep 70s + assert `GET /api/llm/session/:id/queue_messages` contains envelope; keep timeout generous).
-- [ ] Run `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/background_command_completion_test.py -v`, confirm green.
+- [ ] Run `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/background_command_completion_test.py -v`, confirm green.
 - [ ] Run full `zig build test --summary all` once more.
 - [ ] Commit.
 
 ### Task 5 — Docs + SSE verification
 
 - [ ] Grep new strings: envelope marker + `queue_queued` appear in backend emitter + `additionalEventTypes` + dispatch chain (no new event name needed — verify reuse).
-- [ ] Update `NALAR.md` changelog (one entry, same style as prior entries).
+- [ ] Update `PABRIK.md` changelog (one entry, same style as prior entries).
 - [ ] Verify plan checklist from writing-plans skill (header, bite-sized, commits per task).
-- [ ] Final `zig build test --summary all` + `zig build nalar-desktop --summary all` (21/21 steps).
+- [ ] Final `zig build test --summary all` + `zig build pabrik-desktop --summary all` (21/21 steps).
 
 ## Out of Scope (v2)
 
