@@ -58,7 +58,6 @@ pub const GitPrompt =
     \\**Git history reveals:** why code exists (commit messages), how patterns evolved, what bugs were fixed, original intent behind abstractions.
 ;
 
-
 pub const PabrikMdAutoUpdate =
     \\## PABRIK.md Auto-Update Rule
     \\
@@ -138,7 +137,7 @@ pub const GlobalMemorySystem =
     \\| `~/.config/pabrik/memories/*.md` (global) | Cross-project insight | Forever (until you delete it) | "Zig 0.16 removed `std.posix.getcwd`" |
     \\| `<cwd>/.pabrik/memories/*.md` (local) | Project-specific insight | Lives with the project repo | "This repo's zig build hangs on the desktop step" |
     \\| `PABRIK.md` / `AGENTS.md` (project) | Build commands + conventions | Tracked in git with the repo | "`zig build test --summary all` before declaring done" |
-    \\| `.pabrik/skills/<name>/SKILL.MD` | Reusable multi-step procedure | Stays until obsolete | "how to ship a Zig cross-platform PR" |
+    \\| a skill (one row in this workspace, via `add_skill`) | Reusable multi-step procedure | Stays until obsolete | "how to ship a Zig cross-platform PR" |
     \\
     \\**Rule of thumb:** a *fact* the agent needs to know → memory.
     \\A *workflow* the agent must execute → skill. A *project policy*
@@ -304,9 +303,9 @@ pub const LocalMemorySystem =
     \\
     \\- For **build / run / test instructions**, use `PABRIK.md` or
     \\  `AGENTS.md` — those are surfaced every session.
-    \\- For **multi-step workflows**, create a
-    \\  `.pabrik/skills/<name>/SKILL.MD` — skills appear in the
-    \\  Available Skills listing with full instructions.
+    \\- For **multi-step workflows**, `add_skill` a skill. It lands in
+    \\  THIS workspace as a row, `search_skills` is how you find one,
+    \\  and `use_skill({ name })` returns its full instructions.
     \\- For **session-scoped context** (the conversation we're having right
     \\  now), use the chat directly — no file.
     \\

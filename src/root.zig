@@ -202,6 +202,12 @@ pub const agent_memories = @import("agentic_loop/agent_memories.zig");
 /// hand-written `SELECT ... FROM documents` is how a scope check drifts
 /// out of sync with its siblings.
 pub const documents_store = @import("agentic_loop/documents_store.zig");
+/// Workspace-scoped skill storage (Migration 101). Shared by the
+/// `/api/workspaces/:wsId/skills` handlers and the `search_skills` /
+/// `use_skill` / `add_skill` / `edit_skill` / `remove_skill` tools so both
+/// obey ONE scoping rule — and so the database, not a directory walk, is
+/// the only place a skill body lives.
+pub const skills_store = @import("agentic_loop/skills_store.zig");
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // Storage layer for the per-session markdown task plan (savePlan / getPlan / getPlanOpt).
 pub const session_plan = @import("agentic_loop/session_plan.zig");
@@ -290,6 +296,14 @@ test {
     // lazy-compilation workaround as cleanup_stale_worker above.
     _ = @import("agentic_loop/update_worker.zig");
     _ = @import("http_handlers/worker_list.zig");
+    // The `skills` table (Migration 101) and its store. Same lazy-compilation
+    // workaround: the `pub const skills_store` re-export above puts the file
+    // in the module tree but does NOT discover its inline tests.
+    _ = @import("agentic_loop/skills_store.zig");
+    // The one-shot directory -> `skills` table importer. Same
+    // lazy-compilation workaround: nothing else in the tree imports it yet,
+    // and an unreferenced file's tests are never discovered.
+    _ = @import("agentic_loop/skills_import.zig");
     // The download endpoint half of the present_files contract: it holds the
     // status mapping tests plus the static checks that keep it on the shared
     // file_sandbox rule (docs/plans/2026-09-29-present-files-sandbox-parity.md).

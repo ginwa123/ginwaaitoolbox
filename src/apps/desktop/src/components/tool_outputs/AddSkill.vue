@@ -44,7 +44,7 @@ const handleToggle = (next: boolean) => {
       :primary="parsed.skillName"
       :success="parsed.created"
       :expanded="isExpanded"
-      :expandable="!parsed.created || !!parsed.error || !!parsed.path || hasArgs"
+      :expandable="!parsed.created || !!parsed.error || hasArgs"
       :show-open-in-editor="false"
       @update:expanded="handleToggle"
     />
@@ -60,12 +60,18 @@ const handleToggle = (next: boolean) => {
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
+      <!-- The skill was created as a row, so there is no location to show.
+           The name is what the user recognises and what the rest of the
+           skill surface takes as its identifier. -->
       <div
-        v-if="parsed.created && parsed.path"
+        v-if="parsed.created && parsed.skillName"
         class="flex gap-2 px-2 py-1.5 text-green-500 text-dense border-b border-dashed border-[var(--color-border)]"
+        data-testid="add-skill-name"
       >
-        <span class="font-semibold shrink-0">Path:</span>
-        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)]">{{ parsed.path }}</span>
+        <span class="font-semibold shrink-0">Created:</span>
+        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)]">{{
+          parsed.skillName
+        }}</span>
       </div>
       <ToolParameters :parameters="parameters" />
     </div>

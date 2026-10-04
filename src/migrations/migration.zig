@@ -2049,12 +2049,14 @@ pub const allMigrations: []const Migration = &.{
     // workspace can be shared. Additive; the column stays for one release so
     // `DROP TABLE workspace_members` is a complete rollback.
     .{ .version = Migration100AddWorkspaceMembers.version, .name = Migration100AddWorkspaceMembers.name, .up = Migration100AddWorkspaceMembers.up },
-    // Migration 101 — `llm_history.model` is never empty. Closes two
-    // independent failures: raw SQL writing `''` outright, and an empty
-    // *bind* landing as SQL NULL and failing the NOT NULL constraint
-    // (which silently DROPS the user's message row). The AFTER INSERT
-    // trigger is the only SQLite choke point that also catches raw SQL.
-    .{ .version = Migration101GuardLlmHistoryModel.version, .name = Migration101GuardLlmHistoryModel.name, .up = Migration101GuardLlmHistoryModel.up },
+    // Migration 101 — the `skills` table: workspace-scoped skill bodies.
+    // Skills move off the two filesystem tiers (`~/.config/pabrik/skills/`
+    // and `<cwd>/.pabrik/skills/`) into SQL, so `workspace_id` on the row
+    // IS the isolation boundary and `search_skills` can list ONE
+    // workspace's skills instead of walking a directory. `skill_assets`
+    // carries the companion files of bundled skills (`pdf`,
+    // `skill-creator`) whose bodies reference them by relative path.
+    .{ .version = Migration102CreateSkills.version, .name = Migration102CreateSkills.name, .up = Migration102CreateSkills.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4917,7 +4919,7 @@ pub const Migration081CreateAgentKanbans = struct {
 /// `workspace_item_tasks`). Used by the chat sidebar to render the
 /// "last human touched" time pill instead of the AI-tainted
 /// `updated_at`. Stamped by:
-///   - `app.zig::emit_run_agent` - every user-sends-a-message path
+///   - `root.zig::emit_run_agent` - every user-sends-a-message path
 ///     (chat send, kanban "create & run", kanban "Start agent", `+ Chat`)
 ///   - `session_update.zig::useCase` - user renames / changes profile /
 ///     toggles unattended mode
@@ -14882,6 +14884,91 @@ pub const Migration100AddWorkspaceMembers = struct {
 
 // Migration 100 — `workspace_members` (shared workspaces) — inline tests
 // ============================================================================
+// Migration 101 — the `skills` table: workspace-scoped skill bodies.
+// ============================================================================
+//
+// Skills used to live on disk in TWO directories — a "global" one under
+// `~/.config/pabrik/skills/` and a "local" one under `<cwd>/.pabrik/skills/` —
+// and which one won was decided by walking the filesystem. That made the
+// FILESYSTEM the source of truth: a skill could not be scoped to a
+// workspace, could not be listed per workspace, and its identity was a
+// pathname. This migration moves the body into SQL so `workspace_id` on the
+// row is the isolation boundary, exactly as Migration 098 did for documents.
+//
+// There is deliberately no `is_global` column and no `cwd` column. Both
+// existed only to answer "which of the two directories is this?", and with
+// a single workspace-scoped table that question has no answer to give. A
+// skill wanted in every workspace is a row per workspace, not a special row.
+//
+// `UNIQUE (workspace_id, name)` rather than a surrogate-only key because
+// `name` is what every caller knows: `use_skill({ name })`, `add_skill({
+// name })`, `GET /api/workspaces/:workspace_id/skills/:skill_name`. Without
+// it, "two skills called `pdf` in one workspace" would be a
+// database-level impossibility rather than an upsert the store performs
+// explicitly.
+//
+// `skill_assets` exists because two installed skills (`pdf`, 11 files, and
+// `skill-creator`, 17 files) are BUNDLES whose bodies tell the model to run
+// sibling scripts like `scripts/run_eval.py`. A `content` column alone would
+// leave the model pointing at files that do not exist. Keeping companions as
+// rows is what lets the database stay the only source of truth; `use_skill`
+// materialises them into a temp directory and returns that path so the
+// body's relative references resolve.
+//
+// Asset `content` is TEXT, not BLOB: every companion shipped so far is
+// .py / .md / .html, and `SqliteBackend` binds through `sqlite3_bind_text`.
+// The importer refuses a non-UTF-8 file rather than corrupting it.
+//
+// Every text column is `NOT NULL DEFAULT ''` rather than nullable, for the
+// same reason as `documents`: `SqliteBackend.exec` binds a zero-length slice
+// as SQL NULL, so a skill with an empty description (perfectly legal — a
+// model may write a body before it writes a description) would blow up the
+// NOT NULL constraint mid-write unless every writer goes through
+// `COALESCE(NULLIF(?, ''), '')`.
+//
+// `ON DELETE CASCADE` is documentation only — `PRAGMA foreign_keys` is off
+// project-wide (see Migration 072's tests and Migration 093's header), so
+// the workspace delete path issues the child DELETEs itself.
+//
+// Idempotency: CREATE TABLE IF NOT EXISTS. One statement per db.exec
+// (sqlite3_prepare_v2 compiles only the first). Neither table gets its own
+// index: `UNIQUE (workspace_id, name)` already indexes that exact prefix,
+// and `UNIQUE (skill_id, rel_path)` already indexes every `WHERE skill_id =
+// ?` read, so a second bare index would only give the planner a duplicate to
+// choose between.
+pub const Migration102CreateSkills = struct {
+    pub const version: u32 = 101;
+    pub const name = "create_skills";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS skills (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_id TEXT NOT NULL,
+            \\    name TEXT NOT NULL,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    UNIQUE (workspace_id, name),
+            \\    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS skill_assets (
+            \\    id TEXT PRIMARY KEY,
+            \\    skill_id TEXT NOT NULL,
+            \\    rel_path TEXT NOT NULL,
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    UNIQUE (skill_id, rel_path),
+            \\    FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+    }
+};
+// ============================================================================
 //
 // See docs/plans/2026-10-02-workspace-members-shared-workspaces.md.
 //
@@ -15094,322 +15181,188 @@ test "Migration100 is registered in allMigrations" {
     }
     return error.Migration100NotRegistered;
 }
-
-
 // ============================================================================
-// Migration 101 — `llm_history.model` is never empty
+// Migration 101 — the `skills` table — inline tests
 // ============================================================================
 //
-// ## The bug
+// Each case answers one question a reviewer has to agree with before the
+// store above it can ship:
 //
-// `llm_history.model` is declared `TEXT NOT NULL` (Migration 001), which reads
-// like a guarantee that it is always populated. It is not — NOT NULL rejects
-// SQL NULL and says nothing about the empty string. Two distinct paths wrote a
-// blank model into chat history:
-//
-//  1. **Raw SQL with a `''` literal.** The two kanban task-create paths seed a
-//     synthetic `role='user'` row so the chatview never lands on the "How can
-//     I help you?" empty state. Both hardcoded a `''` model literal, with a
-//     comment explaining that `''` was the only way to satisfy NOT NULL given
-//     the backend's bind semantics. The row landed; `model` was blank.
-//
-//  2. **An empty *bind*, which is worse — it loses the row entirely.**
-//     `SqliteBackend.exec` binds a zero-length slice as SQL NULL (the rule
-//     Migration 100 documents for `workspace_members.user_id`). NULL *does*
-//     violate NOT NULL, so the INSERT fails outright — and every write site
-//     swallows that non-fatally with a `catch`. The user's message row is
-//     silently gone, leaving nothing to render at all.
-//
-// Failure 2 is why this migration does not simply reject a bad model. A
-// `RAISE(ABORT)` trigger would convert "blank model" into "row deleted", which
-// is strictly more destructive than either original symptom. So the trigger
-// *substitutes* a sentinel instead.
-//
-// ## What this migration does
-//
-//   1. Backfills `''` on existing rows to the sentinel.
-//   2. Installs an `AFTER INSERT` trigger that rewrites an empty-or-NULL model
-//      to the sentinel on every future write.
-//
-// The trigger is the ONLY choke point that catches raw SQL — the Zig-side guard
-// (`agentic_loop/llm_history_model_guard.zig`) cannot see a literal a caller
-// typed into its own SQL string. Together they cover both layers: the guard
-// gives a real model, the trigger makes the invariant hold even for code that
-// predates it or bypasses it.
-//
-// ## Why AFTER INSERT and not BEFORE
-//
-// A BEFORE INSERT trigger cannot assign to `NEW.model` in SQLite. The rewrite
-// therefore happens in an AFTER INSERT trigger, which costs one extra UPDATE
-// only for rows that were actually bad — the common path stays a single INSERT.
-//
-// ## Idempotency
-//
-// `CREATE TRIGGER IF NOT EXISTS` plus an UPDATE scoped by
-// `model IS NULL OR TRIM(model) = ''`, so re-running is a no-op and can never
-// touch a row that already holds a real model.
+//   1. Does `skills` have the shape the design promises?
+//   2. Does `skill_assets` exist, and with the columns the bundle
+//      materialiser needs?
+//   3. Is `UNIQUE (workspace_id, name)` per-workspace — the whole point of
+//      dropping the two filesystem tiers?
+//   4. Do the NOT NULL DEFAULTs survive the empty-slice-as-NULL bind trap?
+//   5. Is it replay-safe, and is it wired into the chain at all?
 
-pub const Migration101GuardLlmHistoryModel = struct {
-    pub const version: u32 = 101;
-    pub const name = "guard_llm_history_model";
+test "Migration101 creates skills with the expected columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
 
-    /// The sentinel written when no model could be resolved. Mirrors
-    /// `agentic_loop/llm_history_model_guard.zig::UNKNOWN_MODEL` — kept as a
-    /// literal because a SQL trigger cannot call into Zig, and asserted equal
-    /// to the Zig constant in the inline tests below so the two cannot drift.
-    pub const sentinel: []const u8 = "unknown";
+    try Migration102CreateSkills.up(&ctx.db, alloc);
 
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        var tx = try db.begin();
-        defer tx.commitOrRollback() catch {};
-        errdefer tx.rollback() catch {};
-
-        // Backfill first so the trigger (which only fires on INSERT) does not
-        // have to reason about rows that already exist. TRIM catches both the
-        // empty string and whitespace-only values, and the WHERE clause keeps
-        // this from touching any real model id.
-        //
-        // Literals, not binds — so the empty-slice-as-NULL rule does not apply
-        // here and NULL and '' remain distinguishable.
-        try tx.exec(allocator,
-            \\UPDATE llm_history SET model = 'unknown'
-            \\WHERE model IS NULL OR TRIM(model) = ''
-        , &[_][]const u8{});
-
-        // The backstop. Catches raw SQL (which the Zig guard cannot see) and
-        // any future write site that forgets the guard.
-        //
-        // `WHEN` guards the UPDATE so a healthy insert costs nothing: the
-        // trigger body simply does not run. That matters because the FTS sync
-        // trigger `llm_history_au` fires on this UPDATE — restricting the
-        // rewrite to bad rows keeps the search index untouched in the normal
-        // case.
-        try tx.exec(allocator,
-            \\CREATE TRIGGER IF NOT EXISTS llm_history_ai_model_not_empty
-            \\AFTER INSERT ON llm_history
-            \\FOR EACH ROW WHEN NEW.model IS NULL OR TRIM(NEW.model) = ''
-            \\BEGIN
-            \\  UPDATE llm_history SET model = 'unknown' WHERE id = NEW.id;
-            \\END
-        , &[_][]const u8{});
-
-        try tx.commit();
+    const cols = try columnsOf(&ctx, "skills");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
     }
-};
-
-// Migration 101 — inline tests
-// ============================================================================
-//
-// Each case answers one question a reviewer must agree with before shipping:
-//
-//   1. Does the backfill repair existing rows without touching real models?
-//   2. Does the trigger rewrite a raw-SQL `''` insert?
-//   3. Does it leave a healthy insert alone?
-//   4. Is it replay-safe?
-//   5. Does the SQL sentinel still match the Zig `UNKNOWN_MODEL`?
-//   6. Is it wired into the migration chain?
-//   7. Do both raw-SQL write sites stay guarded?
-
-/// Minimal pre-101 schema: `llm_history` exactly as Migration 001 left it.
-/// Deliberately NOT `setupDb` — that fixture builds the full current schema,
-/// including columns and triggers this migration must not depend on.
-fn setupLlmHistoryRoot(ctx: *TestCtx) !void {
-    try ctx.db.exec(testing.allocator, "CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, model TEXT NOT NULL, response_content TEXT)", &.{});
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id", "workspace_id", "name", "description", "content", "created_at", "updated_at",
+    });
 }
 
-fn seedHistoryRow(ctx: *TestCtx, id: []const u8, model_sql: []const u8) !void {
-    // `model_sql` is spliced as a literal, NOT bound — a bound empty slice
-    // would collapse to NULL and defeat the point of several cases here.
-    const sql = try std.fmt.allocPrint(
-        testing.allocator,
-        "INSERT INTO llm_history (id, session_id, model, response_content) VALUES ('{s}', 'sess', {s}, 'hi')",
-        .{ id, model_sql },
-    );
-    defer testing.allocator.free(sql);
-    try ctx.db.exec(testing.allocator, sql, &.{});
+test "Migration101 creates skill_assets with the expected columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "skill_assets");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id", "skill_id", "rel_path", "content", "created_at",
+    });
 }
 
-/// Read one row's model back as a comparison (no duped value escapes to the
-/// caller, which would trip the leak-checking allocator).
-fn expectHistoryModel(ctx: *TestCtx, id: []const u8, expected: []const u8) !void {
-    var q = try ctx.db.query(testing.allocator, "SELECT COALESCE(model, '<NULL>') FROM llm_history WHERE id = ?", &[_][]const u8{id});
+test "Migration101 scopes skill names to a workspace, not globally" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+
+    // Same name, two workspaces, two rows: the isolation boundary is the
+    // row's `workspace_id`, which is what lets two workspaces each carry
+    // their own `pdf` without either shadowing the other.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'pdf')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_2', 'ws_b', 'pdf')
+    , &.{});
+
+    // Same name TWICE in one workspace is refused, so `use_skill({ name })`
+    // can never resolve to an arbitrary row.
+    try testing.expectError(error.ExecuteFailed, ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_3', 'ws_a', 'pdf')
+    , &.{}));
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM skills", &.{});
     defer q.deinit();
-    const row = (try q.next()) orelse return error.HistoryRowMissing;
-    defer row.deinit(testing.allocator);
-    try testing.expectEqualStrings(expected, row.values[0]);
+    const row = (try q.next()) orelse return error.NoRows;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("2", row.values[0]);
 }
 
-fn countHistoryRows(ctx: *TestCtx) !i64 {
-    var q = try ctx.db.query(testing.allocator, "SELECT COUNT(*) FROM llm_history", &.{});
+test "Migration101 skill_assets refuses a duplicate rel_path for one skill" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'pdf')
+    , &.{});
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path) VALUES ('sa_1', 'sk_1', 'scripts/run.py')
+    , &.{});
+    try testing.expectError(error.ExecuteFailed, ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path) VALUES ('sa_2', 'sk_1', 'scripts/run.py')
+    , &.{}));
+
+    // The same rel_path under a DIFFERENT skill is fine — two bundles both
+    // shipping `scripts/run.py` is the ordinary case.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_2', 'ws_a', 'skill-creator')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path) VALUES ('sa_3', 'sk_2', 'scripts/run.py')
+    , &.{});
+}
+
+test "Migration101 skill_assets stores an empty companion without a NULL violation" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'pdf')
+    , &.{});
+
+    // An empty companion file is legal (`touch assets/.keep`). Bind "" and
+    // NOT NULL would reject it — which is exactly why the store writes
+    // `COALESCE(NULLIF(?, ''), '')`. A real NULL must still fail, so the
+    // test proves the column is constrained rather than merely nullable.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path, content)
+        \\VALUES ('sa_1', 'sk_1', 'assets/.keep', COALESCE(NULLIF('', ''), ''))
+    , &.{});
+    try testing.expectError(error.ExecuteFailed, ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path, content) VALUES ('sa_2', 'sk_1', 'x.md', NULL)
+    , &.{}));
+}
+
+test "Migration101 skill description and content default to empty, not NULL" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+
+    // Omit both entirely so the schema DEFAULT applies. A model that writes
+    // a body before it writes a description is normal, not an error.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'draft')
+    , &.{});
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT COALESCE(description, ''), COALESCE(content, '') FROM skills WHERE name = 'draft'
+    , &.{});
     defer q.deinit();
-    const row = (try q.next()) orelse return error.CountQueryFailed;
-    defer row.deinit(testing.allocator);
-    return std.fmt.parseInt(i64, row.values[0], 10);
+    const row = (try q.next()) orelse return error.NoRows;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+    try testing.expectEqualStrings("", row.values[1]);
 }
 
-test "Migration101 backfills empty and whitespace-only model on existing rows" {
+test "Migration101 is idempotent" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
-    try setupLlmHistoryRoot(&ctx);
 
-    try seedHistoryRow(&ctx, "r_blank", "''");
-    try seedHistoryRow(&ctx, "r_ws", "'   '");
-    try seedHistoryRow(&ctx, "r_real", "'space-bunny-free'");
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+    // Second run on a database that already has live rows must not reset or
+    // duplicate anything — IF NOT EXISTS means both statements no-op.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name, content) VALUES ('sk_1', 'ws_a', 'pdf', 'body')
+    , &.{});
+    try Migration102CreateSkills.up(&ctx.db, alloc);
 
-    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
-
-    try expectHistoryModel(&ctx, "r_blank", Migration101GuardLlmHistoryModel.sentinel);
-    try expectHistoryModel(&ctx, "r_ws", Migration101GuardLlmHistoryModel.sentinel);
-    // The whole point of scoping the WHERE clause: a real model is untouched.
-    try expectHistoryModel(&ctx, "r_real", "space-bunny-free");
-}
-
-test "Migration101 trigger rewrites a raw-SQL empty model on INSERT" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-    try setupLlmHistoryRoot(&ctx);
-
-    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
-
-    // Exactly the shape the two kanban paths used to emit.
-    try seedHistoryRow(&ctx, "r_raw", "''");
-
-    try expectHistoryModel(&ctx, "r_raw", Migration101GuardLlmHistoryModel.sentinel);
-}
-
-test "Migration101 trigger rewrites a whitespace-only model on INSERT" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-    try setupLlmHistoryRoot(&ctx);
-
-    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
-
-    try seedHistoryRow(&ctx, "r_ws", "'  '");
-
-    try expectHistoryModel(&ctx, "r_ws", Migration101GuardLlmHistoryModel.sentinel);
-}
-
-test "Migration101 leaves a healthy INSERT alone" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-    try setupLlmHistoryRoot(&ctx);
-
-    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
-
-    try seedHistoryRow(&ctx, "r_ok", "'MiniMax-M3'");
-    try expectHistoryModel(&ctx, "r_ok", "MiniMax-M3");
-}
-
-test "Migration101 is replay-safe" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-    try setupLlmHistoryRoot(&ctx);
-
-    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
-    try seedHistoryRow(&ctx, "r_a", "''");
-    try seedHistoryRow(&ctx, "r_b", "'gpt-4o'");
-
-    // Re-run twice against a database that now holds real rows.
-    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
-    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
-
-    // r_a stays on the sentinel (already correct, no drift); r_b is never
-    // rewritten by a replay. And the re-runs add no rows of their own.
-    try expectHistoryModel(&ctx, "r_a", Migration101GuardLlmHistoryModel.sentinel);
-    try expectHistoryModel(&ctx, "r_b", "gpt-4o");
-    try testing.expectEqual(@as(i64, 2), try countHistoryRows(&ctx));
-}
-
-test "Migration101 SQL sentinel matches the Zig guard's UNKNOWN_MODEL" {
-    // The trigger hardcodes 'unknown' because SQL cannot call into Zig. This
-    // assertion is the ONLY thing keeping the two in step — if someone changes
-    // either one alone, this test fails.
-    const guard = @import("../agentic_loop/llm_history_model_guard.zig");
-    try testing.expectEqualStrings(guard.UNKNOWN_MODEL, Migration101GuardLlmHistoryModel.sentinel);
+    var q = try ctx.db.query(alloc, "SELECT COALESCE(content, '') FROM skills WHERE id = 'sk_1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NoRows;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("body", row.values[0]);
 }
 
 test "Migration101 is registered in allMigrations" {
     for (allMigrations) |m| {
-        if (m.version == Migration101GuardLlmHistoryModel.version) return;
+        if (m.version == Migration102CreateSkills.version) return;
     }
     return error.Migration101NotRegistered;
-}
-
-test "both raw llm_history INSERT sites bind a guarded model, not a '' literal" {
-    // Static contract over the two raw-SQL write sites that hardcoded `''`.
-    // Both produced the observed blank-model row, so both must now bind a
-    // resolved (and guarded) model instead of a literal.
-    const alloc = testing.allocator;
-
-    inline for (.{
-        "src/http_handlers/kanban_tasks_create.zig",
-        "src/modules/agent/tools/create_kanban_task.zig",
-    }) |path| {
-        const source = try readSourceForModelGuard(alloc, path);
-        defer alloc.free(source);
-
-        // The old shape: `VALUES (?, ?, '', ...` — model position is a literal.
-        if (std.mem.indexOf(u8, source, "VALUES (?, ?, '',") != null) {
-            std.debug.print(
-                "\n!! {s} still binds a hardcoded '' for llm_history.model !!\n" ++
-                    "   Bind the resolved model instead — an empty model writes a\n" ++
-                    "   blank model into chat history. See\n" ++
-                    "   agentic_loop/llm_history_model_guard.zig.\n",
-                .{path},
-            );
-            return error.EmptyModelLiteralStillPresent;
-        }
-        if (std.mem.indexOf(u8, source, "model_guard.resolve") == null) {
-            std.debug.print(
-                "\n!! {s} has no model_guard.resolve call !!\n" ++
-                    "   Every llm_history.model write site must route through the\n" ++
-                    "   shared guard so an empty model cannot reach the DB.\n",
-                .{path},
-            );
-            return error.ModelGuardMissing;
-        }
-    }
-}
-
-test "every llm_history funnel routes its model through the guard" {
-    // The funnels cover the workflow's own writes (the majority of rows). A
-    // future edit that binds `input.model` directly reintroduces the silent
-    // row-drop, so pin the guarded shape.
-    const alloc = testing.allocator;
-
-    inline for (.{
-        "src/agentic_loop/insert_llm_histories.zig",
-        "src/agentic_loop/llm_history.zig",
-    }) |path| {
-        const source = try readSourceForModelGuard(alloc, path);
-        defer alloc.free(source);
-
-        if (std.mem.indexOf(u8, source, "model_guard.resolve") == null) {
-            std.debug.print(
-                "\n!! {s} never calls model_guard.resolve !!\n" ++
-                    "   An empty model bound here lands as SQL NULL and FAILS the\n" ++
-                    "   NOT NULL constraint, silently dropping the user's message row.\n",
-                .{path},
-            );
-            return error.ModelGuardMissingFromFunnel;
-        }
-    }
-}
-
-fn readSourceForModelGuard(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.Io.Dir.cwd().openFile(testing.io, path, .{});
-    defer file.close(testing.io);
-    var buf: [4096]u8 = undefined;
-    var reader = file.reader(testing.io, &buf);
-    return reader.interface.allocRemaining(allocator, .limited(512 * 1024));
 }

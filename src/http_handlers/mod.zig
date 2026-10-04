@@ -262,13 +262,20 @@ pub const workerListHandler = @import("worker_list.zig").workerListHandler;
 pub const unifiedEventsStreamHandler = @import("unified_events_sse.zig").unifiedEventsStreamHandler;
 
 // Skills API handlers
+// Workspace-scoped skills (Migration 101). All three read and write through
+// `agentic_loop/skills_store.zig`, so the workspace scoping lives in SQL
+// rather than in a check each handler has to remember. Wired at
+// `/api/workspaces/:workspace_id/skills[/:skill_name]`.
 pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;
+pub const skillDetailHandler = @import("skill_detail.zig").skillDetailHandler;
+pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 // Skill Evals — the read surface (see docs/plans/2026-09-27-skill-evals.md §4.10).
+// A SIBLING prefix under /api/skill-evals/, deliberately outside the skills
+// prefix above: `matchRoute` returns on the first registration-order hit, so
+// a literal nested under a `:skill_name` route would be captured as the param.
 pub const skillEvalsRunsHandler = @import("skill_evals.zig").skillEvalsRunsHandler;
 pub const skillEvalsSummaryHandler = @import("skill_evals.zig").skillEvalsSummaryHandler;
 pub const skillEvalsApplyHandler = @import("skill_evals.zig").skillEvalsApplyHandler;
-pub const skillDetailHandler = @import("skill_detail.zig").skillDetailHandler;
-pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 
 // Memories API handlers
 pub const memoriesListHandler = @import("memories_list.zig").memoriesListHandler;
