@@ -2056,7 +2056,7 @@ pub const allMigrations: []const Migration = &.{
     // workspace's skills instead of walking a directory. `skill_assets`
     // carries the companion files of bundled skills (`pdf`,
     // `skill-creator`) whose bodies reference them by relative path.
-    .{ .version = Migration102CreateSkills.version, .name = Migration102CreateSkills.name, .up = Migration102CreateSkills.up },
+    .{ .version = Migration101CreateSkills.version, .name = Migration101CreateSkills.name, .up = Migration101CreateSkills.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -14936,7 +14936,7 @@ pub const Migration100AddWorkspaceMembers = struct {
 // and `UNIQUE (skill_id, rel_path)` already indexes every `WHERE skill_id =
 // ?` read, so a second bare index would only give the planner a duplicate to
 // choose between.
-pub const Migration102CreateSkills = struct {
+pub const Migration101CreateSkills = struct {
     pub const version: u32 = 101;
     pub const name = "create_skills";
 
@@ -15202,7 +15202,7 @@ test "Migration101 creates skills with the expected columns" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try Migration101CreateSkills.up(&ctx.db, alloc);
 
     const cols = try columnsOf(&ctx, "skills");
     defer {
@@ -15220,7 +15220,7 @@ test "Migration101 creates skill_assets with the expected columns" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try Migration101CreateSkills.up(&ctx.db, alloc);
 
     const cols = try columnsOf(&ctx, "skill_assets");
     defer {
@@ -15238,7 +15238,7 @@ test "Migration101 scopes skill names to a workspace, not globally" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try Migration101CreateSkills.up(&ctx.db, alloc);
 
     // Same name, two workspaces, two rows: the isolation boundary is the
     // row's `workspace_id`, which is what lets two workspaces each carry
@@ -15269,7 +15269,7 @@ test "Migration101 skill_assets refuses a duplicate rel_path for one skill" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try Migration101CreateSkills.up(&ctx.db, alloc);
     try ctx.db.exec(alloc,
         \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'pdf')
     , &.{});
@@ -15297,7 +15297,7 @@ test "Migration101 skill_assets stores an empty companion without a NULL violati
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try Migration101CreateSkills.up(&ctx.db, alloc);
     try ctx.db.exec(alloc,
         \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'pdf')
     , &.{});
@@ -15321,7 +15321,7 @@ test "Migration101 skill description and content default to empty, not NULL" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try Migration101CreateSkills.up(&ctx.db, alloc);
 
     // Omit both entirely so the schema DEFAULT applies. A model that writes
     // a body before it writes a description is normal, not an error.
@@ -15345,13 +15345,13 @@ test "Migration101 is idempotent" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try Migration101CreateSkills.up(&ctx.db, alloc);
     // Second run on a database that already has live rows must not reset or
     // duplicate anything — IF NOT EXISTS means both statements no-op.
     try ctx.db.exec(alloc,
         \\INSERT INTO skills (id, workspace_id, name, content) VALUES ('sk_1', 'ws_a', 'pdf', 'body')
     , &.{});
-    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try Migration101CreateSkills.up(&ctx.db, alloc);
 
     var q = try ctx.db.query(alloc, "SELECT COALESCE(content, '') FROM skills WHERE id = 'sk_1'", &.{});
     defer q.deinit();
@@ -15362,7 +15362,7 @@ test "Migration101 is idempotent" {
 
 test "Migration101 is registered in allMigrations" {
     for (allMigrations) |m| {
-        if (m.version == Migration102CreateSkills.version) return;
+        if (m.version == Migration101CreateSkills.version) return;
     }
     return error.Migration101NotRegistered;
 }

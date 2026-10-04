@@ -536,7 +536,7 @@ fn setupStoreDb() !StoreTestCtx {
     errdefer db.deinit();
     try db.init(io, ":memory:");
     errdefer db.deinit();
-    try migration.Migration102CreateSkills.up(&db, alloc);
+    try migration.Migration101CreateSkills.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };
 }
 

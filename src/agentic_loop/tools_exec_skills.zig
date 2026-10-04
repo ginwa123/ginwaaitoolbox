@@ -444,7 +444,7 @@ fn setupDb() !TestCtx {
     try db.exec(alloc,
         \\INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('s1', 'T1', 'i1'), ('s2', 'T2', 'i2')
     , &.{});
-    try migration.Migration102CreateSkills.up(&db, alloc);
+    try migration.Migration101CreateSkills.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };
 }
 

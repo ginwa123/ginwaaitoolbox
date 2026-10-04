@@ -515,7 +515,7 @@ fn setupStoreDb() !StoreTestCtx {
     var db: sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
-    try migration.Migration102CreateSkills.up(&db, alloc);
+    try migration.Migration101CreateSkills.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };
 }
 
