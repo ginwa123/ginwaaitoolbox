@@ -56,6 +56,12 @@ pub const authIsAuthorized = @import("auth_middleware.zig").isAuthorized;
 // Workspace handlers (stub implementations for desktop app compatibility)
 pub const workspacesListHandler = @import("workspaces_list.zig").workspacesListHandler;
 pub const workspacesCreateHandler = @import("workspaces_create.zig").workspacesCreateHandler;
+// The single workspace-create path: id generation, the `position = MAX + 1`
+// INSERT, the `workspace_members` grant and the attached default project.
+// Exposed so `nalar create-admin` (src/main.zig) and any future signup route
+// can provision an account's "Default" workspace through the same code the
+// POST /api/workspaces handler uses.
+pub const workspace_provisioning = @import("workspace_provisioning.zig");
 pub const workspacesReorderHandler = @import("workspaces_reorder.zig").workspacesReorderHandler;
 pub const workspaceGetHandler = @import("workspace_get.zig").workspaceGetHandler;
 pub const workspaceUpdateHandler = @import("workspace_update.zig").workspaceUpdateHandler;
@@ -299,6 +305,7 @@ pub const gitCommitFileDiffHandler = @import("git_commits.zig").gitCommitFileDif
 pub const gitPrCreateHandler = @import("git_pr_create.zig").gitPrCreateHandler;
 pub const gitPrDiffHandler = @import("git_pr_diff.zig").gitPrDiffHandler;
 pub const gitPrStatusHandler = @import("git_pr_status.zig").gitPrStatusHandler;
+pub const gitPrConflictsHandler = @import("git_pr_conflicts.zig").gitPrConflictsHandler;
 
 // Queue messages handlers
 pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;
@@ -935,7 +942,7 @@ fn llmSourceContains(allocator: std.mem.Allocator, path: []const u8, needle: []c
 }
 
 test "llmTestHandler: registers the POST route with /api/llm/test" {
-    const found = try llmSourceContains(testing.allocator, "src/main.zig", "/api/llm/test");
+    const found = try llmSourceContains(testing.allocator, "src/http_routes.zig", "/api/llm/test");
     try testing.expect(found);
 }
 
@@ -2058,7 +2065,7 @@ fn mcpSourceContains(allocator: std.mem.Allocator, path: []const u8, needle: []c
 }
 
 test "mcpTestHandler: registers the POST route with /api/mcp/test" {
-    const found = try mcpSourceContains(testing.allocator, "src/main.zig", "/api/mcp/test");
+    const found = try mcpSourceContains(testing.allocator, "src/http_routes.zig", "/api/mcp/test");
     try testing.expect(found);
 }
 

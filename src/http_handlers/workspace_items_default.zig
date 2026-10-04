@@ -907,23 +907,23 @@ test "a user rename of the default project is never clobbered" {
 const default_project_route = ".post(\"/api/workspaces/:workspace_id/default-project\"";
 const route_marker = "authed.post(\"/api/workspaces/:workspace_id/";
 
-/// Read `src/main.zig` so the test does not depend on the process working
+/// Read `src/http_routes.zig` so the test does not depend on the process working
 /// directory. `@embedFile` rather than a runtime open: the assertions must
 /// see the route list as COMPILED, otherwise a test run from a different
 /// cwd would silently pass by reading nothing.
-fn readMainSource(allocator: std.mem.Allocator) ![]u8 {
-    const src = @embedFile("../main.zig");
+fn readRouteSource(allocator: std.mem.Allocator) ![]u8 {
+    const src = @embedFile("../http_routes.zig");
     return allocator.dupe(u8, src);
 }
 
 test "the default-project route is registered" {
     const alloc = testing.allocator;
-    const src = try readMainSource(alloc);
+    const src = try readRouteSource(alloc);
     defer alloc.free(src);
 
     if (std.mem.indexOf(u8, src, default_project_route) == null) {
         std.debug.print(
-            "main.zig does not register {s}\n",
+            "http_routes.zig does not register {s}\n",
             .{default_project_route},
         );
         return error.DefaultProjectRouteNotRegistered;
@@ -932,7 +932,7 @@ test "the default-project route is registered" {
 
 test "the default-project route is registered before any /api/workspaces POST param sibling" {
     const alloc = testing.allocator;
-    const src = try readMainSource(alloc);
+    const src = try readRouteSource(alloc);
     defer alloc.free(src);
 
     const ours = std.mem.indexOf(u8, src, default_project_route) orelse
@@ -965,7 +965,7 @@ test "no POST /api/workspaces/:workspace_id/:param route exists at all" {
     // `.../items/agent`, `.../items/kanban`, `.../items/design`,
     // `.../items/routine` are all literals, so they are fine.
     const alloc = testing.allocator;
-    const src = try readMainSource(alloc);
+    const src = try readRouteSource(alloc);
     defer alloc.free(src);
 
     var i: usize = 0;
@@ -989,7 +989,7 @@ test "the default-project route uses a literal segment, not a param" {
     // above would keep passing while the route quietly became ambiguous —
     // so assert the literal directly.
     const alloc = testing.allocator;
-    const src = try readMainSource(alloc);
+    const src = try readRouteSource(alloc);
     defer alloc.free(src);
 
     const bad = "authed.post(\"/api/workspaces/:workspace_id/:param/default-project\"";

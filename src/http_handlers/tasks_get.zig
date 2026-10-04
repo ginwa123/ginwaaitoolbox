@@ -249,7 +249,7 @@ const text_normalize = @import("helpers").text_normalize;
 const HANDLER_PATH = "src/http_handlers/tasks_get.zig";
 const LLM_HISTORY_PATH = "src/agentic_loop/llm_history.zig";
 const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 const TEST_RUNNER_PATH = "src/ai_workflow/tui/test_runner.zig";
 
 /// Read a source file from disk, relative to the project root

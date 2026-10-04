@@ -418,7 +418,7 @@ const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/git_commits.zig";
 const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 const HTTP_RESP_PATH = "src/http_handlers/http_response.zig";
 const TEST_RUNNER_PATH = "src/ai_workflow/tui/test_runner.zig";
 
@@ -527,11 +527,11 @@ test "git commit file-diff route is registered in main.zig" {
     const source = try readSource(allocator, MAIN_PATH);
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "/api/git/commit/file") == null) {
-        std.debug.print("!! main.zig does not register /api/git/commit/file !!\n", .{});
+        std.debug.print("!! http_routes.zig does not register /api/git/commit/file !!\n", .{});
         return error.GitCommitFileDiffRouteMissing;
     }
     if (std.mem.indexOf(u8, source, "gitCommitFileDiffHandler") == null) {
-        std.debug.print("!! main.zig does not reference gitCommitFileDiffHandler !!\n", .{});
+        std.debug.print("!! http_routes.zig does not reference gitCommitFileDiffHandler !!\n", .{});
         return error.GitCommitFileDiffHandlerRefMissing;
     }
 }
@@ -573,11 +573,11 @@ test "git commits routes are registered in main.zig" {
     const source = try readSource(allocator, MAIN_PATH);
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "/api/git/commits") == null) {
-        std.debug.print("!! main.zig does not register /api/git/commits !!\n", .{});
+        std.debug.print("!! http_routes.zig does not register /api/git/commits !!\n", .{});
         return error.GitCommitsRouteMissing;
     }
     if (std.mem.indexOf(u8, source, "/api/git/commit\"") == null and std.mem.indexOf(u8, source, "/api/git/commit,") == null and std.mem.indexOf(u8, source, "/api/git/commit ") == null) {
-        std.debug.print("!! main.zig does not register /api/git/commit !!\n", .{});
+        std.debug.print("!! http_routes.zig does not register /api/git/commit !!\n", .{});
         return error.GitCommitDetailRouteMissing;
     }
 }

@@ -1494,7 +1494,11 @@ fn assertGeneratorUsesCounter(allocator: std.mem.Allocator) !void {
 /// `workspaces.id`) — without an atomic counter, two POST
 /// /api/workspaces hits in the same ms collide (CI run 31863092055).
 fn assertWorkspaceGeneratorUsesCounter(allocator: std.mem.Allocator) !void {
-    const WS_HANDLER_PATH = "src/http_handlers/workspaces_create.zig";
+    // The workspace id generator moved to workspace_provisioning.zig so that
+    // POST /api/workspaces and the automatic per-user provisioning share one
+    // counter — the collision this guards against is a property of the
+    // generator, not of the handler that used to own it.
+    const WS_HANDLER_PATH = "src/http_handlers/workspace_provisioning.zig";
     const source = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         WS_HANDLER_PATH,

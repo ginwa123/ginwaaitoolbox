@@ -204,7 +204,10 @@ const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/workspaces_reorder.zig";
 const LIST_PATH = "src/http_handlers/workspaces_list.zig";
-const CREATE_PATH = "src/http_handlers/workspaces_create.zig";
+// The `position = MAX(position) + 1` INSERT moved to workspace_provisioning.zig,
+// which is now the single workspace-create path shared by POST /api/workspaces
+// and the automatic per-user provisioning.
+const CREATE_PATH = "src/http_handlers/workspace_provisioning.zig";
 const RESPONSE_PATH = "src/http_handlers/http_response.zig";
 const MIGRATION_PATH = "src/migrations/migration.zig";
 

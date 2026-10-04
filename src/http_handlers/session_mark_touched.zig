@@ -29,7 +29,7 @@
 //!   - 400 `session_id required` — path param missing or empty
 //!   - 500 `Out of memory` — `std.json.Stringify.valueAlloc` failure
 //!
-//! Route registration (src/main.zig, next to the sibling PUT routes):
+//! Route registration (src/http_routes.zig, next to the sibling PUT routes):
 //!   - `POST /api/session/:session_id/touched`
 //!   - `POST /api/llm/session/:session_id/touched`
 //! No shadowing: POST differs in method from the existing PUT/GET on the
@@ -215,7 +215,7 @@ pub fn sessionMarkTouchedHandler(
 const testing = std.testing;
 const text_normalize = @import("helpers").text_normalize;
 const HANDLER_PATH = "src/http_handlers/session_mark_touched.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(

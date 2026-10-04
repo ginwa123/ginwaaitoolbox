@@ -1,10 +1,11 @@
-//! `add_document` and `edit_document` — the two agent tools that let a
-//! model write into its own workspace's document store (Migration 098).
+//! `add_document` / `edit_document` / `delete_document` / `search_documents`
+//! — the agent tools that let a model read and write its own workspace's
+//! document store (Migration 098).
 //!
 //! SCOPE, and why it is not a parameter
 //! ────────────────────────────────────
-//! There is deliberately NO `workspace_id` in either input struct or in
-//! either tool schema. A model-supplied workspace id would be a spoofing
+//! There is deliberately NO `workspace_id` in ANY input struct or tool
+//! schema. A model-supplied workspace id would be a spoofing
 //! vector: the LLM would be choosing which isolation boundary it lands
 //! inside. Instead `caller_session_id` arrives as a plain function
 //! parameter from the exec wrapper (`ctx.session_id`), and
@@ -71,6 +72,37 @@ pub const EditDocumentInput = struct {
     content: ?[]const u8 = null,
 };
 
+/// Args for `delete_document`.
+///
+/// Deliberately ONE field. There is no `force`, no `confirm`, no
+/// "delete everything matching this title" — every extra knob on an
+/// irreversible call is a knob the model can fill in wrongly, and a
+/// bulk-delete that got the query wrong is unrecoverable. The model
+/// deletes one id it found with `search_documents`; that is the whole
+/// contract.
+pub const DeleteDocumentInput = struct {
+    document_id: []const u8 = "",
+};
+
+/// Args for `search_documents`.
+///
+/// Field-for-field `search_skills`'s input, plus `include_content`, so the
+/// model learns ONE search contract across `search_tool`, `search_skills`
+/// and this tool instead of three. `query` is a regex unless `literal` is
+/// set; `limit`/`offset` page the matches.
+pub const SearchDocumentsInput = struct {
+    query: ?[]const u8 = null,
+    literal: ?bool = null,
+    limit: ?i64 = null,
+    offset: ?i64 = null,
+    /// Opt-in full bodies. Off by default: a search that returned every
+    /// matching body would put megabytes of markdown into the context
+    /// window for what should be a list. Turn it on when the next action
+    /// is `edit_document`, which replaces the WHOLE body and therefore
+    /// needs the current one first.
+    include_content: ?bool = null,
+};
+
 // =====================================================================
 // Tool schemas
 // =====================================================================
@@ -119,9 +151,9 @@ pub const add_document_tool = AgentTool{
 pub const edit_document_tool_system_prompt =
     \\## Edit Document Tool — Behavior
     \\Use `edit_document` to change an existing document in YOUR workspace.
-    \\- `document_id` comes from the id returned by `add_document`. There is no list/search tool in v1 — if you do not have an id, ask the user which document they mean rather than guessing.
+    \\- `document_id` comes from the id returned by `add_document`, or from a `search_documents` row. If you still have no id, run `search_documents` — do NOT guess one and do NOT ask the user to paste an id you can look up yourself.
     \\- Provide `title`, `content`, or both. An OMITTED field keeps its current value; `content: ""` genuinely clears the body. A patch with neither field is rejected.
-    \\- `content` is the WHOLE new body, not a diff. Read the existing body first (the user can paste it, or you have it in context from a prior turn) or you will silently discard what is there.
+    \\- `content` is the WHOLE new body, not a diff. Read the existing body first — `search_documents` with `include_content: true` returns it — or you will silently discard what is there.
     \\- Scope is automatic. A document belonging to another workspace reports "not found" — you cannot read it, edit it, or learn that it exists.
     \\
 ;
@@ -158,6 +190,96 @@ pub const edit_document_tool = AgentTool{
     },
 };
 
+pub const delete_document_tool_system_prompt =
+    \\## Delete Document Tool — Behavior
+    \\Use `delete_document` to permanently remove ONE document from YOUR workspace.
+    \\- This is IRREVERSIBLE. There is no trash, no undo, and no archive. Once the row is gone the body is unrecoverable — not through this tool, and not from the sidebar.
+    \\- `document_id` must be an id you actually looked up with `search_documents`. Never construct one, never reuse an id from a different workspace, never delete a document just because you wrote it earlier in this session — a document the user has since revised is still their work.
+    \\- Delete only what the user asked you to delete. "Find the doc about X" is not permission to remove X. If you are unsure which document they mean, ask instead of guessing.
+    \\- Scope is automatic. A `document_id` from another workspace reports "not found" — identical to an id that never existed, so you cannot delete across a workspace boundary even by accident.
+    \\- To revise a document instead of removing it, use `edit_document`.
+    \\
+;
+
+pub const delete_document_tool = AgentTool{
+    .type = "function",
+    .function = .{
+        .name = "delete_document",
+        .description =
+        \\Permanently delete ONE document from YOUR workspace by id. This is IRREVERSIBLE — the body is not moved to a trash and cannot be recovered.
+        \\
+        \\SCOPE: automatic and server-side. A `document_id` belonging to another workspace reports "not found", exactly as a nonexistent id does, so you cannot enumerate or delete another workspace's documents.
+        \\
+        \\Use `edit_document` to revise a document. Use this only when the user has asked for the document to be REMOVED.
+        \\
+        \\Example: {"document_id": "doc_1790700000000000000"}
+        ,
+        .parameters = .{
+            .type = "object",
+            .properties = &.{
+                .{ .name = "document_id", .type = "string", .description = "Id of the document to delete, as returned by `add_document` or a `search_documents` row. A document in another workspace reports 'not found'. Required." },
+            },
+            .required = &.{"document_id"},
+        },
+        .system_prompt = delete_document_tool_system_prompt,
+    },
+};
+
+pub const search_documents_tool_system_prompt =
+    \\## Search Documents Tool — Behavior
+    \\Use `search_documents` to find documents in YOUR workspace by title or body content. This is how you get a `document_id` — never invent one.
+    \\- `query` is a REGEX (case-insensitive, unanchored) matched against each document's TITLE AND CONTENT. One pattern reaches a phrase that several words would: `release|launch`, `^Q3`, `\\bTODO\\b`.
+    \\- Set `literal: true` when the query is literal text (e.g. `*.md`, `fn(`) — otherwise its metacharacters are interpreted.
+    \\- Results are PAGED: `limit` (default 20, max 100) caps how many rows you get back, `total` is the real match count, `offset` continues the listing, and `hint` names the exact next offset.
+    \\- An invalid pattern is not a failure: it is matched as a literal substring and the result carries `pattern_warning`. Read it instead of retrying blindly.
+    \\- Every row carries a short `excerpt` around the hit plus `content_length` (bytes) — enough to tell documents apart without dumping megabytes of markdown into your context.
+    \\- Pass `include_content: true` when the NEXT action is `edit_document`, which replaces the WHOLE body and therefore needs the current one first. Leave it off otherwise.
+    \\- Omitting `query` lists your documents, newest-updated first — that is the right first call when you do not know what you are looking for.
+    \\
+;
+
+pub const search_documents_tool = AgentTool{
+    .type = "function",
+    .function = .{
+        .name = "search_documents",
+        .description =
+        \\Search YOUR workspace's documents by title OR body content. `query` is a case-insensitive REGEX, so one pattern reaches a phrase several words would (`release|launch`, `^Q3`, `\\bTODO\\b`); pass `literal: true` when the query is literal text. Results are PAGED — `limit` (default 20) caps the rows returned, `total` is the real match count, `offset` continues the listing — so a big document set never floods your context. Every row carries `document_id` (pass it straight to `edit_document` / `delete_document`), `title`, `updated_at`, `content_length`, and a short `excerpt` centred on the hit. Omit `query` to list your documents newest-first; pass `include_content: true` only when you need the full bodies for an edit.
+        ,
+        .parameters = .{
+            .type = "object",
+            .properties = &.{
+                .{
+                    .name = "query",
+                    .type = "string",
+                    .description = "Regex, matched case-insensitively against every document's title AND content. A pattern finds what a phrase cannot: 'release|launch' = either word, '^Q3' = the Q3-prefixed titles, '\\bTODO\\b' = the word without matching 'TODOIST'. Supported: literals, '.', '[...]', '\\d \\w \\s \\b', '*', '+', '?', '{m,n}' ranges, '( )' groups, '|', '^', '$'. A metacharacter-free query is still a plain substring search. An invalid pattern is matched as a literal substring instead and the result says so in pattern_warning. Omit to list the newest documents first.",
+                },
+                .{
+                    .name = "literal",
+                    .type = "boolean",
+                    .description = "Treat `query` as a literal string — regex metacharacters like '.', '*', '[', '(' are matched verbatim. Set this for code-shaped or glob-shaped queries ('*.md', 'fn('). Default false (regex mode).",
+                },
+                .{
+                    .name = "limit",
+                    .type = "number",
+                    .description = "Maximum matches in THIS response (default 20, max 100). Results are paged to keep the context window small. The result always reports the true `total` — raise limit, or page with offset, only when you need more.",
+                },
+                .{
+                    .name = "offset",
+                    .type = "number",
+                    .description = "Skip the first N matches, for paging a broad query (default 0). The previous page's `hint` names the exact offset that continues it.",
+                },
+                .{
+                    .name = "include_content",
+                    .type = "boolean",
+                    .description = "Include each match's FULL body as `content`. Off by default — rows carry a bounded `excerpt` instead. Turn it on only when the next action is `edit_document`, which replaces the whole body and needs the current one first.",
+                },
+            },
+            .required = &.{},
+        },
+        .system_prompt = search_documents_tool_system_prompt,
+    },
+};
+
 // =====================================================================
 // Result payloads
 // =====================================================================
@@ -174,9 +296,23 @@ pub const DocumentToolSuccess = struct {
     updated_at: []const u8,
 };
 
-/// Error payload shared by `add_document` / `edit_document`.
+/// Error payload shared by `add_document` / `edit_document` /
+/// `delete_document` / `search_documents`.
 pub const DocumentToolError = struct {
     @"error": []const u8,
+};
+
+/// Success payload for `delete_document`.
+///
+/// The DELETED title is echoed, not the body. The body is gone — returning
+/// it would be pointless — and a delete that reports only an id leaves the
+/// model (and the human reading the transcript) unable to tell which document
+/// was removed. `id` + `title` is the minimum that makes the action legible
+/// after the fact.
+pub const DeleteDocumentSuccess = struct {
+    id: []const u8,
+    title: []const u8,
+    deleted: bool,
 };
 
 fn successJSON(allocator: std.mem.Allocator, row: documents_store.DocumentRow) ![]u8 {
@@ -319,9 +455,59 @@ pub fn executeEditDocument(
     return successJSON(allocator, row);
 }
 
-// =====================================================================
-// Tests
-// =====================================================================
+/// Execute `delete_document`. Returns an inner JSON string the exec wrapper
+/// embeds. Caller owns the returned slice and must free it.
+///
+/// The title is read BEFORE the delete so the success payload can name what
+/// was removed. It is read through the SAME workspace-scoped `getDocument`
+/// the edit path uses, so a foreign id fails at the read with the identical
+/// `NotFound` the delete itself would raise — the tool never becomes a way
+/// to learn that another workspace's document exists.
+pub fn executeDeleteDocument(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    caller_session_id: []const u8,
+    input: DeleteDocumentInput,
+) ![]const u8 {
+    if (std.mem.trim(u8, input.document_id, " \t\n\r").len == 0) {
+        return errorJSON(allocator, "document_id is required. Look the id up with search_documents.");
+    }
+
+    const workspace_id = (try resolveScope(allocator, db, caller_session_id)) orelse
+        return scopeErrorJSON(allocator, caller_session_id);
+    defer allocator.free(workspace_id);
+
+    const existing = documents_store.getDocument(allocator, db, workspace_id, input.document_id) catch |err| {
+        const msg = switch (err) {
+            error.IdsRequired => "workspace_id and document_id required",
+            // One message for "no such id" and "another workspace's id" —
+            // see the note on edit_document's NotFound arm.
+            error.NotFound => "No document with that id in your workspace. It may not exist, or it may belong to another workspace.",
+            error.QueryFailed => "Could not read the document (database error).",
+            error.OutOfMemory => "Out of memory",
+        };
+        return errorJSON(allocator, msg);
+    };
+    defer documents_store.freeDocumentRow(allocator, existing);
+
+    documents_store.deleteDocument(allocator, db, workspace_id, input.document_id) catch |err| {
+        const msg = switch (err) {
+            error.IdsRequired => "workspace_id and document_id required",
+            // Unreachable in practice: we just read the row through the
+            // same scope guard. It is still mapped rather than leaked, so a
+            // future change cannot turn a race into an unhandled error.
+            error.NotFound => "No document with that id in your workspace. It may not exist, or it may belong to another workspace.",
+            error.DeleteFailed => "Could not delete the document (database error).",
+        };
+        return errorJSON(allocator, msg);
+    };
+
+    return std.json.Stringify.valueAlloc(allocator, DeleteDocumentSuccess{
+        .id = existing.id,
+        .title = existing.title,
+        .deleted = true,
+    }, .{});
+}
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -664,6 +850,97 @@ test "edit_document: no content leaks through the cross-workspace denial" {
     try testing.expect(std.mem.indexOf(u8, denied, "TOPSECRETBODY") == null);
 }
 
+// ─── delete_document ────────────────────────────────────────────────────
+
+test "delete_document: removes the row and names what it removed" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const id = try seedDoc(alloc, &ctx.db, "Obsolete plan", "no longer needed");
+    defer alloc.free(id);
+
+    const out = try executeDeleteDocument(alloc, &ctx.db, "s1", .{ .document_id = id });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+
+    try testing.expect(p.err == null);
+    try testing.expectEqualStrings(id, p.id);
+    try testing.expectEqualStrings("Obsolete plan", p.title);
+    try testing.expect(std.mem.indexOf(u8, out, "\"deleted\":true") != null);
+
+    // And the row is actually gone from the table, not merely reported gone.
+    const after = documents_store.getDocument(alloc, &ctx.db, "ws_1", id);
+    try testing.expectError(error.NotFound, after);
+}
+
+test "delete_document: an empty document_id is rejected before any DB work" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const out = try executeDeleteDocument(alloc, &ctx.db, "s1", .{ .document_id = "   " });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    try testing.expect(p.err != null);
+    try testing.expect(std.mem.indexOf(u8, p.err.?, "document_id") != null);
+}
+
+test "delete_document: an unresolvable session deletes nothing" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const id = try seedDoc(alloc, &ctx.db, "Survivor", "still here");
+    defer alloc.free(id);
+
+    const out = try executeDeleteDocument(alloc, &ctx.db, "s_orphan", .{ .document_id = id });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    try testing.expect(p.err != null);
+
+    const still = try documents_store.getDocument(alloc, &ctx.db, "ws_1", id);
+    defer documents_store.freeDocumentRow(alloc, still);
+    try testing.expectEqualStrings("still here", still.content);
+}
+
+test "delete_document: workspace B cannot delete workspace A's document, and the error is identical to a missing one" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const id = try seedDoc(alloc, &ctx.db, "Private", "TOPSECRETBODY");
+    defer alloc.free(id);
+
+    const denied = try executeDeleteDocument(alloc, &ctx.db, "s2", .{ .document_id = id });
+    defer alloc.free(denied);
+    var d = try parseJson(alloc, denied);
+    defer d.deinit();
+
+    const missing = try executeDeleteDocument(alloc, &ctx.db, "s2", .{
+        .document_id = "doc_nope",
+    });
+    defer alloc.free(missing);
+    var m = try parseJson(alloc, missing);
+    defer m.deinit();
+
+    try testing.expect(d.err != null);
+    try testing.expectEqualStrings(d.err.?, m.err.?);
+    try testing.expect(std.mem.indexOf(u8, denied, "TOPSECRETBODY") == null);
+
+    // A refused cross-workspace delete must not half-apply.
+    const read_back = try documents_store.getDocument(alloc, &ctx.db, "ws_1", id);
+    defer documents_store.freeDocumentRow(alloc, read_back);
+    try testing.expectEqualStrings("TOPSECRETBODY", read_back.content);
+}
+
 // ─── Schema contracts ───────────────────────────────────────────────────
 
 test "static contract: the tool schemas carry no workspace_id" {
@@ -672,7 +949,7 @@ test "static contract: the tool schemas carry no workspace_id" {
     // parameter list, the exec wrapper's `ignore_unknown_fields` would
     // start honouring a spoofed value and this file's fail-closed
     // resolver would be bypassed.
-    for ([_]AgentTool{ add_document_tool, edit_document_tool }) |tool| {
+    for ([_]AgentTool{ add_document_tool, edit_document_tool, delete_document_tool, search_documents_tool }) |tool| {
         for (tool.function.parameters.properties) |prop| {
             try testing.expect(!std.mem.eql(u8, prop.name, "workspace_id"));
         }
@@ -698,9 +975,19 @@ test "static contract: the input structs carry no workspace_id field" {
             try testing.expect(!std.mem.eql(u8, f.name, "workspace_id"));
         }
     }
+
+    // `DeleteDocumentInput` and `SearchDocumentsInput` carry their own
+    // counts: one field, and five. An extra field on either is how a
+    // "just one knob more" scope or delete mode sneaks in.
+    try testing.expectEqual(@as(usize, 1), @typeInfo(DeleteDocumentInput).@"struct".fields.len);
+    const search_fields = @typeInfo(SearchDocumentsInput).@"struct".fields;
+    try testing.expectEqual(@as(usize, 5), search_fields.len);
+    inline for (search_fields) |f| {
+        try testing.expect(!std.mem.eql(u8, f.name, "workspace_id"));
+    }
 }
 
-test "static contract: both tools carry a behavioral system prompt" {
+test "static contract: all four tools carry a behavioral system prompt" {
     // The aggregator in prompts_build_messages_for_agent_prompt.zig reads
     // `system_prompt` straight off the schema. An empty one means the
     // model sees the JSON contract but none of the behavioral rules
@@ -708,6 +995,19 @@ test "static contract: both tools carry a behavioral system prompt" {
     // it from making a destructive call.
     try testing.expect(add_document_tool.function.system_prompt.len > 0);
     try testing.expect(edit_document_tool.function.system_prompt.len > 0);
+    try testing.expect(delete_document_tool.function.system_prompt.len > 0);
+    try testing.expect(search_documents_tool.function.system_prompt.len > 0);
     try testing.expectEqualStrings("add_document", add_document_tool.function.name);
     try testing.expectEqualStrings("edit_document", edit_document_tool.function.name);
+    try testing.expectEqualStrings("delete_document", delete_document_tool.function.name);
+    try testing.expectEqualStrings("search_documents", search_documents_tool.function.name);
+}
+
+test "static contract: no prompt tells the model a search tool does not exist" {
+    // The `edit_document` prompt once said "There is no list/search tool in
+    // v1" — and `search_documents` now exists. A prompt that contradicts the
+    // live tool set is worse than a missing prompt: the model reads it and
+    // declines to look, so nothing anywhere reports an error.
+    try testing.expect(std.mem.indexOf(u8, edit_document_tool.function.system_prompt, "no list/search tool") == null);
+    try testing.expect(std.mem.indexOf(u8, edit_document_tool.function.system_prompt, "search_documents") != null);
 }

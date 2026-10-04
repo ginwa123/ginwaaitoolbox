@@ -96,22 +96,16 @@ export function useChatScrollRestore(
     }
     return el.scrollHeight - el.clientHeight
   }
-  // Capture the initial key synchronously so readSaved() below has
-  // the correct value even when `storageKey` is a Ref (the watch
-  // below updates keyRef on future changes, but the watch's
-  // immediate-callback may not run before this line).
-  const initialKey = typeof storageKey === 'string' ? storageKey : storageKey.value
-  const keyRef = ref(initialKey)
-
-  if (typeof storageKey !== 'string') {
-    watch(
-      storageKey,
-      (v) => {
-        keyRef.value = v
-      },
-      { immediate: true },
-    )
-  }
+  // Alias the key rather than mirroring it into a local ref.
+  //
+  // This used to be `const keyRef = ref(initialKey)` plus a
+  // `{ immediate: true }` watcher copying `storageKey.value` into it. The
+  // watcher needed the `immediate` flag precisely because the snapshot could
+  // not see the current value on its own, and it still could not cover a key
+  // that changed between setup and the first flush. Aliasing reads the live
+  // value every time, so a dynamic key is correct from the first access and
+  // no watcher is needed at all.
+  const keyRef: Ref<string> = typeof storageKey === 'string' ? ref(storageKey) : storageKey
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
 

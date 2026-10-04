@@ -84,6 +84,20 @@ const syncTabParam = (tab: 'files' | 'pr' | 'commits' | 'evals' | null) => {
   router.replace({ path: route.path, query }).catch(() => {})
 }
 
+// "⚠ Conflicts only" filter. View state, so it lives in the URL next to
+// ?panel= (refresh / Back / shared links restore the same panel) — a local
+// ref would lose it on reload. Reuses the existing query object rather than
+// inventing a second history entry; `replace`, not `push`, because toggling a
+// filter is not a navigation.
+const readConflictsParam = (): boolean => route.query.conflicts === '1'
+
+const syncConflictsParam = (on: boolean) => {
+  const query = { ...route.query }
+  if (on) query.conflicts = '1'
+  else delete query.conflicts
+  router.replace({ path: route.path, query }).catch(() => {})
+}
+
 const isPrMode = computed(() => (props.prUrl ?? '').trim().length > 0)
 // Every view switch lands in the URL (?panel=files|pr|commits|evals) so
 // refresh, Back/Forward, and shared links restore the same panel. The commits
@@ -98,6 +112,15 @@ const initialTab = (): 'files' | 'pr' | 'commits' | 'evals' => {
   try {
     param = readTabParam()
   } catch {
+    // This catch exists ONLY for "mounted without a router" — hosts like
+    // ChatRightSidebar mount this panel standalone (ChatRightSidebar.spec.ts),
+    // and `useRoute()` injects nothing there, so `route.query` throws on a
+    // null deref. It cannot reach the user: nothing was fetched, this runs at
+    // mount before any data loads, and with no router there is no URL to keep
+    // in sync. `files` is the documented default, so the fallback is correct
+    // — but the condition is still logged rather than swallowed, because a
+    // mount that silently lost its router is worth seeing in the console.
+    console.warn('[SidebarDiffPanel] mounted without a router; defaulting ?panel to files')
     param = null
   }
   // Evals is reachable regardless of PR mode: it is about the agent's
@@ -157,6 +180,77 @@ const forge = computed(() => forgeWording(props.prProvider))
 const prStatusError = ref('')
 let prSeq = 0
 let prPollTimer: number | undefined
+
+// Which files the local three-way merge refuses to resolve. Fetched ONLY
+// while `hasPrConflict` is true — a clean PR must cost zero extra spawns and
+// must render byte-identically to before this feature existed.
+// Three states, and the difference matters:
+//   loaded=false            → not asked yet / never applicable
+//   error='' + files.length → the answer
+//   error!=''               → could not be determined (git < 2.38, base ref
+//                             missing locally, repo not reachable); the UI says
+//                             so rather than implying "nothing conflicts".
+const prConflictLoaded = ref(false)
+const prConflictFiles = ref<string[]>([])
+const prConflictError = ref('')
+const prConflictBase = ref('')
+const prConflictTruncated = ref(false)
+let prConflictSeq = 0
+// The in-flight PR diff load, so loadPrConflicts can wait for the base/head
+// it wants to reuse rather than racing that read to empty. Without it, a
+// status response that beats a 1MB diff response silently downgrades the
+// conflicts call from "these exact two refs" to the backend's ref ladder.
+let prDiffInFlight: Promise<void> | null = null
+
+// Restored from ?conflicts=1 on mount, so a reload or a shared link comes
+// back showing only the conflicts. Guarded like readTabParam: hosts like
+// ChatRightSidebar mount this panel without a router.
+const conflictsOnly = ref(
+  (() => {
+    try {
+      return readConflictsParam()
+    } catch {
+      // Same guard and same reason as initialTab: no router means
+      // `route.query` throws, nothing was fetched, and there is no URL to
+      // keep in sync. `false` = show the full PR file list, this panel's
+      // pre-router default — logged rather than swallowed for the same
+      // reason.
+      console.warn('[SidebarDiffPanel] mounted without a router; defaulting ?conflicts to off')
+      return false
+    }
+  })(),
+)
+
+const setConflictsOnly = (on: boolean) => {
+  conflictsOnly.value = on
+  syncConflictsParam(on)
+}
+
+// PR file list, narrowed to the conflicting ones when the filter is on.
+// An empty filter result is a real state (the section says so) — never
+// silently fall back to the full list, which would look like the filter
+// did nothing.
+const conflictPathSet = computed(() => new Set(prConflictFiles.value))
+const visiblePrFiles = computed(() =>
+  conflictsOnly.value
+    ? prFiles.value.filter((f) => conflictPathSet.value.has(f.path))
+    : prFiles.value,
+)
+
+// Clicking a conflicting file: if the PR diff has it, select it exactly like
+// a normal row (the centre column then shows that file's hunks). A conflict
+// on a file the PR diff does not carry (added on the base side, deleted
+// here, …) has no hunks to show, so open it in the code editor instead —
+// "nothing happens" would be the wrong answer for a file the user was just
+// told is blocking their merge.
+const onConflictFileClick = (path: string) => {
+  const file = prFiles.value.find((f) => f.path === path)
+  if (file) {
+    selectPrFile(file)
+    return
+  }
+  openFileInNewTab(path)
+}
 
 const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
 
@@ -267,32 +361,42 @@ const loadPrDiff = async () => {
   }
   isLoadingPr.value = true
   prError.value = null
+  // Published so loadPrConflicts can wait for base/head instead of racing it
+  // (see PR_IN_FLIGHT note there). Tab load runs diff + status in parallel;
+  // serialising them would add a full diff round-trip to tab-open latency.
+  const run = (async () => {
+    try {
+      const data = await api.getPrDiff(props.cwd, props.prUrl ?? '', {
+        provider: props.prProvider || undefined,
+      })
+      prFiles.value = splitDiffByFile(data.diff_content)
+      prBase.value = data.base || ''
+      prHead.value = data.head || ''
+      prTruncated.value = data.truncated
+      // Stacked center view: every chunk parses synchronously — no
+      // per-file fetch needed, the full diff text is already in hand.
+      const list: DiffSelection[] = prFiles.value.map((file) => {
+        const parsed = parseUnifiedDiff(file.text)
+        return {
+          path: file.path,
+          staged: false,
+          lines: parsed.lines,
+          added: parsed.added,
+          removed: parsed.removed,
+        }
+      })
+      emit('show-diff-list', list)
+    } catch (err) {
+      console.error('Failed to load PR diff:', err)
+      prError.value = serverErrorMessage(err, 'Failed to load PR diff')
+      prFiles.value = []
+    }
+  })()
+  prDiffInFlight = run
   try {
-    const data = await api.getPrDiff(props.cwd, props.prUrl ?? '', {
-      provider: props.prProvider || undefined,
-    })
-    prFiles.value = splitDiffByFile(data.diff_content)
-    prBase.value = data.base || ''
-    prHead.value = data.head || ''
-    prTruncated.value = data.truncated
-    // Stacked center view: every chunk parses synchronously — no
-    // per-file fetch needed, the full diff text is already in hand.
-    const list: DiffSelection[] = prFiles.value.map((file) => {
-      const parsed = parseUnifiedDiff(file.text)
-      return {
-        path: file.path,
-        staged: false,
-        lines: parsed.lines,
-        added: parsed.added,
-        removed: parsed.removed,
-      }
-    })
-    emit('show-diff-list', list)
-  } catch (err) {
-    console.error('Failed to load PR diff:', err)
-    prError.value = serverErrorMessage(err, 'Failed to load PR diff')
-    prFiles.value = []
+    await run
   } finally {
+    if (prDiffInFlight === run) prDiffInFlight = null
     isLoadingPr.value = false
   }
 }
@@ -323,6 +427,9 @@ const loadPrStatus = async () => {
     prMergeable.value = data.mergeable || ''
     prMergeState.value = data.merge_state || ''
     prStatusError.value = ''
+    // The conflict badge just turned on or off — re-derive the file list in
+    // the same turn so the section never lags the badge by a render.
+    await loadPrConflicts()
   } catch (err) {
     if (seq !== prSeq) return
     prStatus.value = ''
@@ -330,6 +437,7 @@ const loadPrStatus = async () => {
     prMergeable.value = ''
     prMergeState.value = ''
     prStatusError.value = serverErrorMessage(err, 'Failed to load PR status')
+    await loadPrConflicts()
   }
 }
 
@@ -337,6 +445,62 @@ const retryPr = () => {
   void loadPrDiff()
   void loadPrStatus()
 }
+
+// Which files conflict, per `git merge-tree` on the local refs. Called
+// right after loadPrStatus resolves a conflict, and again whenever the merge
+// state flips — never speculatively, so the clean-PR path is unchanged.
+const loadPrConflicts = async () => {
+  if (!props.cwd || !isPrMode.value || !hasPrConflict.value) {
+    // Clear too: the PR may have just been merged/rebased clean, and a stale
+    // list under a badge that vanished would be a lie in the other direction.
+    prConflictLoaded.value = false
+    prConflictFiles.value = []
+    prConflictError.value = ''
+    prConflictBase.value = ''
+    prConflictTruncated.value = false
+    return
+  }
+  const seq = ++prConflictSeq
+  // Wait for the diff load so base/head below are the exact refs the file
+  // list above was computed from. loadPrDiff already renders its own error.
+  const pendingDiff = prDiffInFlight
+  if (pendingDiff) {
+    try {
+      await pendingDiff
+    } catch {
+      /* diff error is shown by the PR tab itself */
+    }
+    if (seq !== prConflictSeq) return
+  }
+  try {
+    const data = await api.getPrConflicts(props.cwd, props.prUrl ?? '', {
+      provider: props.prProvider || undefined,
+      base: prBase.value || undefined,
+      head: prHead.value || undefined,
+    })
+    if (seq !== prConflictSeq) return
+    prConflictFiles.value = data.conflicting_files || []
+    prConflictBase.value = data.base_ref || ''
+    prConflictTruncated.value = !!data.truncated
+    prConflictError.value = ''
+    prConflictLoaded.value = true
+  } catch (err) {
+    if (seq !== prConflictSeq) return
+    prConflictFiles.value = []
+    prConflictBase.value = ''
+    prConflictTruncated.value = false
+    prConflictError.value = serverErrorMessage(err, 'Failed to compute conflicting files')
+    prConflictLoaded.value = true
+  }
+}
+
+// The forge says CONFLICTING but our local merge came back clean. Almost
+// always a stale local base ref (we deliberately never `git fetch`). Showing
+// an empty list next to a red badge would read as "nothing to do", so say so
+// instead and point at the ref the answer was computed from.
+const prConflictUnreproduced = computed(
+  () => prConflictLoaded.value && !prConflictError.value && prConflictFiles.value.length === 0,
+)
 
 const selectPrFile = (file: SplitDiffFile) => {
   selectedPath.value = file.path
@@ -643,6 +807,16 @@ watch(
         activeTab.value = 'files'
         syncTabParam(null)
       }
+      // The conflicts-only filter is a PR-tab view, so it must not outlive
+      // the PR it filtered — clear it and its query param with the binding.
+      conflictsOnly.value = false
+      syncConflictsParam(false)
+      prConflictSeq++
+      prConflictLoaded.value = false
+      prConflictFiles.value = []
+      prConflictError.value = ''
+      prConflictBase.value = ''
+      prConflictTruncated.value = false
     }
     selectedPath.value = null
     loadedTabs.value.clear()
@@ -668,6 +842,7 @@ defineExpose({
   loadGitStatus,
   loadPrDiff,
   loadPrStatus,
+  loadPrConflicts,
   loadDiff,
   refresh: refreshCurrentTab,
   changeCount,
@@ -791,10 +966,16 @@ defineExpose({
         v-if="hasPrConflict"
         class="px-1.5 py-0.5 rounded text-dense font-medium shrink-0"
         style="background-color: var(--semantic-error); color: var(--color-bg)"
-        :title="`This ${forge.noun} has merge conflicts that must be resolved`"
+        :title="
+          prConflictFiles.length > 0
+            ? `This ${forge.noun} has merge conflicts in ${prConflictFiles.length} file(s)`
+            : `This ${forge.noun} has merge conflicts that must be resolved`
+        "
         data-testid="sidebar-pr-conflict-badge"
       >
-        ⚠ Merge conflicts
+        ⚠ Merge conflicts<span v-if="prConflictFiles.length > 0">
+          ({{ prConflictFiles.length }})</span
+        >
       </span>
       <span
         v-if="prBase || prHead"
@@ -954,6 +1135,102 @@ defineExpose({
             ><span v-else>web editor</span>
             or the command line to resolve conflicts before continuing.
           </div>
+          <!-- Which files, not just "there is a conflict". Computed locally by
+               `git merge-tree` over the same base ref the PR diff used, so it
+               works for GitHub, GitLab and generic providers alike. Rendered
+               only under the badge above, so a clean PR is byte-identical to
+               before this feature existed. -->
+          <div
+            v-if="
+              hasPrConflict && prConflictLoaded && !prConflictError && prConflictFiles.length > 0
+            "
+            data-testid="sidebar-pr-conflict-files"
+          >
+            <div class="flex items-center gap-2 px-3 pt-2 pb-1">
+              <span class="text-dense font-semibold" style="color: var(--semantic-error)">
+                Conflicting files ({{ prConflictFiles.length }})
+              </span>
+              <button
+                type="button"
+                class="text-dense px-1.5 py-0.5 rounded hover:opacity-80 shrink-0"
+                :style="
+                  conflictsOnly
+                    ? { backgroundColor: 'var(--color-violet)', color: 'var(--color-bg)' }
+                    : { color: 'var(--semantic-text-dim)' }
+                "
+                :aria-pressed="conflictsOnly"
+                :title="conflictsOnly ? 'Show all changed files' : 'Show only conflicting files'"
+                data-testid="sidebar-pr-conflicts-only"
+                @click="setConflictsOnly(!conflictsOnly)"
+              >
+                {{ conflictsOnly ? '⚠ Conflicts only ✓' : '⚠ Conflicts only' }}
+              </button>
+            </div>
+            <div
+              v-for="path in prConflictFiles"
+              :key="'pr-conflict-' + path"
+              class="flex items-center gap-2 px-3 py-1 cursor-pointer hover:opacity-80"
+              :style="{
+                backgroundColor:
+                  selectedPath === path ? 'var(--semantic-active-bg)' : 'transparent',
+              }"
+              :data-testid="`sidebar-pr-conflict-file-${path}`"
+              :title="path"
+              @click="onConflictFileClick(path)"
+              @contextmenu.prevent="onFileRowContextMenu($event, path)"
+            >
+              <span class="text-dense">⚠</span>
+              <span class="text-dense truncate flex-1" style="color: var(--semantic-text)">
+                {{ path }}
+              </span>
+            </div>
+            <div
+              v-if="prConflictTruncated"
+              class="px-3 py-1 text-dense"
+              style="color: var(--semantic-text-dim)"
+              data-testid="sidebar-pr-conflict-files-truncated"
+            >
+              List truncated — some conflicting files are not shown
+            </div>
+            <div
+              v-if="prConflictBase"
+              class="px-3 py-1 text-dense"
+              style="color: var(--semantic-text-dim)"
+              data-testid="sidebar-pr-conflict-base"
+            >
+              Computed from your local {{ prConflictBase }}
+            </div>
+          </div>
+          <!-- Forge says CONFLICTING, our local merge says clean. Almost
+               always a stale local base ref — say so instead of showing an
+               empty list beside a red badge. -->
+          <div
+            v-if="prConflictUnreproduced"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense"
+            style="
+              background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
+              color: var(--semantic-text);
+            "
+            data-testid="sidebar-pr-conflict-unreproduced"
+          >
+            Could not reproduce these conflicts locally<span v-if="prConflictBase">
+              from {{ prConflictBase }}</span
+            >. Run <code>git fetch</code> and refresh — the forge may be comparing against a newer
+            base branch.
+          </div>
+          <div
+            v-else-if="hasPrConflict && prConflictError"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense break-words"
+            style="
+              background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
+              color: var(--semantic-text);
+              white-space: pre-wrap;
+            "
+            :title="prConflictError"
+            data-testid="sidebar-pr-conflict-error"
+          >
+            Could not list conflicting files — {{ prConflictError }}
+          </div>
           <div
             v-if="!prStatusLabel && prStatusError"
             class="mx-3 mt-2 px-2 py-1.5 rounded text-dense break-words"
@@ -999,10 +1276,12 @@ defineExpose({
           </div>
           <div class="py-1">
             <div class="px-3 py-1 text-dense font-semibold" style="color: var(--color-violet)">
-              {{ forge.short }} files ({{ prFiles.length }})
+              {{ forge.short }} files ({{ visiblePrFiles.length
+              }}<template v-if="conflictsOnly"> of {{ prFiles.length }}</template
+              >)
             </div>
             <div
-              v-for="file in prFiles"
+              v-for="file in visiblePrFiles"
               :key="'pr-' + file.path"
               class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:opacity-80"
               :style="{

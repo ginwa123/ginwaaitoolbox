@@ -199,6 +199,10 @@ _ = @import("../../http_handlers/kanban_tasks_create.zig");
     _ = @import("../../http_handlers/session_list.zig");
     _ = @import("../../http_handlers/session_get.zig");
     _ = @import("../../http_handlers/workspaces_list.zig");
+    // Automatic per-user workspace provisioning: the shared workspace insert
+    // path (used by both POST /api/workspaces and the login-time hook) plus
+    // the idempotence/isolation/position/default-project guarantees.
+    _ = @import("../../http_handlers/workspace_provisioning.zig");
     // NEW (2026-08-29-chat-sidebar-last-human-touched, Task 4):
     // session_update.zig stamps sessions.last_human_touched_at_nano when
     // the user edits a field. The static-contract test guards the call site.

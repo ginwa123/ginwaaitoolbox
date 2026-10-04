@@ -974,21 +974,6 @@ onMounted(async () => {
   loadChats()
 })
 
-// Watch for navItems changes to sync active state
-watch(
-  navItems,
-
-  (newItems) => {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-    newItems.forEach((item, index) => {
-      if (item.processing && processingState.value[item.id]) {
-        item.processing = true // Keep processing state true
-      }
-    })
-  },
-  { deep: true },
-)
-
 // Watch for processingState changes
 watch(processingState, (state) => {
   navItems.value = navItems.value.map((item) => ({

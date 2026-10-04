@@ -330,7 +330,7 @@ const testing = std.testing;
 const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/system_folder.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 const TEST_RUNNER_PATH = "src/ai_workflow/tui/test_runner.zig";
 
 /// Read a source file from disk, relative to the project root

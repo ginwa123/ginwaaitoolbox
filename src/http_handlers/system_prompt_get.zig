@@ -185,7 +185,7 @@ const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/system_prompt_get.zig";
 const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 
 /// Read a source file from disk, relative to the project root
 /// (which is the cwd when `zig build test:ai_workflow:tui` runs).
