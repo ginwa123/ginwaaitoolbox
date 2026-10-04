@@ -39,6 +39,7 @@ const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 const tags_validation = @import("../../../http_handlers/tags_validation.zig");
 const image_urls_validation = @import("../../../http_handlers/image_urls_validation.zig");
+const model_guard = @import("../../../agentic_loop/llm_history_model_guard.zig");
 
 /// Input structure for `create_kanban_task` tool.
 ///
@@ -124,6 +125,16 @@ pub const CreateKanbanTaskInput = struct {
     /// on the task itself, only on the chat session it spawns
     /// later).
     selected_profile_model: ?[]const u8 = null,
+    /// The model id the seeded `llm_history` row records for this
+    /// session's chat. NOT part of the LLM tool schema — the caller
+    /// (`tools_exec_create_kanban_task.zig`) always overwrites it with
+    /// `ToolExecContext.model` before invoking, so a model-supplied value
+    /// here is ignored. It exists only because the seed INSERT needs a
+    /// real model instead of the `''` literal it used to hardcode (which
+    /// wrote a blank `model` into chat history). Empty is safe: the write
+    /// site resolves it to the shared sentinel. See
+    /// `agentic_loop/llm_history_model_guard.zig`.
+    resolved_model: []const u8 = "",
 };
 
 /// Top-level tool definition for the LLM.
@@ -701,8 +712,8 @@ pub fn executeKanbanTaskToJSON(
     //     `if (is_create_session)` block at
     //     `kanban_tasks_create.zig:300-352` verbatim:
     //     content is `"{name}\n\n{description}"`, `image_urls` wire
-    //     value attached, `model=''` literal (NOT NULL + the
-    //     empty-slice-binds-as-NULL backend quirk). Non-fatal on
+    //     value attached, `model` bound from the session's resolved
+    //     model (guarded so it can never be empty). Non-fatal on
     //     error — the card + session already exist.
     {
         const initial_message = std.fmt.allocPrint(
@@ -725,10 +736,14 @@ pub fn executeKanbanTaskToJSON(
                             "(id, session_id, model, response_content, finish_reason, role, " ++
                             "agent, parent_id, parent_session_id, is_input, image_url, " ++
                             "is_feed_to_llm, created_at_nano, created_iso) " ++
-                            "VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, ?, 1, ?, '')",
+                            "VALUES (?, ?, ?, ?, 'null', 'user', 'Agent', ?, ?, 1, ?, 1, ?, '')",
                         &[_][]const u8{
                             ids,
                             task_id,
+                            // Never empty: an empty bind lands as SQL NULL and
+                            // fails `model TEXT NOT NULL`, dropping the seed row.
+                            // See agentic_loop/llm_history_model_guard.zig.
+                            model_guard.resolve(input.resolved_model),
                             msg,
                             task_id,
                             task_id,

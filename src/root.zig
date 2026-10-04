@@ -996,6 +996,7 @@ pub const tui_check_session_exists = @import("agentic_loop/llm_history.zig");
 pub const session_helpers = @import("agentic_loop/llm_history.zig");
 pub const session_db = @import("agentic_loop/llm_history.zig");
 pub const llm_history = @import("agentic_loop/llm_history.zig");
+pub const llm_history_model_guard = @import("agentic_loop/llm_history_model_guard.zig");
 pub const workspace_scope = @import("agentic_loop/workspace_scope.zig");
 pub const agent_memories = @import("agentic_loop/agent_memories.zig");
 /// Workspace-scoped document storage (Migration 098). Shared by the
@@ -1185,6 +1186,9 @@ test {
     _ = @import("models/design_page.zig");
     _ = @import("models/design_page_element.zig");
     _ = @import("models/llm_history.zig");
+    // `llm_history.model` is never empty — see the module header for the
+    // NULL-collapse vs. ''-literal distinction this guard closes.
+    _ = @import("agentic_loop/llm_history_model_guard.zig");
     _ = @import("models/worker.zig");
     _ = @import("models/log.zig");
     _ = @import("models/agent_memory.zig");

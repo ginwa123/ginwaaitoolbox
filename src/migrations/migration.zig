@@ -2049,6 +2049,12 @@ pub const allMigrations: []const Migration = &.{
     // workspace can be shared. Additive; the column stays for one release so
     // `DROP TABLE workspace_members` is a complete rollback.
     .{ .version = Migration100AddWorkspaceMembers.version, .name = Migration100AddWorkspaceMembers.name, .up = Migration100AddWorkspaceMembers.up },
+    // Migration 101 — `llm_history.model` is never empty. Closes two
+    // independent failures: raw SQL writing `''` outright, and an empty
+    // *bind* landing as SQL NULL and failing the NOT NULL constraint
+    // (which silently DROPS the user's message row). The AFTER INSERT
+    // trigger is the only SQLite choke point that also catches raw SQL.
+    .{ .version = Migration101GuardLlmHistoryModel.version, .name = Migration101GuardLlmHistoryModel.name, .up = Migration101GuardLlmHistoryModel.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -15087,4 +15093,323 @@ test "Migration100 is registered in allMigrations" {
         if (m.version == Migration100AddWorkspaceMembers.version) return;
     }
     return error.Migration100NotRegistered;
+}
+
+
+// ============================================================================
+// Migration 101 — `llm_history.model` is never empty
+// ============================================================================
+//
+// ## The bug
+//
+// `llm_history.model` is declared `TEXT NOT NULL` (Migration 001), which reads
+// like a guarantee that it is always populated. It is not — NOT NULL rejects
+// SQL NULL and says nothing about the empty string. Two distinct paths wrote a
+// blank model into chat history:
+//
+//  1. **Raw SQL with a `''` literal.** The two kanban task-create paths seed a
+//     synthetic `role='user'` row so the chatview never lands on the "How can
+//     I help you?" empty state. Both hardcoded a `''` model literal, with a
+//     comment explaining that `''` was the only way to satisfy NOT NULL given
+//     the backend's bind semantics. The row landed; `model` was blank.
+//
+//  2. **An empty *bind*, which is worse — it loses the row entirely.**
+//     `SqliteBackend.exec` binds a zero-length slice as SQL NULL (the rule
+//     Migration 100 documents for `workspace_members.user_id`). NULL *does*
+//     violate NOT NULL, so the INSERT fails outright — and every write site
+//     swallows that non-fatally with a `catch`. The user's message row is
+//     silently gone, leaving nothing to render at all.
+//
+// Failure 2 is why this migration does not simply reject a bad model. A
+// `RAISE(ABORT)` trigger would convert "blank model" into "row deleted", which
+// is strictly more destructive than either original symptom. So the trigger
+// *substitutes* a sentinel instead.
+//
+// ## What this migration does
+//
+//   1. Backfills `''` on existing rows to the sentinel.
+//   2. Installs an `AFTER INSERT` trigger that rewrites an empty-or-NULL model
+//      to the sentinel on every future write.
+//
+// The trigger is the ONLY choke point that catches raw SQL — the Zig-side guard
+// (`agentic_loop/llm_history_model_guard.zig`) cannot see a literal a caller
+// typed into its own SQL string. Together they cover both layers: the guard
+// gives a real model, the trigger makes the invariant hold even for code that
+// predates it or bypasses it.
+//
+// ## Why AFTER INSERT and not BEFORE
+//
+// A BEFORE INSERT trigger cannot assign to `NEW.model` in SQLite. The rewrite
+// therefore happens in an AFTER INSERT trigger, which costs one extra UPDATE
+// only for rows that were actually bad — the common path stays a single INSERT.
+//
+// ## Idempotency
+//
+// `CREATE TRIGGER IF NOT EXISTS` plus an UPDATE scoped by
+// `model IS NULL OR TRIM(model) = ''`, so re-running is a no-op and can never
+// touch a row that already holds a real model.
+
+pub const Migration101GuardLlmHistoryModel = struct {
+    pub const version: u32 = 101;
+    pub const name = "guard_llm_history_model";
+
+    /// The sentinel written when no model could be resolved. Mirrors
+    /// `agentic_loop/llm_history_model_guard.zig::UNKNOWN_MODEL` — kept as a
+    /// literal because a SQL trigger cannot call into Zig, and asserted equal
+    /// to the Zig constant in the inline tests below so the two cannot drift.
+    pub const sentinel: []const u8 = "unknown";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        var tx = try db.begin();
+        defer tx.commitOrRollback() catch {};
+        errdefer tx.rollback() catch {};
+
+        // Backfill first so the trigger (which only fires on INSERT) does not
+        // have to reason about rows that already exist. TRIM catches both the
+        // empty string and whitespace-only values, and the WHERE clause keeps
+        // this from touching any real model id.
+        //
+        // Literals, not binds — so the empty-slice-as-NULL rule does not apply
+        // here and NULL and '' remain distinguishable.
+        try tx.exec(allocator,
+            \\UPDATE llm_history SET model = 'unknown'
+            \\WHERE model IS NULL OR TRIM(model) = ''
+        , &[_][]const u8{});
+
+        // The backstop. Catches raw SQL (which the Zig guard cannot see) and
+        // any future write site that forgets the guard.
+        //
+        // `WHEN` guards the UPDATE so a healthy insert costs nothing: the
+        // trigger body simply does not run. That matters because the FTS sync
+        // trigger `llm_history_au` fires on this UPDATE — restricting the
+        // rewrite to bad rows keeps the search index untouched in the normal
+        // case.
+        try tx.exec(allocator,
+            \\CREATE TRIGGER IF NOT EXISTS llm_history_ai_model_not_empty
+            \\AFTER INSERT ON llm_history
+            \\FOR EACH ROW WHEN NEW.model IS NULL OR TRIM(NEW.model) = ''
+            \\BEGIN
+            \\  UPDATE llm_history SET model = 'unknown' WHERE id = NEW.id;
+            \\END
+        , &[_][]const u8{});
+
+        try tx.commit();
+    }
+};
+
+// Migration 101 — inline tests
+// ============================================================================
+//
+// Each case answers one question a reviewer must agree with before shipping:
+//
+//   1. Does the backfill repair existing rows without touching real models?
+//   2. Does the trigger rewrite a raw-SQL `''` insert?
+//   3. Does it leave a healthy insert alone?
+//   4. Is it replay-safe?
+//   5. Does the SQL sentinel still match the Zig `UNKNOWN_MODEL`?
+//   6. Is it wired into the migration chain?
+//   7. Do both raw-SQL write sites stay guarded?
+
+/// Minimal pre-101 schema: `llm_history` exactly as Migration 001 left it.
+/// Deliberately NOT `setupDb` — that fixture builds the full current schema,
+/// including columns and triggers this migration must not depend on.
+fn setupLlmHistoryRoot(ctx: *TestCtx) !void {
+    try ctx.db.exec(testing.allocator, "CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, model TEXT NOT NULL, response_content TEXT)", &.{});
+}
+
+fn seedHistoryRow(ctx: *TestCtx, id: []const u8, model_sql: []const u8) !void {
+    // `model_sql` is spliced as a literal, NOT bound — a bound empty slice
+    // would collapse to NULL and defeat the point of several cases here.
+    const sql = try std.fmt.allocPrint(
+        testing.allocator,
+        "INSERT INTO llm_history (id, session_id, model, response_content) VALUES ('{s}', 'sess', {s}, 'hi')",
+        .{ id, model_sql },
+    );
+    defer testing.allocator.free(sql);
+    try ctx.db.exec(testing.allocator, sql, &.{});
+}
+
+/// Read one row's model back as a comparison (no duped value escapes to the
+/// caller, which would trip the leak-checking allocator).
+fn expectHistoryModel(ctx: *TestCtx, id: []const u8, expected: []const u8) !void {
+    var q = try ctx.db.query(testing.allocator, "SELECT COALESCE(model, '<NULL>') FROM llm_history WHERE id = ?", &[_][]const u8{id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.HistoryRowMissing;
+    defer row.deinit(testing.allocator);
+    try testing.expectEqualStrings(expected, row.values[0]);
+}
+
+fn countHistoryRows(ctx: *TestCtx) !i64 {
+    var q = try ctx.db.query(testing.allocator, "SELECT COUNT(*) FROM llm_history", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.CountQueryFailed;
+    defer row.deinit(testing.allocator);
+    return std.fmt.parseInt(i64, row.values[0], 10);
+}
+
+test "Migration101 backfills empty and whitespace-only model on existing rows" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupLlmHistoryRoot(&ctx);
+
+    try seedHistoryRow(&ctx, "r_blank", "''");
+    try seedHistoryRow(&ctx, "r_ws", "'   '");
+    try seedHistoryRow(&ctx, "r_real", "'space-bunny-free'");
+
+    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
+
+    try expectHistoryModel(&ctx, "r_blank", Migration101GuardLlmHistoryModel.sentinel);
+    try expectHistoryModel(&ctx, "r_ws", Migration101GuardLlmHistoryModel.sentinel);
+    // The whole point of scoping the WHERE clause: a real model is untouched.
+    try expectHistoryModel(&ctx, "r_real", "space-bunny-free");
+}
+
+test "Migration101 trigger rewrites a raw-SQL empty model on INSERT" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupLlmHistoryRoot(&ctx);
+
+    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
+
+    // Exactly the shape the two kanban paths used to emit.
+    try seedHistoryRow(&ctx, "r_raw", "''");
+
+    try expectHistoryModel(&ctx, "r_raw", Migration101GuardLlmHistoryModel.sentinel);
+}
+
+test "Migration101 trigger rewrites a whitespace-only model on INSERT" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupLlmHistoryRoot(&ctx);
+
+    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
+
+    try seedHistoryRow(&ctx, "r_ws", "'  '");
+
+    try expectHistoryModel(&ctx, "r_ws", Migration101GuardLlmHistoryModel.sentinel);
+}
+
+test "Migration101 leaves a healthy INSERT alone" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupLlmHistoryRoot(&ctx);
+
+    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
+
+    try seedHistoryRow(&ctx, "r_ok", "'MiniMax-M3'");
+    try expectHistoryModel(&ctx, "r_ok", "MiniMax-M3");
+}
+
+test "Migration101 is replay-safe" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupLlmHistoryRoot(&ctx);
+
+    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
+    try seedHistoryRow(&ctx, "r_a", "''");
+    try seedHistoryRow(&ctx, "r_b", "'gpt-4o'");
+
+    // Re-run twice against a database that now holds real rows.
+    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
+    try Migration101GuardLlmHistoryModel.up(&ctx.db, alloc);
+
+    // r_a stays on the sentinel (already correct, no drift); r_b is never
+    // rewritten by a replay. And the re-runs add no rows of their own.
+    try expectHistoryModel(&ctx, "r_a", Migration101GuardLlmHistoryModel.sentinel);
+    try expectHistoryModel(&ctx, "r_b", "gpt-4o");
+    try testing.expectEqual(@as(i64, 2), try countHistoryRows(&ctx));
+}
+
+test "Migration101 SQL sentinel matches the Zig guard's UNKNOWN_MODEL" {
+    // The trigger hardcodes 'unknown' because SQL cannot call into Zig. This
+    // assertion is the ONLY thing keeping the two in step — if someone changes
+    // either one alone, this test fails.
+    const guard = @import("../agentic_loop/llm_history_model_guard.zig");
+    try testing.expectEqualStrings(guard.UNKNOWN_MODEL, Migration101GuardLlmHistoryModel.sentinel);
+}
+
+test "Migration101 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration101GuardLlmHistoryModel.version) return;
+    }
+    return error.Migration101NotRegistered;
+}
+
+test "both raw llm_history INSERT sites bind a guarded model, not a '' literal" {
+    // Static contract over the two raw-SQL write sites that hardcoded `''`.
+    // Both produced the observed blank-model row, so both must now bind a
+    // resolved (and guarded) model instead of a literal.
+    const alloc = testing.allocator;
+
+    inline for (.{
+        "src/http_handlers/kanban_tasks_create.zig",
+        "src/modules/agent/tools/create_kanban_task.zig",
+    }) |path| {
+        const source = try readSourceForModelGuard(alloc, path);
+        defer alloc.free(source);
+
+        // The old shape: `VALUES (?, ?, '', ...` — model position is a literal.
+        if (std.mem.indexOf(u8, source, "VALUES (?, ?, '',") != null) {
+            std.debug.print(
+                "\n!! {s} still binds a hardcoded '' for llm_history.model !!\n" ++
+                    "   Bind the resolved model instead — an empty model writes a\n" ++
+                    "   blank model into chat history. See\n" ++
+                    "   agentic_loop/llm_history_model_guard.zig.\n",
+                .{path},
+            );
+            return error.EmptyModelLiteralStillPresent;
+        }
+        if (std.mem.indexOf(u8, source, "model_guard.resolve") == null) {
+            std.debug.print(
+                "\n!! {s} has no model_guard.resolve call !!\n" ++
+                    "   Every llm_history.model write site must route through the\n" ++
+                    "   shared guard so an empty model cannot reach the DB.\n",
+                .{path},
+            );
+            return error.ModelGuardMissing;
+        }
+    }
+}
+
+test "every llm_history funnel routes its model through the guard" {
+    // The funnels cover the workflow's own writes (the majority of rows). A
+    // future edit that binds `input.model` directly reintroduces the silent
+    // row-drop, so pin the guarded shape.
+    const alloc = testing.allocator;
+
+    inline for (.{
+        "src/agentic_loop/insert_llm_histories.zig",
+        "src/agentic_loop/llm_history.zig",
+    }) |path| {
+        const source = try readSourceForModelGuard(alloc, path);
+        defer alloc.free(source);
+
+        if (std.mem.indexOf(u8, source, "model_guard.resolve") == null) {
+            std.debug.print(
+                "\n!! {s} never calls model_guard.resolve !!\n" ++
+                    "   An empty model bound here lands as SQL NULL and FAILS the\n" ++
+                    "   NOT NULL constraint, silently dropping the user's message row.\n",
+                .{path},
+            );
+            return error.ModelGuardMissingFromFunnel;
+        }
+    }
+}
+
+fn readSourceForModelGuard(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(testing.io, path, .{});
+    defer file.close(testing.io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(testing.io, &buf);
+    return reader.interface.allocRemaining(allocator, .limited(512 * 1024));
 }
