@@ -119,7 +119,7 @@ const text_normalize = @import("helpers").text_normalize;
 const testing = std.testing;
 
 const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 const MEMORIES_HELPERS_PATH = "src/modules/agent/tools/memories.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {

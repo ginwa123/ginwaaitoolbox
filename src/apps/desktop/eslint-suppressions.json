@@ -144,11 +144,6 @@
       "count": 1
     }
   },
-  "src/components/views/chat_right_sidebar/SidebarDiffPanel.vue": {
-    "local/no-silent-fallback-catch": {
-      "count": 1
-    }
-  },
   "src/components/views/chat_right_sidebar/SidebarDiffView.vue": {
     "local/no-silent-fallback-catch": {
       "count": 1

@@ -286,7 +286,7 @@ const text_normalize = @import("helpers").text_normalize;
 
 const IMPL_PATH = "src/http_handlers/run_all_agents.zig";
 const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 const TEST_RUNNER_PATH = "src/ai_workflow/tui/test_runner.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {

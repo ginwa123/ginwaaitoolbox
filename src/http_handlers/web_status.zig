@@ -87,14 +87,14 @@ test "web_status: handler is registered in test_runner.zig" {
 
 test "web_status: GET /api/web/status route is registered in main.zig" {
     const allocator = std.testing.allocator;
-    const source = try readSource(allocator, "src/main.zig");
+    const source = try readSource(allocator, "src/http_routes.zig");
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "\"/api/web/status\"") == null) {
-        std.debug.print("!! main.zig does not register GET /api/web/status !!\n", .{});
+        std.debug.print("!! http_routes.zig does not register GET /api/web/status !!\n", .{});
         return error.RouteMissingWebStatus;
     }
     if (std.mem.indexOf(u8, source, "webStatusHandler") == null) {
-        std.debug.print("!! main.zig does not wire webStatusHandler !!\n", .{});
+        std.debug.print("!! http_routes.zig does not wire webStatusHandler !!\n", .{});
         return error.HandlerMissingWebStatus;
     }
 }
