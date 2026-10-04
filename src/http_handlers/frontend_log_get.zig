@@ -39,7 +39,7 @@
 //!
 //! Preserves the static-contract assertions in `frontend_log_get_test.zig`:
 //!   - reads `req.query` (NOT `req.path_params`) — per the project
-//!     memory `nalar-http-handler-thin-wrapper-pattern` and the
+//!     memory `pabrik-http-handler-thin-wrapper-pattern` and the
 //!     precedent in `tasks_list.zig` (line 210)
 //!   - `makeFrontendLogListResponse` for the success response shape
 //!   - `ORDER BY created_at DESC` for the recent-first ordering
@@ -47,9 +47,9 @@
 //!   - `1000` literal for the limit cap
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const sqlite = pabrikcore.sqlite;
 const http_response = @import("http_response.zig");
 
 // =====================================================================
@@ -92,7 +92,7 @@ const MAX_LIMIT: u32 = 1000;
 /// `tasks_list.zig`'s defensive pattern; see Task 3.2's
 /// `parseInput` for the rationale).
 pub const FrontendLogGetError = error{
-    /// `nalarcore.getSingleton()` failed (server has not been
+    /// `pabrikcore.getSingleton()` failed (server has not been
     /// initialised yet). Maps to 500.
     ServerNotInitialized,
     /// `level` query param value is not in the whitelist. Maps to 400.
@@ -211,7 +211,7 @@ fn useCase(
     allocator: std.mem.Allocator,
     input: FrontendLogGetInput,
 ) FrontendLogGetError!FrontendLogGetOutput {
-    const di = nalarcore.getSingleton() catch return error.ServerNotInitialized;
+    const di = pabrikcore.getSingleton() catch return error.ServerNotInitialized;
     const db = di.db;
 
     // Build the SQL string dynamically. We always include
@@ -268,7 +268,7 @@ fn useCase(
     // `db.exec` / `db.query` only bind TEXT, and SQLite coerces
     // numeric-looking text to INTEGER under INTEGER affinity
     // (verified via :memory: round-trip — project memory
-    // `nalar-sqlite-exec-binds-text-only`).
+    // `pabrik-sqlite-exec-binds-text-only`).
     //
     // `since_str` is conditionally allocated — only when `since_us`
     // was supplied. For empty binds (no filter), we use `""` which
@@ -502,9 +502,9 @@ fn nullableInt(v: []const u8) ?i64 {
 //      builds (recent-first ordering, `WHERE level = ?`,
 //      `WHERE created_at >= ?`, `LIMIT ?`) against an in-memory
 //      SQLite DB with the `logs` table loaded. The handler itself
-//      is too tightly coupled to `nalarcore.getSingleton()` to
+//      is too tightly coupled to `pabrikcore.getSingleton()` to
 //      behavioural-test end-to-end (would need a live
-//      `ContextIPCTui`), so the tests assert the SQL contract
+//      `App`), so the tests assert the SQL contract
 //      directly. Mirrors the dedup-SQL tests in
 //      `frontend_log_post_test.zig`.
 // 
@@ -666,7 +666,7 @@ fn setupDbWithLogs() !struct {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    try nalarcore.migrations_mod.migration.Migration064AddFrontendLogs.up(&db, alloc);
+    try pabrikcore.migrations_mod.migration.Migration064AddFrontendLogs.up(&db, alloc);
     // Also apply the logs half of Migration 075
     // (`logs.created_at` → `logs.created_at_nano`) so these tests
     // target the production schema (see

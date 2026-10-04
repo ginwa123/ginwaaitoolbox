@@ -66,9 +66,9 @@ pub const MemoryToolRule =
     \\
     \\**These tools are NOT optional.** Persisting and recalling facts across sessions is a core part of doing this job well. Failing to call `load_memory` when prior context exists, or `save_memory` when a fact should persist, is a task failure.
     \\
-    \\These are **AGENT-MANAGED notes** (SQLite FTS5 index), distinct from the curated `.md` files in `~/.config/nalar/memories/` (auto-injected as `## Global Knowledge`). Use `save_memory` for short structured facts you'd otherwise re-ask; use the `.md` surface for hand-curated insights (architecture notes, project conventions).
+    \\These are **AGENT-MANAGED notes** (SQLite FTS5 index), distinct from the curated `.md` files in `~/.config/pabrik/memories/` (auto-injected as `## Global Knowledge`). Use `save_memory` for short structured facts you'd otherwise re-ask; use the `.md` surface for hand-curated insights (architecture notes, project conventions).
     \\
-    \\**SCOPE — PER WORKSPACE, NOT GLOBAL.** Notes are filed under the workspace THIS SESSION belongs to. `load_memory` searches only that workspace, and another workspace's `mem_<16-hex>` id comes back `not found`. The scope is derived from the session server-side — there is no `workspace_id` argument. So a preference you save here will NOT come back in a different workspace; if a fact must hold everywhere, put it in a `~/.config/nalar/memories/*.md` file instead.
+    \\**SCOPE — PER WORKSPACE, NOT GLOBAL.** Notes are filed under the workspace THIS SESSION belongs to. `load_memory` searches only that workspace, and another workspace's `mem_<16-hex>` id comes back `not found`. The scope is derived from the session server-side — there is no `workspace_id` argument. So a preference you save here will NOT come back in a different workspace; if a fact must hold everywhere, put it in a `~/.config/pabrik/memories/*.md` file instead.
     \\
     \\**TWO TOOLS (append-only — no edit, no delete):**
     \\- `save_memory({ content, tags? })` — APPENDS a new row with a fresh `mem_<16-hex>` id and `CURRENT_TIMESTAMP` timestamps. `content` must be 1 KiB – 1 MiB (empty/oversized rejected, no silent truncation). To correct a fact, save a NEW memory — never try to overwrite; recency + rank surface the latest row.
@@ -174,17 +174,22 @@ pub const SkillsToolRule =
     \\load it and follow it — that is faster and more reliable than reasoning
     \\from scratch, and it is what the user expects when they wrote the skill.
     \\
-    \\**The loop — two calls, and no skills are pre-listed in this prompt:**
-    \\- `search_skills` — find installed skills by name or description
-    \\  (global `~/.config/nalar/skills/` + local `.nalar/skills/`).
-    \\  Nothing is pre-injected, so this call IS the discovery step. `query` is a
-    \\  regex and results are PAGED: narrow with a pattern instead of pulling the
-    \\  whole library in, then page with `offset` when `total` says there is
-    \\  more. Every row carries its `scope` and the exact `path`.
-    \\- `use_skill` — load one skill's full instructions by the EXACT `path` from
-    \\  that result. The path is case-sensitive and ends in `SKILL.MD`; pass it
-    \\  verbatim. Never construct it from the skill name — `~` is not expanded
-    \\  and the layout is `<name>/SKILL.MD`, not `<name>.md`.
+    \\**A skill belongs to ONE workspace — the workspace this session runs in.**
+    \\The tools resolve that themselves; you pass no scope. There is no second
+    \\tier and no copy shared across workspaces, so a name `search_skills` did
+    \\not return is genuinely not found. Nothing is pre-injected: a tool call is
+    \\the only way to see what this workspace has.
+    \\
+    \\**The loop — two calls:**
+    \\- `search_skills` — find this workspace's skills by name or description;
+    \\  `query` is a regex. Nothing is pre-injected, so this call IS the
+    \\  discovery step. Results are PAGED: narrow with a pattern instead of
+    \\  pulling the whole library in, then page with `offset` when `total`
+    \\  says there is more. Every row carries the exact `name`.
+    \\- `use_skill` — load one skill's full instructions. Its one and only
+    \\  argument is that `name`, passed verbatim — there is nothing to
+    \\  construct and nothing to qualify it with. A name it did not return
+    \\  does not exist: say so and move on, never retry a guessed variant.
     \\
     \\**When to load — these are blocking, not advisory:**
     \\- The task matches a skill's description → `use_skill` it BEFORE the first
@@ -228,8 +233,13 @@ pub const SkillWriteToolRule =
     \\
     \\**Loading a skill is half the loop; writing it is the other half.** A
     \\task that ends in a non-obvious discovery is a skill nobody wrote, and
-    \\the next session on the same task pays for it again. `add_skill` and
-    \\`edit_skill` are the tools; the judgement is yours.
+    \\the next session on the same task pays for it again. `add_skill`,
+    \\`edit_skill` and `remove_skill` are the tools; the judgement is yours.
+    \\
+    \\**All three write to the workspace this session runs in.** A skill is one
+    \\row there — no directory tier and no scope argument to pick. If another
+    \\workspace needs the same procedure, it is written there, from that
+    \\workspace's own session; there is no write-once-install-everywhere copy.
     \\
     \\**When to write one — a procedure, not a fact.** One question decides
     \\it: would a future session on a similar task otherwise redo this same
@@ -254,15 +264,15 @@ pub const SkillWriteToolRule =
     \\instead. Skills should consolidate over time, not accumulate; every row
     \\you add is a future result somebody has to skim past.
     \\
-    \\**Format.** A SKILL.MD file's `---` frontmatter is GENERATED by the
-    \\tool — you never type it. The three `add_skill` arguments are:
+    \\**Format.** The `---` frontmatter block is GENERATED by the tool — you
+    \\never type it, and pasting one into `content` gets you a duplicate.
+    \\The three `add_skill` arguments are:
     \\
-    \\- `name`: kebab-case directory name (also the frontmatter `name:`).
+    \\- `name`: kebab-case (also the frontmatter `name:`).
     \\- `description`: ONE sentence — what it does AND when to use it. It is
     \\  the only text `search_skills` returns, so a vague one makes the skill
     \\  undiscoverable.
-    \\- `content`: the markdown BODY only. Pasting a `---` frontmatter block
-    \\  into it duplicates the block in the file.
+    \\- `content`: the markdown BODY only.
     \\
     \\Body sections:
     \\```
@@ -272,10 +282,10 @@ pub const SkillWriteToolRule =
     \\## Pitfalls — failure modes you actually hit. Never invented ones.
     \\```
     \\Skip sections that do not apply — a tight three-section skill beats a
-    \\padded six. One skill per concept. Prefer local (`.nalar/skills/`);
-    \\pass `is_global: true` only when the procedure holds outside this repo.
-    \\`edit_skill` takes the same arguments (`skill_name` for `name`) and
-    \\accepts `description` alone or `content` alone to change just one.
+    \\padded six. One skill per concept. `edit_skill` takes the same arguments
+    \\(`skill_name` for `name`) and accepts `description` alone or `content`
+    \\alone to change just one; `remove_skill` takes `skill_name` and deletes
+    \\the row.
     \\
     \\**Close the loop — a skill nobody verifies rots.**
     \\- An eval flags a skill as outdated or wrong → `edit_skill` it: fix

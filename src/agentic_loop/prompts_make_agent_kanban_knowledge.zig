@@ -21,7 +21,7 @@
 //! Task: task_1787597624259_2
 
 const std = @import("std");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 
 /// 100 MiB per-file OOM safety. NOT a content budget — purely to prevent
 /// the server from OOM-ing on a misconfigured path like `/dev/zero`.
@@ -200,7 +200,7 @@ pub fn makeAgentKanbanKnowledge(
 const testing = std.testing;
 // Use a fresh alias for the test section to avoid duplicate-struct-
 // member shadowing (file-level `const sqlite` already exists).
-const test_sqlite = @import("nalarcore").sqlite;
+const test_sqlite = @import("pabrikcore").sqlite;
 const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
 
 const TestCtx = struct {

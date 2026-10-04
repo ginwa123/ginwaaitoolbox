@@ -53,12 +53,12 @@
 //! Plan: docs/plans/2026-09-27-sidebar-new-chat-default-project.md
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
-const SystemFolder = nalarcore.system_folder.SystemFolder;
+const SystemFolder = pabrikcore.system_folder.SystemFolder;
 
 /// The display name of an auto-created default project. Cosmetic only —
 /// both clients follow the `is_default` flag, never the name, so a user is
@@ -108,7 +108,7 @@ pub const DefaultProject = struct {
 /// the lookup finds nothing.
 pub fn ensureDefaultProject(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     workspace_id: []const u8,
     environment: ?*const std.process.Environ.Map,
     config_tools: ?[]const []const u8,
@@ -252,7 +252,7 @@ fn nameLooksUsable(name: []const u8) bool {
 /// no human would have typed, and a user rename is left alone.
 fn repairGarbageName(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     item_id: []const u8,
     stored_name: []const u8,
 ) void {
@@ -280,7 +280,7 @@ fn repairGarbageName(
 /// This is the whole "does a default exist?" query — one row on the hot path.
 fn readDefault(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     workspace_id: []const u8,
 ) ?DefaultProject {
     var q = db.query(
@@ -347,7 +347,7 @@ fn readDefault(
 /// on failure — position is a sort hint, and 0 is a legal value for it.
 fn readPosition(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) i64 {
     var q = db.query(allocator, "SELECT position FROM workspace_items WHERE id = ?", &[_][]const u8{item_id}) catch return 0;
@@ -363,7 +363,7 @@ fn readPosition(
 /// create an ORPHAN workspace_items row for a workspace that never existed.
 pub fn workspaceExists(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     workspace_id: []const u8,
 ) bool {
     var q = db.query(allocator, "SELECT 1 FROM workspaces WHERE id = ?", &[_][]const u8{workspace_id}) catch return false;
@@ -405,7 +405,7 @@ pub const WorkspaceDefaultProjectInput = struct {
     environment: ?*const std.process.Environ.Map = null,
 };
 
-pub fn useCaseGet(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend, input: WorkspaceDefaultProjectInput) EnsureDefaultProjectError![]const u8 {
+pub fn useCaseGet(allocator: std.mem.Allocator, db: *pabrikcore.sqlite.SqliteBackend, input: WorkspaceDefaultProjectInput) EnsureDefaultProjectError![]const u8 {
     const project = try ensureDefaultProject(allocator, db, input.workspace_id, input.environment, input.config_tools);
     defer project.deinit(allocator);
 
@@ -434,9 +434,9 @@ pub fn workspaceDefaultProjectHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
-    const config_tools = nalarcore.getLlmConfig(di).tools;
+    const config_tools = pabrikcore.getLlmConfig(di).tools;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
     if (workspace_id.len == 0) {
@@ -487,7 +487,7 @@ pub fn workspaceDefaultProjectHandler(
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 
 const TestCtx = struct {

@@ -27,7 +27,7 @@ THE FIX (this branch):
 How this test drives the SSE path without a real LLM:
 
     Same mechanism as chatview_sse_stick_ui_test.py: the harness boots
-    nalar with NALAR_TEST_SSE_EMIT=1, which arms POST /api/dev/sse/emit_llm.
+    pabrik with PABRIK_TEST_SSE_EMIT=1, which arms POST /api/dev/sse/emit_llm.
     The test seeds a session, opens the chatview, then fires `full`
     events with is_error=true through the endpoint — the exact wire path
     a real agent loop uses.
@@ -45,7 +45,7 @@ Assertions (the bug contract):
        for the rationale: avoids pile-up, surfaces the latest status.
 
 Run:
-    NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \\
+    PABRIK_BIN=./zig-out/bin/pabrikcore-linux-x86_64 \\
         python3 -m pytest tests/functional_ui/chatview_agent_error_card_ui_test.py -v
 """
 
@@ -93,7 +93,7 @@ NORMAL_CONTENT = "Final assistant answer after a successful turn."
 
 
 def _seed_db_path(h: UIHarness) -> Path:
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _seed_session(h: UIHarness, workspace_id: str, session_id: str) -> None:
@@ -227,7 +227,7 @@ def _emit_until_text(
 @pytest.fixture(autouse=True)
 def _arm_sse_emit_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Arm the test-only SSE emit gate BEFORE the harness boots."""
-    monkeypatch.setenv("NALAR_TEST_SSE_EMIT", "1")
+    monkeypatch.setenv("PABRIK_TEST_SSE_EMIT", "1")
 
 
 # ─── Tests ──────────────────────────────────────────────────────────────────

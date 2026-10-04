@@ -8,7 +8,7 @@
 
 **Spec / wireframe:** this document IS the spec. Visual wireframe: `docs/wireframes/ask-user-tool.html`.
 
-**Worktree:** `/home/ginwa/.config/nalar/.worktrees/agent-tool-ask-user-1789509458939` on branch `worktree/agent-tool-ask-user-1789509458939`.
+**Worktree:** `/home/ginwa/.config/pabrik/.worktrees/agent-tool-ask-user-1789509458939` on branch `worktree/agent-tool-ask-user-1789509458939`.
 
 **Base:** `origin/main` @ `3bc0e389`.
 
@@ -36,7 +36,7 @@
 | 14 | Frontend running-state is driven **purely by worker lifetime**: `App.vue` `processingState` ← `worker_created|worker_deleted` → `ChatView.isLLMProcessing` → `FileInput` swaps Stop↔Send. Nothing reads a local streaming flag for it. | `App.vue:12-13,32-51,114-130`; `ChatView.vue:451-454`; `FileInput.vue:794,825` | When the run breaks, the composer returns to **idle** (Send visible, Stop hidden) while the card waits. That is why §1.6 needs the `abandoned` rule. |
 | 15 | Frontend `finish_reason` is a plain `string` with no exhaustive switch; tool cards are dispatched by an exact `msg.tool_name` `v-if` chain; card content comes from `innerToolData(msg)` (the `&lt;data&gt;` inside the `<tool>` envelope) and args from `getParametersForMessage(msg)`. `unwrapToolOutput` ignores unknown inner tags. | `ChatView.vue:180,1424,1693,1946,3211,4178-4420,1575-1603`; `helpers/unwrapToolOutput.ts:61-95` | A `<status>` element inside `<data>` parses fine; the card is one `v-else-if` branch with no helper changes. |
 | 16 | `ToolCardHeader.running` exists (yellow "running…" badge) but is only ever set by `ProgressiveTool.vue`, derived from *empty content*. | `ToolCardHeader.vue:46-59,124-128`; `ProgressiveTool.vue:58` | The `AskUser` card derives its own "waiting for you" badge from `<status>pending</status>` and passes `:running="true"` itself. |
-| 17 | Functional-harness precedent: sqlite3 direct seeding into `harness.temp_dir/.config/nalar/agent.db`, `harness.http(...)`, SSE assertions via `for line in response.iter_lines()`. | `tests/functional/harness.py`; `session_pr_url_test.py:48-70`; README:209 | §8.4 is a genuine end-to-end test of this feature **with no LLM** — see the note there. |
+| 17 | Functional-harness precedent: sqlite3 direct seeding into `harness.temp_dir/.config/pabrik/agent.db`, `harness.http(...)`, SSE assertions via `for line in response.iter_lines()`. | `tests/functional/harness.py`; `session_pr_url_test.py:48-70`; README:209 | §8.4 is a genuine end-to-end test of this feature **with no LLM** — see the note there. |
 
 ---
 
@@ -443,7 +443,7 @@ def test_answer_route_not_shadowed_by_sibling_param_routes(harness):
 ```
 
 ### 8.5 What is deliberately NOT done
-No `nohup ./zig-out/bin/nalar --port 8080` + `curl`. No port 8081. The harness owns the binary lifecycle and the tmpdir teardown.
+No `nohup ./zig-out/bin/pabrik --port 8080` + `curl`. No port 8081. The harness owns the binary lifecycle and the tmpdir teardown.
 
 ---
 

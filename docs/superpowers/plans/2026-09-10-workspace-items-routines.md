@@ -18,7 +18,7 @@
 - Cron errors → `400 InvalidSchedule` with offending expression; wrong item kind → `400 ItemNotRoutine`; missing → `404`; busy run → `409 Disabled|AlreadyRunning`.
 - Per-request arena: no `defer free` on `ctx.allocator` memory; still `deinit()` SQLite stmts.
 - No new SSE event in v1.
-- Verification per task: `zig build test --summary all` + `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/workspace_routines_test.py -v` (new) + proof of deletion (old tests removed, old routes 404). Never live-server+curl, never port 8081.
+- Verification per task: `zig build test --summary all` + `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/workspace_routines_test.py -v` (new) + proof of deletion (old tests removed, old routes 404). Never live-server+curl, never port 8081.
 - One commit per task, green tree.
 
 ## Deletion Inventory (everything below goes or is edited)
@@ -119,7 +119,7 @@ Delete: `GET /api/routines` → 404 after Task 2 (assert in tests). `POST /api/w
 - [ ] Delete `task_lifecycle_test.py` Tests 8, 9, 14, 15 (4 routine tests; other 17 stay) + `migration_routines_test.zig` (5 tests) — assert `search routine` in `src/` returns only `workspace_routines`/`cron.zig`/`HandlerRoutine` (Win32 false-positive) hits.
 - [ ] Update `docs/SPEC.md` (routines section: per-task deleted, workspace-level table + 4 endpoints + breaking-change note; tree entry stays, body rewritten) + release-note entry (old schedules dropped, no auto-migration).
 - [ ] Extend functional test: cascade (delete `workspace_items` row wipes `workspace_routines`); `schedule:''` never auto-fires; `last_error` surfaces failure; `GET /api/routines` still 404 (no resurrection).
-- [ ] Run FULL: `zig build test --summary all` + `pnpm test:unit` + `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/workspace_routines_test.py tests/functional/task_lifecycle_test.py tests/functional/agent_kanbans_test.py -v`.
+- [ ] Run FULL: `zig build test --summary all` + `pnpm test:unit` + `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/workspace_routines_test.py tests/functional/task_lifecycle_test.py tests/functional/agent_kanbans_test.py -v`.
 - [ ] Commit. Mark plan complete.
 
 ## Verification (global)

@@ -568,7 +568,7 @@ const AnthropicTool = struct {
 
 /// Anthropic `metadata` block. Currently only `user_id` is supported —
 /// Anthropic's Messages API accepts arbitrary key/value metadata but
-/// nalar only uses `user_id` for the LLM-API end-user identifier.
+/// pabrik only uses `user_id` for the LLM-API end-user identifier.
 const AnthropicMetadata = struct {
     user_id: []const u8,
 
@@ -3015,7 +3015,7 @@ pub const Agent = struct {
             .connect_timeout_ms = 30_000,
             .follow_redirects = false,
             .verify_ssl = true,
-            .user_agent = "nalar/1.0",
+            .user_agent = "pabrik/1.0",
         };
 
         // 6. Open the streaming request.
@@ -3161,7 +3161,7 @@ pub const Agent = struct {
                     std.mem.startsWith(u8, uri_str, "https://"))
                     std.fmt.allocPrint(
                         self.allocator,
-                        "scanner.next failed after {d} chunk(s): UnsupportedProtocol — vendored libcurl was built --disable-ssl (see kabelweb/scripts/build-vendor-curl.sh); URL must be http:// until OpenSSL is vendored, or change base_url in ~/.config/nalar/config.json to an http:// endpoint",
+                        "scanner.next failed after {d} chunk(s): UnsupportedProtocol — vendored libcurl was built --disable-ssl (see kabelweb/scripts/build-vendor-curl.sh); URL must be http:// until OpenSSL is vendored, or change base_url in ~/.config/pabrik/config.json to an http:// endpoint",
                         .{chunk_count},
                     ) catch null
                 else
@@ -3380,7 +3380,7 @@ test "AnthropicContentBlock video serializes type video" {
 const testing = std.testing;
 
 /// Hardcoded identifier — the value that every Anthropic + OpenAI call
-/// from this fork of nalar sends. See `Agent.userIdentifier` default.
+/// from this fork of pabrik sends. See `Agent.userIdentifier` default.
 const HARDCODED_USER_ID = "AnakMagang";
 
 fn makeAgentUserId(user_id: []const u8) Agent {
@@ -3975,7 +3975,7 @@ test "callStreaming: anthropic style sends x-api-key + anthropic-version (not on
 // behavior so it can't silently regress.
 //
 // Manual integration test (for real-world verification, run by hand):
-//   1. Start nalar-dev on port 8080.
+//   1. Start pabrik-dev on port 8080.
 //   2. Begin an agent turn that streams a long response.
 //   3. Mid-stream: `sudo tc qdisc add dev lo root netem loss 100%` (drops
 //      all loopback packets, simulating a Wi-Fi drop on localhost).
@@ -4612,9 +4612,9 @@ test "callStreaming returns within idle_timeout when server is silent (watchdog 
 // ============================================================================
 // FD-leak regression tests (2026-07-15).
 //
-// Symptom (production nalar, 9-hour uptime, 8081):
+// Symptom (production pabrik, 9-hour uptime, 8081):
 //   - Total FDs: ~820
-//   - Of which: ~818 anonymous pipes (self-pipes held entirely by nalar,
+//   - Of which: ~818 anonymous pipes (self-pipes held entirely by pabrik,
 //     appearing in only 1 process in /proc)
 //   - Burst pattern: created in a 6-minute window concurrent with retry storm
 //   - Source: each `callStreaming` that fails (HttpRequestFailed) leaks

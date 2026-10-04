@@ -1,10 +1,10 @@
-"""Starting nalar on an already-occupied port must fail cleanly.
+"""Starting pabrik on an already-occupied port must fail cleanly.
 
 Regression test for a bug that made the functional suite untrustworthy:
 `Address.init` returns `error.BindFailed` when the port is taken, `try`
 carried it out of `main`, and the process died on the runtime's error
 path with **SIGSEGV (exit code -11)** plus a bare stack trace. The
-harness reads that as `nalar exited rc=-11 during boot` and reports it
+harness reads that as `pabrik exited rc=-11 during boot` and reports it
 as a crash of the binary, so an ordinary port collision — which the
 harness can cause itself, see the RANDOM_PORT_* comment in harness.py —
 looks like a memory-safety bug in an unrelated test.
@@ -16,7 +16,7 @@ Contract pinned here:
 
 Run:
     zig build install:linux
-    NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \\
+    PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \\
         python3 -m pytest tests/functional/server_port_bind_test.py -v
 """
 
@@ -33,9 +33,9 @@ from harness import REQUIRED_TMP_SUBSTR, find_free_port_random, is_safe_tmp
 
 
 def _squatter(port: int) -> socket.socket:
-    """Bind + listen on ``port`` so nalar's bind() must fail.
+    """Bind + listen on ``port`` so pabrik's bind() must fail.
 
-    POSIX: ``SO_REUSEADDR`` matches what nalar's own listener sets (kabelweb
+    POSIX: ``SO_REUSEADDR`` matches what pabrik's own listener sets (kabelweb
     `http_server.zig` `setReuseAddr`), so the only thing standing between the
     two is that a bound-and-listening socket refuses a second bind.
 
@@ -43,7 +43,7 @@ def _squatter(port: int) -> socket.socket:
     it. ``SO_REUSEADDR`` has different semantics there — it permits a second
     socket to bind an address another socket is already using, which is the
     long-standing Windows ``SO_REUSEADDR`` hazard. So with ``SO_REUSEADDR``
-    the squatter did not actually squat: nalar bound the same port
+    the squatter did not actually squat: pabrik bound the same port
     successfully, started serving, and never exited, and the test failed on
     ``subprocess.TimeoutExpired`` instead of on the contract it is checking.
 
@@ -52,6 +52,7 @@ def _squatter(port: int) -> socket.socket:
     asks for. Setting it BEFORE ``bind`` is what makes the squatter a real
     squatter on Windows. The two flags are mutually contradictory on Windows,
     so this sets exactly one of them per platform rather than both.
+
     """
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
@@ -64,7 +65,7 @@ def _squatter(port: int) -> socket.socket:
     return s
 
 
-def test_occupied_port_exits_nonzero_not_by_signal(default_nalar_bin) -> None:
+def test_occupied_port_exits_nonzero_not_by_signal(default_pabrik_bin) -> None:
     """A taken port ⇒ rc > 0, never a negative (signal) code."""
     orig_home = os.environ.get("HOME", "")
     port = find_free_port_random()
@@ -85,7 +86,7 @@ def test_occupied_port_exits_nonzero_not_by_signal(default_nalar_bin) -> None:
     try:
         started = time.monotonic()
         proc = subprocess.run(
-            [str(default_nalar_bin), "--port", str(port)],
+            [str(default_pabrik_bin), "--port", str(port)],
             capture_output=True,
             text=True,
             env=env,

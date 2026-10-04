@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const set_element_parent_mod = nalarcore.set_element_parent;
+const agent = pabrikcore.agent;
+const set_element_parent_mod = pabrikcore.set_element_parent;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execSetElementParent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

@@ -76,7 +76,7 @@ Setup mirrors `ChatView.stopSession.spec.ts`:
 - `Object.defineProperty(globalThis, 'localStorage', { value: makeLocalStorageStub() })`
   (jsdom 29 dropped localStorage; the `workspacesStore.init()` path
   calls `localStorage.getItem` and crashes without this stub)
-- `getNalarConfig` / `getSession` are `vi.spyOn` mocked per test
+- `getPabrikConfig` / `getSession` are `vi.spyOn` mocked per test
 
 Tests cover the 5-row behavioural matrix from the spec + 2 picker
 checks (active badge + ✓ on effective row).
@@ -204,5 +204,5 @@ this change.
 - `spawn_sub_agent.zig:334` — cascade through `active_profile` for
   sub-agent lookup (currently only checks per-session
   `selected_profile_model`).
-- Live smoke test: restart nalar, observe chatview chip shows
+- Live smoke test: restart pabrik, observe chatview chip shows
   "300 ribu" instead of "Default" when active profile is set.

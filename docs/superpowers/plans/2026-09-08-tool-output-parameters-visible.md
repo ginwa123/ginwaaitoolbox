@@ -38,7 +38,7 @@ New:
 - `src/apps/desktop/src/components/tool_outputs/_shared/ToolParameters.spec.ts` — unit tests.
 
 Edit (presentational only, one card per task):
-- `tool_outputs/ReadFile.vue`, `WriteFile.vue`, `Search.vue`, `ReadWorkspaceSession.vue`, `TextReplace.vue`, `ListDirectory.vue`, `RemoveFile.vue`, `SaveMemory.vue`, `LoadMemory.vue`, `DeleteMemory.vue`, `ShowPreview.vue`, `GenerateImage.vue`, `SpawnSubAgent.vue`, `NalarBrowser.vue`, `SetGitWorktree.vue`, `ReadCompactedMessages.vue`, `KanbanMove.vue`, `KanbanList.vue`, `preview/ShellTool.vue`, `preview/Glob.vue`, `preview/Bash.vue`, `preview/GetSkill.vue` (whichever exist — verify via glob at execution time).
+- `tool_outputs/ReadFile.vue`, `WriteFile.vue`, `Search.vue`, `ReadWorkspaceSession.vue`, `TextReplace.vue`, `ListDirectory.vue`, `RemoveFile.vue`, `SaveMemory.vue`, `LoadMemory.vue`, `DeleteMemory.vue`, `ShowPreview.vue`, `GenerateImage.vue`, `SpawnSubAgent.vue`, `PabrikBrowser.vue`, `SetGitWorktree.vue`, `ReadCompactedMessages.vue`, `KanbanMove.vue`, `KanbanList.vue`, `preview/ShellTool.vue`, `preview/Glob.vue`, `preview/Bash.vue`, `preview/GetSkill.vue` (whichever exist — verify via glob at execution time).
 - `components/views/ChatView.vue` — only for the 2 gap closures (thread `:parameters` to skill cards; decide UpdatePlan/GetPlan handling).
 - `tool_outputs/McpTool.vue` — refactor to USE the shared component (no visual change, dedupe only).
 
@@ -81,7 +81,7 @@ No change: `src/ai_workflow/**`, `src/modules/**`, SSE, API, migrations.
 - [ ] Run specs — green.
 - [ ] Commit.
 
-### Task 5 — Add parameters block to memory/plan-adjacent cards (SaveMemory/LoadMemory/DeleteMemory/ShowPreview/GenerateImage/SpawnSubAgent/NalarBrowser/SetGitWorktree/ReadCompactedMessages/KanbanMove/KanbanList)
+### Task 5 — Add parameters block to memory/plan-adjacent cards (SaveMemory/LoadMemory/DeleteMemory/ShowPreview/GenerateImage/SpawnSubAgent/PabrikBrowser/SetGitWorktree/ReadCompactedMessages/KanbanMove/KanbanList)
 
 - [ ] Write failing tests per card with representative params (`<id>`, `<content>`, kanban fields, etc.).
 - [ ] Run to confirm fail.

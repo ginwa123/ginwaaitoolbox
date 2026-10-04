@@ -1,7 +1,7 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 
 const MAX_SIBLING_ITEMS: u32 = 20;
 const MAX_TASKS_PER_ITEM: u32 = 5;
@@ -54,7 +54,7 @@ pub fn makeKanbanContext(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
-    tools: []const nalarcore.tool_models.AgentTool,
+    tools: []const pabrikcore.tool_models.AgentTool,
 ) ![]const u8 {
     if (session_id.len == 0) return allocator.dupe(u8, "");
 
@@ -171,7 +171,7 @@ pub fn makeKanbanContext(
 ///
 /// SQL convention: all tables are aliased (`wi` for workspace_items,
 /// `t` for workspace_item_tasks) per the project's
-/// `nalar-sql-alias-tables` memory rule.
+/// `pabrik-sql-alias-tables` memory rule.
 fn getWorkspaceContext(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -499,7 +499,7 @@ fn freeColumns(allocator: std.mem.Allocator, cols: []KanbanColumn) void {
 /// (tools lists are typically small — under 50 entries — so the
 /// constant factor is irrelevant). Matches the convention used by
 /// the static-section `.requires_tool` gate in `prompts.zig`.
-fn hasToolByName(tools: []const nalarcore.tool_models.AgentTool, name: []const u8) bool {
+fn hasToolByName(tools: []const pabrikcore.tool_models.AgentTool, name: []const u8) bool {
     for (tools) |t| {
         if (std.mem.eql(u8, t.function.name, name)) return true;
     }
@@ -509,7 +509,7 @@ fn hasToolByName(tools: []const nalarcore.tool_models.AgentTool, name: []const u
 // ─── Tests (in-memory DB, no cap) ───────────────────────────────────────
 
 const testing = std.testing;
-const test_sqlite = @import("nalarcore").sqlite;
+const test_sqlite = @import("pabrikcore").sqlite;
 
 const TestCtx = struct {
     db: test_sqlite.SqliteBackend,

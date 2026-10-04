@@ -338,7 +338,7 @@ These are the decisions the fix must make. **None are implemented here.**
 | Gate | Command |
 |------|---------|
 | Backend unit | `zig build test` |
-| Functional | `NALAR_BIN=zig-out/bin/nalarcore-linux-x86_64 pytest tests/functional/ask_user_test.py tests/functional/ask_user_multi_question_test.py` |
+| Functional | `PABRIK_BIN=zig-out/bin/pabrikcore-linux-x86_64 pytest tests/functional/ask_user_test.py tests/functional/ask_user_multi_question_test.py` |
 | Frontend | `cd src/apps/desktop && pnpm vitest run src/components/tool_outputs/__tests__/` |
 | Frontend build | `cd src/apps/desktop && pnpm run build` |
 

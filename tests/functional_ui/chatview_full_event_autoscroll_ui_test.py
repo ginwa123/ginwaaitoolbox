@@ -43,7 +43,7 @@ Run (the frontend is served from THIS worktree — that is the code under test;
 the backend binary can come from anywhere, since no backend code changed):
 
     zig build
-    NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \\
+    PABRIK_BIN=./zig-out/bin/pabrikcore-linux-x86_64 \\
         python3 -m pytest tests/functional_ui/chatview_full_event_autoscroll_ui_test.py -v
 
 Ports: the UI harness reserves (5173, 8081) and picks both the backend and the
@@ -77,12 +77,12 @@ from chatview_at_bottom_stick_ui_test import (
 @pytest.fixture(autouse=True)
 def _arm_sse_emit_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Arm the test-only SSE emit gate BEFORE the harness boots."""
-    monkeypatch.setenv("NALAR_TEST_SSE_EMIT", "1")
+    monkeypatch.setenv("PABRIK_TEST_SSE_EMIT", "1")
 
 
 def _seed_session(h: UIHarness, workspace_id: str, session_id: str) -> None:
     """A transcript far taller than the viewport, uniform body heights."""
-    seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+    seed = DbSeed(h.temp_dir / ".config" / "pabrik" / "agent.db")
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, f"Full-event autoscroll {TURN_COUNT}")
         bind_session_workspace(conn, workspace_id, session_id)

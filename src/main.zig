@@ -1,48 +1,48 @@
 const std = @import("std");
 
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
 /// Zig calls `root.debug.handleSegfault` before anything else for a
-/// hardware fault. Declaring it is what puts nalar's crash reporter at
+/// hardware fault. Declaring it is what puts pabrik's crash reporter at
 /// the FRONT of the Windows exception chain — std installs a vectored
 /// handler (`RtlAddVectoredExceptionHandler(0, handleSegfaultWindows)`)
 /// at process start, and vectored handlers run before the
 /// UnhandledExceptionFilter that `installCrashHandlers()` registers.
 /// Without this decl, an access violation is swallowed by std and
-/// nalar's own Windows report never runs.
+/// pabrik's own Windows report never runs.
 ///
 /// See `crash_handler.root_debug` for the full ordering argument.
-pub const debug = nalarcore.crash_handler.root_debug;
+pub const debug = pabrikcore.crash_handler.root_debug;
 
-const ai_mod = nalarcore.ai_mod;
-const sqlite = nalarcore.sqlite;
-const database = nalarcore.database;
+const ai_mod = pabrikcore.ai_mod;
+const sqlite = pabrikcore.sqlite;
+const database = pabrikcore.database;
 // `helpers` is now its own Zig module (see `src/helpers/build.zig`);
-// promoted out of `nalarcore` so multiple sub-packages can share a
+// promoted out of `pabrikcore` so multiple sub-packages can share a
 // single module instance. The root build.zig wires it via
 // `mod.addImport("helpers", helpers_mod)` — consumers reference it
 // directly via `@import("helpers")`.
 const helpers = @import("helpers");
-const gserverz = nalarcore.gserverz;
-const cli_args = nalarcore.cli_args;
-const http_routes = nalarcore.http_routes;
-const startup = nalarcore.startup;
-const static_files = nalarcore.static_files;
-const migration = nalarcore.migrations_mod.migration;
-// cleanup_stale_worker is re-exported via nalarcore (root.zig) so the
+const gserverz = pabrikcore.gserverz;
+const cli_args = pabrikcore.cli_args;
+const http_routes = pabrikcore.http_routes;
+const startup = pabrikcore.startup;
+const static_files = pabrikcore.static_files;
+const migration = pabrikcore.migrations_mod.migration;
+// cleanup_stale_worker is re-exported via pabrikcore (root.zig) so the
 // exe module doesn't directly @import the file — that would put it
 // in both modules and trigger Zig's "file exists in two modules"
 // error. See root.zig's `pub const cleanup_stale_worker = ...`.
-const cleanup_stale_worker = nalarcore.cleanup_stale_worker;
+const cleanup_stale_worker = pabrikcore.cleanup_stale_worker;
 // cleanup_stale_background_process: same routing as above — re-exported
-// via nalarcore so the exe module doesn't directly @import the file.
-const cleanup_stale_background_process = nalarcore.cleanup_stale_background_process;
+// via pabrikcore so the exe module doesn't directly @import the file.
+const cleanup_stale_background_process = pabrikcore.cleanup_stale_background_process;
 
-// state_file and main_service are re-exported from nalarcore (see src/root.zig).
-// Access them via nalarcore.* to avoid duplicating the module symbol
+// state_file and main_service are re-exported from pabrikcore (see src/root.zig).
+// Access them via pabrikcore.* to avoid duplicating the module symbol
 // across both root files.
-const state_file = nalarcore.state_file;
-const main_service = nalarcore.main_service;
+const state_file = pabrikcore.state_file;
+const main_service = pabrikcore.main_service;
 
 // Graceful shutdown (Ctrl+C / SIGTERM): the live server pointer the
 // signal handler closes. Set once after `GinwaServer.init`, cleared
@@ -62,7 +62,7 @@ pub fn main(init: std.process.Init) !void {
     const environment = init.environ_map;
     const io = init.io;
 
-    // Service subcommand dispatch (Chunk 3 of the decoupled-nalar-service
+    // Service subcommand dispatch (Chunk 3 of the decoupled-pabrik-service
     // plan): if argv[1] == "service", route the rest of argv to the
     // service module and exit before doing any other init.
     if (try dispatchServiceSubcommand(allocator, io, environment, init)) return;
@@ -132,13 +132,13 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("HOME={s}", .{home});
     }
 
-    var llm_config = nalarcore.config.LlmConfig.init(allocator, io, null, environment) catch |err| {
+    var llm_config = pabrikcore.config.LlmConfig.init(allocator, io, null, environment) catch |err| {
         std.log.err("Failed to load config: {s}", .{@errorName(err)});
         return err;
     };
     // NOTE: do NOT `defer llm_config.deinit()` here — the value is moved
     // into the heap-allocated `initial_llm_config_ptr` below. Shutdown
-    // cleanup runs via `nalarcore.freeAllLlmConfigs(ctxParent)` at the end
+    // cleanup runs via `pabrikcore.freeAllLlmConfigs(ctxParent)` at the end
     // of `main`.
     // Was: try llm_config.validate();
     //
@@ -149,7 +149,7 @@ pub fn main(init: std.process.Init) !void {
     // calls will fail naturally with a clear "empty api_key" error
     // until the user fills in config.json.
     //
-    // The PUT handler (`nalar_config_put.zig:234`) keeps the strict
+    // The PUT handler (`pabrik_config_put.zig:234`) keeps the strict
     // behavior — when the user actively edits their config via the UI,
     // an empty api_key is still rejected with a 200 + error body so
     // they can correct it.
@@ -157,14 +157,14 @@ pub fn main(init: std.process.Init) !void {
         // OK — config has all required fields.
     } else |err| {
         std.log.warn(
-            "Config validation: {s}. LLM calls will fail until api_key/model/base_url are populated in ~/.config/nalar/config.json.",
+            "Config validation: {s}. LLM calls will fail until api_key/model/base_url are populated in ~/.config/pabrik/config.json.",
             .{@errorName(err)},
         );
     }
 
     // Move the initial LlmConfig onto the heap so the `LlmConfigHolder`
     // can later swap pointers without owning stack memory of `main`.
-    const initial_llm_config_ptr = try allocator.create(nalarcore.config.LlmConfig);
+    const initial_llm_config_ptr = try allocator.create(pabrikcore.config.LlmConfig);
     errdefer allocator.destroy(initial_llm_config_ptr);
     initial_llm_config_ptr.* = llm_config;
 
@@ -187,16 +187,16 @@ pub fn main(init: std.process.Init) !void {
     const log_file_path = try std.fs.path.join(allocator, &.{ tmp_path, "agentic_coding.log" });
     defer allocator.free(log_file_path);
 
-    nalarcore.setPanicLogPath(log_file_path);
+    pabrikcore.setPanicLogPath(log_file_path);
     // Install OS-level crash handlers (SIGSEGV / SIGBUS / SIGABRT /
     // SIGILL / SIGFPE on POSIX; EXCEPTION_ACCESS_VIOLATION / etc on
     // Windows) BEFORE we start the HTTP server. The handler writes a
     // backtrace to the same log_file_path that panicHandler uses.
     // See src/service/crash_handler.zig for the contract.
-    nalarcore.crash_handler.setCrashLogPath(log_file_path);
-    nalarcore.crash_handler.installCrashHandlers();
+    pabrikcore.crash_handler.setCrashLogPath(log_file_path);
+    pabrikcore.crash_handler.installCrashHandlers();
 
-    nalarcore.loggermod.initGlobalColor(allocator, io, .{
+    pabrikcore.loggermod.initGlobalColor(allocator, io, .{
         .min_level = .debug,
         .output_mode = .file,
         .log_file_path = log_file_path,
@@ -204,13 +204,13 @@ pub fn main(init: std.process.Init) !void {
         .include_request_id = true,
         .include_timestamp = true,
     });
-    defer nalarcore.loggermod.deinitGlobal(io);
+    defer pabrikcore.loggermod.deinitGlobal(io);
 
-    const global_logger_ptr = nalarcore.loggermod.getGlobal().?;
+    const global_logger_ptr = pabrikcore.loggermod.getGlobal().?;
 
-    const ctxParent = try allocator.create(nalarcore.ContextIPCTui);
+    const ctxParent = try allocator.create(pabrikcore.App);
     defer allocator.destroy(ctxParent);
-    ctxParent.* = nalarcore.ContextIPCTui{
+    ctxParent.* = pabrikcore.App{
         .allocator = allocator,
         .io = io,
         .db = &dbSqlite,
@@ -232,19 +232,19 @@ pub fn main(init: std.process.Init) !void {
         std.log.info("--auth on: per-user LLM config comes from users.config_json; config.json is ignored.", .{});
     }
 
-    _ = try nalarcore.setSingleton(ctxParent);
+    _ = try pabrikcore.setSingleton(ctxParent);
 
     // Eagerly init the process-global MCP registries on the process-lifetime
     // allocator and cache the pointers on the singleton struct, so every
     // call site goes through `di.mcp_stdio_registry` (via
-    // `nalarcore.mcpStdioRegistry`) instead of lazy-init on first MCP use.
+    // `pabrikcore.mcpStdioRegistry`) instead of lazy-init on first MCP use.
     // Shutdown hooks below kill spawned children + free registry arenas.
-    ctxParent.mcp_stdio_registry = nalarcore.mcp_stdio.StdioRegistry.global(allocator);
-    ctxParent.mcp_http_registry = nalarcore.mcp_http.HttpRegistry.global(allocator);
-    defer nalarcore.mcp_stdio.StdioRegistry.deinitGlobal();
-    defer nalarcore.mcp_http.HttpRegistry.deinitGlobal();
+    ctxParent.mcp_stdio_registry = pabrikcore.mcp_stdio.StdioRegistry.global(allocator);
+    ctxParent.mcp_http_registry = pabrikcore.mcp_http.HttpRegistry.global(allocator);
+    defer pabrikcore.mcp_stdio.StdioRegistry.deinitGlobal();
+    defer pabrikcore.mcp_http.HttpRegistry.deinitGlobal();
 
-    const event_bus_mod = nalarcore.event_bus;
+    const event_bus_mod = pabrikcore.event_bus;
     var event_bus = event_bus_mod.EventBus.init("my-bus", allocator, io);
     defer event_bus.deinit();
     ctxParent.event_bus = &event_bus;
@@ -295,10 +295,10 @@ pub fn main(init: std.process.Init) !void {
     // default, unchanged).
     var port: u16 = cli.port orelse (if (llm_config.web_launch_enabled) 0 else 8081);
     if (port == 0) {
-        port = nalarcore.web_port.pickFreePort(io) catch |err| {
+        port = pabrikcore.web_port.pickFreePort(io) catch |err| {
             std.log.err("web launch: no free port in [{d},{d}]: {s}", .{
-                nalarcore.web_port.web_port_range_start,
-                nalarcore.web_port.web_port_range_end,
+                pabrikcore.web_port.web_port_range_start,
+                pabrikcore.web_port.web_port_range_end,
                 @errorName(err),
             });
             return err;
@@ -321,14 +321,14 @@ pub fn main(init: std.process.Init) !void {
 
     const address = gserverz.Address.init("127.0.0.1", port) catch |err| switch (err) {
         // A port already in use is an ordinary, expected operator error (a
-        // second nalar, a stale dev server). Letting `try` carry `BindFailed`
+        // second pabrik, a stale dev server). Letting `try` carry `BindFailed`
         // out of `main` sends the process down the runtime's error path,
         // where it dies with SIGSEGV (exit code -11) and a bare stack trace —
         // which reads like a memory-safety bug and, in the functional suite,
         // masks a plain port collision as an apparent crash of the binary
         // itself. Report it and exit non-zero instead.
         error.BindFailed => {
-            std.log.err("cannot bind 127.0.0.1:{d} - address already in use (is another nalar already running on this port?)", .{port});
+            std.log.err("cannot bind 127.0.0.1:{d} - address already in use (is another pabrik already running on this port?)", .{port});
             std.process.exit(1);
         },
         else => return err,
@@ -347,7 +347,7 @@ pub fn main(init: std.process.Init) !void {
     // instead of unwinding the `defer` chain.
     shutdown_server = gs;
     shutdown_requested.store(false, .seq_cst);
-    nalarcore.signal_handlers.installShutdownHandlers(handleShutdownSignal);
+    pabrikcore.signal_handlers.installShutdownHandlers(handleShutdownSignal);
 
     // TLS context built during flag parsing (validated there, adopted here).
     if (tls_ctx) |ctx| gs.setTlsCtx(ctx);
@@ -526,7 +526,7 @@ pub fn main(init: std.process.Init) !void {
     gs.sse_manager.stop();
 }
 
-/// Dispatch the `nalar service {start,stop,status,restart}` subcommand.
+/// Dispatch the `pabrik service {start,stop,status,restart}` subcommand.
 /// Returns true if the subcommand was handled (main should exit); false
 /// if no subcommand matched (main should continue with the regular flow).
 ///
@@ -569,14 +569,14 @@ fn dispatchServiceSubcommand(
     const log_path = blk: {
         const home_z = std.c.getenv("HOME") orelse "/tmp";
         const home = std.mem.sliceTo(home_z, 0);
-        break :blk try std.fs.path.join(allocator, &.{ home, ".local", "share", "nalar", "service.log" });
+        break :blk try std.fs.path.join(allocator, &.{ home, ".local", "share", "pabrik", "service.log" });
     };
     defer allocator.free(log_path);
 
     const cmd = main_service.parseServiceSubcommand(rest.items) catch |err| switch (err) {
         error.UnknownSubcommand => {
             std.log.err("unknown subcommand: {s}", .{if (rest.items.len > 0) rest.items[0] else "(none)"});
-            std.log.err("usage: nalar service {{start|stop|status|restart}} [flags]", .{});
+            std.log.err("usage: pabrik service {{start|stop|status|restart}} [flags]", .{});
             std.log.err("  start    [--port PORT] [--static-dir DIR] [--no-static-dir]  (PORT 0 = random free port)", .{});
             std.log.err("  stop     [--graceful-timeout-ms MS]", .{});
             std.log.err("  status", .{});
@@ -660,7 +660,7 @@ fn dispatchServiceSubcommand(
     return true;
 }
 
-/// Dispatch `nalar create-admin --email E [--password P] [--name N] [--force]`.
+/// Dispatch `pabrik create-admin --email E [--password P] [--name N] [--force]`.
 /// Bootstraps the first admin for opt-in `--auth` mode. Opens the same
 /// SQLite DB + runs migrations (so it works on fresh installs), refuses
 /// when an active admin already exists unless `--force`.
@@ -701,7 +701,7 @@ fn dispatchCreateAdmin(
         } else if (std.mem.eql(u8, a, "--force")) {
             force = true;
         } else if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
-            std.debug.print("Usage: nalar create-admin --email E [--password P] [--name N] [--force]\n", .{});
+            std.debug.print("Usage: pabrik create-admin --email E [--password P] [--name N] [--force]\n", .{});
             return true;
         } else {
             std.log.err("create-admin: unknown flag '{s}'", .{a});
@@ -815,19 +815,20 @@ fn dispatchCreateAdmin(
 /// (one-character change: `Writer` → `*Writer`), this duplication can
 /// be removed and the call can be replaced with a single
 /// `static_files.serve(...)` call.
-/// Where a generated certificate lives: `$XDG_DATA_HOME/nalar/tls`, falling back
-/// to `~/.local/share/nalar/tls` (POSIX) or `%LOCALAPPDATA%\nalar\tls` (Windows).
+/// Where a generated certificate lives: `$XDG_DATA_HOME/pabrik/tls`, falling back
+/// to `~/.local/share/pabrik/tls` (POSIX) or `%LOCALAPPDATA%\pabrik\tls` (Windows).
 /// Deliberately NOT the config dir: it is state, not configuration.
 fn tlsDataDir(allocator: std.mem.Allocator, env: *const std.process.Environ.Map) ![]const u8 {
+    const app_name = "pabrik";
     if (comptime @import("builtin").os.tag == .windows) {
         const base = env.get("LOCALAPPDATA") orelse return error.NoDataDir;
-        return std.fs.path.join(allocator, &.{ base, "nalar", "tls" });
+        return std.fs.path.join(allocator, &.{ base, app_name, "tls" });
     }
     if (env.get("XDG_DATA_HOME")) |xdg| {
-        return std.fs.path.join(allocator, &.{ xdg, "nalar", "tls" });
+        return std.fs.path.join(allocator, &.{ xdg, app_name, "tls" });
     }
     const home = env.get("HOME") orelse return error.NoDataDir;
-    return std.fs.path.join(allocator, &.{ home, ".local", "share", "nalar", "tls" });
+    return std.fs.path.join(allocator, &.{ home, ".local", "share", app_name, "tls" });
 }
 
 fn staticDirHandler(

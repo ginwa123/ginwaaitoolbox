@@ -11,18 +11,18 @@
 //! frontend card stranded on `running`.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const batch = @import("sub_agent_batch.zig");
 
-const logger_mod = nalarcore.loggermod;
+const logger_mod = pabrikcore.loggermod;
 const ai_workflow = @import("workflow.zig");
-const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
+const spawn_sub_agent_tool = pabrikcore.spawn_sub_agent;
 const subagent_progress = @import("subagent_progress.zig");
 const sanitize = @import("helpers").sanitize_control_chars;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
+const agent = pabrikcore.agent;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub const slugifySubAgentName = batch.slugifySubAgentName;

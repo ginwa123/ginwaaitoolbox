@@ -20,9 +20,9 @@
 //!   - `std.json.Stringify.valueAlloc` substring check
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const memories_mod = nalarcore.memories;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const memories_mod = pabrikcore.memories;
 const http_response = @import("http_response.zig");
 
 /// JSON request body for `POST /api/memories`.
@@ -92,7 +92,7 @@ fn useCase(
     io: std.Io,
     input: MemoryCreateInput,
 ) MemoryCreateError!MemoryCreateOutput {
-    const di = nalarcore.getSingleton() catch return error.ServerNotInitialized;
+    const di = pabrikcore.getSingleton() catch return error.ServerNotInitialized;
     const environment = di.environment orelse return error.MissingEnvironment;
 
     if (input.name.len == 0) return error.NameRequired;

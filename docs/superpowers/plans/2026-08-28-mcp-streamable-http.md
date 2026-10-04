@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the nalar agent's HTTP MCP transport fully conformant with the [MCP Streamable HTTP spec](https://modelcontextprotocol.io/specification/draft/basic/transports/streamable-http), targeting the most recent protocol revision that the ecosystem actually supports on the wire (revision `2025-11-25` — the latest that `@modelcontextprotocol/sdk` v1.30.0 recognizes; the spec page's "current" `2026-07-28` revision is not yet implemented by any SDK). The agent can talk to MCP servers that expose a single HTTP endpoint accepting POST, with the server free to answer each request as either a single `application/json` object or a `text/event-stream` (SSE) stream carrying progress notifications + the final JSON-RPC response. Required request metadata headers (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) are emitted on every POST. stdio stays untouched (backward compat). For self-testing we ship a separate **`mcp-http-hello-world`** Node binary (sibling of the existing `mcp-hello-world` stdio binary) that uses the SDK's `StreamableHTTPServerTransport` — the functional harness runs it as a subprocess, points a `mcp_servers.url` at it, calls a tool via the agent, and asserts the wire contract end-to-end.
+**Goal:** Make the pabrik agent's HTTP MCP transport fully conformant with the [MCP Streamable HTTP spec](https://modelcontextprotocol.io/specification/draft/basic/transports/streamable-http), targeting the most recent protocol revision that the ecosystem actually supports on the wire (revision `2025-11-25` — the latest that `@modelcontextprotocol/sdk` v1.30.0 recognizes; the spec page's "current" `2026-07-28` revision is not yet implemented by any SDK). The agent can talk to MCP servers that expose a single HTTP endpoint accepting POST, with the server free to answer each request as either a single `application/json` object or a `text/event-stream` (SSE) stream carrying progress notifications + the final JSON-RPC response. Required request metadata headers (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) are emitted on every POST. stdio stays untouched (backward compat). For self-testing we ship a separate **`mcp-http-hello-world`** Node binary (sibling of the existing `mcp-hello-world` stdio binary) that uses the SDK's `StreamableHTTPServerTransport` — the functional harness runs it as a subprocess, points a `mcp_servers.url` at it, calls a tool via the agent, and asserts the wire contract end-to-end.
 
 **Process — TDD + one-file-per-Zig-module + git worktree:**
 - **TDD discipline for every task**: write the failing test first, run it to confirm RED, write the minimal impl to pass it, refactor, run it again to confirm GREEN, then move on. Every inline test in `mcp_http.zig` and every functional test in `mcp_http_test.py` is written BEFORE the production code it exercises. The plan is structured red → green → refactor for each unit.
@@ -17,7 +17,7 @@
 4. **`HttpRegistry`** — process-global, one `HttpClient` per server name, lazy first call, no respawn needed (HTTP servers don't die on us like stdio children do; the registry just caches the reusable `Client` and per-server config).
 5. **`ListTools`** — a sibling helper that wraps the `tools/list` roundtrip; both `handle_mcp_tool.zig` and `prompts_build_messages_for_agent_prompt.zig`'s `buildMCPToolsRun` route through it.
 
-The existing `mcp_stdio.zig` (`StdioClient`, `StdioRegistry`) is **untouched** — same sibling pattern, same one-file convention. The existing `mcp_transport.zig` (server-side) is **untouched** — it serves nalar's own MCP server endpoint, not the client side. `handle_mcp_tool.zig` becomes a thin dispatcher: parse `mcp_serverName_toolName` → look up server config → if `command` present, call `mcp_stdio.StdioRegistry`; if `url` present, call new `mcp_http.HttpRegistry`. No new config schema column (MCP server config keeps living in `config.json` under the existing `mcp_servers` key; `url` is the discriminator for HTTP). No new PUT endpoint.
+The existing `mcp_stdio.zig` (`StdioClient`, `StdioRegistry`) is **untouched** — same sibling pattern, same one-file convention. The existing `mcp_transport.zig` (server-side) is **untouched** — it serves pabrik's own MCP server endpoint, not the client side. `handle_mcp_tool.zig` becomes a thin dispatcher: parse `mcp_serverName_toolName` → look up server config → if `command` present, call `mcp_stdio.StdioRegistry`; if `url` present, call new `mcp_http.HttpRegistry`. No new config schema column (MCP server config keeps living in `config.json` under the existing `mcp_servers` key; `url` is the discriminator for HTTP). No new PUT endpoint.
 
 **Tech Stack:** Zig 0.16 (`std.Io`, `std.atomic.Mutex`, `std.json`), `custom_http_client` (existing — has `Client.post`, `ResponseStream`, `StreamScanner` for line-buffered streaming needed for SSE), Vue 3 + TypeScript + Pinia, `pytest` + `subprocess` harness, `tests/functional/harness.py` (isolated tmpdir HOME, port 8080..8199).
 
@@ -32,19 +32,19 @@ The existing `mcp_stdio.zig` (`StdioClient`, `StdioRegistry`) is **untouched** �
 - **Tool listing** — `src/ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig:391 buildMCPToolsRun` → `fetchToolsFromServer`. Today it only handles the HTTP path; the stdio path was added by the previous plan. The new HTTP path needs the same treatment.
 - **Config schema** — `src/modules/config/Config.zig:380 McpServerConfig { url, headers, command, args, cwd }` already covers HTTP (just `url` + `headers`); no schema change needed. The discriminator in `McpServerConfig.transport()` (line 397) prefers `command` over `url`, matching our dispatcher semantics.
 - **HTTP client** — `src/modules/custom_http_client/src/{client.zig, request.zig, response.zig, stream.zig}`. The non-streaming `post()` returns a fully-buffered `Response` (line 150 in `handle_mcp_tool.zig`); the streaming `openStream()` returns a `ResponseStream` + `StreamScanner` (line 382 in `stream.zig`) that already does **line-buffered streaming** with a carry buffer — exactly what we need to parse SSE events. The 30s timeout is already the default for POST in the existing HTTP path; the new HTTP client keeps that.
-- **Frontend** — `src/apps/desktop/src/api/index.ts:3486 McpServer`, `src/apps/desktop/src/components/nalar/McpServerModal.vue`, `src/apps/desktop/src/components/NalarSettings.vue`. UI today: one URL field + key/value headers editor — already supports HTTP. No frontend changes needed for the client (the wire is what changes; the user-facing config shape is unchanged).
+- **Frontend** — `src/apps/desktop/src/api/index.ts:3486 McpServer`, `src/apps/desktop/src/components/pabrik/McpServerModal.vue`, `src/apps/desktop/src/components/PabrikSettings.vue`. UI today: one URL field + key/value headers editor — already supports HTTP. No frontend changes needed for the client (the wire is what changes; the user-facing config shape is unchanged).
 - **Test fixture** — `src/apps/mcp_hello_world/{index.ts, package.json}` is a stdio-only `McpServer` (unchanged). The `@modelcontextprotocol/sdk@1.30.0` (already installed in `node_modules/`) ships `StreamableHTTPServerTransport` (Node `http.Server` variant) at `dist/esm/server/streamableHttp.js` — we use it in the NEW sibling binary `src/apps/mcp_http_hello_world/`, not in `mcp-hello-world`. Per the user's "one binary per transport" preference.
-- **Functional harness** — `tests/functional/harness.py` already isolates `HOME`, picks port 8080..8199 (NOT 8081), launches `zig-out/bin/nalarcore-linux-x86_64`. We add a `mcp_http_hello_world_bin()` helper that resolves the new `mcp-http-hello-world-{target-triple}` sibling binary path; the test then spawns it via `subprocess.Popen` on a random port and waits for the "listening on" stderr line.
+- **Functional harness** — `tests/functional/harness.py` already isolates `HOME`, picks port 8080..8199 (NOT 8081), launches `zig-out/bin/pabrikcore-linux-x86_64`. We add a `mcp_http_hello_world_bin()` helper that resolves the new `mcp-http-hello-world-{target-triple}` sibling binary path; the test then spawns it via `subprocess.Popen` on a random port and waits for the "listening on" stderr line.
 
 ---
 
 ## Global Constraints
 
-- **Spec target is revision 2025-11-25** — the most recent revision `@modelcontextprotocol/sdk` v1.30.0 (the canonical MCP TS SDK, already vendored in `src/apps/mcp_hello_world/node_modules/`) actually implements. The spec page's "current" `2026-07-28` revision is not yet implemented by any SDK or client in the ecosystem; targeting it would mean our HTTP client can't talk to ANY real server today. Earlier revisions (2024-11-05, 2025-03-26, 2025-06-18) added the Streamable HTTP transport and various revisions; we implement the 2025-11-25 wire which is the most recent the ecosystem exercises. The nalar client's `MCP-Protocol-Version` header carries this value. (If/when an SDK ships 2026-07-28, the client becomes a 1-line constant bump.)
+- **Spec target is revision 2025-11-25** — the most recent revision `@modelcontextprotocol/sdk` v1.30.0 (the canonical MCP TS SDK, already vendored in `src/apps/mcp_hello_world/node_modules/`) actually implements. The spec page's "current" `2026-07-28` revision is not yet implemented by any SDK or client in the ecosystem; targeting it would mean our HTTP client can't talk to ANY real server today. Earlier revisions (2024-11-05, 2025-03-26, 2025-06-18) added the Streamable HTTP transport and various revisions; we implement the 2025-11-25 wire which is the most recent the ecosystem exercises. The pabrik client's `MCP-Protocol-Version` header carries this value. (If/when an SDK ships 2026-07-28, the client becomes a 1-line constant bump.)
 - **Backward compat for stdio**: every existing stdio `mcp_servers` entry keeps working unchanged. `handle_mcp_tool.zig`'s `if (server_obj.get("command"))` branch is preserved verbatim.
 - **Cross-platform from day one**: SSE parsing uses byte-level string ops, not platform-specific APIs. HTTP via `custom_http_client` is already cross-platform. The Node `mcp-http-hello-world` binary runs on Linux + macOS + Windows wherever Node 18+ runs.
 - **Per-request arena**: handlers allocate from `ctx.allocator` (arena) → NO `defer allocator.free` inside HTTP handlers. The new SSE parser returns either an arena-allocated slice (when the caller is in a request handler) or a heap-allocated slice owned by the caller (when the caller is a test). Both are supported via the same `allocator: std.mem.Allocator` argument.
-- **No new CHANGELOG file** — update `NALAR.md` (§"Recent changes") with one entry that lands on the same commit as the wire-up task.
+- **No new CHANGELOG file** — update `PABRIK.md` (§"Recent changes") with one entry that lands on the same commit as the wire-up task.
 - **DONT KILL THE PORT 8081 SERVER** — functional harness uses ports 8080..8199.
 - **No port-8081 live-server + curl verification** — use the python functional harness + Zig unit tests.
 - **Empty-slice-as-NULL rule** — `SqliteBackend.exec` binds `""` as SQL NULL. We don't touch the DB; only in-memory config + new code paths. Be aware if any future iteration persists server config (not this plan).
@@ -63,7 +63,7 @@ The existing `mcp_stdio.zig` (`StdioClient`, `StdioRegistry`) is **untouched** �
 | D2  | **SSE parser is a line-level event iterator** built on `custom_http_client.stream.StreamScanner`. It carries bytes across `next()` calls, splits on `\n\n` (the event boundary per the SSE spec), parses each event's `event:` / `data:` / `id:` / `retry:` fields, and returns one `SseEvent { event, data, id, retry }` per `next()`. Multi-`data:` lines per event are concatenated with `\n` (per the SSE spec). | The SSE spec is small and stable; a hand-rolled parser is faster than pulling in a dep and gives us full control over edge cases (comments, `id:` line-only events, BOM, UTF-8 BOM in the first byte). |
 | D3  | **MCP response semantics**: for a request, the server returns EITHER a single JSON object OR an SSE stream. We branch on `Content-Type` — if `application/json`, parse the body as JSON-RPC; if `text/event-stream`, walk the stream until the connection closes (the spec says "The final JSON-RPC response SHOULD terminate the stream" — we treat stream-end as the natural terminator, taking the last event's `data` as the final response). | The spec's "SHOULD terminate the stream" is not a MUST, so a server COULD close mid-stream. We handle both: per-event progress notifications, then the last event is the final answer. |
 | D4  | **No protocol-level session** (the spec calls this "stateless mode"). The `HttpClient` does NOT send `Mcp-Session-Id` and does NOT maintain a session id. The `HttpRegistry` is a process-global cache of `HttpClient` per server name (one per server, not per session). If a future server rejects requests without `Mcp-Session-Id`, we add a 5-line change (one `?[]const u8` field on `HttpClient` that the server's initialize response populates and subsequent requests echo). | Spec compliance + minimal state. The 2025-11-25 revision supports both stateful and stateless modes; we go stateless because (a) it matches the spec's longer-term direction (the `2026-07-28` revision goes further and removes sessions entirely), and (b) the test fixture is stateless so we test what we ship. |
-| D5  | **`HttpClient` is stateless across calls except for the reusable `custom_http_client.Client` and the cached base URL + headers.** Each `callTool` is a fresh POST; no request batching, no SSE GET stream, no long-lived listen subscription. (We do NOT implement the `subscriptions/listen` request — nalar's tool-calling loop doesn't need server-pushed change notifications. A v2 can add a long-lived listener if a real server needs it.) | Matches the simplicity of the stdio path. The spec lists `subscriptions/listen` as a v1 MAY, not MUST; skipping it keeps the surface area tight. If we need it later, the registry's `getOrConnect` shape already accommodates a long-lived stream per client. |
+| D5  | **`HttpClient` is stateless across calls except for the reusable `custom_http_client.Client` and the cached base URL + headers.** Each `callTool` is a fresh POST; no request batching, no SSE GET stream, no long-lived listen subscription. (We do NOT implement the `subscriptions/listen` request — pabrik's tool-calling loop doesn't need server-pushed change notifications. A v2 can add a long-lived listener if a real server needs it.) | Matches the simplicity of the stdio path. The spec lists `subscriptions/listen` as a v1 MAY, not MUST; skipping it keeps the surface area tight. If we need it later, the registry's `getOrConnect` shape already accommodates a long-lived stream per client. |
 | D6  | **Required headers on EVERY request** (per spec): `MCP-Protocol-Version: 2025-11-25`, `Accept: application/json, text/event-stream`, `Content-Type: application/json`. **Per-method headers**: `Mcp-Method: <method>` always; `Mcp-Name: <tool name>` for `tools/call`, `<uri>` for `resources/read`, `<name>` for `prompts/get`. The `Mcp-Name` source value is emitted as a plain ASCII header — if the tool name contains non-ASCII characters (rare but possible), we fall back to omitting `Mcp-Name` and rely on the JSON body. (Full Base64-sentinel encoding per the spec is a v2.) | Spec requires these. ASCII fallback is pragmatic — every realistic tool name in the wild is ASCII. |
 | D7  | **Custom headers from `mcp_servers[name].headers`** are merged with the spec-mandated headers. **Order in the request**: custom headers first, spec headers last (so spec values always win if a user accidentally sets `Accept: text/plain` or similar). This matches the stdio plan's "spec headers always win" precedent. | Defensive default. The spec-mandated values are non-negotiable. |
 | D8  | **Notification POSTs return 202 Accepted with no body** per spec. We DO NOT send notifications in v1 (the only client-sent notification is `notifications/cancelled`, which the spec says is stdio-only on Streamable HTTP — closing the SSE stream is the cancellation signal). But we still implement the 202-handling path so a future notification POST is correct. | Future-proof without scope creep. The 202 branch is 4 lines of code; not having it would be a footgun when someone adds a notification later. |
@@ -86,7 +86,7 @@ src/modules/agent/mcp/mcp/mcp_http.zig              # ONE file: SSE parser + hea
 ```
 src/ai_workflow/tui/agentic_loop/handle_mcp_tool.zig      # dispatch stdio vs http: stdio path → mcp_stdio.StdioRegistry, http path → mcp_http.HttpRegistry; extract the body-parser into a shared helper
 src/ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig  # buildMCPToolsRun: stdio path uses mcp_stdio, http path uses mcp_http.ListTools
-src/root.zig                                              # re-export mcp_http module so nalar_mod.mcp_http.HttpRegistry etc. resolves
+src/root.zig                                              # re-export mcp_http module so pabrik_mod.mcp_http.HttpRegistry etc. resolves
 src/main.zig                                              # shutdown hook calls mcp_http.HttpRegistry.deinitGlobal() to free per-server clients (mirrors the stdio shutdown hook)
 ```
 
@@ -109,7 +109,7 @@ build.zig                                                 # add install_mcp_http
 ### New files (tests — functional)
 
 ```
-tests/functional/mcp_http_test.py                         # E2E: spawn mcp-http-hello-world on a random port, configure nalar with mcp_servers.url pointing at it, call a tool via the agent, assert response
+tests/functional/mcp_http_test.py                         # E2E: spawn mcp-http-hello-world on a random port, configure pabrik with mcp_servers.url pointing at it, call a tool via the agent, assert response
 ```
 
 ### Edited files (tests — functional)
@@ -122,7 +122,7 @@ tests/functional/harness.py                              # mcp_http_hello_world_
 
 ```
 docs/superpowers/plans/2026-08-28-mcp-streamable-http.md      # this file
-NALAR.md                                                       # append "### 2026-08-28: MCP Streamable HTTP transport" changelog entry
+PABRIK.md                                                       # append "### 2026-08-28: MCP Streamable HTTP transport" changelog entry
 ```
 
 Total: **15 files** (1 NEW backend, 5 NEW test fixture, 1 NEW functional test, 5 EDIT backend/build/test, 1 NEW plan + 1 changelog entry). No new migration. **MCP server config continues to live in `config.json` under the existing `mcp_servers` key** — users point an HTTP entry at a Streamable HTTP server by setting `url: "https://example.com/mcp"`. No new config file, no new PUT endpoint.
@@ -511,9 +511,9 @@ zig build test --summary all
 
 ### Task 5 — Functional test: end-to-end agent → HTTP MCP (TDD: red → green)
 
-**Why:** Static-contract tests prove the SSE parser + header builder + status-code handling are correct, but the agent's actual end-to-end behaviour (LLM emits `mcp_hello_print_hello`, the dispatcher routes to `mcp_http.HttpRegistry`, the POST hits a real spec-compliant server, the response is parsed, the text is shown to the LLM) needs a functional test with the real `nalar` binary + the real `mcp-http-hello-world` fixture.
+**Why:** Static-contract tests prove the SSE parser + header builder + status-code handling are correct, but the agent's actual end-to-end behaviour (LLM emits `mcp_hello_print_hello`, the dispatcher routes to `mcp_http.HttpRegistry`, the POST hits a real spec-compliant server, the response is parsed, the text is shown to the LLM) needs a functional test with the real `pabrik` binary + the real `mcp-http-hello-world` fixture.
 
-**TDD order**: write the functional test FIRST (Task 5.2 below), run it against a nalar that already uses the new `mcp_http` module — watch it PASS. If the test fails, the bug is in `mcp_http` (Tasks 2-3) or the dispatcher (Task 4). The test is the spec contract: if it passes, the client is spec-compliant against a real SDK server.
+**TDD order**: write the functional test FIRST (Task 5.2 below), run it against a pabrik that already uses the new `mcp_http` module — watch it PASS. If the test fails, the bug is in `mcp_http` (Tasks 2-3) or the dispatcher (Task 4). The test is the spec contract: if it passes, the client is spec-compliant against a real SDK server.
 
 **Files:**
 - `tests/functional/harness.py` (EDIT — add `mcp_http_hello_world_bin()` helper that resolves the new sibling binary path; mirrors the existing `mcp_hello_world_bin()` helper)
@@ -531,16 +531,16 @@ def mcp_http_hello_world_bin() -> Path:
     the binary isn't built; tests wrap that as `pytest.skip` so the
     functional test suite can run before the build step.
     """
-    if env := os.environ.get("NALAR_MCP_HTTP_HELLO_WORLD_BIN"):
+    if env := os.environ.get("PABRIK_MCP_HTTP_HELLO_WORLD_BIN"):
         p = Path(env)
         if p.is_file(): return p
-    nalar_bin = os.environ.get("NALAR_BIN", "")
-    if nalar_bin:
-        sibling = Path(nalar_bin).parent / "mcp-http-hello-world-linux-x86_64"
+    pabrik_bin = os.environ.get("PABRIK_BIN", "")
+    if pabrik_bin:
+        sibling = Path(pabrik_bin).parent / "mcp-http-hello-world-linux-x86_64"
         if sibling.is_file(): return sibling
     raise FileNotFoundError(
         "mcp-http-hello-world not found; run `zig build mcp-http-hello-world` "
-        "or set $NALAR_MCP_HTTP_HELLO_WORLD_BIN."
+        "or set $PABRIK_MCP_HTTP_HELLO_WORLD_BIN."
     )
 ```
 
@@ -550,7 +550,7 @@ Create `tests/functional/mcp_http_test.py` mirroring the stdio test (`tests/func
 
 ```python
 def test_http_mcp_server_url_round_trips(harness):
-    """Boot nalar, configure mcp_servers with a url pointing at a live
+    """Boot pabrik, configure mcp_servers with a url pointing at a live
     mcp-http-hello-world server, fetch the config back, assert the url
     round-trips through PUT → on-disk JSON → GET."""
     port = harness.get_free_port()  # avoid 8081
@@ -559,9 +559,9 @@ def test_http_mcp_server_url_round_trips(harness):
         url = f"http://127.0.0.1:{port}/mcp"
         ws = harness.create_workspace()
         # PUT a config with mcp_servers.http_test = { url }
-        harness.put_nalar_config(ws, {"mcp_servers": {"http_test": {"url": url}}})
+        harness.put_pabrik_config(ws, {"mcp_servers": {"http_test": {"url": url}}})
         # GET the config back, assert url is intact
-        cfg = harness.get_nalar_config(ws)
+        cfg = harness.get_pabrik_config(ws)
         assert cfg["mcp_servers"]["http_test"]["url"] == url
     finally:
         proc.terminate()
@@ -569,7 +569,7 @@ def test_http_mcp_server_url_round_trips(harness):
 
 
 def test_http_mcp_tools_call_roundtrip(harness):
-    """The wire path: spawn the HTTP server, configure nalar with a
+    """The wire path: spawn the HTTP server, configure pabrik with a
     url, call a tool, assert the response matches what the SDK server
     would return. This is the spec-compliance smoke test."""
     port = harness.get_free_port()
@@ -578,7 +578,7 @@ def test_http_mcp_tools_call_roundtrip(harness):
         url = f"http://127.0.0.1:{port}/mcp"
         ws = harness.create_workspace()
         # Stub LLM profile so we don't need a real LLM call.
-        harness.put_nalar_config(ws, {
+        harness.put_pabrik_config(ws, {
             "mcp_servers": {"http_test": {"url": url}},
             "stub_llm": True,
         })
@@ -598,7 +598,7 @@ def test_http_mcp_tools_call_roundtrip(harness):
 
 `spawn_mcp_http_hello_world(port)` is a module-level helper that wraps `mcp_http_hello_world_bin()` + the `Popen` + the "listening on" stderr-line wait (same pattern as `_send_jsonrpc` in the stdio test).
 
-**TDD commit**: commit the test file. Run `NALAR_BIN=... pytest tests/functional/mcp_http_test.py -v` — it must FAIL (the agent's HTTP path doesn't yet emit the spec headers, so the SDK server's `MCP-Protocol-Version` validation rejects the request). ✅ RED.
+**TDD commit**: commit the test file. Run `PABRIK_BIN=... pytest tests/functional/mcp_http_test.py -v` — it must FAIL (the agent's HTTP path doesn't yet emit the spec headers, so the SDK server's `MCP-Protocol-Version` validation rejects the request). ✅ RED.
 
 #### Step 5.3 — Run the functional test
 
@@ -606,14 +606,14 @@ By the time this task lands, Tasks 1-3 (test fixture, helpers, client) and Task 
 
 ```bash
 cd /home/ginwa/ginwaaitoolbox
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
   python3 -m pytest tests/functional/mcp_http_test.py -v
 ```
 
-**Expected**: 2 tests pass. The test exercises the real wire: a real HTTP server (Node + SDK), a real `nalar` binary, a real Zig HTTP client doing SSE parsing + spec-compliant headers. ✅ GREEN.
+**Expected**: 2 tests pass. The test exercises the real wire: a real HTTP server (Node + SDK), a real `pabrik` binary, a real Zig HTTP client doing SSE parsing + spec-compliant headers. ✅ GREEN.
 
 If either test fails:
-- `test_http_mcp_server_url_round_trips` failing → the config PUT/GET path doesn't carry the URL through correctly. Check `parseMcpServerConfig` + the round-trip in `nalar_config_put.zig`.
+- `test_http_mcp_server_url_round_trips` failing → the config PUT/GET path doesn't carry the URL through correctly. Check `parseMcpServerConfig` + the round-trip in `pabrik_config_put.zig`.
 - `test_http_mcp_tools_call_roundtrip` failing → the HTTP client isn't spec-compliant against the SDK server. Check the headers (Task 2's `buildMcpHeaders`) and the response parsing (Task 3's `HttpClient.callTool` for SSE vs JSON). Use `zig build test --summary all` to see which Zig-level test fails.
 
 #### Step 5.4 — Run the full test suite to confirm no regressions
@@ -621,8 +621,8 @@ If either test fails:
 ```bash
 cd /home/ginwa/ginwaaitoolbox
 zig build test --summary all
-zig build nalar-desktop --summary all  # ensures the wire-up compiles
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+zig build pabrik-desktop --summary all  # ensures the wire-up compiles
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
   python3 -m pytest tests/functional/ -v  # all functional tests, not just the new one
 ```
 
@@ -635,10 +635,10 @@ NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
 
 ### Task 6 — Changelog + final pass
 
-**Why:** NALAR.md is the project-level changelog. Every merged plan adds an entry. This task is the "ship it" task.
+**Why:** PABRIK.md is the project-level changelog. Every merged plan adds an entry. This task is the "ship it" task.
 
 **Files:**
-- `NALAR.md` (EDIT — append a "### 2026-08-28: MCP Streamable HTTP transport" entry mirroring the structure of the "2026-08-27: MCP stdio transport" entry that's already in the file)
+- `PABRIK.md` (EDIT — append a "### 2026-08-28: MCP Streamable HTTP transport" entry mirroring the structure of the "2026-08-27: MCP stdio transport" entry that's already in the file)
 
 The changelog entry is a 30-line summary in the same format as the stdio entry. It should mention:
 - What landed (HttpClient + SSE parser + spec-compliant headers).
@@ -653,9 +653,9 @@ The changelog entry is a 30-line summary in the same format as the stdio entry. 
 ```bash
 cd /home/ginwa/ginwaaitoolbox
 zig build test --summary all
-zig build nalar-desktop --summary all
+zig build pabrik-desktop --summary all
 NPM_CONFIG_LOGLEVEL=error npm run test:unit  # frontend unaffected; just confirming
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
   python3 -m pytest tests/functional/ -v
 ```
 
@@ -689,7 +689,7 @@ The user reviews the PR; once approved, they (or the merge) move the card to `me
 | Layer | Test | Expected |
 | --- | --- | --- |
 | Unit (Zig) | `zig build test --summary all` | 2856/2856 pass |
-| Build | `zig build nalar-desktop --summary all` | 10/10 steps succeed |
+| Build | `zig build pabrik-desktop --summary all` | 10/10 steps succeed |
 | Build | `zig build mcp-hello-world --summary all` | existing stdio binary rebuilt (no changes here) |
 | Build | `zig build mcp-http-hello-world --summary all` | new HTTP binary built and installed in `zig-out/bin/` |
 | Test fixture | `npm test` (in `src/apps/mcp_hello_world`) | 3 stdio + 1 http = 4 tests pass |

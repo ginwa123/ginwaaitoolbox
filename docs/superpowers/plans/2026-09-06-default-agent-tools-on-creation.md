@@ -96,7 +96,7 @@ Single source of truth: new shared helper (e.g. `src/ai_workflow/tui/agentic_loo
   - `POST /api/workspaces/:ws/items/agent {name, path}` → `GET .../items/:id/agent` bundle shows 3 tools.
   - `POST /api/workspaces/:ws/items/kanban {name, path?}` → `GET /api/agent-kanbans/:id/tools` shows 3 tools; `GET .../items/:item/tools` bundle non-null (previously 404 NotConfigured).
   - Pre-existing empty board (created before this change) still returns `[]`/404-null — no backfill.
-- Full gates: `zig build test --summary all`, `pnpm test:unit` (if frontend touched), `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/<new>_test.py -v`. Never `curl` a live 8081 server (mandatory repo rule — use the harness on another port).
+- Full gates: `zig build test --summary all`, `pnpm test:unit` (if frontend touched), `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/<new>_test.py -v`. Never `curl` a live 8081 server (mandatory repo rule — use the harness on another port).
 
 ## 6. Risks / edge cases
 

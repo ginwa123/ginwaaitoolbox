@@ -25,7 +25,7 @@ The frontend already has the generic `BaseSyncEngine` and IndexedDB store used b
 
 - `ChatEngineDb` paints cached messages and revalidates the existing message endpoint.
 - `SessionEngineDb` paints cached session rows per workspace and revalidates the existing session endpoint.
-- `IndexedDbStore` uses the shared `nalar-sync` database and an in-memory fallback when IndexedDB is unavailable.
+- `IndexedDbStore` uses the shared `pabrik-sync` database and an in-memory fallback when IndexedDB is unavailable.
 
 Task fetching has four production paths in `workspaces.ts`:
 
@@ -94,7 +94,7 @@ Successful task mutations mirror the existing local state and also update/evict 
 
 ### 4. IndexedDB migration
 
-Bump `nalar-sync` to the next schema version and add a `tasks` object store. The upgrade callback creates every known store so whichever engine opens the database first leaves a complete schema. Existing message/session caches remain readable.
+Bump `pabrik-sync` to the next schema version and add a `tasks` object store. The upgrade callback creates every known store so whichever engine opens the database first leaves a complete schema. Existing message/session caches remain readable.
 
 The task store uses the existing `by_ctx_sort` compound index and the `sync_state` namespace. IndexedDB failures remain advisory: the in-memory engine path continues to work.
 
@@ -144,7 +144,7 @@ The task store uses the existing `by_ctx_sort` compound index and the `sync_stat
 
 ### Functional verification
 
-Use the isolated Python functional harness for any HTTP/wire verification. It boots a fresh nalar binary with an isolated temporary HOME and a free port other than 8081. Replay the existing frontend task-list URL and verify its response shape and cache-facing timestamps. Do not start a live server manually or use port 8081.
+Use the isolated Python functional harness for any HTTP/wire verification. It boots a fresh pabrik binary with an isolated temporary HOME and a free port other than 8081. Replay the existing frontend task-list URL and verify its response shape and cache-facing timestamps. Do not start a live server manually or use port 8081.
 
 ## Rollout and compatibility
 

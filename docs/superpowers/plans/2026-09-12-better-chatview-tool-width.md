@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Do NOT annotate code with `// NEW (plan: ...)` tags. Explain *why* in one plain sentence or no comment.
-- Do NOT spin up a live `nalar` binary + `curl` for verification. Use vitest + `pnpm run build`. For wire payloads use `tests/functional/harness.py` on ports 8080..8199 (never 8081).
+- Do NOT spin up a live `pabrik` binary + `curl` for verification. Use vitest + `pnpm run build`. For wire payloads use `tests/functional/harness.py` on ports 8080..8199 (never 8081).
 - Frontend changes must keep `pnpm --dir src/apps/desktop run build` green and existing `ChatView.*.spec.ts` passing.
 - One responsibility per file; follow existing `tool_outputs/_shared/` patterns (no unilateral restructure).
 - YAGNI: fix width stability only. No new visual design, no slider, no card redesign.

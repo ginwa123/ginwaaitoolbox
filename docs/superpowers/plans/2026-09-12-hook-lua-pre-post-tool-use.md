@@ -25,7 +25,7 @@
 **Lua side — the whole API is this one file:**
 
 ```lua
--- ~/.config/nalar/hooks/register_hook.lua
+-- ~/.config/pabrik/hooks/register_hook.lua
 function init(event, data)
   if event == "pre_tool_use" then
     -- data = { tool_name = "bash", arguments = "{...raw json...}",
@@ -62,7 +62,7 @@ end
 - Loop caller `handle_tool(...):335` pre-inserts placeholder `role=tool` rows then UPDATEs them — hooks run inside per-tool dispatch so placeholder/SSE order is untouched. Deny/mock/post-replace outputs go through existing `wrapToolOutput` envelope (same path as unknown-tool error, `:452-459`).
 - `src/agentic_loop/hooks.zig` = 18-line comment stub, imported by nothing. Replace wholesale.
 - No Lua in repo today. `build.zig` has a pure-Zig `fileExists` probe pattern + `linkSystemLibrary` usage to copy for the Lua probe.
-- Hooks dir follows the *config* dir: `<config_dir>/hooks` where config dir = `~/.config/nalar` (Linux), `~/Library/Application Support/nalar` (macOS), `%APPDATA%/nalar` (Windows) — mirror `Config.zig:2478 getDefaultConfigPath` branches + `mkdir -p` like `helpers/db_path.zig`.
+- Hooks dir follows the *config* dir: `<config_dir>/hooks` where config dir = `~/.config/pabrik` (Linux), `~/Library/Application Support/pabrik` (macOS), `%APPDATA%/pabrik` (Windows) — mirror `Config.zig:2478 getDefaultConfigPath` branches + `mkdir -p` like `helpers/db_path.zig`.
 - System: `zig 0.16.0`, `lua5.4` + headers + `.so` present.
 
 ## File Map

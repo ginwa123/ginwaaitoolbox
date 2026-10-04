@@ -6,13 +6,13 @@
 //! (Chunk 3, Task 3.2)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const move_element_to_page_mod = nalarcore.move_element_to_page;
+const agent = pabrikcore.agent;
+const move_element_to_page_mod = pabrikcore.move_element_to_page;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execMoveElementToPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

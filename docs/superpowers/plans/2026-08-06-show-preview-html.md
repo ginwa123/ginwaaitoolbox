@@ -474,7 +474,7 @@ The Zig unit tests cover the tool layer and the Vue unit tests cover the render 
 
 ### 4.1 Start a dev server on port 8080 (NEVER 8081 — that's the user's always-running dev)
 
-- [ ] **Confirm** port 8081 is NOT your `nalar` process:
+- [ ] **Confirm** port 8081 is NOT your `pabrik` process:
 
 ```bash
 ss -tlnp 2>/dev/null | grep -E ':8081|:8080' || netstat -tlnp 2>/dev/null | grep -E ':8081|:8080'
@@ -482,10 +482,10 @@ ss -tlnp 2>/dev/null | grep -E ':8081|:8080' || netstat -tlnp 2>/dev/null | grep
 
 If 8081 is occupied, do NOT touch it. Use 8080.
 
-- [ ] **Start the nalar backend** on port 8080 (from the project root):
+- [ ] **Start the pabrik backend** on port 8080 (from the project root):
 
 ```bash
-timeout 10 ./zig-out/bin/nalar --port 8080 --static-dir src/apps/desktop/dist 2>&1 | tee /tmp/nalar-8080.log &
+timeout 10 ./zig-out/bin/pabrik --port 8080 --static-dir src/apps/desktop/dist 2>&1 | tee /tmp/pabrik-8080.log &
 sleep 3
 curl -s http://localhost:8080/api/health
 ```
@@ -532,7 +532,7 @@ Expected: pass count went up by 3 (the new behavioural tests in Task 1.1). No re
 timeout 180 zig build install:linux:system 2>&1 | tail -n 5
 ```
 
-Expected: builds cleanly. (The `cp` to `/usr/local/bin/nalar` may fail on permissions — that's harmless.)
+Expected: builds cleanly. (The `cp` to `/usr/local/bin/pabrik` may fail on permissions — that's harmless.)
 
 - [ ] ```bash
 timeout 360 bash -c 'rm -rf zig-out/bin && zig build' 2>&1 | tail -n 5

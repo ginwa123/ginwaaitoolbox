@@ -41,7 +41,7 @@ fn isReservedDosName(seg: []const u8) bool {
 /// Windows NTSTATUS panic guard for a model-supplied path.
 ///
 /// std's Threaded Io backend maps OBJECT_NAME_INVALID / INVALID_PARAMETER /
-/// OBJECT_PATH_SYNTAX_BAD to ntstatusBug(), which PANICS and kills nalar.exe
+/// OBJECT_PATH_SYNTAX_BAD to ntstatusBug(), which PANICS and kills pabrik.exe
 /// (see Threaded.zig: dirAccessWindows + the delete path via NtCreateFile).
 /// The LLM controls `input.path`, so every name must be validated BEFORE any
 /// Dir.access / openDir / deleteTree / deleteFile call.

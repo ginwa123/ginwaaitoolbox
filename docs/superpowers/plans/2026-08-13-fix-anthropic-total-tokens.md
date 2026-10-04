@@ -409,7 +409,7 @@ Use the exact same `TestCtx` / `setupDb` pattern as
 
 const std = @import("std");
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 
 const Migration074AddLlmHistoryCacheTokenColumns = @import("migration.zig").Migration074AddLlmHistoryCacheTokenColumns;
 

@@ -1,6 +1,6 @@
 // tools/clean_webapp_cache.zig
 //
-// Cross-platform "clean" step for the nalar-desktop fresh-assets build
+// Cross-platform "clean" step for the pabrik-desktop fresh-assets build
 // path. Deletes the two artifacts that make an embedded-assets build go
 // stale:
 //
@@ -11,14 +11,14 @@
 // Why a Zig tool instead of `sh -c 'rm -rf ...'`: the old clean step in
 // build.zig spawned `sh -c` unconditionally, which works on Linux/macOS
 // and on Windows *only* when Git Bash is on PATH (the CI Windows job
-// wraps everything in Git Bash, but a native `zig build nalar-desktop`
+// wraps everything in Git Bash, but a native `zig build pabrik-desktop`
 // on a stock Windows box has no `sh`). This tool uses std.fs directly,
 // so it runs anywhere Zig runs.
 //
 // Usage:
 //     zig run tools/clean_webapp_cache.zig
 // or via the build step wired up in build.zig (`webapp-rebuild` /
-// `nalar-desktop` fresh-assets path).
+// `pabrik-desktop` fresh-assets path).
 //
 // Exit codes: 0 on success (including "nothing to delete"), non-zero on
 // real I/O errors other than FileNotFound (missing paths are fine — that

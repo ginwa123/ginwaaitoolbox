@@ -35,7 +35,7 @@ route, so their wording is locked by the inline description/prompt tests
 in the same Zig file instead.
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/spawn_sub_agent_tools_required_test.py -v
 """
 

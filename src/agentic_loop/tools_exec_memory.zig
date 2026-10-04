@@ -14,17 +14,17 @@
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const migration = @import("../migrations/migration.zig");
 const workspace_scope = @import("workspace_scope.zig");
 
-const sqlite = nalarcore.sqlite;
-const agent_memories = nalarcore.agent_memories;
+const sqlite = pabrikcore.sqlite;
+const agent_memories = pabrikcore.agent_memories;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const memory_mod = nalarcore.memory;
+const agent = pabrikcore.agent;
+const memory_mod = pabrikcore.memory;
 const wrapToolOutput = tools.wrapToolOutput;
 
 /// Probe an inner JSON payload for a top-level `"error"` key. The

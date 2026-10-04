@@ -424,7 +424,7 @@ Use vitest's fake timers + a controllable `EventSourceCtor` mock:
    (or just hit DevTools → Network → Offline). Within 1 s the badge
    shows "Reconnecting…". Bring network back → within 1 s badge
    disappears, new chunks arrive, message completes.
-3. `kill -9` the nalar process, wait 5 s, restart it. The chat list
+3. `kill -9` the pabrik process, wait 5 s, restart it. The chat list
    re-syncs on reconnect, no manual reload.
 4. Switch to another tab for 30 s, switch back — no reconnect storm,
    the timer was paused while hidden.
@@ -433,7 +433,7 @@ Use vitest's fake timers + a controllable `EventSourceCtor` mock:
 
 ---
 
-## 9. NALAR.md updates (post-merge)
+## 9. PABRIK.md updates (post-merge)
 
 Add an entry under **Bug Fixes** (the bug we *prevented* in §1.1)
 and one under **Lessons Learned**:
@@ -484,7 +484,7 @@ and one under **Lessons Learned**:
 3. Update call sites (§6) to use the new type and the new state
    channel.
 4. Add the badge (§7) if scope allows.
-5. Update `NALAR.md` (§9).
+5. Update `PABRIK.md` (§9).
 
 Steps 1-3 are the minimum viable change. Step 4 is a separate,
 follow-up.

@@ -1,6 +1,6 @@
 //! mcp-http-hello-world — a tiny test MCP server.
 //!
-//! Self-test target for nalar's MCP Streamable HTTP client. Sibling of
+//! Self-test target for pabrik's MCP Streamable HTTP client. Sibling of
 //! `mcp-hello-world` (the stdio fixture) — same 3 tools, different
 //! transport. Built from the same `@modelcontextprotocol/sdk` v1.30
 //!

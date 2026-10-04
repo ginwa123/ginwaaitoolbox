@@ -6,7 +6,7 @@
 
 **Architecture:** The orchestrator (`workflow_commpact_message.zig`) already owns `maybeCompactMessagesNew`, `compactMessageInMemoryNew`, `defaultCompactDeps`, and all the mock infrastructure for testing. The pure LLM-orchestration function `callCompactAgent` (builds a 2-message convo, instantiates `agent.Agent`, calls `callStreaming`) is its only remaining external collaborator and conceptually belongs with it. After this move, `compaction.zig` has no callers and can be deleted; `workflow_compact_message.zig` (the 2-m file I created last round) keeps the pure-data helpers and stays as a peer to the orchestrator.
 
-**Tech Stack:** Zig 0.16, nalarcore.agent / nalarcore.agent.prompt / nalarcore.loggermod / nalarcore.config.
+**Tech Stack:** Zig 0.16, pabrikcore.agent / pabrikcore.agent.prompt / pabrikcore.loggermod / pabrikcore.config.
 
 ## Global Constraints
 
@@ -42,7 +42,7 @@
   - `fn noopStreamCallbackNew(_: ?*anyopaque, _: agent.StreamChunk) void {}` (compaction.zig:127)
 - [ ] The `buildCompactMessagePrompt` call inside `callCompactAgent` already imports via `compact_message = @import("workflow_compact_message.zig")` (line 6) — keep the import name but rename the local constant to `buildCompactMessagePrompt = compact_message.buildCompactMessagePrompt;` so the function body doesn't need editing.
 - [ ] Delete lines 3-4 (`@import("compaction.zig")` lines). Add a top-of-file note: `// LLM-call orchestration moved here from the deleted compaction.zig (PR this file's task card).`
-- [ ] Move `agent.prompt` into the local const aliases at the top of the file — `callCompactAgent` references `prompt.CompactionAgent`. Add `const prompt = nalarcore.agent.prompt;` next to the existing `agent = nalarcore.agent` line.
+- [ ] Move `agent.prompt` into the local const aliases at the top of the file — `callCompactAgent` references `prompt.CompactionAgent`. Add `const prompt = pabrikcore.agent.prompt;` next to the existing `agent = pabrikcore.agent` line.
 
 **Verify:** `rg 'compaction\.zig' src/ai_workflow/tui/agentic_loop/workflow_commpact_message.zig` returns zero matches (the file should no longer mention the deleted path).
 
@@ -116,7 +116,7 @@
 
 ## Pitfalls
 
-- **`prompt` import missing.** `callCompactAgent` references `prompt.CompactionAgent` (Zig 0.16's agent prompt module). The orchestrator file does NOT currently import `prompt` — only `agent`. Task 1 adds `const prompt = nalarcore.agent.prompt;` to fix this.
+- **`prompt` import missing.** `callCompactAgent` references `prompt.CompactionAgent` (Zig 0.16's agent prompt module). The orchestrator file does NOT currently import `prompt` — only `agent`. Task 1 adds `const prompt = pabrikcore.agent.prompt;` to fix this.
 - **Doc comment reference in `workflow_compact_message.zig`.** That file's docstring still says "compaction.zig owns the agent.Agent lifecycle" (line 21). After this round's move, that statement is stale — Task 6 catches the stale reference and rewrites the docstring to point at `workflow_commpact_message.zig`.
 - **`workflow_compact_call_agent_test.zig` doc comments.** Lines 5 and 233 reference `compaction.zig` as the home of `callCompactAgent`. After this round, that's no longer true. Task 3 updates the references (low risk, but grep `rg 'compaction\.zig' src/ai_workflow/tui/agentic_loop/workflow_compact_call_agent_test.zig` should return zero after Task 3 — the test file uses `compaction.zig` only in past-tense commentary).
 - **`noopStreamCallbackNew` visibility.** It's `fn` (private) in the original `compaction.zig`. Keep it private in the new home too — it's only used by `callCompactAgent` inside the same file.

@@ -18,7 +18,7 @@
 //! session instead.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const config_mod = @import("../modules/config/Config.zig");
 
 /// Just enough of the user's config to reach the block.
@@ -40,10 +40,10 @@ const UserConfigHolder = struct {
 /// pre-existing one rather than a new breakage.
 pub fn resolve(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) ?config_mod.SkillEvalsConfig {
-    const di = nalarcore.getSingleton() catch return null;
+    const di = pabrikcore.getSingleton() catch return null;
     // File mode: the PUT swaps the singleton synchronously, so it already
     // tracks the user's settings. Reading the database here would add a
     // second source that can only ever disagree with it.
@@ -63,10 +63,10 @@ pub fn resolve(
 /// would leak into every other test in the binary.
 pub fn resolveForOwner(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     owner: []const u8,
 ) ?config_mod.SkillEvalsConfig {
-    const raw = nalarcore.user_config_store.loadRaw(allocator, db, owner) catch return null;
+    const raw = pabrikcore.user_config_store.loadRaw(allocator, db, owner) catch return null;
     // No saved config for this user means they never opened Settings, so the
     // singleton is still the better guess. An absent row is not a request to
     // switch the feature off.
@@ -84,7 +84,7 @@ pub fn resolveForOwner(
 
 fn sessionOwner(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) ![]u8 {
     var q = try db.query(
@@ -103,7 +103,7 @@ fn sessionOwner(
 // ─── tests ───────────────────────────────────────────────────────────────
 
 const testing = std.testing;
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const migration = @import("../migrations/migration.zig");
 
 const TestCtx = struct {

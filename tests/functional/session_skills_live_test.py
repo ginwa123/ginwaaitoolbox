@@ -42,14 +42,14 @@ SESSION_ID = "sess_skills_live_001"
 
 
 @pytest.fixture
-def skills_harness(default_nalar_bin: Path) -> Iterator[FunctionalHarness]:
-    """Fresh nalar booted with the stub LLM profile.
+def skills_harness(default_pabrik_bin: Path) -> Iterator[FunctionalHarness]:
+    """Fresh pabrik booted with the stub LLM profile.
 
     The stub points at a dead port so the LLM call fails fast, but the
     session row + worker turn still run: the queue-message insert emits
     llm_full (workflow.zig uses is_emit_sse=true) carrying session_skills.
     """
-    h = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    h = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         yield h
     finally:
@@ -109,7 +109,7 @@ def _drain_until(events_q: queue.Queue, predicate, timeout_s: float = 60.0):
 
 def _seed_session_skill(harness: FunctionalHarness) -> None:
     """Direct DB insert mirroring llm_history.saveSkill's SQL."""
-    db_path = harness.temp_dir / ".config" / "nalar" / "agent.db"
+    db_path = harness.temp_dir / ".config" / "pabrik" / "agent.db"
     assert db_path.exists(), f"agent.db missing at {db_path}"
     conn = sqlite3.connect(str(db_path))
     try:

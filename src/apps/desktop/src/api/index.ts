@@ -190,7 +190,7 @@ export interface KanbanColumn {
    * string when no description has been set. The Settings UI
    * renders an "Add a description..." placeholder for empty
    * values. Optional for backwards compat with legacy column
-   * literals in test files (see nalar-frontend-task-literal-typing-rule).
+   * literals in test files (see pabrik-frontend-task-literal-typing-rule).
    */
   description?: string | null
   position: number
@@ -390,7 +390,7 @@ export interface WorkspaceItem {
   // `item_type === 'kanban'`; omitted for folder/chat/memory items.
   // Optional so legacy workspace-item literals (5+ test files
   // construct WorkspaceItem without this field) keep type-checking —
-  // see the nalar-frontend-task-literal-typing-rule memory.
+  // see the pabrik-frontend-task-literal-typing-rule memory.
   kanban_columns?: KanbanColumn[]
 }
 
@@ -411,7 +411,7 @@ export interface Task {
   // NEW (pinned-tasks feature, plan: docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md).
   // Both optional so legacy task literals (8+ test files construct Task
   // without these fields) keep type-checking — see the
-  // nalar-frontend-task-literal-typing-rule memory.
+  // pabrik-frontend-task-literal-typing-rule memory.
   is_pinned?: boolean
   pinned_position?: number
   // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
@@ -884,7 +884,7 @@ export async function markTaskHumanTouched(
  *
  * The backend stores `task_type` on `workspace_item_tasks`.
  * For memories, the backend creates the .md file
- * at `<workspace_item.path>/.nalar/memories/<name>.md` AND inserts
+ * at `<workspace_item.path>/.pabrik/memories/<name>.md` AND inserts
  * the task row pointing at it.
  */
 export async function createTask(
@@ -2153,7 +2153,7 @@ export async function createWorkspaceItem(
 /**
  * Create a new design workspace item (`item_type='design'`). The
  * `path` is REQUIRED because design elements live as HTML files
- * under `<path>/.nalar/design/...` (the model layer rejects
+ * under `<path>/.pabrik/design/...` (the model layer rejects
  * element-add with `ItemPathMissing` if path is NULL — see
  * design_model.zig).
  *
@@ -2773,7 +2773,7 @@ export async function ungroupDesignElements(
  * Delete a design page. The backend (design_model.deletePage) handles
  * the SQL DELETE on design_pages (FK ON DELETE CASCADE cleans up the
  * child design_page_elements rows) and recursively rmdirs the
- * on-disk `<item_path>/.nalar/design/<sanitized_page_name>/` folder.
+ * on-disk `<item_path>/.pabrik/design/<sanitized_page_name>/` folder.
  *
  * UI-only — no LLM tool exposes this endpoint, only the DesignView
  * tab-strip × button. Returns 200 with `{success:true}`. 404 if the
@@ -3043,64 +3043,65 @@ export async function moveDesignElementToPage(
 }
 
 // Skills API
+//
+// A skill is a ROW scoped to one workspace, and that scope is its whole
+// identity: no `is_global`, no `cwd`, no `path`. A skill wanted in two
+// workspaces is two rows. So every route here carries the workspace id in
+// the URL — the same shape `documents` uses — and "list the skills" is
+// never answerable without one.
 export interface Skill {
   name: string
   description: string
-  path?: string
 }
 
-export interface SkillDetail extends Skill {
+export interface SkillDetail {
+  name: string
+  description: string
   content: string
-  is_global: boolean
+  /**
+   * Companion files stored beside the body (`scripts/…`, `references/…`).
+   * `use_skill` materialises them into a temp directory so the body's
+   * relative references resolve, so a bundled skill is more than its one
+   * row. Zero for a plain single-file skill.
+   */
+  asset_count: number
+}
+
+export interface SkillListResponse {
+  skills: Skill[]
 }
 
 export interface SkillDeleteResponse {
   success: boolean
   skill_name: string
-  deleted_from: string | null
-  error_message: string | null
+  /** `''` on success; the reason on a refusal. */
+  error_message: string
 }
 
-export async function getSkills(cwd?: string): Promise<{
-  global_skills: Skill[]
-  local_skills: Skill[]
-}> {
-  const params = new URLSearchParams()
-  if (cwd) {
-    params.set('cwd', cwd)
-  }
-  const query = params.toString() ? `?${params.toString()}` : ''
-  return await apiFetch<{ global_skills: Skill[]; local_skills: Skill[] }>(`/skills${query}`)
+/** GET /api/workspaces/:workspaceId/skills */
+export async function getSkills(workspaceId: string): Promise<SkillListResponse> {
+  return await apiFetch<SkillListResponse>(`/workspaces/${encodeURIComponent(workspaceId)}/skills`)
 }
 
+/** GET /api/workspaces/:workspaceId/skills/:skillName */
 export async function getSkillDetail(
-  name: string,
-  cwd?: string,
-): Promise<{ skill: SkillDetail | null; error_message: string | null }> {
-  const params = new URLSearchParams()
-  if (cwd) {
-    params.set('cwd', cwd)
-  }
-  const query = params.toString() ? `?${params.toString()}` : ''
-  return await apiFetch<{ skill: SkillDetail | null; error_message: string | null }>(
-    `/skills/${encodeURIComponent(name)}${query}`,
+  workspaceId: string,
+  skillName: string,
+): Promise<{ skill: SkillDetail | null; error_message: string }> {
+  return await apiFetch<{ skill: SkillDetail | null; error_message: string }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/skills/${encodeURIComponent(skillName)}`,
   )
 }
 
+/** DELETE /api/workspaces/:workspaceId/skills/:skillName */
 export async function deleteSkill(
-  name: string,
-  options: { is_global?: boolean; cwd?: string },
+  workspaceId: string,
+  skillName: string,
 ): Promise<SkillDeleteResponse> {
-  const params = new URLSearchParams({ name })
-  if (options.is_global !== undefined) {
-    params.set('is_global', options.is_global.toString())
-  }
-  if (options.cwd) {
-    params.set('cwd', options.cwd)
-  }
-  return await apiFetch<SkillDeleteResponse>(`/skills?${params}`, {
-    method: 'DELETE',
-  })
+  return await apiFetch<SkillDeleteResponse>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/skills/${encodeURIComponent(skillName)}`,
+    { method: 'DELETE' },
+  )
 }
 
 // Memories API
@@ -3166,7 +3167,7 @@ export async function deleteMemory(name: string): Promise<MemoryDeleteResponse> 
   })
 }
 
-// Local Memories API (per-cwd memories at `<cwd>/.nalar/memories/`).
+// Local Memories API (per-cwd memories at `<cwd>/.pabrik/memories/`).
 //
 // Distinct from the global memories above: local memories are scoped
 // to a specific project directory (the cwd) and are auto-injected
@@ -3174,7 +3175,7 @@ export async function deleteMemory(name: string): Promise<MemoryDeleteResponse> 
 // prompt (see `loadLocalKnowledge` in
 // `src/modules/agent/prompts.zig`). The `cwd` is passed in the body
 // (POST/PUT) or the query string (GET/DELETE) and is required for
-// the request to be useful. The backend falls back to the nalar
+// the request to be useful. The backend falls back to the pabrik
 // server's CWD when no cwd is provided.
 
 /**
@@ -4352,7 +4353,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
     onStateChange: (state, info) => {
       // Match the convention of the 5 old factories: terminal-failure
       // only. Transient errors are retried internally by the SseClient.
-      // See memory nalar-sse-incomplete-chunked-encoding.md for why
+      // See memory pabrik-sse-incomplete-chunked-encoding.md for why
       // ChatView's isStreaming flag flips ONLY on 'failed'.
       // Throw-isolation: a throwing onError must never break emitState's
       // per-subscriber loop (emitState already guards, but guard here too
@@ -4368,8 +4369,8 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   })
 }
 
-// Nalar Config API
-export interface NalarProfile {
+// Pabrik Config API
+export interface PabrikProfile {
   model?: string
   base_url?: string
   thinking?: string
@@ -4378,7 +4379,7 @@ export interface NalarProfile {
   api_key?: string
   /**
    * Per-profile sub-agents. Same shape as the top-level
-   * `NalarConfig.sub_agents` field — profiles can override the default
+   * `PabrikConfig.sub_agents` field — profiles can override the default
    * sub-agent set with their own.
    */
   sub_agents?: SubAgent[]
@@ -4486,9 +4487,9 @@ export interface McpServer {
  * `key` may come back MASKED rather than as the secret, so the value the
  * form holds is not necessarily the credential. Round-tripping it
  * unchanged is therefore required — replacing it with `""` would blank
- * the stored secret. See `components/nalar/webSearchProviders.ts`.
+ * the stored secret. See `components/pabrik/webSearchProviders.ts`.
  */
-export interface NalarWebSearchProvider {
+export interface PabrikWebSearchProvider {
   /** Host pin. The ONLY host whose requests may carry `key`. Must be
    *  `https` and must not name a loopback, private or link-local host. */
   url: string
@@ -4515,7 +4516,7 @@ export interface NalarWebSearchProvider {
  * fields are the budgets around it and are sent back unchanged so a save
  * from the toggle can never reset a value the user hand-edited.
  */
-export interface NalarSkillEvalsConfig {
+export interface PabrikSkillEvalsConfig {
   enabled?: boolean
   max_skills_per_run?: number
   max_evals_per_day?: number
@@ -4525,13 +4526,13 @@ export interface NalarSkillEvalsConfig {
   apply_mode?: string | null
 }
 
-export interface NalarConfig {
+export interface PabrikConfig {
   // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
   // defaults (api_endpoint/api_key/model/url_style/temperature/max_tokens/
   // system_prompt) were REMOVED from config.json. LLM access is configured
   // exclusively via `profiles`; the backend derives effective credentials
   // from the active profile at load time.
-  profiles?: Record<string, NalarProfile>
+  profiles?: Record<string, PabrikProfile>
   active_profile?: string
   /**
    * Map of MCP server name to its raw JSON config (snake_case).
@@ -4544,7 +4545,7 @@ export interface NalarConfig {
    * field is present: `command` ⇒ stdio, `url` ⇒ http.
    *
    * Note: this type is also re-exported and re-used by the
-   * `NalarSettings.vue` parser/serializer pair so the frontend
+   * `PabrikSettings.vue` parser/serializer pair so the frontend
    * round-trips config.json unchanged. If you add a field here, add
    * it to the `McpServer` interface above too (camelCase).
    */
@@ -4567,14 +4568,14 @@ export interface NalarConfig {
    * agent discovers them through `list_web_search_providers`.
    *
    * `null` / absent = the key is not in config.json. Sent verbatim to
-   * the backend on save; see `NalarWebSearchProvider` for the value
+   * the backend on save; see `PabrikWebSearchProvider` for the value
    * shape and the rules the backend enforces on it.
    */
-  web_search?: Record<string, NalarWebSearchProvider> | null
+  web_search?: Record<string, PabrikWebSearchProvider> | null
   /**
    * @deprecated Per-profile only (plan 2026-09-04-subagents-per-profile).
-   * The backend (`GET /api/config/nalar`) always returns `sub_agents: null`
-   * at the top level; each profile owns its list via `NalarProfile.sub_agents`.
+   * The backend (`GET /api/config/pabrik`) always returns `sub_agents: null`
+   * at the top level; each profile owns its list via `PabrikProfile.sub_agents`.
    * Kept as an optional field so legacy payloads still type-check — do NOT
    * read or write it in new code.
    */
@@ -4609,7 +4610,7 @@ export interface NalarConfig {
    * in the PUT persists the switch; omitting it leaves the on-disk value
    * untouched.
    */
-  skill_evals?: NalarSkillEvalsConfig
+  skill_evals?: PabrikSkillEvalsConfig
   /**
    * Compaction threshold in KB. Sessions whose DB-stored token
    * estimate exceeds this value trigger context compaction. Defaults
@@ -4648,20 +4649,20 @@ export interface NalarConfig {
    */
   web_launch_enabled?: boolean
   // Per-profile compaction overrides (`max_capacity_tokens` /
-  // `compaction_threshold_percent`) live on `NalarProfile` (Chunk
+  // `compaction_threshold_percent`) live on `PabrikProfile` (Chunk
   // 7.6) and remain there. Both layers coexist.
 }
 
-export async function getNalarConfig(): Promise<NalarConfig> {
+export async function getPabrikConfig(): Promise<PabrikConfig> {
   try {
-    return await apiFetch<NalarConfig>('/config/nalar')
+    return await apiFetch<PabrikConfig>('/config/pabrik')
   } catch {
     return {}
   }
 }
 
-export async function saveNalarConfig(config: NalarConfig): Promise<{ success: boolean }> {
-  return await apiFetch<{ success: boolean }>('/config/nalar', {
+export async function savePabrikConfig(config: PabrikConfig): Promise<{ success: boolean }> {
+  return await apiFetch<{ success: boolean }>('/config/pabrik', {
     method: 'PUT',
     body: config,
   })
@@ -4691,7 +4692,7 @@ export async function getWebStatus(): Promise<WebStatus | null> {
 }
 
 /**
- * Response shape from `DELETE /api/config/nalar/profiles/:name`.
+ * Response shape from `DELETE /api/config/pabrik/profiles/:name`.
  *
  * `active_profile_was_cleared` is `true` when the deleted profile was
  * the active one (the backend also cleared `active_profile` on disk).
@@ -4707,7 +4708,7 @@ export interface ProfileDeleteResponse {
 }
 
 /**
- * DELETE /api/config/nalar/profiles/:name
+ * DELETE /api/config/pabrik/profiles/:name
  *
  * Removes a profile from `config.json` and live-reloads the backend's
  * in-memory LLM config. Throws an Error (with the HTTP status) on
@@ -4716,7 +4717,7 @@ export interface ProfileDeleteResponse {
  */
 export async function deleteProfile(name: string): Promise<ProfileDeleteResponse> {
   return await apiFetch<ProfileDeleteResponse>(
-    `/config/nalar/profiles/${encodeURIComponent(name)}`,
+    `/config/pabrik/profiles/${encodeURIComponent(name)}`,
     { method: 'DELETE' },
   )
 }
@@ -4939,6 +4940,73 @@ export async function getPrStatus(
   })
   if (opts?.provider) params.set('provider', opts.provider)
   return await apiFetch<GitPrStatus>(`/git/pr/status?${params.toString()}`, { silent: true })
+}
+
+/**
+ * PR CI checks (GET /api/git/pr/checks via `gh pr checks`).
+ *
+ * `checks` is one row per CI job; `steps` is filled in for failed and
+ * cancelled jobs only — "which job failed" is already on the PR page,
+ * "which process or task failed" is what the user comes here for.
+ *
+ * `steps_error` is the contract that matters: when the backend tried to
+ * read a job's steps and could not, the reason lands here so the panel
+ * can say so. An empty `steps` with an empty `steps_error` is a real
+ * answer (an external check has no steps); an empty `steps` with a
+ * message is a gap.
+ */
+export interface GitPrCheckStep {
+  name: string
+  number: number
+  conclusion: string // success | failure | cancelled | skipped | neutral | timed_out | ''
+  status: string // queued | in_progress | completed
+  started_at: string
+  completed_at: string
+}
+
+export interface GitPrCheck {
+  name: string
+  workflow: string
+  bucket: string // pass | fail | pending | skipping | cancel
+  state: string
+  link: string
+  started_at: string
+  completed_at: string
+  steps: GitPrCheckStep[]
+  steps_error: string
+}
+
+export interface GitPrChecksSummary {
+  total: number
+  passed: number
+  failed: number
+  pending: number
+  skipped: number
+  cancelled: number
+}
+
+export interface GitPrChecks {
+  provider: string
+  pr_url: string
+  checks: GitPrCheck[]
+  summary: GitPrChecksSummary
+  /** Some failed jobs have no steps because the run-lookup budget ran out. */
+  steps_truncated: boolean
+}
+
+export async function getPrChecks(
+  cwd: string,
+  prUrl: string,
+  opts?: { provider?: string },
+): Promise<GitPrChecks> {
+  const params = new URLSearchParams({
+    path: cwd,
+    pr: prUrl,
+  })
+  if (opts?.provider) params.set('provider', opts.provider)
+  // `silent: true`: the Checks tab renders its own error inline, and a
+  // toast per poll would be noise on top of it.
+  return await apiFetch<GitPrChecks>(`/git/pr/checks?${params.toString()}`, { silent: true })
 }
 
 // Which-files-conflict API. `getPrStatus` tells us a PR is CONFLICTING but

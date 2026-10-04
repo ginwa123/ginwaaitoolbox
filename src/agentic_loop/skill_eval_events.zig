@@ -24,10 +24,10 @@
 //! Miss any one and the event silently vanishes.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const SseEvent = @import("sse.zig").SseEvent;
 
-const event_bus_mod = nalarcore.event_bus;
+const event_bus_mod = pabrikcore.event_bus;
 
 /// The central routing key. The frontend subscribes with the `skill_evals`
 /// channel token, which `parseChannels` maps to this key.

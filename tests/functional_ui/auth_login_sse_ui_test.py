@@ -16,7 +16,7 @@ isolated backend (booted with `--auth`) + Vite dev server:
      "Connection lost" badge is visible — WITHOUT any reload.
 
 Run:
-    NALAR_BIN=./zig-out/bin/nalar pytest tests/functional_ui/auth_login_sse_ui_test.py -v
+    PABRIK_BIN=./zig-out/bin/pabrik pytest tests/functional_ui/auth_login_sse_ui_test.py -v
 """
 
 from __future__ import annotations
@@ -33,12 +33,12 @@ EMAIL = "uitest@example.com"
 PASSWORD = "supersecret123"
 
 
-def _boot_auth_ui(default_nalar_bin: Path) -> UIHarness:
-    return UIHarness.boot(default_nalar_bin, extra_args=("--auth",))
+def _boot_auth_ui(default_pabrik_bin: Path) -> UIHarness:
+    return UIHarness.boot(default_pabrik_bin, extra_args=("--auth",))
 
 
 def _create_admin(bin_path: Path, home: Path) -> None:
-    """Run `nalar create-admin` against the harness's isolated HOME.
+    """Run `pabrik create-admin` against the harness's isolated HOME.
 
     Every variable the harness shadows for the SERVER has to be
     shadowed here too, or this subprocess lands somewhere else. On
@@ -72,11 +72,11 @@ def _create_admin(bin_path: Path, home: Path) -> None:
 
 
 def test_login_redirect_keeps_sse_connected(
-    default_nalar_bin: Path, browser, tmp_path_factory
+    default_pabrik_bin: Path, browser, tmp_path_factory
 ) -> None:
-    h = _boot_auth_ui(default_nalar_bin)
+    h = _boot_auth_ui(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir)
+        _create_admin(default_pabrik_bin, h.temp_dir)
 
         context = browser.new_context(viewport={"width": 1280, "height": 800})
         page = context.new_page()

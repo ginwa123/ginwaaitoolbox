@@ -5,7 +5,7 @@ The desktop materialises its embedded webapp into content-addressed
 `<base>/current -> <hash>`, so `ps` always shows one path no matter how
 many versioned dirs sit behind the link.
 
-Wire behaviour pinned here (real nalar, real --static-dir, isolated HOME):
+Wire behaviour pinned here (real pabrik, real --static-dir, isolated HOME):
 
   Test 1 — serving THROUGH the stable symlink works: boot with
            `--static-dir <base>/current`, `GET /` serves the app.
@@ -37,7 +37,7 @@ def _make_version(root: Path, body: str) -> Path:
     (root / "index.html").write_text(
         f"<!DOCTYPE html><html><body>{body}</body></html>", encoding="utf-8"
     )
-    (root / "assets" / "app.js").write_text("console.log('nalar');", encoding="utf-8")
+    (root / "assets" / "app.js").write_text("console.log('pabrik');", encoding="utf-8")
     return root
 
 
@@ -105,7 +105,7 @@ def _point_link(link: Path, target: Path) -> None:
 
 
 def test_stable_symlink_serves_the_app(
-    default_nalar_bin: Path, tmp_path: Path
+    default_pabrik_bin: Path, tmp_path: Path
 ) -> None:
     """Booting with `--static-dir <base>/current` serves the app."""
     base = tmp_path / "desktop-webapp"
@@ -120,7 +120,7 @@ def test_stable_symlink_serves_the_app(
     stable.symlink_to(v1.name)
 
     h = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
         extra_args=("--static-dir", str(stable)),
     )
@@ -134,7 +134,7 @@ def test_stable_symlink_serves_the_app(
 
 
 def test_flipping_the_stable_link_never_404s_the_running_daemon(
-    default_nalar_bin: Path, tmp_path: Path
+    default_pabrik_bin: Path, tmp_path: Path
 ) -> None:
     """An upgrade flip keeps the old daemon on its boot version (no 404
     window), while a fresh boot on the same stable string gets the new one.
@@ -152,7 +152,7 @@ def test_flipping_the_stable_link_never_404s_the_running_daemon(
     stable.symlink_to(v1.name)
 
     first = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
         extra_args=("--static-dir", str(stable)),
     )
@@ -168,7 +168,7 @@ def test_flipping_the_stable_link_never_404s_the_running_daemon(
 
         # A fresh boot on the SAME stable string picks up the new version.
         second = FunctionalHarness.boot(
-            default_nalar_bin,
+            default_pabrik_bin,
             stub_llm_profile=True,
             extra_args=("--static-dir", str(stable)),
         )

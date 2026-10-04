@@ -18,8 +18,8 @@
 //!   (Chunk 3, Task 3.2)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../agentic_loop/design_model.zig");
 
@@ -41,7 +41,7 @@ pub const DesignPagesListResult = []const u8; // pre-serialized JSON
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) DesignPagesListError!DesignPagesListResult {
     if (item_id.len == 0) return error.ItemIdRequired;
@@ -63,7 +63,7 @@ pub fn designPagesListHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const item_id = req.params.get("item_id") orelse "";

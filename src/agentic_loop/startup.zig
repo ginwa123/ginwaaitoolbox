@@ -24,7 +24,7 @@
 //! `ai_workflow.RunParamsNew` events).
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const Scheduler = @import("../ai_workflow/tui/routines/Scheduler.zig");
 
 /// Submit the routine scheduler as a concurrent task on the Io
@@ -32,8 +32,8 @@ const Scheduler = @import("../ai_workflow/tui/routines/Scheduler.zig");
 /// session-create tasks. No thread is spawned.
 pub fn start(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
-    di: *nalarcore.ContextIPCTui,
+    db: *pabrikcore.sqlite.SqliteBackend,
+    di: *pabrikcore.App,
     io: std.Io,
 ) !void {
     try di.group_emit_session_create.concurrent(
@@ -41,8 +41,8 @@ pub fn start(
         struct {
             fn run(
                 alloc: std.mem.Allocator,
-                database: *nalarcore.sqlite.SqliteBackend,
-                di_inner: *nalarcore.ContextIPCTui,
+                database: *pabrikcore.sqlite.SqliteBackend,
+                di_inner: *pabrikcore.App,
                 io_inner: std.Io,
             ) void {
                 Scheduler.start(alloc, database, di_inner, io_inner) catch |err| {

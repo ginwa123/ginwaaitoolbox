@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
-import SubAgentPeekPanel from '../components/nalar/SubAgentPeekPanel.vue'
+import SubAgentPeekPanel from '../components/pabrik/SubAgentPeekPanel.vue'
 import type { Message } from '../api'
 
 // Stub the embedded ChatView so we can assert the embed wiring

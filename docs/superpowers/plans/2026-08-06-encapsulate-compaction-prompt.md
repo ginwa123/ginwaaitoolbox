@@ -123,11 +123,11 @@ exports — keeps the convention consistent with the rest of the directory.
 | Step | Result |
 |---|---|
 | `zig build test --summary all` | 2168/2174 pass (was 2161/2167 = +8 = my tests), 0 failed |
-| `zig build install:linux:system` | compile succeeds (cp to `/usr/local/bin/nalar` fails for perms — unrelated) |
-| Fresh rebuild (`rm -rf zig-out/bin && zig build`) | both `nalarcore-linux-x86_64` + `nalar-desktop` produced |
-| Cross-compile `zig build-obj -target x86_64-windows-gnu` | pre-existing harness limitation (recursive `nalarcore` import) — affects pre-existing `callCompactAgent` identically, NOT a regression |
+| `zig build install:linux:system` | compile succeeds (cp to `/usr/local/bin/pabrik` fails for perms — unrelated) |
+| Fresh rebuild (`rm -rf zig-out/bin && zig build`) | both `pabrikcore-linux-x86_64` + `pabrik-desktop` produced |
+| Cross-compile `zig build-obj -target x86_64-windows-gnu` | pre-existing harness limitation (recursive `pabrikcore` import) — affects pre-existing `callCompactAgent` identically, NOT a regression |
 | Cross-compile `zig build-obj -target aarch64-macos` | same pre-existing limitation |
-| Linux binary smoke test (`./zig-out/bin/nalarcore-linux-x86_64`) | not run — no behaviour change, no LLM dependency touched |
+| Linux binary smoke test (`./zig-out/bin/pabrikcore-linux-x86_64`) | not run — no behaviour change, no LLM dependency touched |
 
 ## Out of scope
 

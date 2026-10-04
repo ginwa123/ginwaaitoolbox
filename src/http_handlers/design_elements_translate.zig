@@ -45,9 +45,9 @@
 //!   (Task 1.1: split /geometry into /translate + /resize)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const sqlite = pabrikcore.sqlite;
 const design_model = @import("../agentic_loop/design_model.zig");
 
 /// HTTP request body. Both `dx` and `dy` are required.
@@ -149,7 +149,7 @@ pub fn designElementsTranslateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const element_id = req.params.get("element_id") orelse "";

@@ -1,4 +1,4 @@
-# Nalar — Project Specification
+# Pabrik — Project Specification
 
 > **Compiled**: 2026-08-06 (re-consolidated from the 17 plans + 1 SSE plan that accumulated since the 2026-07-26 cut)
 > **Source**: Originally compiled from 178 plan files in `docs/superpowers/plans/` + `docs/plans/` on 2026-07-26; the second consolidation on 2026-08-06 adds all plans from `docs/superpowers/plans/2026-07-28-*` through `docs/superpowers/plans/2026-08-06-*` plus `docs/sse-reconnect-plan.md`. The plan folders were deleted on 2026-07-26 and again on 2026-08-06 after each consolidation; see `§10.2` for the historical inventory.
@@ -8,11 +8,11 @@
 
 ## 1. Project Overview
 
-**Nalar** is an AI agent workspace tool built around three pillars:
+**Pabrik** is an AI agent workspace tool built around three pillars:
 
 1. **Backend** — A Zig 0.16 agent runtime that orchestrates LLM calls, runs tools in a managed file-descriptor and process environment, and persists state to SQLite.
 2. **Frontend** — A Vue 3 + TypeScript + Pinia single-page app that presents the workspace to the user (chat, kanban, design canvas, file tree, settings).
-3. **Desktop Shell** — A native webview wrapper (`nalar-desktop`) that embeds the webapp and runs the backend in a managed service.
+3. **Desktop Shell** — A native webview wrapper (`pabrik-desktop`) that embeds the webapp and runs the backend in a managed service.
 
 ### 1.1 Tech Stack (Current)
 
@@ -21,12 +21,12 @@
 | Backend language | **Zig 0.16** | Vendored sqlite3 amalgamation; vendored libcurl on non-Linux; `linkSystemLibrary` on Linux |
 | Backend HTTP | **Custom HTTP server** | `src/modules/custom_http_server/` — per-request arena allocator, `Io.Threaded` runtime |
 | HTTP client | **Custom libcurl wrapper** | `src/modules/custom_http_client/` — replaces `std.http`; cross-platform |
-| Database | **SQLite** (via `nalarcore.sqlite`) | Migrated from scratch (54 migrations); transaction support added |
+| Database | **SQLite** (via `pabrikcore.sqlite`) | Migrated from scratch (54 migrations); transaction support added |
 | LLM providers | Anthropic, OpenAI-style, custom base URLs | `LlmConfig` with per-profile `base_url`/`model`/`api_key` |
 | Frontend | **Vue 3 + TypeScript + Pinia** | Composition API, `<script setup lang="ts" generic>`, Vitest |
 | Frontend build | **Vite + Bun** | `bunx vitest run` + `bun run build` (vue-tsc + vite) |
 | Desktop wrapper | **Native webview** | WebKitGTK 4.1 (Linux) / WKWebView (macOS) / WebView2 (Windows) — three C/C++/ObjC++ shims under `src/apps/desktop_app/platform/` |
-| CLI wrapper | **`nalarcli` (Zig, libcurl-backed)** | Wraps the REST API from the terminal — `send` / `sessions` / `messages` / `events` (SSE tail). Re-uses `custom_http_client_mod` for the HTTP transport. Lives at `src/apps/cli/` with build wiring in the parent `build.zig` (`cli_app_mod` + `cli_exe` + `test:cli` + `install:cli`). |
+| CLI wrapper | **`pabrikcli` (Zig, libcurl-backed)** | Wraps the REST API from the terminal — `send` / `sessions` / `messages` / `events` (SSE tail). Re-uses `custom_http_client_mod` for the HTTP transport. Lives at `src/apps/cli/` with build wiring in the parent `build.zig` (`cli_app_mod` + `cli_exe` + `test:cli` + `install:cli`). |
 | SSE | **`/api/events?channels=...`** | Single global stream (PR #51), per-channel routing keys |
 | Tests | **Zig** (`zig build test`) + **Vitest** + **pytest** (functional, isolated-`$HOME`) | Three-layer test pyramid |
 
@@ -47,12 +47,12 @@ src/
 │   ├── custom_http_client/        # libcurl wrapper (replaces std.http)
 │   ├── custom_http_server/        # Per-request arena HTTP server
 │   ├── databases/sqlite/          # SqliteBackend + Transactions
-│   ├── daemon/                    # Cross-platform nalar service (POSIX + Win32)
+│   ├── daemon/                    # Cross-platform pabrik service (POSIX + Win32)
 │   ├── event_bus/                 # pub/sub for SSE fan-out
 │   ├── gilvec_db/                 # Semantic-search vector store
 │   ├── http/                      # Bash-tool HTTP client (separate from custom_http_client)
 │   ├── logger/                    # Stdout/stderr/dedup logger
-│   ├── nalar_browser/             # HTTP handlers + scripts for the browser tool
+│   ├── pabrik_browser/             # HTTP handlers + scripts for the browser tool
 │   └── signal_handlers/           # SIGTERM/SIGINT equivalents
 ├── apps/
 │   ├── desktop/                   # Vue 3 + TS webapp (the UI)
@@ -63,7 +63,7 @@ src/
 │   │       ├── api/               # apiFetch wrapper + REST endpoints
 │   │       ├── helpers/           # unwrapToolOutput, sseBus, scrollLogger, …
 │   │       └── __tests__/
-│   └── desktop_app/               # Native webview wrapper (nalar-desktop)
+│   └── desktop_app/               # Native webview wrapper (pabrik-desktop)
 │       ├── main.zig
 │       ├── embedded/              # Codegen outputs (Vue build artifacts)
 │       ├── shared/
@@ -75,7 +75,7 @@ src/
 
 ### 1.3 Operating Conventions
 
-- **Build**: `zig build` (full) · `zig build test` · `zig build install:linux:system` · `zig build nalar-desktop`
+- **Build**: `zig build` (full) · `zig build test` · `zig build install:linux:system` · `zig build pabrik-desktop`
 - **Ports**: dev server always on **8081** (DO NOT kill), local smoke on **8080**
 - **Cross-platform**: every feature must compile on Linux + macOS + Windows; `zig build-obj -fno-emit-bin -target X` is the cross-compile smoke test
 - **Migrations**: sequential `NNN_xxx.zig`; use `addColumnIfMissing` / `dropColumnIfExists` for idempotency
@@ -86,7 +86,7 @@ src/
 
 ## 2. Plan Status Summary
 
-The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, see `§10.2`) were each opened, the first 30–50 lines summarized, and the claim cross-checked against `git log --all`, source-tree searches, and the `NALAR.md` changelog (which records "what landed" entries). Classification after the 2026-08-06 second-round consolidation:
+The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, see `§10.2`) were each opened, the first 30–50 lines summarized, and the claim cross-checked against `git log --all`, source-tree searches, and the `PABRIK.md` changelog (which records "what landed" entries). Classification after the 2026-08-06 second-round consolidation:
 
 | Status | Count | Meaning |
 |---|---|---|
@@ -123,14 +123,14 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 |---|---|---|
 | `2026-01-15-llm-completion-notification.md` | ✅ | OS notification on `finish_reason=stop` (notify-send / osascript / PowerShell) |
 | `2026-03-17-add-is-input-is-output-columns.md` | ✅ | `is_input`/`is_output` INTEGER columns (Migration 016) |
-| `2026-06-11-nalar-config-url-style.md` | ✅ | `url_style` per LLM profile + `notify_on_complete` flag |
+| `2026-06-11-pabrik-config-url-style.md` | ✅ | `url_style` per LLM profile + `notify_on_complete` flag |
 | `2026-06-11-sub-agents-config-field.md` | ✅ | `SubAgentConfig` type + `sub_agents: SubAgentsList` |
 | `2026-06-19-fix-sse-incomplete-chunked-encoding.md` | ✅ | Chunked encoding + `Transfer-Encoding: chunked` (#21) |
 | `2026-06-30-fix-sse-blocking-api.md` | ✅ | `SseManager.sendDeferred` + locked reads (#52) |
 | `2026-06-30-fix-sse-fd-leak.md` | ✅ | POLL.NVAL sub + TOCTOU race fix (#52) |
 | `2026-06-30-single-sse-all-sessions.md` | ✅ | Single global EventSource + central broadcast (#51) |
 | `2026-06-30-unify-sse-endpoints.md` | ✅ | 5 routes → `/api/events?channels=…` (#48) |
-| `2026-07-03-decoupled-nalar-service.md` | ✅ | `nalar service {start,stop,status,restart}` + `daemon.zig` (#72) |
+| `2026-07-03-decoupled-pabrik-service.md` | ✅ | `pabrik service {start,stop,status,restart}` + `daemon.zig` (#72) |
 | `2026-07-16-search-add-rg-flags.md` | ✅ | `word_boundary`/`literal`/`only_matching` (#104) |
 | `2026-07-16-history-fts.md` | ✅ | FTS5 history search replaces `read_compacted_messages` |
 | `2026-07-16-session-auto-retry-until-stop.md` | ✅ | "Unattended mode" — keep retrying (#103) |
@@ -170,8 +170,8 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 
 | Plan | Status | Key file / PR |
 |---|---|---|
-| `2026-06-12-web-fetching-service-to-nalar-browser.md` | ✅ | `web_fetching_service` → `nalar_browser`; `cloak_browser` → `nalar_browser` |
-| `2026-06-17-nalar-browser-tool-output-component.md` | ✅ | `components/tool_outputs/NalarBrowser.vue` |
+| `2026-06-12-web-fetching-service-to-pabrik-browser.md` | ✅ | `web_fetching_service` → `pabrik_browser`; `cloak_browser` → `pabrik_browser` |
+| `2026-06-17-pabrik-browser-tool-output-component.md` | ✅ | `components/tool_outputs/PabrikBrowser.vue` |
 | `2026-04-08-multifolder-session-dir.md` | 🟡 | Only single `session_dir` filter shipped; array `session_dirs: ?[][]const u8` not added |
 | `2026-04-08-multifolder-session-dir-design.md` | ✅ | Multi-folder design (backend partial) |
 | `2026-07-08-glob-edge-cases.md` | ✅ | 22+ edge-case hardenings for `glob.zig` (#85) |
@@ -217,7 +217,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-06-19-stop-notification.md` | ⏳ | Backend OS-notification hook fired; frontend toast UI not built |
 | `2026-06-19-stop-notification-design.md` | 🟡 | Backend Done; frontend in-flight |
 | `2026-06-19-workspace-siblings-in-prompt.md` | ✅ | Workspace Context (siblings list) injected into prompt |
-| `2026-06-10-local-cwd-memories-in-prompt.md` | ✅ | Auto-inject `<cwd>/.nalar/memories/*.md` into system prompt |
+| `2026-06-10-local-cwd-memories-in-prompt.md` | ✅ | Auto-inject `<cwd>/.pabrik/memories/*.md` into system prompt |
 | `2026-06-04-chat-lazy-load-button.md` | ❌ | Rolled into `chat-load-more-before-edge` |
 | `2026-06-04-full-type-only-bubbles.md` | 🟡 | `streamingContent` refactor split; `streaming-` ID-prefix removal not fully done |
 | `2026-06-10-scroll-ratcheting-fix.md` | ✅ | Fix scroll position oscillation |
@@ -265,7 +265,7 @@ Chat skills badge: live source = SSE `llm_full.session_skills`; initial load = R
 | `2026-08-06-kanban-per-column-pagination.md` | ✅ | Per-column pagination: backend `?column_id=` filter; frontend `WorkspaceItem.columnPagination: Record<col, {cursor, hasMore, isLoading}>`; new `loadMoreTasksForColumn(ws, item, columnId)` action; each kanban column paginates independently. See §3.7.9 below. |
 | `2026-08-06-kanban-task-git-branch.md` | ✅ | Each kanban task card displays a GitHub-style fork/branch icon + branch name in the meta row. Backend computes `git -C <cwd> symbolic-ref --short HEAD` on-demand per request (cwd = `session.git_worktree_cwd` or `workspace_item.path`); frontend reads `task.git_branch` and renders the badge. No DB column, no migration. See §3.7.10 below. |
 | `2026-08-13-kanban-task-session-name-match.md` | ✅ | Kanban task name and the linked session name are bound to the same trimmed title at create time. Sidebar (ChatsList), chat header (`ChatView.chatName`), and kanban card (`task.name`) all show the same string the user typed — no manual rename, no LLM auto-rename required. Two create paths patched: the LLM-callable `create_kanban_task` agent tool (`src/modules/agent/tools/create_kanban_task.zig`) and the HTTP `POST /api/workspaces/:ws/items/:item/tasks` handler (`src/ai_workflow/tui/http_handlers/task_create.zig::createStandardTask`). `task.id == session.id` convention (Migration 052) still holds for the id column; only the name column changes. Behavioural tests pin the contract. |
-| `2026-08-14-folder-picker-recent-history.md` | ✅ | `FilePickerDialog` (used by every "pick a folder" modal: Add Project / Kanban / Memory / Design, Per-Task cwd, Create Worktree parent dir, "Set project root" banner) opens on a new **Recent** tab showing the user's previously picked folders, with a **Browse** tab one click away for the existing tree UX. Recent rows show folder icon, basename, full path, and a relative-time chip (reuses `formatRelativeTime`: `now` / `2h` / `1d` / `3d` / `1w` / `6mo` / `2y`). A star button on each row toggles pin — pinned items sort to the top and are exempt from the 12-entry auto-eviction cap. New `useRecentFoldersStore` Pinia store at `src/apps/desktop/src/stores/recentFolders.ts` with localStorage persistence (`nalar-folder-picker-recent:v1`, 200 ms debounced writes, defensive corruption handling, quota-error swallow). Default-on; opt-out via `enableRecentHistory: false` (no caller needs this today). Toolbar (search + hidden + refresh) is hidden under Recent — it only applies to Browse. Dialog `max-height` bumped from `80vh` to `min(80vh, 720px)` so the new tabstrip + Recent list fits on a 720p display without inner-scroll. 12 store tests + 10 dialog tests in `FilePickerDialog.spec.ts`. Branch: `worktree/folder-picker-recent-history`. |
+| `2026-08-14-folder-picker-recent-history.md` | ✅ | `FilePickerDialog` (used by every "pick a folder" modal: Add Project / Kanban / Memory / Design, Per-Task cwd, Create Worktree parent dir, "Set project root" banner) opens on a new **Recent** tab showing the user's previously picked folders, with a **Browse** tab one click away for the existing tree UX. Recent rows show folder icon, basename, full path, and a relative-time chip (reuses `formatRelativeTime`: `now` / `2h` / `1d` / `3d` / `1w` / `6mo` / `2y`). A star button on each row toggles pin — pinned items sort to the top and are exempt from the 12-entry auto-eviction cap. New `useRecentFoldersStore` Pinia store at `src/apps/desktop/src/stores/recentFolders.ts` with localStorage persistence (`pabrik-folder-picker-recent:v1`, 200 ms debounced writes, defensive corruption handling, quota-error swallow). Default-on; opt-out via `enableRecentHistory: false` (no caller needs this today). Toolbar (search + hidden + refresh) is hidden under Recent — it only applies to Browse. Dialog `max-height` bumped from `80vh` to `min(80vh, 720px)` so the new tabstrip + Recent list fits on a 720p display without inner-scroll. 12 store tests + 10 dialog tests in `FilePickerDialog.spec.ts`. Branch: `worktree/folder-picker-recent-history`. |
 | `2026-08-18-kanban-task-detail-start-agent.md` | ✅ | New `▶ Start agent` button in the kanban task-detail dialog (edit mode only) — sibling of the create-mode `▶ Create task & run agent` button. Kicks off an LLM worker on the task's existing session WITHOUT queueing a new user message; the agent runs on the chat history already in the session. Disabled while `processingState[task.id]` is true (the App.vue map updated by the SSE `worker` channel + initial `GET /api/workers` re-sync). New dedicated backend endpoint `POST /api/workspaces/:ws/items/:i/tasks/:task_id/start_agent` (404 if task missing, 409 if worker running, 200 `{ success, session_id, status: 'triggered' }` on success) — NOT a wrapper around `/api/llm/session` (which always queues a message). Backend threads a new `skip_initial_queue_message: bool = false` flag through `EmitRunAgentInput` → `emit_run_agent.concurrent` task → `RunParamsNew` → `runAgenticMultiStepnew`; the workflow's initial `insertQueueMessage` call is wrapped in `if (!params.skip_initial_queue_message)`. Frontend: `api.startAgentOnTask` helper + `workspacesStore.startAgentOnTask` action + dialog `inject('processingState')` + `isWorkerRunning` computed + `▶ Start agent` menu item in the commit split button (caret menu; the left half is Save) + `start-agent` emit + KanbanView handler with `startAgentError` ref + `startAgentBusy` 1-shot guard. For tasks with no chat history, the LLM responds based on its system prompt alone (typically a clarification). Branch: `worktree/kanban-task-detail-start-agent`. |
 | `2026-08-19-kanban-create-task-inits-session.md` | ✅ | Plain **Create task** button in the kanban New Task dialog now also inserts a `sessions` row + `session_created` SSE (new mode `'create_session'` on the existing `POST /api/workspaces/:wid/items/:iid/kanban/tasks` endpoint) but does NOT call `emit_run_agent`. Clicking the card lands on an existing empty session; the chatview's profile picker reflects the dialog's choice immediately (selected_profile_model is now persisted on the sessions row). Two-button story: **Create task** = prep everything, you open the chat yourself; **Create task & run agent** = prep everything + start the agent. Backward compat: legacy `mode='create'` on the API surface keeps the OLD behaviour (no session insert) for any external consumer. New `KanbanCreateSessionOnlyPayload` interface + `KanbanCreateMode` union widened to `'create' \| 'create_session' \| 'create_and_run'`. `workspacesStore.addKanbanTask` dispatches the new mode. 5 new static-contract tests in `kanban_tasks_create_test.zig` lock in the wire contract. Branch: `worktree/kanban-create-task-inits-session`. See §3.7.5.1 below. |
 | `2026-08-19-session-plan-agent-tool.md` | ✅ | `update_plan` + `get_plan` agent tools + `session_plan` table (1:1 with sessions). Plan re-injected on every iteration + survives compaction. See §3.7.5.2 below. |
@@ -426,7 +426,7 @@ Backward compat: zero — new table, new tools, new optional UI. No existing cal
 
 #### 3.7.6 New Task dialog — profile-model picker (2026-08-06)
 
-The New Task dialog (create mode) gains a profile-model picker. Loads profiles via `api.getNalarConfig()`; mirrors `ChatView.vue`'s picker pattern. Selected profile is threaded through `POST /api/llm/session` and persisted on the new session via `sessions.selected_profile_model` (per PR #158 — chatview profile persists across page refresh).
+The New Task dialog (create mode) gains a profile-model picker. Loads profiles via `api.getPabrikConfig()`; mirrors `ChatView.vue`'s picker pattern. Selected profile is threaded through `POST /api/llm/session` and persisted on the new session via `sessions.selected_profile_model` (per PR #158 — chatview profile persists across page refresh).
 
 **Layout.** Same row as the Unattended-mode toggle (compact 2-column, Q2 = 2a). Picker on the left, toggle on the right.
 
@@ -498,7 +498,7 @@ modal dialog any more.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│ [⬛ Nalar] [▦ AGENTIC_KANBAN] [▦ fix-husky-vue-build ✕]   ← strip │
+│ [⬛ Pabrik] [▦ AGENTIC_KANBAN] [▦ fix-husky-vue-build ✕]   ← strip │
 ├────────────────────────────────────────────────────────────────┤
 │ fix-husky-vue-build                                        [✕] │
 ├────────────────────────────────────────────────────────────────┤
@@ -698,13 +698,13 @@ The per-board agent config (Knowledge / System Prompt / Tools checkboxes, fed by
 | `2026-08-06-move-element-with-descendants.md` | ✅ | **Server-side cascade move.** New `POST .../elements/move-batch` accepts `{ items: [{ element_id, dx, dy, width?, height?, rotation? }] }`. Each item's `(dx, dy)` applies to the root + every transitive descendant via a single recursive CTE inside one SQL transaction. `width`/`height`/`rotation` apply ONLY to the root (Figma convention — resize is per-element, not per-subtree). One SSE event per request carrying every affected `element_id`. The frontend's drag path shrinks from N x/y pairs (with client-side `expandSelectionWithDescendants` walk) to N (dx, dy) pairs (typically one — the dragged root). New LLM tool `move_design_element` with `apply_to_children` default `true` matches the user mental model. |
 | `2026-08-06-design-pages-in-workspace-tree.md` | ✅ | **Move pages list into the workspace sidebar tree** (SUPERSEDES #167 — left-sidebar-inside-DesignView was the wrong abstraction; the user wanted pages in the navigation tree itself). User reported (after #167 landed): *"i mean pages move inside workpace item, 'design' like config agentic ai"*. `WorkspaceItem.vue` now renders `<DesignPageRow>` per `design_pages` row + `+ Add Page` button under expanded design items, indented the same way `WorkspaceItemTaskRow` renders under kanban items. The chevron (▶) click toggles expand WITHOUT activating the item; row body click still activates. Workspaces store: new `designPagesByItemId: Record<itemId, DesignPage[]>` cache (single source of truth shared with `DesignView`) + `fetchDesignPages` (in-flight-guarded concurrent-fetch dedupe) + `addDesignPage` actions; `deleteDesignPage` now picks a sensible next-active page when the deleted page was the active one. `DesignPageTabs.vue` + spec **deleted** (no longer used). 2 commits: revert `63c287f8` of PR #167 + this implementation. +11 net new behavioural tests (6 new `DesignPageRow.spec.ts` + 5 new `workspacesStoreDesignPages.spec.ts` migrated from `DesignView.spec.ts`). Branch: `worktree/design-pages-in-tree` (commit `219b1832`). |
 | `2026-08-06-design-pages-left-sidebar.md` | ⚠️ superseded | **Move pages list from top tabs to left sidebar** (SUPERSEDED by `2026-08-06-design-pages-in-workspace-tree.md`). User asked to move the design-mode page list (AI Chat View, Kanban Mode, etc.) from a horizontal tab strip at the TOP of DesignView to a vertical list on the LEFT edge (Figma/Sketch convention). The resulting UX (pages in a left sidebar INSIDE DesignView) was the wrong abstraction — the user wanted pages in the WORKSPACE SIDEBAR TREE instead. PR reverted in commit `63c287f8`. Listed here for historical traceback. |
-### 3.9 Frontend — Settings / Profiles / Nalar
+### 3.9 Frontend — Settings / Profiles / Pabrik
 
 | Plan | Status | Key file / PR |
 |---|---|---|
-| `2026-06-05-delete-profile.md` | ✅ | `DELETE /api/config/nalar/profiles/:name` + `useProfileDelete` |
-| `2026-06-17-nalar-settings-revamp.md` | ✅ | 4-sub-tab Nalar settings IA |
-| `2026-06-17-nalar-settings-revamp-design.md` | ✅ | Companion design |
+| `2026-06-05-delete-profile.md` | ✅ | `DELETE /api/config/pabrik/profiles/:name` + `useProfileDelete` |
+| `2026-06-17-pabrik-settings-revamp.md` | ✅ | 4-sub-tab Pabrik settings IA |
+| `2026-06-17-pabrik-settings-revamp-design.md` | ✅ | Companion design |
 | `2026-06-17-add-memories-settings-menu.md` | ✅ | Memories tab in Settings (CRUD) |
 | `2026-07-02-auto-init-config.md` | ✅ | `writeDefaultConfig` + relaxed `validate()` |
 | `2026-07-06-configurable-compaction.md` | ❌ | Per-profile Compaction tab — replaced by inline |
@@ -740,10 +740,10 @@ The per-board agent config (Knowledge / System Prompt / Tools checkboxes, fed by
 
 | Plan | Status | Key file / PR |
 |---|---|---|
-| `2026-06-10-nalar-desktop-app.md` | ✅ | `nalar-desktop` webview wrapper — Linux/macOS/Windows |
+| `2026-06-10-pabrik-desktop-app.md` | ✅ | `pabrik-desktop` webview wrapper — Linux/macOS/Windows |
 | `2026-06-10-desktop-webview-app-design.md` | ✅ | Companion design |
-| `2026-06-10-nalar-static-dir.md` | ✅ | `--static-dir` flag + SPA fallback |
-| `2026-07-04-nalar-desktop-ci-cd.md` | ✅ | 2-cell self-hosted CI matrix (#58) |
+| `2026-06-10-pabrik-static-dir.md` | ✅ | `--static-dir` flag + SPA fallback |
+| `2026-07-04-pabrik-desktop-ci-cd.md` | ✅ | 2-cell self-hosted CI matrix (#58) |
 | `2026-06-28-multi-platform-ci-cd-pipeline.md` | ✅ | GitHub Actions matrix for Linux/Windows/macOS |
 
 ### 3.13 Testing / Tooling
@@ -778,7 +778,7 @@ The per-board agent config (Knowledge / System Prompt / Tools checkboxes, fed by
 | `2025-01-21-folder-picker-design.md` | ✅ | `FolderExplorer.vue` (commit `d9ce15aa`) |
 | `2025-01-21-folder-picker.md` | ❌ | SolidJS + Electrobun version — replaced by Vue 3 |
 | `2025-03-30-chatbox-design.md` | ✅ | Chat input bar; design-only doc |
-| `2025-03-27-desktop-process-discovery-design.md` | 🗑️ | Old `desktop-bun` referencing `127.0.0.1:8080` — replaced by nalar-desktop service |
+| `2025-03-27-desktop-process-discovery-design.md` | 🗑️ | Old `desktop-bun` referencing `127.0.0.1:8080` — replaced by pabrik-desktop service |
 
 ---
 
@@ -858,7 +858,7 @@ The per-board agent config (Knowledge / System Prompt / Tools checkboxes, fed by
 | `2026-06-05-chatview-loading-overlay.md` | `LoadingOverlay.vue` reusable component never built |
 | `2026-06-12-virtual-scroller-tall-item-scroll-jump.md` | Per-item estimated-height callback never built |
 
-> **Note**: When the project's stack changed (Bun → Vue 3, SolidJS → Vue 3, nalar-desktop replacing WebView/WinUI), many plans became not-relevant even though their underlying feature survived under a different tool stack. The 2025 plans in `§7` are kept for historical context but should not be used as current implementation guidance.
+> **Note**: When the project's stack changed (Bun → Vue 3, SolidJS → Vue 3, pabrik-desktop replacing WebView/WinUI), many plans became not-relevant even though their underlying feature survived under a different tool stack. The 2025 plans in `§7` are kept for historical context but should not be used as current implementation guidance.
 
 ---
 
@@ -892,10 +892,10 @@ For each plan file in the 178-file input set:
 2. **Search** `git log --all --grep` for matching commit messages (e.g. `fix(VirtualScroller): remove hardcoded +200 overscan`).
 3. **Search** `git log --all -- <file>` for the affected source file paths.
 4. **Grep** the current source tree for symbols, route paths, component names, and CLI flags mentioned in the plan.
-5. **Cross-reference** `NALAR.md` changelog entries (which record "what landed" with a one-line summary).
+5. **Cross-reference** `PABRIK.md` changelog entries (which record "what landed" with a one-line summary).
 6. **Classify** by the section in `§2` above.
 
-> **Verification gap**: a few "✅ Implemented" results may have been partially overwritten by a later refactor. The git log traces the original ship; the current state may differ — re-check components before assuming the original implementation is still fully present. This is the project-wide discipline called out in `nalar-data-and-routines.md` (verify migrations, not just commit messages).
+> **Verification gap**: a few "✅ Implemented" results may have been partially overwritten by a later refactor. The git log traces the original ship; the current state may differ — re-check components before assuming the original implementation is still fully present. This is the project-wide discipline called out in `pabrik-data-and-routines.md` (verify migrations, not just commit messages).
 
 ---
 
@@ -906,7 +906,7 @@ For each plan file in the 178-file input set:
 ```
 #3   config: add sub_agents array to LlmConfig and LlmProfile
 #8   Add Task Routines — backend
-#9   Rename web_fetching_service → nalar_browser
+#9   Rename web_fetching_service → pabrik_browser
 #21  fix(sse): chunked encoding + Transfer-Encoding: chunked
 #43  feat(kanban): SSE auto-move on kanban_task.*
 #46  feat(kanban): kanban_move_task emits onEventSendKanbanTask
@@ -919,9 +919,9 @@ For each plan file in the 178-file input set:
 #156 feat(agent): show_preview 'html' content_type (sandboxed iframe)
 #TBD feat(preview): user-controlled sidebar/inline display-mode toggle (extracted PreviewContentRenderer + usePreviewDisplayMode composable)
 #57  feat(frontend): task variant: 'row' | 'card'
-#58  ci: 2-cell nalar-desktop-build matrix
+#58  ci: 2-cell pabrik-desktop-build matrix
 #60  refactor: is_input/is_output JSON boolean (#60)
-#72  feat(svc): nalar service {start,stop,status,restart}
+#72  feat(svc): pabrik service {start,stop,status,restart}
 #75  feat(ui): drag-resizable PreviewSidePanel
 #83  feat(search): edge-case hardenings
 #85  feat(glob): edge-case hardenings
@@ -1022,16 +1022,16 @@ The 107 implementation plans once held here have been consolidated into this SPE
 2026-06-08-sse-client-ids-use-after-free       ✅ lock + owned copy
 2026-06-09-remove-get-skill-name-parameter     ✅ landed
 2026-06-09-spawn-sub-agent-inherited-context   ✅ landed
-2026-06-10-nalar-desktop-app                   ✅ landed
-2026-06-10-nalar-static-dir                    ✅ landed
+2026-06-10-pabrik-desktop-app                   ✅ landed
+2026-06-10-pabrik-static-dir                    ✅ landed
 2026-06-10-virtual-scroller-buffer-fix         ✅ landed
 2026-06-11-messages-panel-extraction           🗑️ never built
-2026-06-11-nalar-config-url-style              ✅ landed
+2026-06-11-pabrik-config-url-style              ✅ landed
 2026-06-11-sub-agents-config-field             ✅ landed
 2026-06-11-tls-init-fast-fail                  ❌ replaced by CallError
 2026-06-11-workspace-item-tasks-sort-by-updated-at ✅ Migration042
 2026-06-12-virtual-scroller-tall-item-scroll-jump 🗑️ never built
-2026-06-12-web-fetching-service-to-nalar-browser ✅ renamed
+2026-06-12-web-fetching-service-to-pabrik-browser ✅ renamed
 2026-06-13-add-task-routines                   ✅ landed (PR #8)
 2026-06-13-add-task-routines-chunk-4          ✅ HTTP handlers
 2026-06-13-add-task-routines-chunks-2-3       ✅ in-process fire
@@ -1041,7 +1041,7 @@ The 107 implementation plans once held here have been consolidated into this SPE
 2026-06-13-add-task-routines-chunks-6-tests   ✅ spec files
 2026-06-13-add-task-routines-chunks-7         ✅ task row + sidebar
 2026-06-16-workspace-item-position-reorder     ✅ Migration045
-2026-06-17-nalar-browser-tool-output-component ✅ landed
+2026-06-17-pabrik-browser-tool-output-component ✅ landed
 2026-06-19-api-error-notification              ✅ NotificationContainer
 2026-06-19-fix-sse-incomplete-chunked-encoding ✅ landed (#21)
 2026-06-19-stop-notification                   ⏳ backend only, frontend pending
@@ -1062,9 +1062,9 @@ The 107 implementation plans once held here have been consolidated into this SPE
 2026-06-30-unify-sse-endpoints                 ✅ landed (#48)
 2026-07-01-agent-show-preview                 ✅ landed (#55, #56)
 2026-07-02-auto-init-config                    ✅ landed
-2026-07-03-decoupled-nalar-service             ✅ landed (#72)
+2026-07-03-decoupled-pabrik-service             ✅ landed (#72)
 2026-07-04-copy-kanban-spec                    ✅ landed
-2026-07-04-nalar-desktop-ci-cd                 ✅ landed (#58)
+2026-07-04-pabrik-desktop-ci-cd                 ✅ landed (#58)
 2026-07-04-preview-panel-resize                ✅ landed (#75)
 2026-07-05-design-mode                         ❌ superseded by redesign
 2026-07-06-configurable-compaction             ❌ superseded by inline
@@ -1127,14 +1127,14 @@ The 71 design documents once held here have been consolidated into this SPEC.md.
 2026-06-10-scroll-ratcheting-fix              ✅ landed
 2026-06-10-workspace-item-task-pagination     ✅ landed (v2)
 2026-06-11-messages-panel-extraction-design   ❌ MessagesPanel.vue never built
-2026-06-12-web-fetching-service-to-nalar-browser-design ✅ design doc
+2026-06-12-web-fetching-service-to-pabrik-browser-design ✅ design doc
 2026-06-12-workspace-drag-and-drop            ✅ landed
 2026-06-13-add-task-routines-design           ✅ design doc
 2026-06-15-spawn-sub-agent-config             ✅ landed
 2026-06-16-streaming-ux-design                🟡 partial
 2026-06-17-add-memories-settings-menu         ✅ landed
-2026-06-17-nalar-settings-revamp              ✅ landed
-2026-06-17-nalar-settings-revamp-design       ✅ design doc
+2026-06-17-pabrik-settings-revamp              ✅ landed
+2026-06-17-pabrik-settings-revamp-design       ✅ design doc
 2026-06-18-add-show-file-tool                 ❌ replaced by show_preview
 2026-06-18-create-worktree-menu-option        ✅ landed
 2026-06-18-fix-glob-duplicate-results         ✅ landed
@@ -1159,7 +1159,7 @@ The 71 design documents once held here have been consolidated into this SPEC.md.
 2026-07-01-agent-show-preview-design          ✅ design doc
 2026-07-01-change-task-to-card-kanban         ✅ landed (#57)
 2026-07-01-is-input-output-bool-consistency   ✅ landed (#60)
-2026-07-03-decoupled-nalar-service-design     ✅ design doc
+2026-07-03-decoupled-pabrik-service-design     ✅ design doc
 2026-07-04-preview-panel-resize-design        ✅ design doc
 2026-07-05-design-mode-design                 ❌ superseded by redesign
 2026-07-08-design-mode-deferred               🟡 deferred items
@@ -1222,7 +1222,7 @@ This is a protocol reference (not a per-feature implementation plan). Its 4 `Eve
 
 1. **For new contributors**: Read `AGENTS.md` (project conventions), then `§1.1` (tech stack), then `§3` (what's built). Pick a `§5 Pending` item to start.
 2. **For new features**: Look at `§3` for the closest architectural neighbor, then update this SPEC.md (`§3`, `§5`, `§10.1`) with the new feature's status — the spec is the single source of truth that replaces the old per-feature plan files.
-3. **For refactors**: See `nalar-backend-architecture.md`, `nalar-frontend-patterns.md`, `nalar-data-and-routines.md` in `.nalar/memories/`.
+3. **For refactors**: See `pabrik-backend-architecture.md`, `pabrik-frontend-patterns.md`, `pabrik-data-and-routines.md` in `.pabrik/memories/`.
 4. **For cross-platform work**: See `zig-cross-platform.md` and `AGENTS.md` "Cross-platform matrix" section.
 5. **For bugs**: Check `§5 Pending` first — the project already has plans for many latent bugs.
 

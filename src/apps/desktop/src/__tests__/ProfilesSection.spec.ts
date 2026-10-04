@@ -1,8 +1,8 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import ProfilesSection from '../components/nalar/ProfilesSection.vue'
-import type { ProfileRow } from '../components/nalar/ProfilesSection.vue'
+import ProfilesSection from '../components/pabrik/ProfilesSection.vue'
+import type { ProfileRow } from '../components/pabrik/ProfilesSection.vue'
 import type { SubAgent } from '../api'
 
 const baseProfile: ProfileRow = {
@@ -205,7 +205,7 @@ describe('ProfilesSection', () => {
   // ─── Clear active profile ───────────────────────────────────────────
   // Plan 2026-08-06-reset-active-profile: when a profile is marked
   // active, the header shows a "Reset" button next to the pill. Clicking
-  // it emits `clearActive` so the parent (NalarSettings) can save
+  // it emits `clearActive` so the parent (PabrikSettings) can save
   // `active_profile: null` to config.json. After the save, the cascade
   // in `workflow.zig::resolveProfileField` falls through to the top-level
   // config and every chat session / task uses the bare defaults.

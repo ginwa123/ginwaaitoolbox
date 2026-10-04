@@ -6,87 +6,66 @@
 //! / `total` / `next_offset` / `hint` contract the model already reads from
 //! `search_tool`. It lives HERE rather than in
 //! `src/modules/agent/tools/skill_tools.zig` because a `modules → agentic_loop`
-//! import would close a cycle through the `nalarcore` root — the same reason
+//! import would close a cycle through the `pabrikcore` root — the same reason
 //! `progressive_tools.zig` keeps its AgentTool literals pure.
 //!
-//! The tool schema + `SearchSkillsInput` live in `skill_tools.zig`; the raw
-//! per-tier listing (`skill_tools.listAllSkills`) is shared with the HTTP
-//! `/skills` handler and is deliberately NOT renamed — that endpoint still
-//! answers "everything installed", which is a different question from this
-//! tool's "what matches my query".
+//! What changed when skills moved into SQLite
+//! ──────────────────────────────────────────
+//! Every row used to be tagged with a TIER (`global` for
+//! `~/.config/pabrik/skills/`, `local` for `<cwd>/.pabrik/skills/`) and
+//! carried the exact `path` to hand back to `use_skill`. Both described a
+//! directory, and there is no directory now: `collectRows` projects the
+//! `skills` table's rows, and the only handle the model handles is a
+//! `name`. The matcher, the pager and the pattern-warning machinery are
+//! UNCHANGED — this feature is glue around an existing engine, not a new
+//! matcher, and every rule the model already learned from `search_tool`
+//! still holds.
 //!
-//! Tiers: `global` (`~/.config/nalar/skills/`) and `local` (`<cwd>/.nalar/skills/`).
-//! `workspace` (SQLite) is deliberately NOT in `parseScope` yet — see the note
-//! on `Scope`: an accepted-but-empty tier is worse than a rejected one.
+//! `Scope` and `parseScope` are gone rather than deprecated. An accepted
+//! tier that can no longer be named by anything is worse than a rejected
+//! one: `search_skills({scope: "global"})` returning zero rows reads as
+//! "there are no global skills", which is a statement about a place that
+//! no longer exists.
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const progressive_regex = @import("progressive_regex.zig");
-const skill_tools = nalarcore.skill_tools;
+const skills_store = pabrikcore.skills_store;
 
 /// Default page size and the hard ceiling. The result rides in the context
 /// window, so a single call may never return the whole library.
 pub const DEFAULT_SEARCH_LIMIT: usize = 40;
 pub const MAX_SEARCH_LIMIT: usize = 200;
 
-/// A skill's tier. Every result row carries one, because the model cannot
-/// pass anything else back to `use_skill` (which loads by exact `path`) and
-/// `add_skill` / `edit_skill` need to know which directory they write to.
-///
-/// `workspace` (the SQLite tier) has no rows yet — this module has no
-/// database handle. It is listed in the error message `parseScope` produces
-/// for an unknown value only once it is real; until then an unknown scope is
-/// REJECTED rather than silently matching nothing, because a zero-result
-/// answer to "search the workspace tier" reads as "no skills exist there"
-/// instead of "that tier does not exist yet".
-pub const Scope = enum {
-    global,
-    local,
-};
-
-pub fn scopeStr(scope: Scope) []const u8 {
-    return switch (scope) {
-        .global => "global",
-        .local => "local",
-    };
-}
-
-/// `"global"` / `"local"` → `Scope`. `null` for anything else (including
-/// `""`), so callers can reject an unusable value instead of running a
-/// query that can only return zero rows.
-pub fn parseScope(raw: []const u8) ?Scope {
-    if (std.mem.eql(u8, raw, "global")) return .global;
-    if (std.mem.eql(u8, raw, "local")) return .local;
-    return null;
-}
-
-/// The accepted `scope` values, for the error message on a bad one.
-pub const ACCEPTED_SCOPES_MSG =
-    "scope must be omitted (search every tier) or one of: 'global', 'local'";
-
-/// One installed skill, flattened out of its tier.
+/// One skill, as the matcher sees it: name + description, borrowed from
+/// the store row it came from. There is no tier and no path — see the
+/// file header for why both are gone.
 pub const SkillRow = struct {
     name: []const u8,
     description: []const u8,
-    scope: Scope,
-    /// The EXACT path to hand to `use_skill` — case-sensitive, ends in `SKILL.MD`.
-    path: []const u8,
 };
 
-/// Flatten the per-tier listing into scope-tagged rows.
+/// Project the store's rows into the borrowed shape the matcher wants.
 ///
-/// Borrows every string from `data` — the caller must keep `data` (and free
-/// it with `skill_tools.freeSkillsListData`) alive for as long as the rows.
-pub fn collectRows(allocator: std.mem.Allocator, data: skill_tools.SkillsListData) ![]SkillRow {
+/// Borrows every string from `rows`, so the caller must keep the
+/// `skills_store.SkillRow` slice alive (and free it with
+/// `skills_store.freeSkillRows`) for as long as the result.
+///
+/// One row, one hop: the store already scopes its `listSkills` by
+/// `workspace_id`, so nothing here filters and nothing here can widen the
+/// set. That is the property worth keeping — the tier flattening this
+/// function used to do was the only place a skill could arrive from a
+/// directory the caller did not ask about.
+pub fn collectRows(
+    allocator: std.mem.Allocator,
+    rows: []const skills_store.SkillRow,
+) ![]SkillRow {
     var out: std.ArrayList(SkillRow) = .empty;
     errdefer out.deinit(allocator);
 
-    for (data.global_skills) |s| {
-        try out.append(allocator, .{ .name = s.name, .description = s.description, .scope = .global, .path = s.path });
-    }
-    for (data.local_skills) |s| {
-        try out.append(allocator, .{ .name = s.name, .description = s.description, .scope = .local, .path = s.path });
+    for (rows) |row| {
+        try out.append(allocator, .{ .name = row.name, .description = row.description });
     }
 
     return out.toOwnedSlice(allocator);
@@ -95,7 +74,7 @@ pub fn collectRows(allocator: std.mem.Allocator, data: skill_tools.SkillsListDat
 /// How a query was interpreted. Rendered into the result so the model can
 /// tell a real regex hit from a literal fallback without guessing.
 pub const QueryMode = enum {
-    /// No query given: every row (scope filter only).
+    /// No query given: every row.
     all,
     /// Compiled and matched as a regex.
     regex,
@@ -109,8 +88,6 @@ pub const QueryMode = enum {
 pub const MatchOptions = struct {
     /// `literal: true`: case-insensitive substring, no metacharacters.
     literal: bool = false,
-    /// `null` = every tier.
-    scope: ?Scope = null,
 };
 
 pub const QueryResult = struct {
@@ -133,12 +110,9 @@ const WARNING_SUFFIX =
 /// it") rather than lumping them under one message.
 fn invalidPatternWarningFor(err: progressive_regex.Error) []const u8 {
     return switch (err) {
-        error.InvalidPattern =>
-        "query is not a valid regex (InvalidPattern) — matched as a case-insensitive literal substring instead." ++ WARNING_SUFFIX,
-        error.PatternTooLong =>
-        "query is too long for the pattern compiler (PatternTooLong) — matched as a case-insensitive literal substring instead." ++ WARNING_SUFFIX,
-        error.OutOfMemory =>
-        "the pattern could not be compiled (OutOfMemory) — matched as a case-insensitive literal substring instead." ++ WARNING_SUFFIX,
+        error.InvalidPattern => "query is not a valid regex (InvalidPattern) — matched as a case-insensitive literal substring instead." ++ WARNING_SUFFIX,
+        error.PatternTooLong => "query is too long for the pattern compiler (PatternTooLong) — matched as a case-insensitive literal substring instead." ++ WARNING_SUFFIX,
+        error.OutOfMemory => "the pattern could not be compiled (OutOfMemory) — matched as a case-insensitive literal substring instead." ++ WARNING_SUFFIX,
     };
 }
 
@@ -163,18 +137,8 @@ pub fn matchQuery(
     var matched: std.ArrayList(SkillRow) = .empty;
     errdefer matched.deinit(allocator);
 
-    const inScope = struct {
-        fn f(row: SkillRow, scope: ?Scope) bool {
-            const want = scope orelse return true;
-            return row.scope == want;
-        }
-    }.f;
-
     if (query.len == 0) {
-        for (rows) |row| {
-            if (!inScope(row, opts.scope)) continue;
-            try matched.append(allocator, row);
-        }
+        for (rows) |row| try matched.append(allocator, row);
         return .{ .rows = try matched.toOwnedSlice(allocator), .mode = .all };
     }
 
@@ -195,7 +159,6 @@ pub fn matchQuery(
     }
 
     for (rows) |row| {
-        if (!inScope(row, opts.scope)) continue;
         const hit = if (regex) |*re|
             (re.isMatch(row.name) or re.isMatch(row.description))
         else
@@ -233,7 +196,6 @@ pub const PageParams = struct {
     /// The requested page size. The renderer still caps `page` at this.
     limit: usize,
     query: []const u8,
-    scope: ?Scope,
     mode: QueryMode,
     warning: []const u8,
 };
@@ -249,8 +211,6 @@ pub fn pageSlice(rows: []const SkillRow, offset: usize, limit: usize) []const Sk
 const SkillRowJson = struct {
     name: []const u8,
     description: []const u8,
-    scope: []const u8,
-    path: []const u8,
 };
 
 fn modeStr(mode: QueryMode) []const u8 {
@@ -263,9 +223,9 @@ fn modeStr(mode: QueryMode) []const u8 {
 }
 
 /// `search_skills` result: `{"query","pattern_mode","pattern_warning",
-/// "scope","count","total","offset","limit","skills","truncated",
-/// "next_offset","hint"}`. Mirrors `search_tool`'s envelope field-for-field
-/// so one paging convention serves both catalogs.
+/// "count","total","offset","limit","skills","truncated","next_offset",
+/// "hint"}`. Mirrors `search_tool`'s envelope field-for-field so one paging
+/// convention serves both catalogs.
 pub fn renderSearchResult(
     allocator: std.mem.Allocator,
     page: []const SkillRow,
@@ -278,8 +238,6 @@ pub fn renderSearchResult(
         rows[i] = .{
             .name = row.name,
             .description = row.description,
-            .scope = scopeStr(row.scope),
-            .path = row.path,
         };
     }
 
@@ -292,17 +250,19 @@ pub fn renderSearchResult(
             .{ params.offset, params.offset + shown, params.total, params.offset + shown },
         )
     else
-        try allocator.dupe(u8, "Call use_skill with a row's exact `path` to load it. Widen `query` or pass `scope` if you expected more.");
+        try std.fmt.allocPrint(
+            allocator,
+            "Call use_skill with a row's exact `name` to load it. Widen `query` if you expected more.",
+            .{},
+        );
     defer allocator.free(hint);
 
     const warning: ?[]const u8 = if (params.warning.len > 0) params.warning else null;
-    const scope: ?[]const u8 = if (params.scope) |s| scopeStr(s) else null;
 
     return try std.json.Stringify.valueAlloc(allocator, .{
         .query = params.query,
         .pattern_mode = modeStr(params.mode),
         .pattern_warning = warning,
-        .scope = scope,
         .count = shown,
         .total = params.total,
         .offset = params.offset,
@@ -315,15 +275,19 @@ pub fn renderSearchResult(
 }
 
 // ───────────────────────── tests ─────────────────────────
-
-const testing_skill_tools = nalarcore.skill_tools;
+//
+// The regex / paging / warning machinery is unchanged, so those tests are
+// unchanged too — only the row shape they build lost its tier and path.
+// The one test that built real `/tmp/.pabrik/skills/<name>/SKILL.MD` trees
+// is now store-backed, because the thing it used to prove (that the local
+// tier resolved from the PASSED cwd rather than the process cwd) no longer
+// has a tier to resolve.
 
 /// Parsed shape of `renderSearchResult` output.
 const RenderedSearch = struct {
     query: []const u8 = "",
     pattern_mode: []const u8 = "",
     pattern_warning: ?[]const u8 = null,
-    scope: ?[]const u8 = null,
     count: usize = 0,
     total: usize = 0,
     offset: usize = 0,
@@ -337,8 +301,6 @@ const RenderedSearch = struct {
 const RenderedRow = struct {
     name: []const u8,
     description: []const u8,
-    scope: []const u8,
-    path: []const u8,
 };
 
 fn parseRendered(alloc: std.mem.Allocator, out: []const u8) !std.json.Parsed(RenderedSearch) {
@@ -346,18 +308,10 @@ fn parseRendered(alloc: std.mem.Allocator, out: []const u8) !std.json.Parsed(Ren
 }
 
 const test_rows = [_]SkillRow{
-    .{ .name = "zig-cross-platform", .description = "Prove Zig code compiles for Linux, macOS and Windows", .scope = .global, .path = "/g/zig/SKILL.MD" },
-    .{ .name = "vitest-alias-stub", .description = "Resolve a bare specifier in a Vue component test", .scope = .global, .path = "/g/vitest/SKILL.MD" },
-    .{ .name = "brainstorming", .description = "Explore user intent before creative work", .scope = .local, .path = "/l/brainstorming/SKILL.MD" },
+    .{ .name = "zig-cross-platform", .description = "Prove Zig code compiles for Linux, macOS and Windows" },
+    .{ .name = "vitest-alias-stub", .description = "Resolve a bare specifier in a Vue component test" },
+    .{ .name = "brainstorming", .description = "Explore user intent before creative work" },
 };
-
-test "parseScope accepts exactly global and local" {
-    try testing.expectEqual(Scope.global, parseScope("global").?);
-    try testing.expectEqual(Scope.local, parseScope("local").?);
-    try testing.expect(parseScope("workspace") == null);
-    try testing.expect(parseScope("") == null);
-    try testing.expect(parseScope("GLOBAL") == null);
-}
 
 test "matchQuery with no query returns every row in mode=all" {
     const alloc = testing.allocator;
@@ -389,24 +343,6 @@ test "matchQuery regex matches name OR description, case-insensitively" {
     const alt = try matchQuery(alloc, &test_rows, "brainstorming|zig-cross", .{});
     defer alloc.free(alt.rows);
     try testing.expectEqual(@as(usize, 2), alt.rows.len);
-}
-
-test "matchQuery scope filter narrows to one tier; omitted means both" {
-    const alloc = testing.allocator;
-
-    const global_only = try matchQuery(alloc, &test_rows, "", .{ .scope = .global });
-    defer alloc.free(global_only.rows);
-    try testing.expectEqual(@as(usize, 2), global_only.rows.len);
-    for (global_only.rows) |r| try testing.expectEqual(Scope.global, r.scope);
-
-    const local_only = try matchQuery(alloc, &test_rows, "", .{ .scope = .local });
-    defer alloc.free(local_only.rows);
-    try testing.expectEqual(@as(usize, 1), local_only.rows.len);
-    try testing.expectEqualStrings("brainstorming", local_only.rows[0].name);
-
-    const both = try matchQuery(alloc, &test_rows, "", .{});
-    defer alloc.free(both.rows);
-    try testing.expectEqual(@as(usize, 3), both.rows.len);
 }
 
 test "matchQuery literal:true treats metacharacters verbatim" {
@@ -456,7 +392,7 @@ test "pageSlice returns the requested window and clamps at the end" {
     try testing.expectEqual(@as(usize, 1), pageSlice(&test_rows, 2, 99).len);
 }
 
-test "renderSearchResult carries scope + path on every row and reports the pre-page total" {
+test "renderSearchResult reports the pre-page total and names the continuing offset" {
     const alloc = testing.allocator;
 
     const out = try renderSearchResult(alloc, &test_rows, .{
@@ -464,7 +400,6 @@ test "renderSearchResult carries scope + path on every row and reports the pre-p
         .offset = 0,
         .limit = 2,
         .query = "skill",
-        .scope = null,
         .mode = .regex,
         .warning = "",
     });
@@ -479,10 +414,12 @@ test "renderSearchResult carries scope + path on every row and reports the pre-p
     try testing.expectEqual(@as(usize, 2), parsed.value.next_offset.?);
     try testing.expectEqualStrings("regex", parsed.value.pattern_mode);
     try testing.expect(parsed.value.pattern_warning == null);
-    try testing.expect(parsed.value.scope == null);
     try testing.expectEqual(@as(usize, 2), parsed.value.skills.len);
-    try testing.expectEqualStrings("global", parsed.value.skills[0].scope);
-    try testing.expectEqualStrings("/g/zig/SKILL.MD", parsed.value.skills[0].path);
+    try testing.expectEqualStrings("zig-cross-platform", parsed.value.skills[0].name);
+    try testing.expectEqualStrings(
+        "Prove Zig code compiles for Linux, macOS and Windows",
+        parsed.value.skills[0].description,
+    );
     // The hint names the exact continuing offset.
     try testing.expect(std.mem.indexOf(u8, parsed.value.hint, "offset=2") != null);
 }
@@ -495,7 +432,6 @@ test "renderSearchResult on the last page is not truncated and points at use_ski
         .offset = 1,
         .limit = 40,
         .query = "",
-        .scope = .local,
         .mode = .all,
         .warning = "",
     });
@@ -506,7 +442,6 @@ test "renderSearchResult on the last page is not truncated and points at use_ski
 
     try testing.expect(!parsed.value.truncated);
     try testing.expect(parsed.value.next_offset == null);
-    try testing.expectEqualStrings("local", parsed.value.scope.?);
     try testing.expect(std.mem.indexOf(u8, parsed.value.hint, "use_skill") != null);
 }
 
@@ -521,7 +456,6 @@ test "renderSearchResult surfaces a pattern_warning verbatim" {
         .offset = 0,
         .limit = 40,
         .query = "zig(",
-        .scope = null,
         .mode = res.mode,
         .warning = res.warning,
     });
@@ -533,72 +467,111 @@ test "renderSearchResult surfaces a pattern_warning verbatim" {
     try testing.expect(parsed.value.pattern_warning != null);
 }
 
-// ---------------------------------------------------------------------------
-// End-to-end against the real filesystem: the tier flattening must read the
-// local tier from the PASSED cwd, not the process cwd (the regression the
-// old `execute_list_skills` test pinned — the exec wiring once passed null).
-// ---------------------------------------------------------------------------
-
-const fsio = testing.io;
-
-fn writeSkill(alloc: std.mem.Allocator, dir: []const u8, name: []const u8, desc: []const u8) !void {
-    const skill_dir = try std.fs.path.join(alloc, &[_][]const u8{ dir, ".nalar", "skills", name });
-    defer alloc.free(skill_dir);
-    try std.Io.Dir.cwd().createDirPath(fsio, skill_dir);
-
-    const file_path = try std.fs.path.join(alloc, &[_][]const u8{ skill_dir, "SKILL.MD" });
-    defer alloc.free(file_path);
-
-    const body = try std.fmt.allocPrint(
-        alloc,
-        "---\nname: {s}\ndescription: \"{s}\"\n---\n\n# {s}\n\nbody\n",
-        .{ name, desc, name },
-    );
-    defer alloc.free(body);
-
-    const f = try std.Io.Dir.createFileAbsolute(fsio, file_path, .{});
-    defer std.Io.File.close(f, fsio);
-    try std.Io.File.writeStreamingAll(f, fsio, body);
-}
-
-test "collectRows + matchQuery: local tier resolves from the passed cwd and is scope-tagged" {
+test "renderSearchResult emits no tier and no path on any row" {
     const alloc = testing.allocator;
 
-    const tmp = "/tmp/nalar-search-skills-test";
-    const other = "/tmp/nalar-search-skills-other-cwd";
-    std.Io.Dir.cwd().deleteTree(fsio, tmp) catch {};
-    std.Io.Dir.cwd().deleteTree(fsio, other) catch {};
-    defer {
-        std.Io.Dir.cwd().deleteTree(fsio, tmp) catch {};
-        std.Io.Dir.cwd().deleteTree(fsio, other) catch {};
-    }
+    const out = try renderSearchResult(alloc, &test_rows, .{
+        .total = 3,
+        .offset = 0,
+        .limit = 40,
+        .query = "",
+        .mode = .all,
+        .warning = "",
+    });
+    defer alloc.free(out);
 
-    try writeSkill(alloc, tmp, "search-fixture", "Fixture for the local tier");
-    try writeSkill(alloc, other, "other-cwd-fixture", "Must never leak in");
+    // Read the RAW string rather than the parsed struct: parsing with
+    // `ignore_unknown_fields` would hide exactly the thing this asserts.
+    try testing.expect(std.mem.indexOf(u8, out, "\"scope\"") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"is_global\"") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"path\"") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "SKILL.MD") == null);
+}
 
-    var env = std.process.Environ.Map.init(alloc);
-    defer env.deinit();
-    try env.put("HOME", "/tmp/nalar-nonexistent-home-for-search-test");
+// ---------------------------------------------------------------------------
+// End-to-end against the store: the flattening must not widen the set. The
+// old version of this test proved the LOCAL TIER resolved from the passed
+// cwd rather than the process cwd — a bug that only existed because there
+// were two directories to choose between. The equivalent guarantee now is
+// that `collectRows` is a projection and nothing more.
+// ---------------------------------------------------------------------------
 
-    const data = try testing_skill_tools.listAllSkills(alloc, fsio, tmp, &env);
-    defer testing_skill_tools.freeSkillsListData(alloc, data);
+const sqlite = pabrikcore.sqlite;
+const migration = @import("../migrations/migration.zig");
 
-    const rows = try collectRows(alloc, data);
-    defer alloc.free(rows);
+const StoreTestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
 
-    // Exactly one skill, and it is the LOCAL one from `tmp`.
-    try testing.expectEqual(@as(usize, 1), rows.len);
-    try testing.expectEqualStrings("search-fixture", rows[0].name);
-    try testing.expectEqual(Scope.local, rows[0].scope);
-    try testing.expectEqualStrings("Fixture for the local tier", rows[0].description);
-    try testing.expect(std.mem.indexOf(u8, rows[0].path, "search-fixture/SKILL.MD") != null);
+/// Real Migration 101 tables. Seeded through the store, never with SQL —
+/// a hand-written INSERT bypasses the `COALESCE(NULLIF(?, ''), '')` write
+/// path and would pass while the real tool failed.
+fn setupStoreDb() !StoreTestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try migration.Migration102CreateSkills.up(&db, alloc);
+    return .{ .db = db, .threaded = threaded };
+}
 
-    // The same query with scope=global finds nothing — proves the filter runs.
-    const global_res = try matchQuery(alloc, rows, "search-fixture", .{ .scope = .global });
-    defer alloc.free(global_res.rows);
-    try testing.expectEqual(@as(usize, 0), global_res.rows.len);
+fn seedSkill(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_id: []const u8,
+    name: []const u8,
+    description: []const u8,
+) !void {
+    const row = try skills_store.upsertSkill(alloc, db, .{
+        .workspace_id = workspace_id,
+        .name = name,
+        .description = description,
+        .content = "## body\n",
+    });
+    skills_store.freeSkillRow(alloc, row);
+}
 
-    const local_res = try matchQuery(alloc, rows, "search-fixture", .{ .scope = .local });
-    defer alloc.free(local_res.rows);
-    try testing.expectEqual(@as(usize, 1), local_res.rows.len);
+test "collectRows projects one workspace's rows and matches over them" {
+    const alloc = testing.allocator;
+    var ctx = try setupStoreDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try seedSkill(alloc, &ctx.db, "ws_1", "search-fixture", "Fixture for the local tier");
+    try seedSkill(alloc, &ctx.db, "ws_1", "another", "Also mine");
+    try seedSkill(alloc, &ctx.db, "ws_2", "must-never-leak-in", "Another workspace's skill");
+
+    const rows = try skills_store.listSkills(alloc, &ctx.db, "ws_1");
+    defer skills_store.freeSkillRows(alloc, rows);
+    try testing.expectEqual(@as(usize, 2), rows.len);
+
+    const flat = try collectRows(alloc, rows);
+    defer alloc.free(flat);
+
+    // Exactly the two skills of ws_1, borrowed (no copies), and the other
+    // workspace's name appears nowhere in the payload.
+    try testing.expectEqual(@as(usize, 2), flat.len);
+    try testing.expectEqualStrings("another", flat[0].name);
+    try testing.expectEqualStrings("search-fixture", flat[1].name);
+    try testing.expectEqualStrings("Fixture for the local tier", flat[1].description);
+
+    const hit = try matchQuery(alloc, flat, "search-fixture", .{});
+    defer alloc.free(hit.rows);
+    try testing.expectEqual(@as(usize, 1), hit.rows.len);
+    try testing.expectEqualStrings("search-fixture", hit.rows[0].name);
+
+    const out = try renderSearchResult(alloc, hit.rows, .{
+        .total = hit.rows.len,
+        .offset = 0,
+        .limit = 40,
+        .query = "search-fixture",
+        .mode = hit.mode,
+        .warning = hit.warning,
+    });
+    defer alloc.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "must-never-leak-in") == null);
 }

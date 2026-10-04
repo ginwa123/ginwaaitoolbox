@@ -1,15 +1,16 @@
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const agent = nalarcore.agent;
-const logger_mod = nalarcore.loggermod;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const agent = pabrikcore.agent;
+const logger_mod = pabrikcore.loggermod;
 const helpers = @import("helpers");
 const auth_common = @import("../http_handlers/auth_common.zig");
-const config_mod = nalarcore.config;
+const config_mod = pabrikcore.config;
 const TUIHistory = @import("models.zig").TUIHistory;
-const llm_models = @import("nalarcore").llm_models;
+const llm_models = @import("pabrikcore").llm_models;
 const on_event_sent = @import("on_event_sent.zig");
+const model_guard = @import("llm_history_model_guard.zig");
 // NOTE: routines_model import deleted with the per-task `routines`
 // table (Migration 084, plan 2026-09-10-workspace-items-routines).
 
@@ -1090,9 +1091,9 @@ pub fn getSessionMessagesSorted(
             // (`_ = self`), so a stack-allocated empty config is a valid
             // receiver when the singleton is unavailable (unit tests) —
             // the profile override still flows through the cascade.
-            const di_opt = nalarcore.getSingleton() catch null;
+            const di_opt = pabrikcore.getSingleton() catch null;
             if (di_opt) |di| {
-                const cfg = nalarcore.getLlmConfig(di);
+                const cfg = pabrikcore.getLlmConfig(di);
                 break :blk resolveMaxCapacityTotalTokens(cfg, profile, cfg.model);
             }
             const empty_cfg = config_mod.LlmConfig{
@@ -1203,7 +1204,7 @@ pub fn resolveMaxCapacityTotalTokens(
 ///
 ///   1. The session's explicit `selected_profile_model` (chat dropdown)
 ///   2. The user's `config.active_profile` ("Set as active profile" in
-///      NalarSettings) — this is what a "Default" chat uses when the
+///      PabrikSettings) — this is what a "Default" chat uses when the
 ///      user has designated a default profile
 ///   3. `null` → top-level Defaults-tab / built-in per-model defaults
 ///
@@ -1641,7 +1642,10 @@ pub fn saveMessage(
 
     const copy_session_id = try allocator.dupe(u8, input.session_id);
     defer allocator.free(copy_session_id);
-    const copy_model = try allocator.dupe(u8, input.model);
+    // Never bind an empty model: `SqliteBackend.exec` binds a zero-length
+    // slice as SQL NULL, which violates `model TEXT NOT NULL` and fails the
+    // whole INSERT. See llm_history_model_guard.zig.
+    const copy_model = try allocator.dupe(u8, model_guard.resolve(input.model));
     defer allocator.free(copy_model);
     const copy_content = try allocator.dupe(u8, contentStr);
     defer allocator.free(copy_content);
@@ -3221,7 +3225,7 @@ pub fn getWorkerBySessionId(
 
 /// Check if a task is currently running (a worker row exists for it).
 ///
-/// The nalar convention is `task.id == session.id`, so the worker
+/// The pabrik convention is `task.id == session.id`, so the worker
 /// table's `session_id` column holds the task's id. If a row exists,
 /// the task is currently being processed by a worker (its LLM call is
 /// in-flight or streaming). Tasks in this state cannot be deleted —
@@ -3262,7 +3266,7 @@ pub fn cancelSession(
 // message's `tool_calls` array to have a matching `role=tool` row in the
 // next conversation payload, or the API rejects with "Invalid function
 // ID". When the agent crashes mid-execution (bash hangs, spawn_sub_agent
-// dies, nalar process SIGKILL'd), the assistant message is in the DB but
+// dies, pabrik process SIGKILL'd), the assistant message is in the DB but
 // the per-tool result rows aren't — every subsequent LLM call fails.
 //
 // The fix is a 3-phase INSERT pattern:
@@ -3359,7 +3363,10 @@ pub fn saveToolResultPlaceholder(
     const sqlArgs = &.{
         id,
         opts.session_id,
-        opts.model,
+        // Guarded for the same reason as `saveMessage`: an empty bind lands
+        // as NULL and fails `model TEXT NOT NULL`. See
+        // llm_history_model_guard.zig.
+        model_guard.resolve(opts.model),
         opts.tool_call_id,
         opts.tool_name,
         loop_index_str,
@@ -3947,7 +3954,7 @@ pub fn updateTaskLastHumanTouchedAt(
 ///
 /// Called by every HTTP handler / workflow site that mutates a chat on
 /// behalf of a human user:
-///   - `root.zig::emit_run_agent` — the single funnel for every
+///   - `app.zig::emit_run_agent` — the single funnel for every
 ///     "user sends a message" path (chat send, kanban "create & run",
 ///     kanban "Start agent", `+ Chat`). Stamps before the workflow
 ///     kicks off so even an immediate agent bail leaves the stamp in
@@ -4649,7 +4656,7 @@ pub fn deleteWorkspaceItem(
 /// tiebreaker makes the order deterministic when two items share a
 /// position (shouldn't happen post-reorder, but defense-in-depth).
 /// Uses the project's "always alias tables in SQL" convention
-/// (see ~/.config/nalar/memories/) — the `wi` alias matches the
+/// (see ~/.config/pabrik/memories/) — the `wi` alias matches the
 /// short-single-letter pattern used elsewhere (`h` for
 /// `llm_history`, `s` for `sessions`, `t` for `workspace_item_tasks`).
 pub fn listWorkspaceItems(
@@ -4820,7 +4827,7 @@ pub const WorkspaceContext = struct {
 ///
 /// SQL convention: all tables are aliased (`wi` for workspace_items,
 /// `t` for workspace_item_tasks) per the project's
-/// `nalar-sql-alias-tables` memory rule.
+/// `pabrik-sql-alias-tables` memory rule.
 pub fn getWorkspaceContext(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -6086,7 +6093,7 @@ pub fn listWorkspaceItemTasksWithCursor(
 /// `has_more = true`.
 pub fn listKanbanDistinctTags(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     workspace_item_id: []const u8,
     limit: u32,
     offset: u32,

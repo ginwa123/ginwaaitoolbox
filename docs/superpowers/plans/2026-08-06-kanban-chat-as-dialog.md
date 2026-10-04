@@ -21,7 +21,7 @@
 - **No port 8081**: smoke tests use port 8080.
 - **Behavioural Vue tests use `@vue/test-utils` `mount` with `setActivePinia(createPinia())`** in `beforeEach`. Mock fetch via `vi.fn()` returning `{ ok, status, json, text }` shape.
 - **TDD discipline**: every implementation task starts with a failing test, then minimal code to make it pass, then a commit.
-- **Teleport-based dialog tests** must use `attachTo: document.body` and `document.querySelector(...)` for DOM assertions (not `wrapper.find(...)` for teleported content). See `.nalar/skills/vue-teleport-vitest-document-queryselector/SKILL.MD`.
+- **Teleport-based dialog tests** must use `attachTo: document.body` and `document.querySelector(...)` for DOM assertions (not `wrapper.find(...)` for teleported content). See `.pabrik/skills/vue-teleport-vitest-document-queryselector/SKILL.MD`.
 - **Pure architectural relocation**: no UX changes beyond what the design spec specifies. The dialog size, the close affordances, and the existing `:key` strategy are locked in the spec.
 - **`useChatScrollRestore` works transparently**: the composable binds to the VirtualScroller ref inside ChatView, which is the same in dialog mode. No changes to `useChatScrollRestore` or its tests.
 
@@ -37,7 +37,7 @@
 | `src/apps/desktop/src/__tests__/KanbanChatDialog.spec.ts` | NEW | Behavioural tests for the new dialog (open, close, content swap) |
 | `src/apps/desktop/src/__tests__/KanbanView.chatPane.spec.ts` | DELETE | Tests for the deleted chat-pane branch (no longer applicable) |
 | `docs/SPEC.md` | EDIT | Add §10.2.1 PR index row; update Kanban layout §3.7 entry |
-| `NALAR.md` | EDIT | Append "### 2026-08-06: kanban chat as centered dialog" changelog entry |
+| `PABRIK.md` | EDIT | Append "### 2026-08-06: kanban chat as centered dialog" changelog entry |
 
 Total: **7 files** (2 NEW, 4 EDIT, 1 DELETE). No backend changes, no migration, no Zig changes.
 
@@ -795,13 +795,13 @@ Expect: builds successfully (vue-tsc + Vite build).
 
 ### Step 5.6: Manual smoke (port 8080)
 
-The dev `nalar` runs on port 8081 — leave it alone. Spin up a fresh instance on port 8080:
+The dev `pabrik` runs on port 8081 — leave it alone. Spin up a fresh instance on port 8080:
 
 ```bash
-# Start nalar on port 8080 in the background (use a tmp HOME)
-TMPHOME=$(mktemp -d /tmp/nalar-smoke-XXXX)
-HOME="$TMPHOME" /home/ginwa/ginwaaitoolbox/.worktrees/kanban-chat-dialog/zig-out/bin/nalar --port 8080 --static-dir /home/ginwa/ginwaaitoolbox/.worktrees/kanban-chat-dialog/src/apps/desktop/dist &
-NALAR_PID=$!
+# Start pabrik on port 8080 in the background (use a tmp HOME)
+TMPHOME=$(mktemp -d /tmp/pabrik-smoke-XXXX)
+HOME="$TMPHOME" /home/ginwa/ginwaaitoolbox/.worktrees/kanban-chat-dialog/zig-out/bin/pabrik --port 8080 --static-dir /home/ginwa/ginwaaitoolbox/.worktrees/kanban-chat-dialog/src/apps/desktop/dist &
+PABRIK_PID=$!
 sleep 3
 
 # Wait for health
@@ -811,7 +811,7 @@ for i in 1 2 3 4 5; do
 done
 
 # Cleanup
-kill $NALAR_PID
+kill $PABRIK_PID
 rm -rf "$TMPHOME"
 ```
 
@@ -831,9 +831,9 @@ Manual smoke checklist (open the app in a browser pointing at port 8080):
 ```bash
 cd /home/ginwa/ginwaaitoolbox/.worktrees/kanban-chat-dialog
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig 2>&1 | tail -n 20
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig 2>&1 | tail -n 20
 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig 2>&1 | tail -n 20
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig 2>&1 | tail -n 20
 ```
 
 Expect: both compile clean.
@@ -846,7 +846,7 @@ Expect: both compile clean.
 
 ### Step 6.1: Append to AGENTS.md
 
-In `/home/ginwa/ginwaaitoolbox/.worktrees/kanban-chat-dialog/NALAR.md`, append a new `### 2026-08-06: ...` block to the "Recent changes (changelog)" section. Pattern follows the 2026-08-06 entries.
+In `/home/ginwa/ginwaaitoolbox/.worktrees/kanban-chat-dialog/PABRIK.md`, append a new `### 2026-08-06: ...` block to the "Recent changes (changelog)" section. Pattern follows the 2026-08-06 entries.
 
 ```markdown
 ### 2026-08-06: Kanban chat — side-by-side pane → centered modal dialog
@@ -929,7 +929,7 @@ Co-authored-by: session_1785598425276"
 - **`activeTaskWorkspaceItemId` getter is already in the store** (added in kanban-embed-chatview plan). AppLayout already uses it. The dialog mount just adds a consumer.
 - **The `data-kanban-three-column` selector** is gone (it was AppLayout-level from a prior era). The new mount uses `activeTaskWorkspaceItemId === activeWorkspaceItem.id` for gating.
 - **The `vue-teleport-vitest-document-queryselector` skill** is mandatory reading for this task — `attachTo: document.body` + `document.querySelector` is the only way to assert teleported DOM.
-- **`vue-tsc --build` emits `.js` files** next to `.ts` source files in this project. Delete them before committing (per `.nalar/skills/vue-tsc-build-emits-js-files/SKILL.MD`).
+- **`vue-tsc --build` emits `.js` files** next to `.ts` source files in this project. Delete them before committing (per `.pabrik/skills/vue-tsc-build-emits-js-files/SKILL.MD`).
 - **The `useChatScrollRestore` composable** works transparently in dialog mode — the VirtualScroller ref is the same. Don't touch the composable or its tests.
 
 ---

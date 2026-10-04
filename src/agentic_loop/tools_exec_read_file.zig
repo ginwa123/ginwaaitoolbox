@@ -1,14 +1,14 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const ReadFileInput = nalarcore.tool_models.ReadFileInput;
-const ReadFileOptions = nalarcore.read_file.ReadFileOptions;
-const readFile = nalarcore.read_file.readFile;
-const toJSONSuccess = nalarcore.read_file.toJSONSuccess;
+const agent = pabrikcore.agent;
+const ReadFileInput = pabrikcore.tool_models.ReadFileInput;
+const ReadFileOptions = pabrikcore.read_file.ReadFileOptions;
+const readFile = pabrikcore.read_file.readFile;
+const toJSONSuccess = pabrikcore.read_file.toJSONSuccess;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

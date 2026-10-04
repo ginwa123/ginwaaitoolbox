@@ -1,7 +1,7 @@
 const std = @import("std");
 const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
-const sqlite_mod = nalarcore.sqlite;
+const pabrikcore = mod.pabrikcore;
+const sqlite_mod = pabrikcore.sqlite;
 const helpers = @import("helpers");
 
 pub const SqliteBackend = sqlite_mod.SqliteBackend;
@@ -1279,7 +1279,7 @@ pub const Migration055AddDesignPages = struct {
 // file layout:
 //   - Pages become metadata-only (width/height/x/y/position) with NO
 //     html column. The per-page folder at
-//     `<workspace_item.path>/.nalar/design/<page_name>/` holds the
+//     `<workspace_item.path>/.pabrik/design/<page_name>/` holds the
 //     element files.
 //   - Each element is a positioned HTML snippet in the new
 //     `design_page_elements` table; the html body lives at the
@@ -1640,7 +1640,7 @@ pub const MigrationManager = struct {
 /// `definition` is provided by the caller who already knows the
 /// full DDL line.)
 pub fn addColumnIfMissing(
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     allocator: std.mem.Allocator,
     table: []const u8,
     column: []const u8,
@@ -1684,7 +1684,7 @@ pub fn addColumnIfMissing(
 /// no-op for fresh-DB users while still removing the column for
 /// legacy users who do have it.
 pub fn dropColumnIfExists(
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     allocator: std.mem.Allocator,
     table: []const u8,
     column: []const u8,
@@ -1738,7 +1738,7 @@ pub fn dropColumnIfExists(
 ///     index renames separately via `DROP INDEX IF EXISTS old_name;
 ///     CREATE INDEX IF NOT EXISTS new_name ON table(new_name);`.
 pub fn renameColumnIfExists(
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     allocator: std.mem.Allocator,
     table: []const u8,
     old_column: []const u8,
@@ -1934,7 +1934,7 @@ pub const allMigrations: []const Migration = &.{
     // Migration 077 — `users` + `user_companies` + `user_company_members`
     // + additive `workspaces.user_id` + `sessions.user_id` + default
     // `user_system` user + backfill. Sub-project 1 of 4 (foundation for
-    // multi-user / multi-tenant nalar). Plan:
+    // multi-user / multi-tenant pabrik). Plan:
     // docs/superpowers/plans/2026-08-21-users-rbac-foundation.md. Task:
     // task_1787199963946_1.
     .{ .version = Migration077AddUsersAndRbacSchema.version, .name = Migration077AddUsersAndRbacSchema.name, .up = Migration077AddUsersAndRbacSchema.up },
@@ -2049,6 +2049,14 @@ pub const allMigrations: []const Migration = &.{
     // workspace can be shared. Additive; the column stays for one release so
     // `DROP TABLE workspace_members` is a complete rollback.
     .{ .version = Migration100AddWorkspaceMembers.version, .name = Migration100AddWorkspaceMembers.name, .up = Migration100AddWorkspaceMembers.up },
+    // Migration 101 — the `skills` table: workspace-scoped skill bodies.
+    // Skills move off the two filesystem tiers (`~/.config/pabrik/skills/`
+    // and `<cwd>/.pabrik/skills/`) into SQL, so `workspace_id` on the row
+    // IS the isolation boundary and `search_skills` can list ONE
+    // workspace's skills instead of walking a directory. `skill_assets`
+    // carries the companion files of bundled skills (`pdf`,
+    // `skill-creator`) whose bodies reference them by relative path.
+    .{ .version = Migration102CreateSkills.version, .name = Migration102CreateSkills.name, .up = Migration102CreateSkills.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -2175,7 +2183,7 @@ pub const Migration060RebackfillCreatedIso = struct {
 ///
 /// The backfill runs every time the migration runs, so production
 /// users with stale NULL rows (from earlier broken trigger-based
-/// attempts) get them fixed on the next nalar restart.
+/// attempts) get them fixed on the next pabrik restart.
 pub const Migration059AddCreatedIso = struct {
     pub const version: u32 = 59;
     pub const name = "add_llm_history_created_iso";
@@ -2348,7 +2356,7 @@ pub const Migration061FixCreatedIsoYear = struct {
 /// instead of raw `ALTER TABLE` so fresh-DB installs that re-play
 /// the canonical schema (already declaring `description` in their
 /// CREATE TABLE) don't crash on "duplicate column". See project
-/// memory `nalar-fresh-db-migration-cascade`.
+/// memory `pabrik-fresh-db-migration-cascade`.
 ///
 /// Note: this migration is at version 62 because PR #99
 /// (`Migration061FixCreatedIsoYear`) shipped on main before this
@@ -2494,7 +2502,7 @@ pub const Migration064AddFrontendLogs = struct {
 /// Schema (nullable INTEGER, no DEFAULT): NULL is the canonical
 /// "never touched" state. The `addColumnIfMissing` helper handles both
 /// upgrade-from-v1 and fresh-DB-already-declares-it paths gracefully
-/// (see memory `nalar-data-and-routines.md` §"Migration #009-#052
+/// (see memory `pabrik-data-and-routines.md` §"Migration #009-#052
 /// fresh-DB cascade is fragile" for the failure mode this avoids).
 ///
 /// Comparison happens against `sessions.updated_at` in the kanban
@@ -2769,7 +2777,7 @@ pub const Migration067AddTaskTags = struct {
 /// declared in an assistant message's `tool_calls` array to have a
 /// matching `role=tool` message in the next conversation payload, or
 /// the API rejects with "Invalid function ID". If the agent crashes
-/// mid-execution (long bash command, spawn_sub_agent dies, nalar
+/// mid-execution (long bash command, spawn_sub_agent dies, pabrik
 /// process SIGKILL'd, network hang), the assistant message is
 /// already in the DB but the per-tool result rows aren't — every
 /// subsequent LLM call fails.
@@ -2880,7 +2888,7 @@ pub fn registerAllMigrations(manager: *MigrationManager) !void {
 ///
 /// Until now, the only way to attach an image to a kanban task was the
 /// filesystem-backed attachment endpoint (`POST /api/workspaces/tasks/:id/attachments`),
-/// which writes the file to `<workspace_item.path>/.nalar/attachments/<task_id>/<n>.<ext>`
+/// which writes the file to `<workspace_item.path>/.pabrik/attachments/<task_id>/<n>.<ext>`
 /// and serves it back via a broken `GET /...attachments/*` wildcard route
 /// (the custom router doesn't actually handle `*` — see
 /// `src/modules/custom_http_server/src/router.zig::matchPathWithParams`).
@@ -3638,7 +3646,7 @@ pub const Migration070AddAgentMemories = struct {
 // impl + tests in one file (project convention).
 // `std` is already in scope from line 1; only the local aliases need adding.
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const Migration078 = Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 
 
@@ -4490,7 +4498,7 @@ pub const Migration076CreateSessionPlan = struct {
 //
 // What this migration creates
 // ────────────────────────────
-// The schema foundation for multi-user / multi-tenant nalar — sub-project 1 of 4.
+// The schema foundation for multi-user / multi-tenant pabrik — sub-project 1 of 4.
 //   1. `users` (id, email, name, password_hash, role, is_active,
     //      created_at, updated_at, last_login_at) — identity table.
     //   2. `user_companies` (id, name, slug, description, is_active,
@@ -4932,7 +4940,7 @@ pub const Migration081CreateAgentKanbans = struct {
 ///
 /// The `addColumnIfMissing` helper handles both upgrade-from-v1
 /// and fresh-DB-already-declares-it paths gracefully (see memory
-/// `nalar-data-and-routines.md` "Migration #009-#052 fresh-DB
+/// `pabrik-data-and-routines.md` "Migration #009-#052 fresh-DB
 /// cascade is fragile" for the failure mode this avoids).
 ///
 /// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
@@ -5176,7 +5184,7 @@ pub const Migration088AddSessionPendingQuestion = struct {
 // ============================================================================
 //
 // One row per active login cookie: token_hash (SHA-256 of the opaque
-// `nalar_session` cookie value) -> user_id + expiry. `users` (Migration
+// `pabrik_session` cookie value) -> user_id + expiry. `users` (Migration
 // 077) tells us who exists; this table tells us who is currently logged
 // in, on which device, until when.
 //
@@ -9132,7 +9140,7 @@ test "migration 059: is idempotent on a re-run (column + triggers + index)" {
 // `getCompactedMessages`.
 //
 // Migration 060 unconditionally re-runs the v2 backfill UPDATE so
-// production users get a fix on the next nalar restart without
+// production users get a fix on the next pabrik restart without
 // having to nuke their `agent.db`.
 //
 // This file verifies:
@@ -9473,13 +9481,13 @@ test "migration 061: handles mixed NULL + wrong-year + correct rows in one pass"
 //   3. Be safe for fresh-DB installs that already declare the column
 //      in their canonical CREATE TABLE — use `addColumnIfMissing`
 //      so the helper handles both fresh-DB and upgrade-from-v1 paths
-//      gracefully (see memory `nalar-fresh-db-migration-cascade`).
+//      gracefully (see memory `pabrik-fresh-db-migration-cascade`).
 //
 // Plan: docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md
 //   (Chunk 1, Task 1.1)
 
 const Migration062 = Migration062AddTaskDescription;
-const createWorkspaceItemTask = @import("nalarcore").ai_mod.llm_history.createWorkspaceItemTask;
+const createWorkspaceItemTask = @import("pabrikcore").ai_mod.llm_history.createWorkspaceItemTask;
 
 const TestCtx062 = struct {
     db: sqlite.SqliteBackend,
@@ -10069,7 +10077,7 @@ test "Migration063 last_finish_reason is NULL on existing rows" {
 // Plan: docs/superpowers/plans/2026-07-16-session-auto-retry-until-stop.md
 //   (Chunk 1, Task 1.3)
 
-const llm_history = nalarcore.llm_history;
+const llm_history = pabrikcore.llm_history;
 
 const TestCtx063rt = struct {
     db: sqlite.SqliteBackend,
@@ -10400,7 +10408,7 @@ test "Migration063 is idempotent (re-running up() does not error)" {
 //   2. Be idempotent on re-run (re-running must not crash with
 //      "duplicate column name" — see the project's hard-fought
 //      knowledge about fresh-DB migration cascades in
-//      `nalar-data-and-routines.md` §"Migration #009-#052 fresh-DB
+//      `pabrik-data-and-routines.md` §"Migration #009-#052 fresh-DB
 //      cascade is fragile").
 //   3. Be safe for fresh-DB installs that already declare the column
 //      in their canonical CREATE TABLE — use `addColumnIfMissing` so
@@ -10521,7 +10529,7 @@ test "Migration065 is idempotent on a fresh-DB install where the canonical schem
     // already includes `last_human_touched_at INTEGER`. The migration
     // must be a no-op (NOT a "duplicate column" crash). This is the
     // same fresh-DB-vs-upgrade split that bit Migration 020 / 052 —
-    // see project memory `nalar-data-and-routines.md` §"Migration
+    // see project memory `pabrik-data-and-routines.md` §"Migration
     // #009-#052 fresh-DB cascade is fragile".
     try ctx.db.exec(alloc, "DROP TABLE workspace_item_tasks", &.{});
     try ctx.db.exec(alloc,
@@ -10646,7 +10654,7 @@ test "Migration065 stamps a value when set after the migration" {
 //      needed).
 //   3. Be idempotent on re-run (re-running must not crash with
 //      "duplicate column" or "index already exists" — see project
-//      memory `nalar-data-and-routines.md` §"Migration #009-#052
+//      memory `pabrik-data-and-routines.md` §"Migration #009-#052
 //      fresh-DB cascade is fragile").
 //   4. Be safe for fresh-DB installs that already declare the column
 //      in their canonical CREATE TABLE — `addColumnIfMissing` handles
@@ -11113,7 +11121,7 @@ test "Migration067 is idempotent on a fresh-DB install where the canonical schem
     // already includes `tags TEXT`. The migration must be a no-op
     // (NOT a "duplicate column" crash). Mirrors the fresh-DB-vs-
     // upgrade split that hit Migration 020 / 052 — see project memory
-    // `nalar-data-and-routines.md` §"Migration #009-#052 fresh-DB
+    // `pabrik-data-and-routines.md` §"Migration #009-#052 fresh-DB
     // cascade is fragile".
     try ctx.db.exec(alloc, "DROP TABLE workspace_item_tasks", &.{});
     try ctx.db.exec(alloc,
@@ -12171,7 +12179,7 @@ test "Migration071 is registered in allMigrations" {
 // the caller passes null (matches the description / tags / image_urls
 // pattern).
 
-const createWorkspaceItemTask_fromMigration071 = @import("nalarcore").ai_mod.llm_history.createWorkspaceItemTask;
+const createWorkspaceItemTask_fromMigration071 = @import("pabrikcore").ai_mod.llm_history.createWorkspaceItemTask;
 
 test "createWorkspaceItemTask: cwd = '/home/me/proj-A' round-trips verbatim" {
     const alloc = testing.allocator;
@@ -13717,7 +13725,7 @@ test "Migration075: per-table column count is preserved (rename doesn't drop or 
 //
 // Why this file exists
 // ────────────────────
-// Migration 077 lays the schema foundation for multi-user / multi-tenant nalar:
+// Migration 077 lays the schema foundation for multi-user / multi-tenant pabrik:
 //   - `users` table (id, email, name, password_hash, role, is_active,
 //     created_at, updated_at, last_login_at)
 //   - `user_companies` table (id, name, slug, description, is_active,
@@ -14192,7 +14200,7 @@ test "Migration077 is registered in allMigrations" {
 //   2. Be idempotent on re-run (re-running must not crash with
 //      "duplicate column name" — see the project's hard-fought
 //      knowledge about fresh-DB migration cascades in
-//      `nalar-data-and-routines.md` §"Migration #009-#052 fresh-DB
+//      `pabrik-data-and-routines.md` §"Migration #009-#052 fresh-DB
 //      cascade is fragile").
 //   3. Be safe for fresh-DB installs that already declare the column
 //      in their canonical CREATE TABLE — use `addColumnIfMissing` so
@@ -14876,6 +14884,91 @@ pub const Migration100AddWorkspaceMembers = struct {
 
 // Migration 100 — `workspace_members` (shared workspaces) — inline tests
 // ============================================================================
+// Migration 101 — the `skills` table: workspace-scoped skill bodies.
+// ============================================================================
+//
+// Skills used to live on disk in TWO directories — a "global" one under
+// `~/.config/pabrik/skills/` and a "local" one under `<cwd>/.pabrik/skills/` —
+// and which one won was decided by walking the filesystem. That made the
+// FILESYSTEM the source of truth: a skill could not be scoped to a
+// workspace, could not be listed per workspace, and its identity was a
+// pathname. This migration moves the body into SQL so `workspace_id` on the
+// row is the isolation boundary, exactly as Migration 098 did for documents.
+//
+// There is deliberately no `is_global` column and no `cwd` column. Both
+// existed only to answer "which of the two directories is this?", and with
+// a single workspace-scoped table that question has no answer to give. A
+// skill wanted in every workspace is a row per workspace, not a special row.
+//
+// `UNIQUE (workspace_id, name)` rather than a surrogate-only key because
+// `name` is what every caller knows: `use_skill({ name })`, `add_skill({
+// name })`, `GET /api/workspaces/:workspace_id/skills/:skill_name`. Without
+// it, "two skills called `pdf` in one workspace" would be a
+// database-level impossibility rather than an upsert the store performs
+// explicitly.
+//
+// `skill_assets` exists because two installed skills (`pdf`, 11 files, and
+// `skill-creator`, 17 files) are BUNDLES whose bodies tell the model to run
+// sibling scripts like `scripts/run_eval.py`. A `content` column alone would
+// leave the model pointing at files that do not exist. Keeping companions as
+// rows is what lets the database stay the only source of truth; `use_skill`
+// materialises them into a temp directory and returns that path so the
+// body's relative references resolve.
+//
+// Asset `content` is TEXT, not BLOB: every companion shipped so far is
+// .py / .md / .html, and `SqliteBackend` binds through `sqlite3_bind_text`.
+// The importer refuses a non-UTF-8 file rather than corrupting it.
+//
+// Every text column is `NOT NULL DEFAULT ''` rather than nullable, for the
+// same reason as `documents`: `SqliteBackend.exec` binds a zero-length slice
+// as SQL NULL, so a skill with an empty description (perfectly legal — a
+// model may write a body before it writes a description) would blow up the
+// NOT NULL constraint mid-write unless every writer goes through
+// `COALESCE(NULLIF(?, ''), '')`.
+//
+// `ON DELETE CASCADE` is documentation only — `PRAGMA foreign_keys` is off
+// project-wide (see Migration 072's tests and Migration 093's header), so
+// the workspace delete path issues the child DELETEs itself.
+//
+// Idempotency: CREATE TABLE IF NOT EXISTS. One statement per db.exec
+// (sqlite3_prepare_v2 compiles only the first). Neither table gets its own
+// index: `UNIQUE (workspace_id, name)` already indexes that exact prefix,
+// and `UNIQUE (skill_id, rel_path)` already indexes every `WHERE skill_id =
+// ?` read, so a second bare index would only give the planner a duplicate to
+// choose between.
+pub const Migration102CreateSkills = struct {
+    pub const version: u32 = 101;
+    pub const name = "create_skills";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS skills (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_id TEXT NOT NULL,
+            \\    name TEXT NOT NULL,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    UNIQUE (workspace_id, name),
+            \\    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS skill_assets (
+            \\    id TEXT PRIMARY KEY,
+            \\    skill_id TEXT NOT NULL,
+            \\    rel_path TEXT NOT NULL,
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    UNIQUE (skill_id, rel_path),
+            \\    FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+    }
+};
+// ============================================================================
 //
 // See docs/plans/2026-10-02-workspace-members-shared-workspaces.md.
 //
@@ -15087,4 +15180,189 @@ test "Migration100 is registered in allMigrations" {
         if (m.version == Migration100AddWorkspaceMembers.version) return;
     }
     return error.Migration100NotRegistered;
+}
+// ============================================================================
+// Migration 101 — the `skills` table — inline tests
+// ============================================================================
+//
+// Each case answers one question a reviewer has to agree with before the
+// store above it can ship:
+//
+//   1. Does `skills` have the shape the design promises?
+//   2. Does `skill_assets` exist, and with the columns the bundle
+//      materialiser needs?
+//   3. Is `UNIQUE (workspace_id, name)` per-workspace — the whole point of
+//      dropping the two filesystem tiers?
+//   4. Do the NOT NULL DEFAULTs survive the empty-slice-as-NULL bind trap?
+//   5. Is it replay-safe, and is it wired into the chain at all?
+
+test "Migration101 creates skills with the expected columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "skills");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id", "workspace_id", "name", "description", "content", "created_at", "updated_at",
+    });
+}
+
+test "Migration101 creates skill_assets with the expected columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "skill_assets");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id", "skill_id", "rel_path", "content", "created_at",
+    });
+}
+
+test "Migration101 scopes skill names to a workspace, not globally" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+
+    // Same name, two workspaces, two rows: the isolation boundary is the
+    // row's `workspace_id`, which is what lets two workspaces each carry
+    // their own `pdf` without either shadowing the other.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'pdf')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_2', 'ws_b', 'pdf')
+    , &.{});
+
+    // Same name TWICE in one workspace is refused, so `use_skill({ name })`
+    // can never resolve to an arbitrary row.
+    try testing.expectError(error.ExecuteFailed, ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_3', 'ws_a', 'pdf')
+    , &.{}));
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM skills", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NoRows;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("2", row.values[0]);
+}
+
+test "Migration101 skill_assets refuses a duplicate rel_path for one skill" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'pdf')
+    , &.{});
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path) VALUES ('sa_1', 'sk_1', 'scripts/run.py')
+    , &.{});
+    try testing.expectError(error.ExecuteFailed, ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path) VALUES ('sa_2', 'sk_1', 'scripts/run.py')
+    , &.{}));
+
+    // The same rel_path under a DIFFERENT skill is fine — two bundles both
+    // shipping `scripts/run.py` is the ordinary case.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_2', 'ws_a', 'skill-creator')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path) VALUES ('sa_3', 'sk_2', 'scripts/run.py')
+    , &.{});
+}
+
+test "Migration101 skill_assets stores an empty companion without a NULL violation" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'pdf')
+    , &.{});
+
+    // An empty companion file is legal (`touch assets/.keep`). Bind "" and
+    // NOT NULL would reject it — which is exactly why the store writes
+    // `COALESCE(NULLIF(?, ''), '')`. A real NULL must still fail, so the
+    // test proves the column is constrained rather than merely nullable.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path, content)
+        \\VALUES ('sa_1', 'sk_1', 'assets/.keep', COALESCE(NULLIF('', ''), ''))
+    , &.{});
+    try testing.expectError(error.ExecuteFailed, ctx.db.exec(alloc,
+        \\INSERT INTO skill_assets (id, skill_id, rel_path, content) VALUES ('sa_2', 'sk_1', 'x.md', NULL)
+    , &.{}));
+}
+
+test "Migration101 skill description and content default to empty, not NULL" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+
+    // Omit both entirely so the schema DEFAULT applies. A model that writes
+    // a body before it writes a description is normal, not an error.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name) VALUES ('sk_1', 'ws_a', 'draft')
+    , &.{});
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT COALESCE(description, ''), COALESCE(content, '') FROM skills WHERE name = 'draft'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NoRows;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+    try testing.expectEqualStrings("", row.values[1]);
+}
+
+test "Migration101 is idempotent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+    // Second run on a database that already has live rows must not reset or
+    // duplicate anything — IF NOT EXISTS means both statements no-op.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skills (id, workspace_id, name, content) VALUES ('sk_1', 'ws_a', 'pdf', 'body')
+    , &.{});
+    try Migration102CreateSkills.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc, "SELECT COALESCE(content, '') FROM skills WHERE id = 'sk_1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NoRows;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("body", row.values[0]);
+}
+
+test "Migration101 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration102CreateSkills.version) return;
+    }
+    return error.Migration101NotRegistered;
 }

@@ -290,13 +290,13 @@ if (typeof window !== 'undefined') {
 }
 
 // Sibling-tab identity change (plan 2026-09-25, W5): when another tab logs
-// out or switches user, `nalar-auth-me:v1` is rewritten/removed. The
+// out or switches user, `pabrik-auth-me:v1` is rewritten/removed. The
 // `storage` event fires in THIS tab, so drop the previous user's scoped keys
 // here too — otherwise an already-open tab keeps painting A's cache after B
 // signed in next door.
 if (typeof window !== 'undefined') {
   const onStorage = (e: StorageEvent) => {
-    if (e.key !== null && e.key !== 'nalar-auth-me:v1') return
+    if (e.key !== null && e.key !== 'pabrik-auth-me:v1') return
     setCurrentUserId(null)
     purgeForeignScopedKeys()
     refreshAuthState()
@@ -685,7 +685,7 @@ const handleCloseAddMemoryDialog = () => {
 const handleCreateMemory = async (name: string, _content: string, path: string) => {
   // The local memory file is created by AddMemoryDialog (via
   // createLocalMemory API) and lives at
-  // `<cwd>/.nalar/memories/<name>.md`. The next chat in this
+  // `<cwd>/.pabrik/memories/<name>.md`. The next chat in this
   // workspace will pick it up via `loadLocalKnowledge` (see
   // `src/modules/agent/prompts.zig:263`). We currently just log
   // the success — a future iteration could:

@@ -36,7 +36,7 @@ in §"The point of the whole thing" is what caught it.
 The test root never reached `workspace_items_get.zig`, so `zig build test` was
 **green while the executable did not compile** — four errors in
 `workspace_items_default.zig` (`SystemFolder` is
-`nalarcore.system_folder.SystemFolder`; `db.query`'s `argv` is
+`pabrikcore.system_folder.SystemFolder`; `db.query`'s `argv` is
 `[]const []const u8` so `.{}` cannot infer a length; `WorkspaceItemGetResponse`
 has no `position`). Fixed in `d943d1dd`.
 
@@ -92,7 +92,7 @@ The `sessions` row itself is created lazily on the first chat message by `POST /
 |---|---|---|
 | The helper | `Sidebar.vue:845-873 createAndOpenStandardChat(ws, itemId)` | `HomeViewModel.createTask(itemId, request)` — `HomeViewModel.kt:985` |
 | Called from | the project rows' `+` button | `CreateTaskRow` inside an expanded project — `RecentsSidebar.kt:608` |
-| Ends in | `router.replace(buildTaskAppUrl(...))` | `_createdChat.tryEmit(id)` → `NalarNavGraph.kt:386-403` navigates |
+| Ends in | `router.replace(buildTaskAppUrl(...))` | `_createdChat.tryEmit(id)` → `PabrikNavGraph.kt:386-403` navigates |
 | Double-tap guard | `isNavigatingToTask` | `creatingTaskInProjectId != null` — `HomeViewModel.kt:991` |
 
 **Neither client reimplements a create flow.** Each new action resolves an `itemId` and calls the flow that is already there. On Vue that also means the repo's "every view switch must update the browser URL" rule is satisfied for free — the button is an *action*, and the URL change is its consequence.
@@ -107,7 +107,7 @@ Neither client sends a `cwd`. The server falls through to `resolveCwdFromTaskOrI
 //   3. createSandbox(...)         → per-session TMPDIR
 ```
 
-So **"project default root is the user's home" is expressed by a single `path` value on one row.** No new request field, no new resolution step, no migration of the cwd chain. This is also why the Android chat route can keep taking a single `sessionId` argument (`NalarRoutes.CHAT`) — the client never needs to know the cwd.
+So **"project default root is the user's home" is expressed by a single `path` value on one row.** No new request field, no new resolution step, no migration of the cwd chain. This is also why the Android chat route can keep taking a single `sessionId` argument (`PabrikRoutes.CHAT`) — the client never needs to know the cwd.
 
 ---
 
@@ -466,7 +466,7 @@ Add `ProjectsApi.defaultProjectPath(workspaceId)` (mirroring `itemsPath` at `:55
 
 **Wiring** — `shell/RecentsDrawer.kt:28 RecentsDrawerContent` is the single wiring point (its KDoc says so explicitly: two call sites exist, the shell drawer and the chat route's hamburger, and a second copy of this wiring would be a second copy of every drawer bug). One new param there, forwarded to `RecentsSidebar` — never edit the two call sites.
 
-**Visual** — copy `CreateTaskRow` (`projects/CreateTaskUi.kt:63`): a `Surface(onClick=…, enabled = !isBusy)` with `Icons.Filled.Add` and a `labelLarge` `NalarAccent` label, plus a `testTag`. **Do not copy its parameter name** — it is called `projectName` but every caller passes the **id** (`RecentsSidebar.kt:609`), which is why the tag reads `create_task_row_item_abc`. Copy the shape, not the name. Prefer a pencil glyph over a `+` so it is visually distinct from the per-project `+` that means "add to *this* project".
+**Visual** — copy `CreateTaskRow` (`projects/CreateTaskUi.kt:63`): a `Surface(onClick=…, enabled = !isBusy)` with `Icons.Filled.Add` and a `labelLarge` `PabrikAccent` label, plus a `testTag`. **Do not copy its parameter name** — it is called `projectName` but every caller passes the **id** (`RecentsSidebar.kt:609`), which is why the tag reads `create_task_row_item_abc`. Copy the shape, not the name. Prefer a pencil glyph over a `+` so it is visually distinct from the per-project `+` that means "add to *this* project".
 
 **Disabled state** — reuse the existing global guard `creatingTaskInProjectId != null` (`HomeViewModel.kt:991`). It is global rather than per-project, and that is correct: one create at a time is the right semantic, and a second "New Chat" row from one intent is exactly what that guard exists for.
 
@@ -495,7 +495,7 @@ fun newChat() {
 
 `defaultProjectId(projects)` is a **pure internal function** next to `selectWorkspaceId` (`HomeViewModel.kt:1188`), so it is unit-testable without Compose — the same reason that function exists.
 
-**Navigation needs no new code** (D13 changes only *when* the drawer closes, not *how* the chat opens). `_createdChat.tryEmit(created.id)` (`:1072`) is already collected at `NalarNavGraph.kt:386-403`, which selects, opens, and navigates with `popUpTo(SHELL)`. **Do not call `navigate` yourself.** The one addition D13 needs is a drawer-dismissal hook threaded through `RecentsDrawerContent` the way `onOpenAllChats` already is, wired to the modal sheet's `closeDrawer` (`MobileHomeScreen.kt:170-178`), which is only reachable from there. Firing it *before* navigating (so the drawer is gone while the chat screen mounts) is what makes the close feel instant rather than like a flicker.
+**Navigation needs no new code** (D13 changes only *when* the drawer closes, not *how* the chat opens). `_createdChat.tryEmit(created.id)` (`:1072`) is already collected at `PabrikNavGraph.kt:386-403`, which selects, opens, and navigates with `popUpTo(SHELL)`. **Do not call `navigate` yourself.** The one addition D13 needs is a drawer-dismissal hook threaded through `RecentsDrawerContent` the way `onOpenAllChats` already is, wired to the modal sheet's `closeDrawer` (`MobileHomeScreen.kt:170-178`), which is only reachable from there. Firing it *before* navigating (so the drawer is gone while the chat screen mounts) is what makes the close feel instant rather than like a flicker.
 
 ### 9d. Android tests
 JUnit 4 + Robolectric (`app/build.gradle.kts:93,100`); `androidTest/` compiles but **has never been run** — no CI emulator job — so JVM/Robolectric is the tier that actually gates.
@@ -560,7 +560,7 @@ JUnit 4 + Robolectric (`app/build.gradle.kts:93,100`); `androidTest/` compiles b
 | `…/recents/HomeViewModel.kt` | `defaultProjectId` (pure) + `newChat()` |
 | `…/recents/RecentsSidebar.kt` | the New Chat row in the `Column`, not the `LazyColumn` |
 | `…/shell/RecentsDrawer.kt` | one new param, forwarded |
-| `…/shell/NalarNavGraph.kt` | wire the row (no new route) |
+| `…/shell/PabrikNavGraph.kt` | wire the row (no new route) |
 | `…/shell/MobileHomeScreen.kt` | **D13** drawer-dismissal hook, threaded like `onOpenAllChats` |
 | `…/test/…/projects/DefaultProjectTest.kt` | **new** — pure + wire tests |
 | `…/test/…/projects/CreateTaskTest.kt` | agent-default-skips-the-picker case |

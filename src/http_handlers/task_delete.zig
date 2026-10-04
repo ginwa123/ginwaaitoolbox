@@ -37,10 +37,10 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
-const memories_mod = nalarcore.memories;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
+const memories_mod = pabrikcore.memories;
 
 // =====================================================================
 // Domain types
@@ -74,7 +74,7 @@ pub const TaskDeleteOutcome = union(enum) {
 ///
 /// Side effects on `.deleted`:
 ///   - For memory tasks: the underlying .md file in
-///     `<workspace_item.path>/.nalar/memories/<name>.md` is removed
+///     `<workspace_item.path>/.pabrik/memories/<name>.md` is removed
 ///     (idempotent — no-op if already missing).
 ///   - The `workspace_item_tasks` row is removed last.
 ///
@@ -90,7 +90,7 @@ pub const TaskDeleteOutcome = union(enum) {
 pub fn deleteTaskUseCase(
     allocator: std.mem.Allocator,
     io: std.Io,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     task_id: []const u8,
 ) !TaskDeleteOutcome {
     // 1. Look up the task so we can:
@@ -117,7 +117,7 @@ pub fn deleteTaskUseCase(
         }
 
         // 3a. Memory-task cleanup: delete the .md file from
-        //     `<workspace_item.path>/.nalar/memories/<task_name>`. We
+        //     `<workspace_item.path>/.pabrik/memories/<task_name>`. We
         //     only attempt this if the parent workspace_item still
         //     exists and has a path (otherwise the file is
         //     unreachable anyway).
@@ -163,7 +163,7 @@ pub fn deleteTaskUseCase(
 /// "running but unknown worker id" — the 409 message still surfaces).
 fn getRunningWorkerId(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     task_id: []const u8,
 ) ![]const u8 {
     const sql = "SELECT id FROM worker WHERE session_id = ? LIMIT 1";
@@ -185,7 +185,7 @@ fn getRunningWorkerId(
 ///
 /// Thin orchestrator over `deleteTaskUseCase`:
 ///   1. validate `:task_id` path parameter (inline)
-///   2. resolve DB handle via `nalarcore.getSingleton`
+///   2. resolve DB handle via `pabrikcore.getSingleton`
 ///   3. `deleteTaskUseCase` (use-case)
 ///   4. map outcome to HTTP response (200 / 409 / 500)
 ///
@@ -209,8 +209,8 @@ pub fn tasksDeleteHandler(
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "task_id required" }) });
     }
 
-    // 2. Resolve DB handle via the nalar singleton.
-    const di = nalarcore.getSingleton() catch {
+    // 2. Resolve DB handle via the pabrik singleton.
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Internal error" }) });
     };
     const sqlite_db = di.db;
@@ -262,8 +262,8 @@ pub fn tasksDeleteHandler(
 // the `task_update_test.zig` / `kanban_columns_delete_test.zig`
 // pattern), NOT by spinning up an in-memory DB. Standing up sqlite +
 // migrations + event-bus to behavioural-test the handler would
-// duplicate the migration setup and pull in `nalarcore.getSingleton()`
-// (which depends on a live `ContextIPCTui` with a server, logger,
+// duplicate the migration setup and pull in `pabrikcore.getSingleton()`
+// (which depends on a live `App` with a server, logger,
 // and event bus). The static checks below directly test the bug —
 // they fail if and only if the running-check or the handler/usecase
 // split is removed or routed back to the old path.
@@ -356,7 +356,7 @@ test "task_delete handler delegates to deleteTaskUseCase" {
             "\n!! {s} does not call deleteTaskUseCase !!\n" ++
                 "   The handler must delegate to the use-case. The split between\n" ++
                 "   handler (HTTP orchestration) and use-case (business logic) is\n" ++
-                "   the refactor's whole point — see nalar_config_profile_delete.zig.\n",
+                "   the refactor's whole point — see pabrik_config_profile_delete.zig.\n",
             .{HANDLER_PATH},
         );
         return error.DeleteTaskUseCaseMissing;
@@ -461,14 +461,14 @@ test "deleteTaskUseCase is re-exported from http_handlers/mod.zig" {
     defer allocator.free(source);
 
     // The use-case must be reachable as
-    // `nalarcore.http_handlers.deleteTaskUseCase` for tests and other
+    // `pabrikcore.http_handlers.deleteTaskUseCase` for tests and other
     // consumers (the project's convention — see
-    // nalar_config_profile_delete.zig's re-exports).
+    // pabrik_config_profile_delete.zig's re-exports).
     if (std.mem.indexOf(u8, source, "pub const deleteTaskUseCase") == null) {
         std.debug.print(
             "\n!! {s} does not re-export deleteTaskUseCase !!\n" ++
                 "   Add: pub const deleteTaskUseCase = @import(\"task_delete.zig\").deleteTaskUseCase;\n" ++
-                "   so the use-case is reachable via nalarcore.http_handlers.deleteTaskUseCase.\n",
+                "   so the use-case is reachable via pabrikcore.http_handlers.deleteTaskUseCase.\n",
             .{MOD_PATH},
         );
         return error.DeleteTaskUseCaseReExportMissing;

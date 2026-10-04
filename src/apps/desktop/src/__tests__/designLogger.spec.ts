@@ -29,7 +29,7 @@ describe('designLogger', () => {
     // Clear any localStorage key the test created.
     if (typeof localStorage !== 'undefined') {
       try {
-        localStorage.removeItem('nalar.design-logger.enabled')
+        localStorage.removeItem('pabrik.design-logger.enabled')
       } catch {
         // ignore
       }
@@ -121,7 +121,7 @@ describe('designLogger', () => {
     if (typeof localStorage === 'undefined') return
     setDesignLoggerEnabled(true)
     try {
-      expect(localStorage.getItem('nalar.design-logger.enabled')).toBe('on')
+      expect(localStorage.getItem('pabrik.design-logger.enabled')).toBe('on')
     } finally {
       setDesignLoggerEnabled(false)
     }

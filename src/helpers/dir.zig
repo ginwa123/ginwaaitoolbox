@@ -1,7 +1,7 @@
 const std = @import("std");
 
 
-/// Helper to get nalar data directory (~/local/share/nalar/data/apps)
+/// Helper to get pabrik data directory (~/local/share/pabrik/data/apps)
 pub fn getDataAppsDir(allocator: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map) ![]u8 {
     _ = io;
     // On POSIX systems, the canonical user-home env var is `HOME`. On
@@ -23,7 +23,7 @@ pub fn getDataAppsDir(allocator: std.mem.Allocator, io: std.Io, environment: *co
         home,
         ".local",
         "share",
-        "nalar",
+        "pabrik",
         "data",
         "apps",
     });
@@ -40,7 +40,7 @@ test "getDataAppsDir uses HOME when set" {
     defer allocator.free(result);
 
     const expected = try std.fs.path.join(allocator, &[_][]const u8{
-        "/home/testuser", ".local", "share", "nalar", "data", "apps",
+        "/home/testuser", ".local", "share", "pabrik", "data", "apps",
     });
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, result);
@@ -57,7 +57,7 @@ test "getDataAppsDir falls back to USERPROFILE when HOME is missing" {
     defer allocator.free(result);
 
     const expected = try std.fs.path.join(allocator, &[_][]const u8{
-        "C:\\Users\\testuser", ".local", "share", "nalar", "data", "apps",
+        "C:\\Users\\testuser", ".local", "share", "pabrik", "data", "apps",
     });
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, result);
@@ -74,7 +74,7 @@ test "getDataAppsDir falls back to USERPROFILE when HOME is empty" {
     defer allocator.free(result);
 
     const expected = try std.fs.path.join(allocator, &[_][]const u8{
-        "C:\\Users\\testuser", ".local", "share", "nalar", "data", "apps",
+        "C:\\Users\\testuser", ".local", "share", "pabrik", "data", "apps",
     });
     defer allocator.free(expected);
     try std.testing.expectEqualStrings(expected, result);

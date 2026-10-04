@@ -9,7 +9,7 @@ would read is gone. Both are the kind of mistake that survives review and
 is only discovered when a platform breaks.
 
 So these tests are about the TABLE, not about the platform it gates. They
-need no nalar binary, no harness boot and no browser — they run on all
+need no pabrik binary, no harness boot and no browser — they run on all
 three CI platforms identically, which is deliberate: a test that could
 only run on Linux could not police a table whose whole job is to describe
 Linux's differences from the other two.

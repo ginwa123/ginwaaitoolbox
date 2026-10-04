@@ -25,13 +25,13 @@
 ## Global Constraints
 
 - **Cross-platform**: every feature MUST work on Linux, macOS, AND Windows. This change is frontend-only — verify with `bun run build` (vue-tsc typecheck) + `bunx vitest run` (behavioural).
-- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` patterns. See `~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md`.
+- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` patterns. See `~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md`.
 - **TDD discipline**: every implementation step starts with a failing test, then minimal code to make it pass, then a commit.
-- **`bun run build` IS the type-check**: every frontend commit must pass `bun run build` (which runs `vue-tsc` under node); `bunx vitest run` alone does NOT catch type errors — see `.nalar/memories/nalar-frontend-patterns.md`.
+- **`bun run build` IS the type-check**: every frontend commit must pass `bun run build` (which runs `vue-tsc` under node); `bunx vitest run` alone does NOT catch type errors — see `.pabrik/memories/pabrik-frontend-patterns.md`.
 - **Behavioural Vue tests** use `@vue/test-utils` `mount` with `setActivePinia(createPinia())` in `beforeEach`. Mock fetch via `vi.fn()` returning `{ ok, status, json, text }` shape.
-- **Teleport-based components**: `KanbanTaskDetailDialog` uses `<Teleport to="body">`. Use `attachTo: document.body` and `document.querySelector` for assertions (NOT `wrapper.find`). See `.nalar/skills/vue-teleport-vitest-document-queryselector/SKILL.MD`.
-- **No port 8081**: smoke tests use port 8080 (the always-running dev `nalar` on 8081 is off-limits).
-- **NO new comments above `logger.infoFmt(...)` calls** (see `~/.config/nalar/memories/no-comments-on-logger-calls.md`).
+- **Teleport-based components**: `KanbanTaskDetailDialog` uses `<Teleport to="body">`. Use `attachTo: document.body` and `document.querySelector` for assertions (NOT `wrapper.find`). See `.pabrik/skills/vue-teleport-vitest-document-queryselector/SKILL.MD`.
+- **No port 8081**: smoke tests use port 8080 (the always-running dev `pabrik` on 8081 is off-limits).
+- **NO new comments above `logger.infoFmt(...)` calls** (see `~/.config/pabrik/memories/no-comments-on-logger-calls.md`).
 
 ---
 
@@ -46,7 +46,7 @@ EDIT src/apps/desktop/src/components/kanban/KanbanView.vue              (extend 
 NEW  src/apps/desktop/src/__tests__/KanbanView.createAndRun.spec.ts     (behavioural: call order, navigation, partial-success)
 
 EDIT docs/SPEC.md                                                       (+ §3.7 entry; §10.2.1 PR index)
-EDIT NALAR.md                                                           (+ Recent changes entry once shipped)
+EDIT PABRIK.md                                                           (+ Recent changes entry once shipped)
 ```
 
 Total: **8 files** (3 NEW, 5 EDIT).
@@ -793,7 +793,7 @@ const handleCreateTaskSave = async (payload: {
         // Surface a toast so the user knows to click the card to retry.
         useNotificationStore().notifyError(
           'Task created — agent did not start',
-          'Click the card to retry, or check the nalar logs.',
+          'Click the card to retry, or check the pabrik logs.',
         )
       }
     }
@@ -887,7 +887,7 @@ cd src/apps/desktop && timeout 180 bun run build 2>&1 | tail -n 20
 ```
 
 - [ ] `vue-tsc --build` exits clean (no type errors)
-- [ ] No `.js` files emitted next to `.ts` source files (per `.nalar/skills/vue-tsc-build-emits-js-files/SKILL.MD`, delete any if present):
+- [ ] No `.js` files emitted next to `.ts` source files (per `.pabrik/skills/vue-tsc-build-emits-js-files/SKILL.MD`, delete any if present):
 
 ```bash
 git status --short | grep -E '\.ts\.js$|\.ts\.js\.map$' | head -n 5
@@ -909,13 +909,13 @@ timeout 180 zig build install:linux:system 2>&1 | tail -n 10
 
 ### Step 4.4 — Manual smoke (port 8080)
 
-Use the always-running dev `nalar` on a different port to avoid touching 8081:
+Use the always-running dev `pabrik` on a different port to avoid touching 8081:
 
 ```bash
-# Start a fresh nalar on port 8080 with isolated tmpdir
-mkdir -p /tmp/nalar-smoke && cd /tmp/nalar-smoke
-HOME=/tmp/nalar-smoke timeout 600 ../zig-out/bin/nalar --port 8080 &
-NALAR_PID=$!
+# Start a fresh pabrik on port 8080 with isolated tmpdir
+mkdir -p /tmp/pabrik-smoke && cd /tmp/pabrik-smoke
+HOME=/tmp/pabrik-smoke timeout 600 ../zig-out/bin/pabrik --port 8080 &
+PABRIK_PID=$!
 sleep 2
 
 # In a separate terminal, drive the API:
@@ -932,7 +932,7 @@ sleep 2
 #   - Assert first user message is "Smoke test task\n\nThis is the description"
 #   - Assert agent spinner appears within 500ms
 
-kill $NALAR_PID 2>/dev/null
+kill $PABRIK_PID 2>/dev/null
 ```
 
 - [ ] Manual smoke passes
@@ -948,7 +948,7 @@ Edit `docs/SPEC.md`:
 2. Add a row to §10.2.1 PR index:
    > | kanban create task & run agent | worktree/kanban-create-task-run-agent | PR #TBD | 2026-08-06 |
 
-Edit `NALAR.md`:
+Edit `PABRIK.md`:
 
 Add to the Recent Changes section:
 
@@ -967,12 +967,12 @@ Add to the Recent Changes section:
 ### Step 4.6 — Final commit + PR
 
 ```bash
-git add docs/SPEC.md NALAR.md
-git -c user.name=ginwa -c user.email=ginwa@local commit -m "docs(kanban): SPEC.md + NALAR.md entries for create-and-run
+git add docs/SPEC.md PABRIK.md
+git -c user.name=ginwa -c user.email=ginwa@local commit -m "docs(kanban): SPEC.md + PABRIK.md entries for create-and-run
 
 Spec entry: §3.7 frontend kanban section.
 PR index: §10.2.1.
-NALAR.md changelog: 2026-08-06 entry.
+PABRIK.md changelog: 2026-08-06 entry.
 
 Plan: docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md
 Task 4 of 4"

@@ -14,7 +14,7 @@ This test replays the EXACT shape over the real HTTP wire:
   1. A TCP capture server stands in for the LLM endpoint and records the
      raw request bytes the backend sends (then hangs up — the run fails,
      which is fine; we assert on the captured *request*, not the reply).
-  2. The harness boots with the stub profile; ``PUT /api/config/nalar``
+  2. The harness boots with the stub profile; ``PUT /api/config/pabrik``
      (granular ``ProfileChange`` shape) repoints it at the capture server
      with ``url_style="openai-response"`` (live-reload, no restart).
   3. ``PUT /api/llm/session/:id`` creates the session row *without*
@@ -160,7 +160,7 @@ def _repoint_stub_at_capture(
     """PUT granular ProfileChange: stub → capture server + openai-response."""
     harness.http(
         "PUT",
-        "/api/config/nalar",
+        "/api/config/pabrik",
         json_body={
             "profiles": [
                 {
@@ -187,7 +187,7 @@ def _seed_poisoned_history(harness: FunctionalHarness) -> None:
     column. Replay only includes rows with `is_feed_to_llm = 1`
     (`get_llm_histories.zig`), ordered by `created_at_nano`.
     """
-    db_path = harness.temp_dir / ".config" / "nalar" / "agent.db"
+    db_path = harness.temp_dir / ".config" / "pabrik" / "agent.db"
     tool_calls = json.dumps([
         {
             "id": CALL_ID,

@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const text_replace_mod = nalarcore.text_replace_tool;
+const agent = pabrikcore.agent;
+const text_replace_mod = pabrikcore.text_replace_tool;
 const wrapToolOutput = tools.wrapToolOutput;
 const args_repair = @import("tools_args_repair.zig");
 const testing = std.testing;
@@ -122,7 +122,7 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    // The repair cannot leave a legal escape alone, so `…\.config\nalar`
+    // The repair cannot leave a legal escape alone, so `…\.config\pabrik`
     // decodes to a real newline in the middle of the path. No path contains
     // a control byte, and a raw one is illegal inside a JSON string, so the
     // byte provably came from an escape the model meant as a separator.
@@ -409,7 +409,7 @@ test "execTextReplace: wrong field name is reported as a named, actionable error
     // Shape lifted from the reported call: `new_string` instead of
     // `new_str`, and no `old_str` at all.
     const args =
-        \\{"path":"C:\\Users\\gilang.trisetya\\.config\\nalar\\.worktrees\\sb02\\internal\\domain\\sales_invoice\\test.go","new_string":"x"}
+        \\{"path":"C:\\Users\\gilang.trisetya\\.config\\pabrik\\.worktrees\\sb02\\internal\\domain\\sales_invoice\\test.go","new_string":"x"}
     ;
 
     const env = try runTr(a, args);

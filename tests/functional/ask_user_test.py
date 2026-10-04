@@ -39,7 +39,7 @@ from harness import FunctionalHarness
 
 
 def _db_path(harness: FunctionalHarness) -> Path:
-    return Path(harness.temp_dir) / ".config" / "nalar" / "agent.db"
+    return Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
 
 
 def _connect(harness: FunctionalHarness) -> sqlite3.Connection:

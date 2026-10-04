@@ -29,7 +29,7 @@ describe('fpsOverlay', () => {
     unmount()
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
-    document.getElementById('nalar-fps-overlay')?.remove()
+    document.getElementById('pabrik-fps-overlay')?.remove()
   })
 
   function tickFrames(times: number, stepMs = 16) {
@@ -43,7 +43,7 @@ describe('fpsOverlay', () => {
 
   it('mounts a chip into document.body in dev mode', () => {
     mount()
-    const el = document.getElementById('nalar-fps-overlay')
+    const el = document.getElementById('pabrik-fps-overlay')
     expect(el).not.toBeNull()
     expect(el!.textContent).toMatch(/FPS/)
   })
@@ -53,23 +53,23 @@ describe('fpsOverlay', () => {
     // 64 frames at 16ms ≈ 1024ms of wall time → crosses the 1s window
     // and writes a numeric reading.
     tickFrames(64)
-    const el = document.getElementById('nalar-fps-overlay')!
+    const el = document.getElementById('pabrik-fps-overlay')!
     expect(el.textContent).toMatch(/\d+/)
     expect(el.textContent).not.toBe('-- FPS')
   })
 
   it('unmount removes the chip and cancels the loop', () => {
     mount()
-    expect(document.getElementById('nalar-fps-overlay')).not.toBeNull()
+    expect(document.getElementById('pabrik-fps-overlay')).not.toBeNull()
     unmount()
-    expect(document.getElementById('nalar-fps-overlay')).toBeNull()
+    expect(document.getElementById('pabrik-fps-overlay')).toBeNull()
     expect(cancelAnimationFrame).toHaveBeenCalled()
   })
 
   it('is a no-op when DEV is false (prod build)', () => {
     vi.stubEnv('DEV', false)
     mount()
-    expect(document.getElementById('nalar-fps-overlay')).toBeNull()
+    expect(document.getElementById('pabrik-fps-overlay')).toBeNull()
     expect(requestAnimationFrame).not.toHaveBeenCalled()
     // unmount must also be safe when nothing was mounted
     expect(() => unmount()).not.toThrow()
@@ -78,6 +78,6 @@ describe('fpsOverlay', () => {
   it('double-mount is idempotent (no duplicate chips)', () => {
     mount()
     mount()
-    expect(document.querySelectorAll('#nalar-fps-overlay').length).toBe(1)
+    expect(document.querySelectorAll('#pabrik-fps-overlay').length).toBe(1)
   })
 })

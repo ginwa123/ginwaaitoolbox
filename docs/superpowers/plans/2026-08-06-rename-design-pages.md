@@ -146,7 +146,7 @@ single source of truth — no refetch is needed after the rename.
 - **Page-name validation mirrors `setDesignPage`** — the `BadPageName`
   guard (empty string → 400) is intentionally the same as `setDesignPage`.
   An empty name would break the on-disk folder derivation in
-  `design_io` (`<item.path>/.nalar/design/<page_name>/...`).
+  `design_io` (`<item.path>/.pabrik/design/<page_name>/...`).
 
 ## Verification
 
@@ -158,10 +158,10 @@ timeout 180 zig build test --summary all
 # Failures + crash = pre-existing baseline.
 
 timeout 60 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # clean
 timeout 60 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # clean
 
 # Frontend (Linux)

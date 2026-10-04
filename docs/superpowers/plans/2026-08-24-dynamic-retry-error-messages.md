@@ -163,7 +163,7 @@ Change to:
 
 ```zig
 const soft_diagnostic = std.fmt.allocPrint(allocator,
-    \\[Agent Nalar System info] unattended-mode soft-bail after {} consecutive retries.
+    \\[Agent Pabrik System info] unattended-mode soft-bail after {} consecutive retries.
     \\Reason for last retry: {s} (source: {s}).
     \\Server said: {s}
     \\The session keeps running.
@@ -176,7 +176,7 @@ Change to:
 
 ```zig
 const diagnostic = std.fmt.allocPrint(allocator,
-    \\[Agent Nalar System error] workflow halted after {} consecutive retries.
+    \\[Agent Pabrik System error] workflow halted after {} consecutive retries.
     \\Reason for last retry: {s} (source: {s}).
     \\Server said: {s}
 , .{ retry_count, reason_error, reason_source, last_retry_server_detail orelse "(no server detail)" }) catch "workflow halted after too many retries";

@@ -42,7 +42,7 @@ describe('api.memories', () => {
     it('calls GET on /api/memories and returns the parsed body', async () => {
       mockFetchOnce(200, {
         memories: [
-          { name: 'foo.md', title: 'Foo', path: '/home/x/.config/nalar/memories/foo.md', size: 13 },
+          { name: 'foo.md', title: 'Foo', path: '/home/x/.config/pabrik/memories/foo.md', size: 13 },
         ],
       })
 

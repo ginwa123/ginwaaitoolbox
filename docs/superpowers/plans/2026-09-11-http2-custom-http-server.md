@@ -108,7 +108,7 @@ Verified on this box: `curl 8.22.0 … nghttp2/1.70.0` supports `--http2-prior-k
 | CLI flags parse at `:196-221`, server created at `:254`, `ctxParent` flag idiom at `:122-124, 210`; second parser for `service start` at `:706-826` | `src/main.zig` |
 | Tooling: `curl 8.22.0` + `nghttp2/1.70.0`, `--http2-prior-knowledge` supported; no `nghttp`/`h2load`/`h2spec`; no python `h2`/`hpack`/`hyperframe`; `uv 0.12.10` present | verified on this machine; CI installs curl on Linux/macOS |
 | Functional suite: Linux+macOS only, `zig build functional-test`, harness boots `[bin, "--port", port]` with an isolated `HOME` | `ci.yml:1487-1512`, `harness.py:396`, `:318-329`, `:1054-1075` |
-| Build commands | `zig build test --summary all` (root, CI gate); `cd src/modules/custom_http_server && zig build test --summary all` (fast module gate); `zig build install:linux` (produces `zig-out/bin/nalarcore-linux-x86_64` — **`nalar-desktop` does NOT rebuild it**) |
+| Build commands | `zig build test --summary all` (root, CI gate); `cd src/modules/custom_http_server && zig build test --summary all` (fast module gate); `zig build install:linux` (produces `zig-out/bin/pabrikcore-linux-x86_64` — **`pabrik-desktop` does NOT rebuild it**) |
 
 ## 4. File map
 
@@ -150,7 +150,7 @@ Verified on this box: `curl 8.22.0 … nghttp2/1.70.0` supports `--http2-prior-k
 | `src/main.zig` | `--http2=h2c` parse (`:196-221`) + apply after `:254`; static-dir handler + 3 helpers switch to the writer (`:852`, `:892`, `:961`, `:977`); `service start` parser (`:706-826`) |
 | `src/modules/custom_http_server/src/main.zig` | add an `--http2` demo route + fix the 2 pre-existing compile errors so `zig build` works again |
 | `src/modules/custom_http_server/README.md` | features/architecture/limits |
-| `NALAR.md` | changelog entry at the end (repo convention) |
+| `PABRIK.md` | changelog entry at the end (repo convention) |
 | `tests/functional/requirements.txt` | optional: `h2>=4.1,<5` (D6) |
 
 ## 5. Protocol contract (what "done" means on the wire)
@@ -186,9 +186,9 @@ cd src/modules/custom_http_server && zig build test --summary all && cd -
 # 2. CI-equivalent gate (run before every commit that touches module code)
 zig build test --summary all
 
-# 3. Functional gate — rebuild the REAL binary first: nalar-desktop does NOT rebuild it
+# 3. Functional gate — rebuild the REAL binary first: pabrik-desktop does NOT rebuild it
 zig build install:linux
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/http2_test.py -v
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/http2_test.py -v
 
 # 4. Commit per task, push, open the PR at the end
 git add -A && git commit -m "feat(http2): <task>"
@@ -337,7 +337,7 @@ Rule: **port 8081 is never used**; the harness picks a random free port in 40 00
 #### T24 — Demo binary + docs
 - [ ] Fix `src/modules/custom_http_server/src/main.zig`'s 2 compile errors (`:717` unused `noCacheMiddleware`; `wsEchoHandler` signature vs `router.zig:394`) so `zig build` in the module works again.
 - [ ] Add an `--http2` demo note + a `/h2check` route returning the negotiated protocol.
-- [ ] Update `README.md` (features, architecture, limits, the h2c/browser caveat) and `docs/http2.md`; add the `NALAR.md` changelog entry.
+- [ ] Update `README.md` (features, architecture, limits, the h2c/browser caveat) and `docs/http2.md`; add the `PABRIK.md` changelog entry.
 - [ ] Verify + commit: `docs(http2): module README + architecture note + changelog`.
 
 ### Phase 4 — verification
@@ -351,7 +351,7 @@ Rule: **port 8081 is never used**; the harness picks a random free port in 40 00
 - [ ] `test_h2_large_response_flow_control` — a route returning ≥1 MiB (`/api/llm/histories` style or a dedicated test route) completes over h2 (raw socket; assert `WINDOW_UPDATE` frames were exchanged).
 - [ ] `test_h2_bogus_preface_gets_goaway` — raw socket writes `PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n` + a garbage frame → server replies `GOAWAY(PROTOCOL_ERROR)` and closes, process stays alive.
 - [ ] `test_h2_connection_reuse` — `curl --http2-prior-knowledge url1 url2` uses **one** connection (`%{num_connects}` == 1 for the second URL) where h1 today needs 2 (baseline already measured).
-- [ ] Run: `zig build install:linux && NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/http2_test.py -v`.
+- [ ] Run: `zig build install:linux && PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/http2_test.py -v`.
 - [ ] Commit: `test(http2): functional h2c suite (curl + raw sockets)`.
 
 #### T26 — (Optional, D6) multiplexing + interleaving with the `h2` package
@@ -362,7 +362,7 @@ Rule: **port 8081 is never used**; the harness picks a random free port in 40 00
 #### T27 — Final gates + PR
 - [ ] `zig build test --summary all` (root) green; `cd src/modules/custom_http_server && zig build test --summary all` green.
 - [ ] `zig build install:linux` + full `tests/functional/` suite green (no regressions in the ~40 existing suites).
-- [ ] `zig build nalar-desktop --summary all` green (app still builds).
+- [ ] `zig build pabrik-desktop --summary all` green (app still builds).
 - [ ] Manual smoke: start the real binary on a random non-8081 port with `--http2=h2c`, verify `curl --http2-prior-knowledge` + the desktop app still work; stop the process.
 - [ ] Push + `gh pr create --base main` with a body linking this plan, the risk list, and the measured before/after (`num_connects`).
 - [ ] Commit: `docs(http2): verification results` (or fold into the PR body).
@@ -371,10 +371,10 @@ Rule: **port 8081 is never used**; the harness picks a random free port in 40 00
 
 1. `zig build test --summary all` → 0 failures (root/CI gate).
 2. `cd src/modules/custom_http_server && zig build test --summary all` → 0 failures.
-3. `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/ -v` → 0 failures (existing suites + `http2_test.py`).
+3. `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/ -v` → 0 failures (existing suites + `http2_test.py`).
 4. `curl --http2-prior-knowledge` against the real binary returns `http_version=2` on a documented route; `curl` (h1) returns `1.1` with unchanged bytes.
 5. With `--http2` absent: byte-identical h1 behaviour (existing byte-level tests prove it).
-6. `zig build nalar-desktop --summary all` green.
+6. `zig build pabrik-desktop --summary all` green.
 
 ## 9. Risks & pitfalls (ordered by likelihood × damage)
 

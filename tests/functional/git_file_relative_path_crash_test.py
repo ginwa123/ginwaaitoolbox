@@ -28,7 +28,7 @@ Why a wire test: the failure mode is SIGABRT of the whole process, which only a
 real round-trip can observe ("is this PID still answering /health?").
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \\
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \\
       python3 -m pytest tests/functional/git_file_relative_path_crash_test.py -v
 """
 
@@ -54,8 +54,8 @@ FILE = "src/main.zig"
 
 
 @pytest.fixture
-def harness(default_nalar_bin: object) -> FunctionalHarness:
-    h = FunctionalHarness.boot(default_nalar_bin)
+def harness(default_pabrik_bin: object) -> FunctionalHarness:
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         yield h
     finally:
@@ -68,7 +68,7 @@ def harness(default_nalar_bin: object) -> FunctionalHarness:
 def _assert_alive(harness: FunctionalHarness, what: str) -> None:
     log_tail = harness.tail_log(4000)
     assert harness.health(), (
-        f"nalar died while handling {what} — the relative-path abort is back.\n"
+        f"pabrik died while handling {what} — the relative-path abort is back.\n"
         f"--- log tail ---\n{log_tail[-4000:]}"
     )
     for marker in CRASH_MARKERS:

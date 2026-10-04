@@ -34,15 +34,15 @@ Why this file spawns the binary itself
 ``FunctionalHarness.boot`` readiness-probes a **plaintext** ``GET
 http://…/health`` (``harness.py::_wait_ready``). A TLS-only listener — which is
 what the contract above requires — can never satisfy that probe, and ``boot()``
-kills the child and leaks the tempdir on the way out. ``_spawn_nalar`` below
-therefore reuses every harness *invariant* (``nalar-func-`` tmpdir validated by
+kills the child and leaks the tempdir on the way out. ``_spawn_pabrik`` below
+therefore reuses every harness *invariant* (``pabrik-func-`` tmpdir validated by
 ``is_safe_tmp``, the random non-8081 port picker, ``FunctionalHarness``
 teardown) but waits on a TLS probe instead. It also returns the harness even
 when readiness fails, so a test can teardown and assert on the failure text.
 
 Run:
     zig build install:linux
-    NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
         python3 -m pytest tests/functional/http2_tls_test.py -v
 
 KNOWN-BROKEN UPSTREAM: the TLS serve path
@@ -62,12 +62,12 @@ evidence:
     curl: (35) Send failure: Broken pipe
 
 The handshake itself succeeds and the certificate is valid (``CN=localhost``,
-SAN ``DNS:localhost, IP:127.0.0.1``, one-year validity). nalar logs ``TLS
+SAN ``DNS:localhost, IP:127.0.0.1``, one-year validity). pabrik logs ``TLS
 enabled (ALPN: h2, http/1.1) cert=…`` and then ``Agent is ready to serve!`` and
 stays alive. The connection is accepted, the handshake completes, and the
 server then drops the socket without emitting an HTTP response.
 
-That is not nalar's code. ``src/main.zig`` only *constructs* the TLS context
+That is not pabrik's code. ``src/main.zig`` only *constructs* the TLS context
 (``gserverz.tls.Ctx.init(allocator, cert, key, &.{alpn_h2, alpn_http1})`` at
 line 168) and hands it to the server (``gs.setTlsCtx(ctx)`` at line 398); the
 accept/serve loop that drops the connection lives in the pinned ``kabelweb``
@@ -84,7 +84,7 @@ Fixing it means a kabelweb change plus a new pinned hash — not something this
 repo can do. The tests are left in place and skipped rather than deleted, so
 they start guarding again the moment the pin is bumped. Re-enable them with:
 
-    NALAR_RUN_KNOWN_BROKEN_TLS=1 python3 -m pytest tests/functional/http2_tls_test.py -v
+    PABRIK_RUN_KNOWN_BROKEN_TLS=1 python3 -m pytest tests/functional/http2_tls_test.py -v
 """
 
 from __future__ import annotations
@@ -126,11 +126,11 @@ from harness import (
 _TLS_TRANSPORT_BROKEN_UPSTREAM = (
     "kabelweb TLS transport drops the connection after a successful handshake "
     "(upstream dep, pinned at 7e97a09; src/ has no SSL_accept/SSL_read/"
-    "SSL_write). Re-enable with NALAR_RUN_KNOWN_BROKEN_TLS=1."
+    "SSL_write). Re-enable with PABRIK_RUN_KNOWN_BROKEN_TLS=1."
 )
 
 _tls_transport_broken = pytest.mark.skipif(
-    os.environ.get("NALAR_RUN_KNOWN_BROKEN_TLS") != "1",
+    os.environ.get("PABRIK_RUN_KNOWN_BROKEN_TLS") != "1",
     reason=_TLS_TRANSPORT_BROKEN_UPSTREAM,
 )
 
@@ -251,25 +251,25 @@ def _curl_http_version(url: str, extra: list[str] | None = None) -> tuple[str, s
 
 @dataclasses.dataclass
 class Booted:
-    """Result of ``_spawn_nalar``: always a harness, plus whether it got ready."""
+    """Result of ``_spawn_pabrik``: always a harness, plus whether it got ready."""
 
     harness: FunctionalHarness
     ready: bool
     detail: str = ""
 
 
-def _spawn_nalar(
-    nalar_bin: Path,
+def _spawn_pabrik(
+    pabrik_bin: Path,
     extra_args: Sequence[str] = (),
     *,
     tls: bool,
     ready_timeout_s: float = 45.0,
 ) -> Booted:
-    """Boot nalar the way ``FunctionalHarness.boot`` does, but probe for the
+    """Boot pabrik the way ``FunctionalHarness.boot`` does, but probe for the
     protocol the listener was *asked* to speak.
 
     Args:
-        nalar_bin: the built binary (from the ``default_nalar_bin`` fixture).
+        pabrik_bin: the built binary (from the ``default_pabrik_bin`` fixture).
         extra_args: appended after ``--port`` (``--tls-selfsigned`` etc.).
         tls: if True, readiness = an ``https://…/health`` request succeeds; if
             False, readiness = the harness's usual plaintext ``/health``.
@@ -331,10 +331,10 @@ def _spawn_nalar(
         target.mkdir(parents=True, exist_ok=True)
         env[key] = str(target)
 
-    log_path = temp_dir / "nalar.log"
+    log_path = temp_dir / "pabrik.log"
     with log_path.open("wb") as log_file:
         proc = subprocess.Popen(
-            [str(nalar_bin), "--port", str(port), *extra_args],
+            [str(pabrik_bin), "--port", str(port), *extra_args],
             stdout=log_file,
             stderr=subprocess.STDOUT,
             env=env,
@@ -343,12 +343,12 @@ def _spawn_nalar(
 
     h = FunctionalHarness(
         port=port,
-        nalar_bin=nalar_bin,
+        pabrik_bin=pabrik_bin,
         temp_dir=temp_dir,
         orig_home=orig_home,
         log_path=log_path,
         pid=proc.pid,
-        dry_run=os.environ.get("NALAR_FUNCTIONAL_DRY_RUN") == "1",
+        dry_run=os.environ.get("PABRIK_FUNCTIONAL_DRY_RUN") == "1",
         orig_userprofile=orig_userprofile,
         orig_appdata=orig_appdata,
         orig_localappdata=orig_localappdata,
@@ -363,6 +363,7 @@ def _spawn_nalar(
         # synthesised value and invent a variable Windows never had.
         _env_backup=snapshot_parent_env(),
         _env_shadowed={},
+
     )
 
     started = time.monotonic()
@@ -373,7 +374,7 @@ def _spawn_nalar(
             return Booted(
                 h,
                 False,
-                f"nalar exited rc={proc.returncode} during boot ({'TLS' if tls else 'plaintext'} mode)"
+                f"pabrik exited rc={proc.returncode} during boot ({'TLS' if tls else 'plaintext'} mode)"
                 f"\n--- last 30 lines of log ---\n{h.tail_log(30)}",
             )
         ok, last = _probe(h.port, tls=tls)
@@ -396,7 +397,7 @@ def _spawn_nalar(
     return Booted(
         h,
         False,
-        f"nalar did not become ready in {ready_timeout_s}s in {'TLS' if tls else 'plaintext'} "
+        f"pabrik did not become ready in {ready_timeout_s}s in {'TLS' if tls else 'plaintext'} "
         f"mode (last probe: {last})\n--- last 30 lines of log ---\n{h.tail_log(30)}",
     )
 
@@ -529,15 +530,15 @@ def _tls_cert_path(h: FunctionalHarness) -> Path | None:
 
 
 @_tls_transport_broken
-def test_tls_selfsigned_serves_http2(default_nalar_bin: Path) -> None:
+def test_tls_selfsigned_serves_http2(default_pabrik_bin: Path) -> None:
     """``--tls-selfsigned`` + a client that offers h2 (ALPN) → HTTP/2.
 
     ``curl -k --http2`` over an https URL negotiates via ALPN; ``%{http_version}``
     reports ``2`` only if the server offered ``h2`` first and our client took it.
     """
     _require_http2_curl()
-    booted = _spawn_nalar(
-        default_nalar_bin, ("--tls-selfsigned",), tls=True
+    booted = _spawn_pabrik(
+        default_pabrik_bin, ("--tls-selfsigned",), tls=True
     )
     try:
         h = _require_ready(booted)
@@ -551,15 +552,15 @@ def test_tls_selfsigned_serves_http2(default_nalar_bin: Path) -> None:
 
 
 @_tls_transport_broken
-def test_tls_offers_http11_fallback(default_nalar_bin: Path) -> None:
+def test_tls_offers_http11_fallback(default_pabrik_bin: Path) -> None:
     """A TLS client that only asks for ``http/1.1`` is still served, on h1.
 
     The ALPN list is ``["h2", "http/1.1"]``: the server must not require h2 from
     every TLS client.
     """
     _require_http2_curl()
-    booted = _spawn_nalar(
-        default_nalar_bin, ("--tls-selfsigned",), tls=True
+    booted = _spawn_pabrik(
+        default_pabrik_bin, ("--tls-selfsigned",), tls=True
     )
     try:
         h = _require_ready(booted)
@@ -579,7 +580,7 @@ def test_tls_offers_http11_fallback(default_nalar_bin: Path) -> None:
 
 
 @_tls_transport_broken
-def test_tls_cert_san_matches_localhost(default_nalar_bin: Path) -> None:
+def test_tls_cert_san_matches_localhost(default_pabrik_bin: Path) -> None:
     """``--cacert <cert>`` verifies for BOTH ``localhost`` and ``127.0.0.1``.
 
     This is the only test that does not use ``-k``: it is the assertion that the
@@ -587,8 +588,8 @@ def test_tls_cert_san_matches_localhost(default_nalar_bin: Path) -> None:
     the app from one of those two names, depending on backend).
     """
     _require_http2_curl()
-    booted = _spawn_nalar(
-        default_nalar_bin, ("--tls-selfsigned",), tls=True
+    booted = _spawn_pabrik(
+        default_pabrik_bin, ("--tls-selfsigned",), tls=True
     )
     try:
         h = _require_ready(booted)
@@ -619,14 +620,14 @@ def test_tls_cert_san_matches_localhost(default_nalar_bin: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_plaintext_still_works_without_tls_flags(default_nalar_bin: Path) -> None:
+def test_plaintext_still_works_without_tls_flags(default_pabrik_bin: Path) -> None:
     """Default (no TLS flags): HTTP/1.1 and h2c keep working exactly as today.
 
     ``--http2 h2c`` is passed because it is the pre-existing, non-TLS flag that
     makes the prior-knowledge assertion meaningful; nothing TLS-related is set.
     """
     _require_http2_curl()
-    booted = _spawn_nalar(default_nalar_bin, ("--http2", "h2c"), tls=False)
+    booted = _spawn_pabrik(default_pabrik_bin, ("--http2", "h2c"), tls=False)
     try:
         h = _require_ready(booted)
         url = f"http://127.0.0.1:{h.port}/health"
@@ -647,7 +648,7 @@ def test_plaintext_still_works_without_tls_flags(default_nalar_bin: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_tls_flag_requires_both_files(default_nalar_bin: Path, tmp_path: Path) -> None:
+def test_tls_flag_requires_both_files(default_pabrik_bin: Path, tmp_path: Path) -> None:
     """``--tls`` with only one path (or a nonexistent path) must fail loudly.
 
     The contract: non-zero exit, and the message mentions BOTH the flag
@@ -658,8 +659,8 @@ def test_tls_flag_requires_both_files(default_nalar_bin: Path, tmp_path: Path) -
     assert not missing_cert.exists()
 
     # Case A: only one path (the key is missing from the command line).
-    one_path = _spawn_nalar(
-        default_nalar_bin, ("--tls", str(missing_cert)), tls=False, ready_timeout_s=15.0
+    one_path = _spawn_pabrik(
+        default_pabrik_bin, ("--tls", str(missing_cert)), tls=False, ready_timeout_s=15.0
     )
     try:
         text = _expect_boot_failure(one_path, "`--tls <cert.pem>` with no key")
@@ -669,8 +670,8 @@ def test_tls_flag_requires_both_files(default_nalar_bin: Path, tmp_path: Path) -
         one_path.harness.teardown()
 
     # Case B: both paths given, neither exists.
-    two_paths = _spawn_nalar(
-        default_nalar_bin,
+    two_paths = _spawn_pabrik(
+        default_pabrik_bin,
         ("--tls", str(missing_cert), str(missing_key)),
         tls=False,
         ready_timeout_s=15.0,
@@ -691,7 +692,7 @@ def test_tls_flag_requires_both_files(default_nalar_bin: Path, tmp_path: Path) -
 
 
 @_tls_transport_broken
-def test_tls_and_h2c_are_mutually_exclusive_on_a_port(default_nalar_bin: Path) -> None:
+def test_tls_and_h2c_are_mutually_exclusive_on_a_port(default_pabrik_bin: Path) -> None:
     """A TLS listener serves TLS ONLY; plaintext on the same port must fail.
 
     The contract says there is no second port and no sniffing: one port, one
@@ -699,8 +700,8 @@ def test_tls_and_h2c_are_mutually_exclusive_on_a_port(default_nalar_bin: Path) -
     this test is the one that must be revised — deliberately, with the contract.)
     """
     _require_http2_curl()
-    booted = _spawn_nalar(
-        default_nalar_bin, ("--tls-selfsigned",), tls=True
+    booted = _spawn_pabrik(
+        default_pabrik_bin, ("--tls-selfsigned",), tls=True
     )
     try:
         h = _require_ready(booted)

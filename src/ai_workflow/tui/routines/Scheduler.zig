@@ -37,8 +37,8 @@
 //! Task: task_1789032258828_0.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 
 const model = @import("model.zig");
 const cron = @import("cron.zig");
@@ -153,7 +153,7 @@ pub fn recomputeDueNextRunAt(
 pub fn fireDueRoutines(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.App,
     io: std.Io,
 ) !usize {
     const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
@@ -186,7 +186,7 @@ pub fn fireDueRoutines(
 pub fn start(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.App,
     io: std.Io,
 ) !void {
     // Restart safety: do these once at startup. A failure here is
@@ -236,10 +236,10 @@ pub fn start(
 // accessor in this codebase.
 //
 // The integration test that previously exercised `Scheduler.start`
-// end-to-end via the `nalar-routine-fire` sub-process is gone. The
+// end-to-end via the `pabrik-routine-fire` sub-process is gone. The
 // new architecture submits the LLM work to
 // `di.group_emit_session_create.concurrent` which requires a real
-// `nalarcore.ContextIPCTui` singleton with a wired event bus and a
+// `pabrikcore.App` singleton with a wired event bus and a
 // live `CallbackAiWorkerFlow` subscription. That machinery is not
 // constructible inside a unit test. The runtime smoke test (firing
 // a routine via the desktop UI and watching it run) is the
@@ -249,7 +249,7 @@ pub fn start(
 
 const testing = std.testing;
 
-const migration = nalarcore.migrations_mod.migration;
+const migration = pabrikcore.migrations_mod.migration;
 const Migration084ReplaceRoutinesWithWorkspaceRoutines = migration.Migration084ReplaceRoutinesWithWorkspaceRoutines;
 
 // ─── Test helpers ─────────────────────────────────────────────────────────

@@ -104,7 +104,7 @@ zig build test --summary all
 
 # end-to-end with a real h2 client
 zig build install:linux
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
   python3 -m pytest tests/functional/http2_test.py -v
 
 # cross-platform compile check

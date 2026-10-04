@@ -328,11 +328,11 @@ const deepLinkEdges = DATA.edges.filter((e) => e.kind === "deep-link");
 const backEdges = DATA.edges.filter((e) => e.kind === "back");
 const navEdges = DATA.edges.filter((e) => e.kind === "push" || e.kind === "replace");
 
-/* A `nalar://host/...` pattern is only reachable from outside if the manifest
+/* A `pabrik://host/...` pattern is only reachable from outside if the manifest
    claims the host. The check lives here rather than in the extractor because the
    extractor already decided it — this just re-derives it for the badge. */
 const manifestHas = (pattern) => {
-  const m = /^nalar:\/\/([^/]+)/.exec(pattern || "");
+  const m = /^pabrik:\/\/([^/]+)/.exec(pattern || "");
   return !!(m && Object.prototype.hasOwnProperty.call(META.manifestHosts, m[1]));
 };
 
@@ -519,7 +519,7 @@ function buildSvg() {
     route.textContent = d.template.length > 26 ? d.template.slice(0, 25) + "…" : d.template;
     g.appendChild(route);
     const konst = el("text", { class: "const", x: 14, y: 35 });
-    konst.textContent = "NalarRoutes." + d.route;
+    konst.textContent = "PabrikRoutes." + d.route;
     g.appendChild(konst);
     const screen = el("text", { class: "screen", x: 14, y: 52 });
     const joined = d.screens.join(" · ") || "(no screen)";
@@ -682,7 +682,7 @@ function renderDetail() {
     const args = d.arguments.map((a) => argValue.get(a) || a);
     host.innerHTML =
       "<h3>" + esc(d.template) + "</h3>" +
-      '<div class="sub mono">NalarRoutes.' + esc(d.route) + "</div>" +
+      '<div class="sub mono">PabrikRoutes.' + esc(d.route) + "</div>" +
       '<dl class="kv">' +
         "<dt>defined at</dt><dd>" + link({ file: META.navFile, line: d.line }) + "</dd>" +
         "<dt>launch</dt><dd>" + (d.isStart ? "yes — the start destination" : "no") + "</dd>" +

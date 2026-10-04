@@ -3,12 +3,12 @@ import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useCurrentMainView } from './useCurrentMainView'
 
-const BASE_TITLE = 'Nalar'
+const BASE_TITLE = 'Pabrik'
 
 /**
  * Keep the browser tab title in sync with what the main content area
  * is showing: the active session name for chats, the active task (or
- * item) name for workspace views, plain "Nalar" everywhere else.
+ * item) name for workspace views, plain "Pabrik" everywhere else.
  *
  * Source of truth for *what* is showing is `useCurrentMainView`
  * (URL-driven, never store flags that can drift); the *names* come
@@ -34,7 +34,7 @@ export function useDocumentTitle(): void {
       } else if (kind === 'workspace') {
         name = taskName || itemName || ''
       }
-      document.title = name ? `${name} - Nalar` : BASE_TITLE
+      document.title = name ? `${name} - Pabrik` : BASE_TITLE
     },
     { immediate: true },
   )

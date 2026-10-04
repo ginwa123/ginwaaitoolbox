@@ -1,9 +1,9 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
-const llm_history = nalarcore.llm_history;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
+const llm_history = pabrikcore.llm_history;
 const tags_validation = @import("tags_validation.zig");
 const image_urls_validation = @import("image_urls_validation.zig");
 const video_urls_validation = @import("video_urls_validation.zig");
@@ -69,7 +69,7 @@ pub const TaskUpdateError = error{
 const TaskUpdateInput = struct {
     task_id: []const u8,
     body: http_response.TaskUpdateRequest,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
 };
 
 /// Result of a successful task update. The handler serializes the
@@ -87,7 +87,7 @@ const TaskUpdateResult = struct {
 /// logic, and routine-fields branch are identical.
 fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const task_id = req.params.get("task_id") orelse "";
@@ -395,8 +395,8 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
 // (every test in `test_runner.zig` either covers a pure function or
 // is a static source check). Standing up a sqlite DB + migrations +
 // event-bus subscription in a unit test would require either pulling
-// in the `nalarcore.getSingleton()` singleton (which depends on a
-// live `ContextIPCTui` with a server, logger, and event bus) or
+// in the `pabrikcore.getSingleton()` singleton (which depends on a
+// live `App` with a server, logger, and event bus) or
 // duplicating the migration setup. The two static checks below
 // directly test the bug — they fail if and only if the cascade
 // contract is removed or routed back to the old path.

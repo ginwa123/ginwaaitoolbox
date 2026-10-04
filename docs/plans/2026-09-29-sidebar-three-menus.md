@@ -38,7 +38,7 @@ over the tree. Each lands on its own PR; none depends on the next except as note
 ## Global constraints
 
 - **Never port 8081.** Functional tests use `tests/functional/harness.py`, a free port in 8080–8199, and an isolated
-  `HOME` tmpdir. No `nohup ./zig-out/bin/nalar … &` + `curl`.
+  `HOME` tmpdir. No `nohup ./zig-out/bin/pabrik … &` + `curl`.
 - **Empty-slice-binds-as-NULL.** `SqliteBackend.exec` binds `""` as SQL NULL. Any new nullable column added for this work
   must be exercised with a real `""` through the full `useCase`, not just an in-memory SQLite test.
 - **Route order is a live trap.** `matchRoute` walks routes in registration order (`kabelweb src/server/router.zig:182`);
@@ -133,7 +133,7 @@ No new endpoint is introduced by this work. The one backend change is additive:
 a section is a tab switch, not a context change.
 
 **`?nav=`, not `?section=` — verified, not assumed.** `?section=` is already spoken for by the settings pages
-(`NalarSettings.vue:94` reads it for the General/Profiles/MCP/Tools tab; `KanbanSettingsView.vue:86` for the kanban
+(`PabrikSettings.vue:94` reads it for the General/Profiles/MCP/Tools tab; `KanbanSettingsView.vue:86` for the kanban
 settings tab), and `AppLayout` — which renders the sidebar — serves `/app/settings`. Reusing the key would put
 `?section=tools` and `?section=recent` on the same route. `?tab=` is reserved by `helpers/tabTarget.ts:281-293`. A grep
 for `query.nav` returns zero files, so `?nav=` is free.
@@ -259,7 +259,7 @@ for `query.nav` returns zero files, so `?nav=` is free.
 |---|---|
 | Removing the counts reads as a regression ("where did 119 go?") | `See all N chats ›` ships in T5 with the placeholder, and T6 makes the number real. Say so in the PR body. |
 | The breadcrumb needs data the session list does not return | The scope resolver at `workspace_scope.zig:89-91` already walks task → item → workspace. T2 extends that resolver to return the parent name; no new table, no N+1. |
-| ~~`?section=` collides~~ **found and fixed pre-review** | `?section=` <b>is</b> already used: `NalarSettings.vue:94` and `KanbanSettingsView.vue:86`, both on routes `AppLayout` serves. Renamed to `?nav=`, which a grep confirms is unused. `helpers/tabTarget.ts:281-293` separately reserves `?tab=`. |
+| ~~`?section=` collides~~ **found and fixed pre-review** | `?section=` <b>is</b> already used: `PabrikSettings.vue:94` and `KanbanSettingsView.vue:86`, both on routes `AppLayout` serves. Renamed to `?nav=`, which a grep confirms is unused. `helpers/tabTarget.ts:281-293` separately reserves `?tab=`. |
 | Dropping the resize handle is a perceived feature removal | It is one of seven `localStorage` keys with no keyboard path. T4's PR body lists the deleted key. |
 | Two scrollers existed for a reason nobody remembers | `git log -S "chatsHeight" -- src/apps/desktop/src/stores/sidebar.ts` before T4. If a commit message names a real reason, this plan is wrong and the reviewer should hear it. |
 

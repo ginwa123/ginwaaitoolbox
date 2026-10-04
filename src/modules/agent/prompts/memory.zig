@@ -58,11 +58,10 @@ pub const GitPrompt =
     \\**Git history reveals:** why code exists (commit messages), how patterns evolved, what bugs were fixed, original intent behind abstractions.
 ;
 
-
-pub const NalarMdAutoUpdate =
-    \\## NALAR.md Auto-Update Rule
+pub const PabrikMdAutoUpdate =
+    \\## PABRIK.md Auto-Update Rule
     \\
-    \\**MANDATORY: Update NALAR.md after any project change.**
+    \\**MANDATORY: Update PABRIK.md after any project change.**
     \\
     \\Keep concise (~200 lines). Include: project overview, build commands,
     \\file structure, key conventions. One change = one update.
@@ -74,7 +73,7 @@ pub const NalarMdAutoUpdate =
 pub const GlobalMemorySystem =
     \\## Global Memory System
     \\
-    \\Persistent cross-project memory lives in `~/.config/nalar/memories/`
+    \\Persistent cross-project memory lives in `~/.config/pabrik/memories/`
     \\as standalone markdown files, shared across every session and project.
     \\
     \\Each file is **one insight**. Title comes from the `# H1` heading;
@@ -121,33 +120,33 @@ pub const GlobalMemorySystem =
     \\
     \\### When NOT to write a memory
     \\
-    \\- **Project-specific build commands** → those go in `NALAR.md` or
+    \\- **Project-specific build commands** → those go in `PABRIK.md` or
     \\  `AGENTS.md`, not global memory.
     \\- **Single-conversation outcomes** ("we chose option B"). If the
     \\  next session can't act on it, skip it.
     \\- **Trivial one-liner fixes** ("missing semicolon"). Save memory
     \\  space for the 10% of fixes that are genuinely surprising.
     \\- **Duplicates of existing memories** — `read_file` the
-    \\  `~/.config/nalar/memories/` directory first; update the existing
+    \\  `~/.config/pabrik/memories/` directory first; update the existing
     \\  file in place rather than creating a near-duplicate.
     \\
-    \\### Memory vs NALAR.md vs Local memory vs Skills
+    \\### Memory vs PABRIK.md vs Local memory vs Skills
     \\
     \\| Surface | Scope | Lifetime | Example |
     \\|---|---|---|---|
-    \\| `~/.config/nalar/memories/*.md` (global) | Cross-project insight | Forever (until you delete it) | "Zig 0.16 removed `std.posix.getcwd`" |
-    \\| `<cwd>/.nalar/memories/*.md` (local) | Project-specific insight | Lives with the project repo | "This repo's zig build hangs on the desktop step" |
-    \\| `NALAR.md` / `AGENTS.md` (project) | Build commands + conventions | Tracked in git with the repo | "`zig build test --summary all` before declaring done" |
-    \\| `.nalar/skills/<name>/SKILL.MD` | Reusable multi-step procedure | Stays until obsolete | "how to ship a Zig cross-platform PR" |
+    \\| `~/.config/pabrik/memories/*.md` (global) | Cross-project insight | Forever (until you delete it) | "Zig 0.16 removed `std.posix.getcwd`" |
+    \\| `<cwd>/.pabrik/memories/*.md` (local) | Project-specific insight | Lives with the project repo | "This repo's zig build hangs on the desktop step" |
+    \\| `PABRIK.md` / `AGENTS.md` (project) | Build commands + conventions | Tracked in git with the repo | "`zig build test --summary all` before declaring done" |
+    \\| a skill (one row in this workspace, via `add_skill`) | Reusable multi-step procedure | Stays until obsolete | "how to ship a Zig cross-platform PR" |
     \\
     \\**Rule of thumb:** a *fact* the agent needs to know → memory.
     \\A *workflow* the agent must execute → skill. A *project policy*
-    \\(build commands, file layout) → NALAR.md.
+    \\(build commands, file layout) → PABRIK.md.
     \\
     \\### How to write a memory (concrete)
     \\
     \\1. Pick a `kebab-case` filename that names the **root cause** (see
-    \\   examples in `~/.config/nalar/memories/` for tone).
+    \\   examples in `~/.config/pabrik/memories/` for tone).
     \\2. Start with `# <Title>` — the H1 becomes the rendered heading.
     \\3. Available sections — use ONLY the ones that earn their place for
     \\   this specific insight, not all of them by default:
@@ -203,7 +202,7 @@ pub const LocalMemorySystem =
     \\## Local Memory System (Project-Specific)
     \\
     \\Each session also has access to **local memories** in
-    \\`<cwd>/.nalar/memories/*.md` — project-scoped insights that ship
+    \\`<cwd>/.pabrik/memories/*.md` — project-scoped insights that ship
     \\with the codebase and are auto-loaded into your context alongside
     \\global memory.
     \\
@@ -233,7 +232,7 @@ pub const LocalMemorySystem =
     \\### Before writing: check for an existing memory to update
     \\
     \\Before creating a new local memory file, scan the local knowledge
-    \\block (or list `.nalar/memories/`) for an existing file covering
+    \\block (or list `.pabrik/memories/`) for an existing file covering
     \\the same area or component. If one exists:
     \\
     \\- **Merge into it** — add or revise the relevant section rather
@@ -282,12 +281,12 @@ pub const LocalMemorySystem =
     \\### Anti-patterns
     \\
     \\- ❌ **Duplicating a global memory locally.** If a Zig 0.16 quirk
-    \\   applies everywhere, put it in `~/.config/nalar/memories/`, not
-    \\   `<cwd>/.nalar/memories/`.
+    \\   applies everywhere, put it in `~/.config/pabrik/memories/`, not
+    \\   `<cwd>/.pabrik/memories/`.
     \\- ❌ **Secrets or machine-specific paths.** Local memory lives next
     \\   to the code — it should be safe for any contributor to read.
     \\- ❌ **Build commands and run instructions** — those go in
-    \\   `NALAR.md` / `AGENTS.md`, surfaced in a dedicated prompt section.
+    \\   `PABRIK.md` / `AGENTS.md`, surfaced in a dedicated prompt section.
     \\- ❌ **Single-task notes that won't apply next session.** Memory is
     \\   for *patterns*, not session logs.
     \\- ❌ **Writing a changelog or PR summary as memory.** "What
@@ -302,11 +301,11 @@ pub const LocalMemorySystem =
     \\
     \\### When NOT to use local memory at all
     \\
-    \\- For **build / run / test instructions**, use `NALAR.md` or
+    \\- For **build / run / test instructions**, use `PABRIK.md` or
     \\  `AGENTS.md` — those are surfaced every session.
-    \\- For **multi-step workflows**, create a
-    \\  `.nalar/skills/<name>/SKILL.MD` — skills appear in the
-    \\  Available Skills listing with full instructions.
+    \\- For **multi-step workflows**, `add_skill` a skill. It lands in
+    \\  THIS workspace as a row, `search_skills` is how you find one,
+    \\  and `use_skill({ name })` returns its full instructions.
     \\- For **session-scoped context** (the conversation we're having right
     \\  now), use the chat directly — no file.
     \\

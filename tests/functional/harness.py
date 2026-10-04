@@ -1,6 +1,6 @@
-"""Functional test harness for nalar.
+"""Functional test harness for pabrik.
 
-Boots a real `nalar` binary against an isolated tmpdir HOME and provides
+Boots a real `pabrik` binary against an isolated tmpdir HOME and provides
 a typed HTTP client for the API. Every byte of state (DB, config, design
 files, attachments) lives under the tempdir allocated at boot; teardown
 rmtree's that tempdir, never anything else.
@@ -31,7 +31,7 @@ rmtree's that tempdir, never anything else.
    ``APPDATA`` / ``LOCALAPPDATA`` are captured BEFORE shadowing and
    restored on teardown. The Windows child's env points inside
    ``temp_dir`` (``<temp_dir>/.config``, ``<temp_dir>/AppData/...``)
-   so nalar's XDG/APPDATA-aware code lands inside the tempdir even
+   so pabrik's XDG/APPDATA-aware code lands inside the tempdir even
    when the parent shell has those vars set to the real home. Linux/mac
    keep the original parent env per project request ("dont touch linux
    and mac") — child ``HOME`` is still isolated there via the existing
@@ -91,7 +91,7 @@ ALLOWED_TMP_PREFIXES: tuple[str, ...] = (
 #: Substring that every harness-allocated tmpdir must contain. Acts as
 #: a "namespace" so a buggy caller that points ``mkdtemp`` output at a
 #: non-tmpdir path is rejected.
-REQUIRED_TMP_SUBSTR = "nalar-func-"
+REQUIRED_TMP_SUBSTR = "pabrik-func-"
 
 #: Last-resort kill signal. Windows has no ``signal.SIGKILL`` (the
 #: attribute simply doesn't exist — accessing it raises AttributeError,
@@ -207,7 +207,7 @@ PORT_SCAN_END = 8199
 #: outgoing connections. Every ``bind()`` probe the harness does, plus
 #: every pnpm / vite / zig / git / curl on the box, draws from that same
 #: pool. The picker closes its probe socket and returns the number; the
-#: nalar child binds the real listener tens of ms later, and in between
+#: pabrik child binds the real listener tens of ms later, and in between
 #: the port can be taken. The collision surfaces as
 #: ``error: BindFailed`` at boot and — before the matching main.zig fix —
 #: an rc=-11 "crash" that fails an unrelated test. Observed in
@@ -270,7 +270,7 @@ def _canonical(path: str) -> str:
     every test in the job, with an error message that printed both sides
     in a form that visibly matched and so read as nonsense:
 
-        mkdtemp produced an unsafe path: C:\\Users\\RUNNER~1\\...\\nalar-func-abc
+        mkdtemp produced an unsafe path: C:\\Users\\RUNNER~1\\...\\pabrik-func-abc
         Expected prefix in ('C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\',)
 
     (neither of those is the string that was compared — ``real`` is).
@@ -540,7 +540,7 @@ def harness_path(harness: Any, *parts: str) -> str:
 
 @dataclasses.dataclass(frozen=True)
 class Response:
-    """A typed HTTP response from the nalar API."""
+    """A typed HTTP response from the pabrik API."""
 
     status: int
     body: bytes
@@ -553,7 +553,7 @@ class Response:
 
 @dataclasses.dataclass
 class FunctionalHarness:
-    """A booted nalar instance bound to an isolated tmpdir.
+    """A booted pabrik instance bound to an isolated tmpdir.
 
     Lifecycle:
         h = FunctionalHarness.boot()
@@ -569,7 +569,7 @@ class FunctionalHarness:
     """
 
     port: int
-    nalar_bin: Path
+    pabrik_bin: Path
     temp_dir: Path
     orig_home: str
     log_path: Path
@@ -616,17 +616,17 @@ class FunctionalHarness:
     @classmethod
     def boot(
         cls,
-        nalar_bin: Path | None = None,
+        pabrik_bin: Path | None = None,
         *,
         port: int | None = None,
         ready_timeout_s: float = 30.0,
         stub_llm_profile: bool = False,
         extra_args: Sequence[str] = (),
     ) -> "FunctionalHarness":
-        """Boot a fresh nalar binary against an isolated tmpdir HOME.
+        """Boot a fresh pabrik binary against an isolated tmpdir HOME.
 
         Args:
-            nalar_bin: Path to the nalar binary. Defaults to ``$NALAR_BIN``
+            pabrik_bin: Path to the pabrik binary. Defaults to ``$PABRIK_BIN``
                 or a known zig-out path.
             port: Backend port. ``None`` (the default) picks a **random**
                 free port from the wide ``[RANDOM_PORT_START,
@@ -636,7 +636,7 @@ class FunctionalHarness:
                 previous sequential scan. Pass an explicit integer (e.g.
                 ``port=8123``) to fall back to a sequential scan from
                 that port for backwards compat / debugging.
-            ready_timeout_s: Seconds to wait for nalar to become ready.
+            ready_timeout_s: Seconds to wait for pabrik to become ready.
             stub_llm_profile: Pre-create a stub LLM profile so the
                 backend boots without a real API key.
             extra_args: Extra CLI flags appended after `--port` (e.g.
@@ -708,7 +708,7 @@ class FunctionalHarness:
             env_backup = snapshot_parent_env()
 
         # Snapshot XDG envs for isolation and restore. These are used by
-        # nalar on Linux for config/state/cache paths (XDG spec). If the
+        # pabrik on Linux for config/state/cache paths (XDG spec). If the
         # parent env has e.g. XDG_CONFIG_HOME=/home/user/.config, the child
         # must NOT inherit it — otherwise config.json lands in the real home.
         orig_xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "")
@@ -716,10 +716,10 @@ class FunctionalHarness:
         orig_xdg_data_home = os.environ.get("XDG_DATA_HOME", "")
         orig_xdg_cache_home = os.environ.get("XDG_CACHE_HOME", "")
 
-        # 1.5. Reap orphan nalar pids from prior aborted runs. This MUST
+        # 1.5. Reap orphan pabrik pids from prior aborted runs. This MUST
         #      run BEFORE _find_free_port() so the random pick sees a
         #      clean slate. Without this, a prior `kill -9` of the pytest
-        #      worker leaves nalar children alive in their own pgids,
+        #      worker leaves pabrik children alive in their own pgids,
         #      holding their ports — and over time those zombies consume
         #      random picks in the 20k window. Failures here are
         #      non-fatal: if reap raises, print a warning and continue
@@ -758,11 +758,11 @@ class FunctionalHarness:
             _write_stub_llm_profile(temp_dir)
 
         # 6. Resolve the binary.
-        bin_path = nalar_bin if nalar_bin is not None else _default_nalar_bin()
+        bin_path = pabrik_bin if pabrik_bin is not None else _default_pabrik_bin()
         if not bin_path.exists():
-            raise FunctionalHarnessError(f"nalar binary not found: {bin_path}")
+            raise FunctionalHarnessError(f"pabrik binary not found: {bin_path}")
         if not os.access(bin_path, os.X_OK):
-            raise FunctionalHarnessError(f"nalar binary not executable: {bin_path}")
+            raise FunctionalHarnessError(f"pabrik binary not executable: {bin_path}")
 
         # 7. Spawn. Cross-platform: on POSIX, start_new_session=True
         #    puts the child in its own process group (so killpg kills
@@ -822,13 +822,13 @@ class FunctionalHarness:
                 if k in os.environ and os.environ[k] != env_backup.get(k)
             }
 
-        log_path = temp_dir / "nalar.log"
+        log_path = temp_dir / "pabrik.log"
         env = os.environ.copy()
         # Child env: HOME always isolated (existing Linux/mac behavior).
         env["HOME"] = str(temp_dir)
         # XDG isolation applies to the CHILD on EVERY platform, not just
         # Windows. On Linux `getDefaultConfigDir` (Config.zig) resolves
-        # $XDG_CONFIG_HOME/nalar BEFORE $HOME/.config/nalar, and the same
+        # $XDG_CONFIG_HOME/pabrik BEFORE $HOME/.config/pabrik, and the same
         # XDG-first rule is duplicated for memories/, skills/ and hooks/.
         # A child that inherits XDG_CONFIG_HOME=/home/runner/.config (which
         # is exactly what the GitHub Actions ubuntu runner sets) writes
@@ -885,11 +885,11 @@ class FunctionalHarness:
                     job_handle = None
 
         # 7.5. Record pids so a subsequent boot can reap us if we die.
-        #      The pidfile format is "<harness_pid> <nalar_pid>\n":
+        #      The pidfile format is "<harness_pid> <pabrik_pid>\n":
         #        - harness_pid: the Python process running this code
         #          (pytest worker, or the bare pytest process without xdist).
         #          When reap sees this pid is dead, the tempdir is an orphan.
-        #        - nalar_pid: the actual nalar binary holding the TCP port.
+        #        - pabrik_pid: the actual pabrik binary holding the TCP port.
         #          When reap sees the harness is dead, it kills this pid.
         #      Wrapped in try/except because a write failure here must NOT
         #      prevent tests from running — the worst case is "this test
@@ -912,17 +912,18 @@ class FunctionalHarness:
 
         return cls(
             port=chosen_port,
-            nalar_bin=bin_path,
+            pabrik_bin=bin_path,
             temp_dir=temp_dir,
             orig_home=orig_home,
             log_path=log_path,
             pid=proc.pid,
-            dry_run=os.environ.get("NALAR_FUNCTIONAL_DRY_RUN") == "1",
+            dry_run=os.environ.get("PABRIK_FUNCTIONAL_DRY_RUN") == "1",
             _proc=proc,
             _env_backup=env_backup,
             _env_shadowed=env_shadowed,
             _env_owns_baseline=env_owns_baseline,
             _job_handle=job_handle,
+
             orig_userprofile=orig_userprofile,
             orig_appdata=orig_appdata,
             orig_localappdata=orig_localappdata,
@@ -944,7 +945,7 @@ class FunctionalHarness:
         expect: int | tuple[int, ...] = 200,
         timeout_s: float = 5.0,
     ) -> Response:
-        """Issue an HTTP request to the harness's nalar instance.
+        """Issue an HTTP request to the harness's pabrik instance.
 
         Args:
             method: HTTP verb (GET, POST, PUT, PATCH, DELETE).
@@ -1002,7 +1003,7 @@ class FunctionalHarness:
             return False
 
     def tail_log(self, n: int = 50) -> str:
-        """Return the last n lines of the nalar log (useful on failure)."""
+        """Return the last n lines of the pabrik log (useful on failure)."""
         try:
             with self.log_path.open("rb") as f:
                 f.seek(0, os.SEEK_END)
@@ -1017,7 +1018,7 @@ class FunctionalHarness:
     # ---- teardown ---------------------------------------------------------
 
     def teardown(self) -> None:
-        """Stop the nalar binary and rmtree the isolated tempdir.
+        """Stop the pabrik binary and rmtree the isolated tempdir.
 
         Order matters:
           1. Restore HOME (so any post-test code sees the original env).
@@ -1129,7 +1130,7 @@ class FunctionalHarness:
         #      rmtree below) — without this, dry_run would leave a
         #      pidfile pointing at a now-dead harness python, causing
         #      the next boot to mistakenly treat this tempdir as an
-        #      orphan and try to reap its already-dead nalar.
+        #      orphan and try to reap its already-dead pabrik.
         pidfile = self.temp_dir / ".harness.pid"
         try:
             pidfile.unlink()
@@ -1143,7 +1144,7 @@ class FunctionalHarness:
             print(f"[dry-run] would rmtree: {self.temp_dir}")
         else:
             # The child tree is already dead, but "dead" is not "finished
-            # writing": a shell nalar spawned (the PTY a terminal test
+            # writing": a shell pabrik spawned (the PTY a terminal test
             # drives) can still be flushing its last writes into the temp
             # HOME, and POSIX rmtree surfaces that as ENOTEMPTY — a
             # directory that got a new entry between the scan and the
@@ -1379,7 +1380,7 @@ class FunctionalHarness:
 
 
 def _find_free_port(start: int | None = None) -> int:
-    """Find a free port for the nalar backend.
+    """Find a free port for the pabrik backend.
 
     Default behaviour (no ``start``): pick a random port from the wide
     range ``[RANDOM_PORT_START, RANDOM_PORT_END]`` (20k-32k, clear of
@@ -1430,7 +1431,7 @@ def _find_free_port_sequential(start: int) -> int:
     which delegates to ``find_free_port_random()``.
 
     Uses ``SO_REUSEADDR`` so the scan can pick ports in TIME_WAIT state.
-    After the harness closes its probe socket, nalar (which also sets
+    After the harness closes its probe socket, pabrik (which also sets
     ``SO_REUSEADDR`` on its listener — see
     ``kabelweb repo src/server/http_server.zig:201 setReuseAddr``)
     can bind the same port despite lingering server-side TIME_WAITs from
@@ -1456,7 +1457,7 @@ def port_is_free_with_reuse(port: int) -> bool:
 
     Used as the atomic-free primitive by both the random picker and
     the sequential scan. SO_REUSEADDR lets the probe bind TIME_WAIT
-    ports; the subsequent nalar/vite listener sets the same flag so
+    ports; the subsequent pabrik/vite listener sets the same flag so
     it can also bind the port despite lingering server-side TIME_WAITs.
 
     Public so the ``UIHarness`` can share it without duplicating the
@@ -1632,15 +1633,15 @@ def _wait_pid_dead(pid: int, timeout: float) -> bool:
 
 
 def _reap_orphan_test_pids() -> int:
-    """Kill orphaned nalar children from prior aborted runs. Idempotent.
+    """Kill orphaned pabrik children from prior aborted runs. Idempotent.
 
-    On every harness boot, scan ``<tempfile.gettempdir()>/nalar-func-*/
+    On every harness boot, scan ``<tempfile.gettempdir()>/pabrik-func-*/
     .harness.pid``. Each pidfile contains ``"<harness_worker_pid>
-    <nalar_child_pid>\n"`` — written by ``boot()``. If the harness python
+    <pabrik_child_pid>\n"`` — written by ``boot()``. If the harness python
     parent died (``kill -0`` returns ``ProcessLookupError``), the tempdir
-    is an orphan: the nalar child survived in its own pgid
+    is an orphan: the pabrik child survived in its own pgid
     (``subprocess.Popen(start_new_session=True)``) and is still holding
-    its TCP port. Kill the nalar child, then ``rmtree`` the tempdir via
+    its TCP port. Kill the pabrik child, then ``rmtree`` the tempdir via
     the existing ``is_safe_tmp()`` validator.
 
     Returns the number of orphans reaped. Failures are logged to stderr
@@ -1662,18 +1663,18 @@ def _reap_orphan_test_pids() -> int:
         print(f"warning: orphan reap scan failed: {e}", file=sys.stderr)
         return 0
     for entry in candidates:
-        if not entry.is_dir() or not entry.name.startswith("nalar-func-"):
+        if not entry.is_dir() or not entry.name.startswith("pabrik-func-"):
             continue
         pidfile = entry / ".harness.pid"
         if not pidfile.is_file():
             continue
-        # Parse "<harness_pid> <nalar_pid>". Anything else → skip silently.
+        # Parse "<harness_pid> <pabrik_pid>". Anything else → skip silently.
         try:
             tokens = pidfile.read_text().split()
             if len(tokens) != 2:
                 continue
             harness_pid = int(tokens[0])
-            nalar_pid = int(tokens[1])
+            pabrik_pid = int(tokens[1])
         except (OSError, ValueError):
             continue
         # If the harness python is alive, this test is still in progress —
@@ -1694,17 +1695,17 @@ def _reap_orphan_test_pids() -> int:
         try:
             if _pid_is_alive(harness_pid):
                 continue
-            # Harness is dead. Kill the nalar child if alive.
-            if nalar_pid and nalar_pid != os.getpid():
+            # Harness is dead. Kill the pabrik child if alive.
+            if pabrik_pid and pabrik_pid != os.getpid():
                 try:
-                    os.kill(nalar_pid, signal.SIGTERM)
+                    os.kill(pabrik_pid, signal.SIGTERM)
                 except OSError:
                     pass
                 # Wait up to 1s for graceful exit; SIGKILL fallback
                 # (SIGTERM on Windows, which lacks SIGKILL).
-                if not _wait_pid_dead(nalar_pid, 1.0):
+                if not _wait_pid_dead(pabrik_pid, 1.0):
                     try:
-                        os.kill(nalar_pid, _SIGKILL)
+                        os.kill(pabrik_pid, _SIGKILL)
                     except OSError:
                         pass
         except Exception as e:
@@ -1729,26 +1730,26 @@ def _reap_orphan_test_pids() -> int:
     return reaped
 
 
-def _default_nalar_bin() -> Path:
-    """Resolve the nalar binary. Checks env var, then known zig-out paths."""
+def _default_pabrik_bin() -> Path:
+    """Resolve the pabrik binary. Checks env var, then known zig-out paths."""
     candidates: list[Path] = []
-    env_bin = os.environ.get("NALAR_BIN")
+    env_bin = os.environ.get("PABRIK_BIN")
     if env_bin:
         candidates.append(Path(env_bin))
     candidates.extend([
-        Path("./zig-out/bin/nalar"),
-        Path("./zig-out/bin/nalar.exe"),
-        Path("./zig-out/bin/nalarcore-linux-x86_64"),
-        Path("./zig-out/bin/nalarcore-macos-aarch64"),
-        Path("./zig-out/bin/nalarcore-macos-x86_64"),
-        Path("./zig-out/bin/nalarcore-windows-x86_64"),
-        Path("./zig-out/bin/nalarcore-windows-x86_64.exe"),
+        Path("./zig-out/bin/pabrik"),
+        Path("./zig-out/bin/pabrik.exe"),
+        Path("./zig-out/bin/pabrikcore-linux-x86_64"),
+        Path("./zig-out/bin/pabrikcore-macos-aarch64"),
+        Path("./zig-out/bin/pabrikcore-macos-x86_64"),
+        Path("./zig-out/bin/pabrikcore-windows-x86_64"),
+        Path("./zig-out/bin/pabrikcore-windows-x86_64.exe"),
     ])
     for c in candidates:
         if c.exists():
             return c.resolve()
     raise FunctionalHarnessError(
-        "No nalar binary found. Set NALAR_BIN or run "
+        "No pabrik binary found. Set PABRIK_BIN or run "
         "`zig build install:linux:system` first."
     )
 
@@ -1757,12 +1758,12 @@ def mcp_hello_world_bin() -> Path:
     """Resolve the mcp-hello-world test MCP server binary.
 
     Built by `zig build mcp-hello-world`. Same sibling-binary
-    resolution as the nalar binary: the wrapper lives at
-    zig-out/bin/mcp-hello-world next to nalarcore-*.
+    resolution as the pabrik binary: the wrapper lives at
+    zig-out/bin/mcp-hello-world next to pabrikcore-*.
 
     Resolution order:
       1. ``$MCP_HELLO_WORLD_BIN`` env var
-      2. ``./zig-out/bin/mcp-hello-world`` (sibling of nalar binary)
+      2. ``./zig-out/bin/mcp-hello-world`` (sibling of pabrik binary)
       3. ``./zig-out/bin/mcp-hello-world-linux-x86_64`` (cross-target)
 
     Raises FunctionalHarnessError if no binary is found.
@@ -1790,7 +1791,7 @@ def mcp_http_hello_world_bin() -> Path:
     Sibling of mcp_hello_world_bin() (the stdio binary). Built by
     `zig build mcp-http-hello-world`. Same sibling-binary resolution
     pattern — the wrapper lives at zig-out/bin/mcp-http-hello-world
-    next to mcp-hello-world-* and nalarcore-*.
+    next to mcp-hello-world-* and pabrikcore-*.
 
     Per the project convention "one binary per transport" (the HTTP
     transport is NOT a `--http` flag on the stdio binary; it's a
@@ -1799,7 +1800,7 @@ def mcp_http_hello_world_bin() -> Path:
 
     Resolution order:
       1. ``$MCP_HTTP_HELLO_WORLD_BIN`` env var
-      2. ``./zig-out/bin/mcp-http-hello-world`` (sibling of nalar binary)
+      2. ``./zig-out/bin/mcp-http-hello-world`` (sibling of pabrik binary)
       3. ``./zig-out/bin/mcp-http-hello-world-linux-x86_64`` (cross-target)
 
     Raises FunctionalHarnessError if no binary is found.
@@ -1835,7 +1836,7 @@ def _wait_ready(
         if proc.poll() is not None:
             log = log_path.read_text(errors="replace") if log_path.exists() else ""
             raise FunctionalHarnessError(
-                f"nalar exited rc={proc.returncode} during boot\n"
+                f"pabrik exited rc={proc.returncode} during boot\n"
                 f"--- last 30 lines of log ---\n"
                 + "\n".join(log.splitlines()[-30:])
             )
@@ -1848,7 +1849,7 @@ def _wait_ready(
             # Catch-all during readiness polling (not just URLError /
             # ConnectionError / OSError). A half-open listener can reply
             # with a malformed status line (http.client.BadStatusLine,
-            # an HTTPException, not a URLError) when a prior test's nalar
+            # an HTTPException, not a URLError) when a prior test's pabrik
             # is still shutting down on a recycled port, or when the
             # server is mid-boot. Any such transient must be retried,
             # not propagated as a fixture ERROR (observed on CI Linux as
@@ -1858,7 +1859,7 @@ def _wait_ready(
         time.sleep(0.1)
     log = log_path.read_text(errors="replace") if log_path.exists() else ""
     raise FunctionalHarnessError(
-        f"nalar did not become ready in {timeout_s}s (last_err={last_err})\n"
+        f"pabrik did not become ready in {timeout_s}s (last_err={last_err})\n"
         f"--- last 30 lines of log ---\n"
         + "\n".join(log.splitlines()[-30:])
     )
@@ -1867,9 +1868,9 @@ def _wait_ready(
 def _write_stub_llm_profile(temp_dir: Path) -> None:
     """Pre-create a stub LLM profile at the platform-correct path.
 
-    Linux:   $HOME/.config/nalar/config.json (or $XDG_CONFIG_HOME)
-    macOS:   $HOME/Library/Application Support/nalar/config.json
-    Windows: %APPDATA%/nalar/config.json ($HOME/.config is also written
+    Linux:   $HOME/.config/pabrik/config.json (or $XDG_CONFIG_HOME)
+    macOS:   $HOME/Library/Application Support/pabrik/config.json
+    Windows: %APPDATA%/pabrik/config.json ($HOME/.config is also written
              as a fallback so the same helper works cross-platform).
 
     The base_url points to a port that never responds, so session-create
@@ -1877,7 +1878,7 @@ def _write_stub_llm_profile(temp_dir: Path) -> None:
     since the functional tests assert on the wire, not on LLM responses.
 
     Writes to all three locations so the harness works regardless of
-    which platform's `getDefaultConfigDir` the nalar binary uses.
+    which platform's `getDefaultConfigDir` the pabrik binary uses.
     """
     profile = {
         "profiles_models": {
@@ -1891,9 +1892,9 @@ def _write_stub_llm_profile(temp_dir: Path) -> None:
     }
     payload = json.dumps(profile, indent=2)
     for config_dir in (
-        temp_dir / ".config" / "nalar",
-        temp_dir / "AppData" / "Roaming" / "nalar",
-        temp_dir / "Library" / "Application Support" / "nalar",
+        temp_dir / ".config" / "pabrik",
+        temp_dir / "AppData" / "Roaming" / "pabrik",
+        temp_dir / "Library" / "Application Support" / "pabrik",
     ):
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "config.json").write_text(payload)
@@ -1905,7 +1906,7 @@ def _write_stub_llm_profile(temp_dir: Path) -> None:
 
 
 def run_quick(
-    nalar_bin: Path | None = None,
+    pabrik_bin: Path | None = None,
     *,
     port: int = DEFAULT_PORT,
     stub_llm_profile: bool = False,
@@ -1918,7 +1919,7 @@ def run_quick(
             print(r.json())
     """
     h = FunctionalHarness.boot(
-        nalar_bin, port=port, stub_llm_profile=stub_llm_profile
+        pabrik_bin, port=port, stub_llm_profile=stub_llm_profile
     )
     try:
         yield h

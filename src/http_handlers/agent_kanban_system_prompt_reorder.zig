@@ -14,8 +14,8 @@
 //! Task: task_1787597624259_2
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// HTTP request body for system-prompt-reorder.
@@ -52,7 +52,7 @@ pub const SystemPromptReorderInput = struct {
 /// ordering lands at position 0 (not position 1).
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: SystemPromptReorderInput,
 ) SystemPromptReorderError!void {
     if (input.kanban_id.len == 0) return error.KanbanIdRequired;
@@ -87,7 +87,7 @@ pub fn agentKanbanSystemPromptReorderHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const kanban_id = req.params.get("kanban_id") orelse "";
@@ -139,7 +139,7 @@ pub fn agentKanbanSystemPromptReorderHandler(
 //   2. Position assignment: ordered_ids[0] gets the highest position
 //   3. 1-row ordering lands at position 0
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
 

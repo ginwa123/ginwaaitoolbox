@@ -26,33 +26,33 @@ Rolling release — binaries from the latest green `main` build.
 - Built: @@RUN@@
 
 Asset names carry the binary name + zig target triple.
-Linux/macOS ship bare binaries, e.g. `nalar-x86_64-linux-gnu`,
-`nalar-desktop-aarch64-macos`.
-macOS also ships `Nalar-aarch64-macos.zip` holding Nalar.app
-(nalar-desktop + nalar service inside, ad-hoc signed).
-macOS setup (no sudo): extract the zip, move Nalar.app to
-~/Applications -- Spotlight/Launchpad find it as "Nalar".
+Linux/macOS ship bare binaries, e.g. `pabrik-x86_64-linux-gnu`,
+`pabrik-desktop-aarch64-macos`.
+macOS also ships `Pabrik-aarch64-macos.zip` holding Pabrik.app
+(pabrik-desktop + pabrik service inside, ad-hoc signed).
+macOS setup (no sudo): extract the zip, move Pabrik.app to
+~/Applications -- Spotlight/Launchpad find it as "Pabrik".
 If Gatekeeper blocks the first launch, run
-`xattr -dr com.apple.quarantine ~/Applications/Nalar.app`.
+`xattr -dr com.apple.quarantine ~/Applications/Pabrik.app`.
 Windows ships ONE self-contained .zip, e.g.
-`nalar-desktop-x86_64-windows-gnu.zip` -- it holds
-nalar-desktop.exe + nalar.exe (the desktop auto-spawns
+`pabrik-desktop-x86_64-windows-gnu.zip` -- it holds
+pabrik-desktop.exe + pabrik.exe (the desktop auto-spawns
 the service beside itself) plus every runtime DLL
 (libcurl / sqlite3 / ssl / ... + WebView2Loader.dll)
 plus html/ (the shipped UI, served via --static-dir;
 always present -- the bundle gate fails the job otherwise)
-plus Install-Nalar.ps1 (the Windows setup script).
-Extract the zip and run nalar-desktop.exe; a bare .exe
+plus Install-Pabrik.ps1 (the Windows setup script).
+Extract the zip and run pabrik-desktop.exe; a bare .exe
 alone cannot start (loader needs the DLLs beside it).
 Windows setup (no admin): extract the zip, then run
-`powershell -ExecutionPolicy Bypass -File Install-Nalar.ps1`
+`powershell -ExecutionPolicy Bypass -File Install-Pabrik.ps1`
 from the extracted folder -- installs both exes + DLLs to
-%LOCALAPPDATA%\nalar\bin, html/ to
-%LOCALAPPDATA%\nalar\html, and adds a Start Menu shortcut
-(Win key -> "Nalar"). `-Uninstall` removes it again.
+%LOCALAPPDATA%\pabrik\bin, html/ to
+%LOCALAPPDATA%\pabrik\html, and adds a Start Menu shortcut
+(Win key -> "Pabrik"). `-Uninstall` removes it again.
 Install both binaries with
-`sudo scripts/install-nalar-desktop.sh` after downloading.
-Android ships `Nalar-android-debug.apk` -- the Kotlin/Compose
+`sudo scripts/install-pabrik-desktop.sh` after downloading.
+Android ships `Pabrik-android-debug.apk` -- the Kotlin/Compose
 client from src/apps/android_mobile, minSdk 26 (Android 8.0),
 signed with the auto-generated Android SDK debug key. It is
 the DEBUG variant because no release keystore is committed and
@@ -63,15 +63,15 @@ cannot later be upgraded by a properly-signed one without an
 uninstall first (Android refuses an upgrade whose signing key
 differs). It is a real client, not a stub -- the API host is
 compiled in (BuildConfig.API_BASE_URL) and, with no
-`-PnalarBaseUrl` override, points at
+`-PpabrikBaseUrl` override, points at
 https://agent.ginwa.site, the same host a release build would
-use, so sign in with your nalar account. The apk does NOT ship
-or start a server: run nalar somewhere, and this app talks to
-it. Install with `adb install Nalar-android-debug.apk` (device
+use, so sign in with your pabrik account. The apk does NOT ship
+or start a server: run pabrik somewhere, and this app talks to
+it. Install with `adb install Pabrik-android-debug.apk` (device
 connected, USB debugging on), or copy the file to the phone and
 open it, allowing "install unknown apps" for whatever handles
-the tap. To aim it at a nalar on your own machine instead,
-rebuild with `-PnalarBaseUrl=http://10.0.2.2:<port>` -- that
+the tap. To aim it at a pabrik on your own machine instead,
+rebuild with `-PpabrikBaseUrl=http://10.0.2.2:<port>` -- that
 address is the emulator's alias for the host's loopback, which
 is how the app reaches a server bound to 127.0.0.1 -- or use
 `adb reverse tcp:<port> tcp:<port>`. Either route is plain

@@ -79,8 +79,8 @@ def _login(port: int, email: str, password: str) -> str:
     )
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
 def _seed_workspace_item_task(port: int, cookie: str, *, name: str = "Investigate settings bug"):
@@ -124,12 +124,12 @@ def _session_name(port: int, cookie: str, task_id: str) -> str:
     return json.loads(body)["name"]
 
 
-def test_id_only_rename_works_with_auth_on(default_nalar_bin: Path):
+def test_id_only_rename_works_with_auth_on(default_pabrik_bin: Path):
     """The context menu's wire body must rename, not 404, when --auth is on."""
-    h = _boot_auth(default_nalar_bin)
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "rename@example.com", "supersecret123")
-        cookie = f"nalar_session={_login(h.port, 'rename@example.com', 'supersecret123')}"
+        _create_admin(default_pabrik_bin, h.temp_dir, "rename@example.com", "supersecret123")
+        cookie = f"pabrik_session={_login(h.port, 'rename@example.com', 'supersecret123')}"
         ws_id, item_id, task_id = _seed_workspace_item_task(h.port, cookie)
 
         status, _, body = _raw(
@@ -144,16 +144,16 @@ def test_id_only_rename_works_with_auth_on(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_id_only_rename_is_not_a_workspace_lookup(default_nalar_bin: Path):
+def test_id_only_rename_is_not_a_workspace_lookup(default_pabrik_bin: Path):
     """Pins the exact failure: a stale `workspace_id` param must not 404 a rename.
 
     Asserted on the response BODY so a regression names itself instead of
     reading as "some 404 happened".
     """
-    h = _boot_auth(default_nalar_bin)
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "stray@example.com", "supersecret123")
-        cookie = f"nalar_session={_login(h.port, 'stray@example.com', 'supersecret123')}"
+        _create_admin(default_pabrik_bin, h.temp_dir, "stray@example.com", "supersecret123")
+        cookie = f"pabrik_session={_login(h.port, 'stray@example.com', 'supersecret123')}"
         _, _, task_id = _seed_workspace_item_task(h.port, cookie)
 
         status, _, body = _raw(
@@ -168,12 +168,12 @@ def test_id_only_rename_is_not_a_workspace_lookup(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_scoped_rename_still_isolated_between_users(default_nalar_bin: Path):
+def test_scoped_rename_still_isolated_between_users(default_pabrik_bin: Path):
     """Moving the id-only route earlier must not weaken the workspace guard."""
-    h = _boot_auth(default_nalar_bin)
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "owner@example.com", "supersecret123")
-        owner = f"nalar_session={_login(h.port, 'owner@example.com', 'supersecret123')}"
+        _create_admin(default_pabrik_bin, h.temp_dir, "owner@example.com", "supersecret123")
+        owner = f"pabrik_session={_login(h.port, 'owner@example.com', 'supersecret123')}"
         ws_id, item_id, task_id = _seed_workspace_item_task(h.port, owner)
 
         # Owner's own workspace: the scoped PUT still resolves and renames.
@@ -189,9 +189,9 @@ def test_scoped_rename_still_isolated_between_users(default_nalar_bin: Path):
 
         # A second user must not be able to reach it by raw id.
         _create_admin(
-            default_nalar_bin, h.temp_dir, "intruder@example.com", "supersecret123", force=True
+            default_pabrik_bin, h.temp_dir, "intruder@example.com", "supersecret123", force=True
         )
-        intruder = f"nalar_session={_login(h.port, 'intruder@example.com', 'supersecret123')}"
+        intruder = f"pabrik_session={_login(h.port, 'intruder@example.com', 'supersecret123')}"
         status, _, body = _raw(
             "PUT",
             h.port,

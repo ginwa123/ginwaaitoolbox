@@ -22,17 +22,17 @@ import { useWorkspacesStore } from '../stores/workspaces'
  * create-workspace form is the deliberate, asserted exception.
  */
 
-describe('Chats — Nalar landing page', () => {
+describe('Chats — Pabrik landing page', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     push.mockClear()
   })
 
-  it('introduces Nalar with a wordmark, a tagline and the blurb', () => {
+  it('introduces Pabrik with a wordmark, a tagline and the blurb', () => {
     const wrapper = mount(Chats)
 
     expect(wrapper.find('[data-testid="home-landing"]').exists()).toBe(true)
-    expect(wrapper.find('h1[data-testid="home-wordmark"]').text()).toBe('nalar')
+    expect(wrapper.find('h1[data-testid="home-wordmark"]').text()).toBe('pabrik')
     expect(wrapper.find('[data-testid="home-tagline"]').text()).toBe('AI agent workspace')
 
     const blurb = wrapper.find('[data-testid="home-blurb"]').text()

@@ -17,8 +17,8 @@
 //! production, so the URL is only reachable from this machine.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 
 /// Build the browser-mode URL for `port`. Pure (no singleton) so it is
 /// unit-testable without a live server.
@@ -34,8 +34,8 @@ pub fn webStatusHandler(
     _ = req;
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
-    const cfg = nalarcore.getLlmConfig(di);
+    const di = try pabrikcore.getSingleton();
+    const cfg = pabrikcore.getLlmConfig(di);
     const port: u16 = di.server.address.port;
 
     const url = try buildWebUrl(allocator, port);
@@ -63,7 +63,7 @@ test "web_status: buildWebUrl works for a random-range port" {
 
 // ---------------------------------------------------------------------------
 // Static contracts (repo convention: lock registration + wire shape by
-// grepping source — see nalar_config_put_test.zig "registered in
+// grepping source — see pabrik_config_put_test.zig "registered in
 // test_runner.zig").
 // ---------------------------------------------------------------------------
 

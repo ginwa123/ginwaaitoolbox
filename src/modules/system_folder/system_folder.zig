@@ -826,11 +826,11 @@ test "getRelativePathFromHome: deeper subdirectory returns /a/b/c" {
     const allocator = testing.allocator;
     const rel = try SystemFolder.getRelativePathFromHome(
         allocator,
-        "/home/user/projects/nalar/zig/src",
+        "/home/user/projects/pabrik/zig/src",
         "/home/user",
     );
     defer allocator.free(rel);
-    try testing.expectEqualStrings("/projects/nalar/zig/src", rel);
+    try testing.expectEqualStrings("/projects/pabrik/zig/src", rel);
 }
 
 test "getRelativePathFromHome: full_path trailing slash is normalized away" {
@@ -1099,12 +1099,12 @@ test "getParentPath: deeper subdir returns intermediate parent" {
     defer env.deinit();
     const parent = try SystemFolder.getParentPath(
         allocator,
-        "/home/user/projects/nalar/zig",
+        "/home/user/projects/pabrik/zig",
         &env,
     );
     if (parent) |p| {
         defer allocator.free(p);
-        try testing.expectEqualStrings("/home/user/projects/nalar", p);
+        try testing.expectEqualStrings("/home/user/projects/pabrik", p);
     } else {
         try testing.expect(false);
     }
@@ -1387,7 +1387,7 @@ test "integration: getParentPath + getRelativePathFromHome produces /-relative b
     var env = try makeEnvMap(allocator, "/home/user");
     defer env.deinit();
 
-    const abs = "/home/user/projects/nalar";
+    const abs = "/home/user/projects/pabrik";
     const parent_opt = try SystemFolder.getParentPath(allocator, abs, &env);
     try testing.expect(parent_opt != null);
     const parent = parent_opt.?;
@@ -1399,7 +1399,7 @@ test "integration: getParentPath + getRelativePathFromHome produces /-relative b
 
     const abs_rel = try SystemFolder.getRelativePathFromHome(allocator, abs, "/home/user");
     defer allocator.free(abs_rel);
-    try testing.expectEqualStrings("/projects/nalar", abs_rel);
+    try testing.expectEqualStrings("/projects/pabrik", abs_rel);
 }
 
 // ─── Windows regression tests (issue: kanban folder picker fails on Windows) ───

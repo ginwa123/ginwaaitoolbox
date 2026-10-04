@@ -49,9 +49,9 @@ describe('buildTaskCreateMessage', () => {
 
   it('toggle on + path → Path line after the note', () => {
     expect(
-      buildTaskCreateMessage('My task', 'blablabla', true, '/home/you/.config/nalar/.worktrees/my-task'),
+      buildTaskCreateMessage('My task', 'blablabla', true, '/home/you/.config/pabrik/.worktrees/my-task'),
     ).toBe(
-      'Task : My task\nDescription: blablabla\n\n#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/my-task',
+      'Task : My task\nDescription: blablabla\n\n#Notes UseGitWorktree\nPath: /home/you/.config/pabrik/.worktrees/my-task',
     )
   })
 
@@ -63,14 +63,14 @@ describe('buildTaskCreateMessage', () => {
 
   it('toggle off + path → path is ignored', () => {
     expect(
-      buildTaskCreateMessage('My task', 'blablabla', false, '/home/you/.config/nalar/.worktrees/my-task'),
+      buildTaskCreateMessage('My task', 'blablabla', false, '/home/you/.config/pabrik/.worktrees/my-task'),
     ).toBe('Task : My task\nDescription: blablabla')
   })
 
   it('trims a padded path', () => {
     expect(
-      buildTaskCreateMessage('My task', '', true, '  /home/you/.config/nalar/.worktrees/x  '),
-    ).toBe('Task : My task\n\n#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/x')
+      buildTaskCreateMessage('My task', '', true, '  /home/you/.config/pabrik/.worktrees/x  '),
+    ).toBe('Task : My task\n\n#Notes UseGitWorktree\nPath: /home/you/.config/pabrik/.worktrees/x')
   })
 
   it('toggle on + path + base → Base line after Path', () => {
@@ -79,11 +79,11 @@ describe('buildTaskCreateMessage', () => {
         'My task',
         'blablabla',
         true,
-        '/home/you/.config/nalar/.worktrees/my-task',
+        '/home/you/.config/pabrik/.worktrees/my-task',
         'origin/main',
       ),
     ).toBe(
-      'Task : My task\nDescription: blablabla\n\n#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/my-task\nBase: origin/main',
+      'Task : My task\nDescription: blablabla\n\n#Notes UseGitWorktree\nPath: /home/you/.config/pabrik/.worktrees/my-task\nBase: origin/main',
     )
   })
 

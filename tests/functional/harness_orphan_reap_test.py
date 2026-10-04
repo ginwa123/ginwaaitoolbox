@@ -1,7 +1,7 @@
-"""Tests for the orphan-nalar-pid reap step in FunctionalHarness.boot().
+"""Tests for the orphan-pabrik-pid reap step in FunctionalHarness.boot().
 
 When the harness Python is killed unexpectedly (Ctrl+C, ``kill -9``, OOM,
-terminal close), its nalar child survives in its own process group
+terminal close), its pabrik child survives in its own process group
 (``subprocess.Popen(start_new_session=True)``) and continues to hold the
 TCP port the test allocated. After ~120 such incidents the harness's
 8080..8199 scan window is exhausted and every subsequent test errors at
@@ -10,15 +10,15 @@ boot with ``No free port found in 8080..8199 (excluding 8081)``.
 These tests cover the reap logic that runs at the top of every ``boot()``
 to clean up after prior aborted runs. The reap step:
 
-  1. Scans ``<tempfile.gettempdir()>/nalar-func-*/.harness.pid``.
-  2. For each pidfile, parses ``<harness_pid> <nalar_pid>``.
+  1. Scans ``<tempfile.gettempdir()>/pabrik-func-*/.harness.pid``.
+  2. For each pidfile, parses ``<harness_pid> <pabrik_pid>``.
   3. If ``harness_pid`` is no longer alive, the dir is orphaned — kill
-     ``nalar_pid`` (SIGTERM → wait 1s → SIGKILL) and ``rmtree`` the dir
+     ``pabrik_pid`` (SIGTERM → wait 1s → SIGKILL) and ``rmtree`` the dir
      via the existing ``is_safe_tmp()`` safety validator.
 
-These tests run WITHOUT a real nalar binary. The "nalar" pid is just a
+These tests run WITHOUT a real pabrik binary. The "pabrik" pid is just a
 long-lived Python sleeper spawned with ``start_new_session=True`` to
-mimic the nalar spawn pattern.
+mimic the pabrik spawn pattern.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from harness import (
 
 
 def _spawn_long_lived_child() -> subprocess.Popen[bytes]:
-    """Spawn a 60-second sleeper in its own process group, like nalar.
+    """Spawn a 60-second sleeper in its own process group, like pabrik.
 
     Returns the Popen handle. Caller must call ``.kill()`` if the test
     fails before reap does.
@@ -109,15 +109,15 @@ def _force_kill_child(child: subprocess.Popen[bytes]) -> None:
         pass
 
 
-def _make_orphan_marker(temp_dir: Path, harness_pid: int, nalar_pid: int) -> None:
+def _make_orphan_marker(temp_dir: Path, harness_pid: int, pabrik_pid: int) -> None:
     """Write the pidfile as boot() would."""
-    (temp_dir / ".harness.pid").write_text(f"{harness_pid} {nalar_pid}\n")
+    (temp_dir / ".harness.pid").write_text(f"{harness_pid} {pabrik_pid}\n")
 
 
 def _reap_child_zombie(child: subprocess.Popen[bytes], timeout: float = 2.0) -> None:
     """waitpid() a child so its zombie status is cleared.
 
-    After reap() kills the nalar child, the child becomes a zombie
+    After reap() kills the pabrik child, the child becomes a zombie
     (state=Z) until its parent (the test runner, via Popen) calls
     waitpid. Without this, a liveness probe keeps reporting "alive"
     even though reap's job is done.
@@ -131,7 +131,7 @@ def _reap_child_zombie(child: subprocess.Popen[bytes], timeout: float = 2.0) -> 
 def _rmtree_retry(path: Path, attempts: int = 10, delay_s: float = 0.5) -> None:
     """rmtree with backoff for Windows' transient post-exit file locks.
 
-    After teardown() stops the fake-nalar tree, nalar.log can stay
+    After teardown() stops the fake-pabrik tree, pabrik.log can stay
     locked for ~0.5s even though both processes are dead (verified via
     tasklist: no cmd.exe/python.exe survivor — the OS/AV releases the
     redirected-stdout handle asynchronously). The harness's own
@@ -153,16 +153,16 @@ def _rmtree_retry(path: Path, attempts: int = 10, delay_s: float = 0.5) -> None:
 
 
 # ============================================================================
-# Task 1: _reap_orphan_test_pids kills an orphan nalar pid + rmtree's its dir
+# Task 1: _reap_orphan_test_pids kills an orphan pabrik pid + rmtree's its dir
 # ============================================================================
 
 
-def test_reap_kills_orphan_nalar_and_removes_dir() -> None:
-    """A stale pidfile whose harness parent is dead → reap kills the nalar
+def test_reap_kills_orphan_pabrik_and_removes_dir() -> None:
+    """A stale pidfile whose harness parent is dead → reap kills the pabrik
     child and rmtree's the tempdir.
 
     This is the exact failure mode the user hit on 2026-08-23: a prior
-    ``pytest -n auto`` run was killed -9, the workers died, the nalar
+    ``pytest -n auto`` run was killed -9, the workers died, the pabrik
     children survived in their own pgids, and every subsequent test
     errored at boot with "No free port found in 8080..8199".
     """
@@ -172,7 +172,7 @@ def test_reap_kills_orphan_nalar_and_removes_dir() -> None:
     # Create a fake orphan tempdir under tempfile.gettempdir() so the
     # reap scan finds it. Use the safety substring so is_safe_tmp accepts.
     temp_dir = Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
-    _make_orphan_marker(temp_dir, harness_pid=0, nalar_pid=child.pid)
+    _make_orphan_marker(temp_dir, harness_pid=0, pabrik_pid=child.pid)
 
     try:
         # PID 0 is special on Linux (kernel's idle task / swapper). It
@@ -204,7 +204,7 @@ def test_reap_kills_orphan_nalar_and_removes_dir() -> None:
             dead_pid_proc.wait(timeout=5.0)
             dead_pid = dead_pid_proc.pid
         # Rewrite the pidfile with the dead PID as the "harness parent".
-        _make_orphan_marker(temp_dir, harness_pid=dead_pid, nalar_pid=child.pid)
+        _make_orphan_marker(temp_dir, harness_pid=dead_pid, pabrik_pid=child.pid)
 
         # Sanity check: dead_pid is gone, child is alive, dir exists.
         assert not _pid_alive(dead_pid), "dead_pid should not be alive"
@@ -244,13 +244,13 @@ def test_reap_skips_live_harness() -> None:
     """A pidfile whose harness parent is alive is NOT reaped.
 
     This is the cross-xdist safety case: worker A scanning for orphans
-    must NOT kill worker B's live test's nalar child.
+    must NOT kill worker B's live test's pabrik child.
     """
     child = _spawn_long_lived_child()
     temp_dir = Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
     # Mark our own process (the test runner) as the harness parent — we
     # are alive, so reap must skip this entry.
-    _make_orphan_marker(temp_dir, harness_pid=os.getpid(), nalar_pid=child.pid)
+    _make_orphan_marker(temp_dir, harness_pid=os.getpid(), pabrik_pid=child.pid)
 
     try:
         _reap_orphan_test_pids()
@@ -297,18 +297,18 @@ def test_reap_skips_empty_pidfile() -> None:
 
 
 @pytest.fixture
-def built_nalar(tmp_path: Path) -> Path:
-    """Path to a fake-but-executable nalar binary that boots on the given port.
+def built_pabrik(tmp_path: Path) -> Path:
+    """Path to a fake-but-executable pabrik binary that boots on the given port.
 
     The fake binary binds the requested port (with SO_REUSEADDR so it can
-    bind TIME_WAIT ports just like real nalar), prints '{"status":"ok"}'
+    bind TIME_WAIT ports just like real pabrik), prints '{"status":"ok"}'
     on /health, exits 0 on /test/shutdown (so teardown()'s graceful
     path works), and sleeps forever otherwise — sufficient for the
     boot pidfile test which only needs the harness to reach the
     post-Popen state.
     """
     port_env_file = tmp_path / "port"
-    fake = tmp_path / "fake-nalar"
+    fake = tmp_path / "fake-pabrik"
     fake.write_text(
         "#!/usr/bin/env python3\n"
         "import http.server, socketserver, sys, json, os, signal\n"
@@ -337,7 +337,7 @@ def built_nalar(tmp_path: Path) -> Path:
         "        # and the harness's graceful path sends POST. Without\n"
         "        # this the fake 501s the shutdown; on Windows teardown\n"
         "        # then SIGTERMs only the .cmd wrapper, orphaning the\n"
-        "        # python grandchild that holds nalar.log open\n"
+        "        # python grandchild that holds pabrik.log open\n"
         "        # (rmtree fails with PermissionError [WinError 32]). POSIX masks\n"
         "        # this because killpg takes the whole group (and unlink\n"
         "        # works on open files there).\n"
@@ -371,7 +371,7 @@ def built_nalar(tmp_path: Path) -> Path:
         # via os._exit so teardown()'s graceful path releases the
         # log file; killing the cmd wrapper alone would orphan the
         # grandchild and block rmtree with PermissionError.
-        launcher = tmp_path / "fake-nalar.cmd"
+        launcher = tmp_path / "fake-pabrik.cmd"
         launcher.write_text(
             '@"%s" "%s" %%*\r\n' % (sys.executable, fake),
             encoding="ascii",
@@ -381,29 +381,29 @@ def built_nalar(tmp_path: Path) -> Path:
 
 
 def test_boot_writes_pidfile_with_both_pids(
-    built_nalar: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    built_pabrik: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """boot() writes <harness_pid> <nalar_pid> to <tempdir>/.harness.pid."""
+    """boot() writes <harness_pid> <pabrik_pid> to <tempdir>/.harness.pid."""
     # Use a per-test HOME so is_safe_tmp doesn't see the dev's HOME.
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("NALAR_BIN", str(built_nalar))
+    monkeypatch.setenv("PABRIK_BIN", str(built_pabrik))
 
-    h = FunctionalHarness.boot(built_nalar)
+    h = FunctionalHarness.boot(built_pabrik)
     try:
         pidfile = h.temp_dir / ".harness.pid"
         assert pidfile.is_file(), "boot() must write the pidfile"
         content = pidfile.read_text().strip().split()
         assert len(content) == 2, f"pidfile must have 2 tokens, got: {content!r}"
         assert int(content[0]) == os.getpid(), "first pid must be the harness python"
-        assert int(content[1]) == h.pid, "second pid must be the nalar child"
+        assert int(content[1]) == h.pid, "second pid must be the pabrik child"
     finally:
         h.teardown()
 
 
 def test_teardown_removes_pidfile(
-    built_nalar: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    built_pabrik: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """teardown() removes the pidfile before rmtree'ing the tempdir.
 
@@ -413,9 +413,9 @@ def test_teardown_removes_pidfile(
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("NALAR_BIN", str(built_nalar))
+    monkeypatch.setenv("PABRIK_BIN", str(built_pabrik))
 
-    h = FunctionalHarness.boot(built_nalar)
+    h = FunctionalHarness.boot(built_pabrik)
     pidfile = h.temp_dir / ".harness.pid"
     assert pidfile.is_file()
     h.teardown()
@@ -424,24 +424,24 @@ def test_teardown_removes_pidfile(
 
 
 def test_teardown_dry_run_removes_pidfile(
-    built_nalar: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    built_pabrik: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Under NALAR_FUNCTIONAL_DRY_RUN=1, teardown skips rmtree but still
+    """Under PABRIK_FUNCTIONAL_DRY_RUN=1, teardown skips rmtree but still
     removes the pidfile so the next boot doesn't reap this entry."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("NALAR_BIN", str(built_nalar))
-    monkeypatch.setenv("NALAR_FUNCTIONAL_DRY_RUN", "1")
+    monkeypatch.setenv("PABRIK_BIN", str(built_pabrik))
+    monkeypatch.setenv("PABRIK_FUNCTIONAL_DRY_RUN", "1")
 
-    h = FunctionalHarness.boot(built_nalar)
+    h = FunctionalHarness.boot(built_pabrik)
     pidfile = h.temp_dir / ".harness.pid"
     assert pidfile.is_file()
     h.teardown()
     # Tempdir survives (dry_run) but pidfile is gone.
     assert h.temp_dir.is_dir(), "dry_run keeps the tempdir"
     assert not pidfile.exists(), "dry_run teardown must remove the pidfile"
-    # Manual cleanup since dry_run skipped rmtree. Retry: nalar.log can
+    # Manual cleanup since dry_run skipped rmtree. Retry: pabrik.log can
     # stay transiently locked just after teardown on Windows (see
     # _rmtree_retry) — the harness's own rmtree path already retries.
     _rmtree_retry(h.temp_dir)
@@ -459,8 +459,8 @@ def test_find_free_port_picks_time_wait_port() -> None:
     the 8080..8199 scan window with server-side TIME_WAITs (last ~60s),
     causing every subsequent test to error with 'No free port found'.
     The harness's scan socket now sets SO_REUSEADDR — the same option
-    nalar's listener already uses — so the scan can pick ports in
-    TIME_WAIT state and nalar can subsequently bind them.
+    pabrik's listener already uses — so the scan can pick ports in
+    TIME_WAIT state and pabrik can subsequently bind them.
     """
     from harness import _find_free_port, DEFAULT_PORT, PORT_SCAN_END
 

@@ -10,7 +10,7 @@ be scrolled clear of the card.
 Those are the two halves of "floating", and both are GEOMETRY claims, so
 neither can be pinned in jsdom: there is no layout engine, no
 `getBoundingClientRect` worth reading, and no CSS custom-property
-resolution. This suite drives the real app (Vite + nalar + headless
+resolution. This suite drives the real app (Vite + pabrik + headless
 Chromium) and asserts:
 
   1. the dock is an absolute overlay pinned to the column's bottom edge,
@@ -29,8 +29,8 @@ The unit half of the contract lives in
 
 Run (frontend served from THIS worktree; the backend binary may come from
 anywhere since only frontend code is under test):
-    NALAR_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/nalarcore-linux-x86_64 \\
-        /tmp/nalar-ui-venv/bin/python -m pytest -s \\
+    PABRIK_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/pabrikcore-linux-x86_64 \\
+        /tmp/pabrik-ui-venv/bin/python -m pytest -s \\
         tests/functional_ui/chatview_floating_composer_test.py -v
 """
 
@@ -61,7 +61,7 @@ SLACK_PX = 4
 
 
 def _seed_db_path(h) -> Path:
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _seed_session(h, session_id: str, workspace_id: str, count: int = 40) -> None:

@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../api'
-import NalarSettings from '../components/NalarSettings.vue'
+import PabrikSettings from '../components/PabrikSettings.vue'
 import { __resetWindowIdForTests } from '../helpers/windowId'
 import { useTabsStore } from '../stores/tabs'
 import { makeLocalStorageStub } from './helpers'
@@ -16,13 +16,13 @@ import { makeLocalStorageStub } from './helpers'
  */
 
 vi.mock('../api', () => ({
-  getNalarConfig: vi.fn(),
-  saveNalarConfig: vi.fn(),
+  getPabrikConfig: vi.fn(),
+  savePabrikConfig: vi.fn(),
   deleteProfile: vi.fn(),
   getWebStatus: vi.fn(),
 }))
 
-const mockGet = api.getNalarConfig as unknown as ReturnType<typeof vi.fn>
+const mockGet = api.getPabrikConfig as unknown as ReturnType<typeof vi.fn>
 const mockWebStatus = api.getWebStatus as unknown as ReturnType<typeof vi.fn>
 
 function installStorage(): void {
@@ -40,12 +40,12 @@ function installStorage(): void {
 
 async function mountSettings() {
   mockGet.mockResolvedValueOnce({})
-  const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+  const wrapper = mount(PabrikSettings, { global: { stubs: { Teleport: true } } })
   await flushPromises()
   return wrapper
 }
 
-describe('NalarSettings — Browser-style tabs toggle', () => {
+describe('PabrikSettings — Browser-style tabs toggle', () => {
   beforeEach(() => {
     installStorage()
     __resetWindowIdForTests()
@@ -65,19 +65,19 @@ describe('NalarSettings — Browser-style tabs toggle', () => {
   it('persists the preference and never writes it to the server config', async () => {
     const wrapper = await mountSettings()
     const tabs = useTabsStore()
-    const mockSave = api.saveNalarConfig as unknown as ReturnType<typeof vi.fn>
+    const mockSave = api.savePabrikConfig as unknown as ReturnType<typeof vi.fn>
     mockSave.mockReset()
 
     // Default is OFF — opt in first so the change event fires both ways.
     await wrapper.find('[data-testid="toggle-browser-tabs"]').setValue(true)
 
     expect(tabs.enabled).toBe(true)
-    expect(localStorage.getItem('nalar-tabs-enabled')).toBe('true')
+    expect(localStorage.getItem('pabrik-tabs-enabled')).toBe('true')
     expect(mockSave).not.toHaveBeenCalled()
 
     await wrapper.find('[data-testid="toggle-browser-tabs"]').setValue(false)
     expect(tabs.enabled).toBe(false)
-    expect(localStorage.getItem('nalar-tabs-enabled')).toBe('false')
+    expect(localStorage.getItem('pabrik-tabs-enabled')).toBe('false')
   })
 
   it('survives a remount with the pref off and can be turned back on', async () => {

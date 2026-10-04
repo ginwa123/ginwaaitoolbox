@@ -1,10 +1,10 @@
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const LLMHistory = @import("llm_history_row.zig").LLMHistory;
 const args_repair = @import("tools_args_repair.zig");
 
-const agent = nalarcore.agent;
+const agent = pabrikcore.agent;
 const json = std.json;
 
 pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: LLMHistory) ![]agent.AgentMessage {
@@ -190,16 +190,16 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
 /// `tryUnwrapToolOutput` for the same fallback semantics).
 fn stripToolEnvelope(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     return stripToolEnvelopeImpl(allocator, raw) catch |err| {
-        // Use the project's custom Logger (nalarcore.loggermod) — it has its
+        // Use the project's custom Logger (pabrikcore.loggermod) — it has its
         // own formatter and does NOT route through std.log, so it won't
         // increment the test runner's `log_err_count`. Mirrors the
         // `startup.zig` "Failed to ... {s}" convention for errFmt messages.
         // `getGlobal()` returns null if the logger hasn't been initialized
         // (e.g. inside a unit test) — guard with `if (...) |logger|` so we
         // never crash in that case.
-        if (nalarcore.loggermod.getGlobal()) |logger| {
+        if (pabrikcore.loggermod.getGlobal()) |logger| {
             logger.warnFmt(
-                "[stripToolEnvelope] Agent Nalar System error, the actual error is ->>>> {s} (input_len={d}, looks_like_json={any})",
+                "[stripToolEnvelope] Agent Pabrik System error, the actual error is ->>>> {s} (input_len={d}, looks_like_json={any})",
                 .{
                     @errorName(err),
                     raw.len,

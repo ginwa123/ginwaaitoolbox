@@ -40,7 +40,7 @@
 | `src/ai_workflow/tui/agentic_loop/tools_exec_load_memory.zig` | NEW |
 | `src/ai_workflow/tui/agentic_loop/tools.zig` | + `execSaveMemory` / `execLoadMemory` |
 | `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` | + entries in `all_agent_tools` + `.exec` table |
-| `src/root.zig` | + `nalarcore.save_memory` / `nalarcore.load_memory` re-exports |
+| `src/root.zig` | + `pabrikcore.save_memory` / `pabrikcore.load_memory` re-exports |
 | `docs/SPEC.md` | + changelog row |
 | `AGENTS.md` | + changelog block |
 
@@ -70,9 +70,9 @@
 - [ ] **Step 7: Cross-compile smoke** (mandatory — SQL helpers can hide behind lazy analysis):
   ```bash
   zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-    --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+    --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
   zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-    --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+    --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
   ```
   Both must exit 0.
 - [ ] **Step 8: Commit** with message `migration(070): agent_memories table + FTS5 virtual table + sync triggers`.
@@ -175,8 +175,8 @@
 
 - [ ] **Step 1: Add `save_memory_mod` and `load_memory_mod` constant imports** to `tools_equipped.zig`:
   ```zig
-  const save_memory_mod = nalarcore.save_memory;
-  const load_memory_mod = nalarcore.load_memory;
+  const save_memory_mod = pabrikcore.save_memory;
+  const load_memory_mod = pabrikcore.load_memory;
   ```
 - [ ] **Step 2: Add to `all_agent_tools` slice** (after `list_memory_mod.list_memory_tool`):
   ```zig
@@ -190,8 +190,8 @@
   ```
 - [ ] **Step 4: Re-export `save_memory` and `load_memory` from `src/root.zig`**:
   ```zig
-  pub const save_memory = nalarcore_mod.save_memory;
-  pub const load_memory = nalarcore_mod.load_memory;
+  pub const save_memory = pabrikcore_mod.save_memory;
+  pub const load_memory = pabrikcore_mod.load_memory;
   ```
   (verify the existing `pub const list_memory = ...` line for the pattern).
 - [ ] **Step 5: Run `zig build test --summary all`** — confirm no regressions (the tools should now be reachable via the registry; existing tests must still pass).
@@ -201,16 +201,16 @@
 
 - [ ] **Step 1: Backend tests** — `timeout 180 zig build test --summary all`. Expect 23+ new tests pass (5 migration + 8 helpers + 1 getMemoryById + 8 save_memory + 12 load_memory). 0 new failures. Document any pre-existing failures (the 2 design_model_set_element_parent_test leaks).
 - [ ] **Step 2: Linux build** — `timeout 180 zig build install:linux:system`. Expect success (cp-to-`/usr/local/bin` may fail on perms — that's fine).
-- [ ] **Step 3: Fresh rebuild** — `rm -rf zig-out/bin && timeout 360 zig build`. All 3 binaries (nalar, nalarcore-linux-x86_64, nalar-desktop) produced.
+- [ ] **Step 3: Fresh rebuild** — `rm -rf zig-out/bin && timeout 360 zig build`. All 3 binaries (pabrik, pabrikcore-linux-x86_64, pabrik-desktop) produced.
 - [ ] **Step 4: Cross-compile smoke** (mandatory):
   ```bash
   zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-    --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+    --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
   zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-    --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+    --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
   ```
   Both must exit 0.
-- [ ] **Step 5: Live smoke on port 8080** — start `zig-out/bin/nalar` on port 8080 (NOT 8081 — that's the dev instance). Drive the agent via the kanban chat flow:
+- [ ] **Step 5: Live smoke on port 8080** — start `zig-out/bin/pabrik` on port 8080 (NOT 8081 — that's the dev instance). Drive the agent via the kanban chat flow:
   - Send a message asking the agent to remember "the test passed today"
   - Open a new session, ask the agent "what was the test result?"
   - Confirm the agent uses `load_memory` to retrieve the saved note

@@ -51,7 +51,7 @@
 | `src/apps/desktop/src/components/preview/ShellTool.vue` | Accept `toolName === 'command'`; pill renders `command`; parsing via `parseShell('command', ...)` |
 | `src/apps/desktop/src/components/preview/Bash.vue` | Keep as-is (legacy wrapper); optionally add `Command.vue` wrapper or reuse `ShellTool` directly — prefer reuse, no new file |
 | `src/apps/desktop/src/components/views/ChatView.vue` (L3099-3104) | Dispatcher condition gains `\|\| msg.tool_name === 'command'`; `:tool-name` normalizes `command → 'command'`, `run_command → 'bash'`, `pwsh → 'pwsh'` (compat) |
-| `src/apps/desktop/src/components/nalar/SubAgentPeekPanel.vue` (L304-308) | Same dispatcher change as ChatView |
+| `src/apps/desktop/src/components/pabrik/SubAgentPeekPanel.vue` (L304-308) | Same dispatcher change as ChatView |
 | `src/apps/desktop/src/components/views/KanbanToolsPanel.vue` + `parseSpawnSubAgentArgs` valid-names + `unwrapToolOutput` | `RECOMMENDED_TOOLS` swaps `'bash' → 'command'` (keep pwsh out); valid tool-name list accepts `'command'` (keep bash/pwsh accepted for compat) |
 
 ### Docs / tests (3)
@@ -60,7 +60,7 @@
 |---|---|
 | `docs/superpowers/plans/2026-09-04-unify-bash-pwsh-into-command.md` (this file) | Plan under review |
 | `tests/functional/command_tool_test.py` (NEW) | Harness: `command` runs `echo` on current OS; unknown-name compat (`bash` still works); envelope has `<name>command</name>` |
-| `NALAR.md` | Changelog entry |
+| `PABRIK.md` | Changelog entry |
 
 ## Key Design Decisions (locked before implementation)
 
@@ -84,7 +84,7 @@
 - [ ] **B1. Failing test: registry contains `command`.** Extend static-contract style test (mirror `pwsh.zig:248-325`): grep `tools_equipped.zig` for `.name = "command"` + `tools.execCommand` + `command_tool_mod.command_tool`. Run → fails.
 - [ ] **B2. Implement `tools_exec_command.zig` (merge, not copy).** Move (not duplicate) the shared body from `tools_exec_bash/pwsh.zig:26-93` into `tools_exec_command.zig` (`tool_name="command"`); then shrink both old files to shims delegating to `execCommand`; re-export in `tools.zig`; add import + 2 lines in `tools_equipped.zig` (keep bash/pwsh); update `prompts_build_messages_for_agent_prompt.zig:111` gate to `bash || command`.
 - [ ] **B3. Shrink bash/pwsh to shims.** `bash.zig`/`pwsh.zig` keep only name override + `execute_* = command.execute_command` + one-line deprecation pointer; `tools_exec_bash/pwsh.zig` keep only delegation. No duplicated schema/prompt text.
-- [ ] **B4. Verify B.** `zig build test --summary all` green; `zig build nalar-desktop` links; commit.
+- [ ] **B4. Verify B.** `zig build test --summary all` green; `zig build pabrik-desktop` links; commit.
 
 ### Phase C — frontend `command` rendering
 
@@ -94,8 +94,8 @@
 
 ### Phase D — wire verification + docs
 
-- [ ] **D1. Functional test (harness, isolated HOME, non-8081 port).** New `tests/functional/command_tool_test.py`: boot fresh binary, run `command` with `echo hello` (portable across shells), assert `<name>command</name>` + `exit_code 0` + stdout contains hello; second case: old `bash` name still dispatches (compat) on Linux. Run `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/command_tool_test.py -v`.
-- [ ] **D2. Full suites + changelog.** `zig build test --summary all` + `pnpm test:unit` green; add `NALAR.md` entry; commit.
+- [ ] **D1. Functional test (harness, isolated HOME, non-8081 port).** New `tests/functional/command_tool_test.py`: boot fresh binary, run `command` with `echo hello` (portable across shells), assert `<name>command</name>` + `exit_code 0` + stdout contains hello; second case: old `bash` name still dispatches (compat) on Linux. Run `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/command_tool_test.py -v`.
+- [ ] **D2. Full suites + changelog.** `zig build test --summary all` + `pnpm test:unit` green; add `PABRIK.md` entry; commit.
 - [ ] **D3. Human review gate.** Present this plan; stay in `in_review_planning`; do NOT implement until approved. Follow-up (out of scope): remove `bash`/`pwsh` registry entries + wrappers + parser aliases after one release.
 
 ## Pitfalls

@@ -28,7 +28,7 @@ replaying the EXACT JSON bodies the frontend sends:
     workspace join the tool's SQL scopes on, verified over HTTP.
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/agent_workspace_history_test.py -v
 """
 

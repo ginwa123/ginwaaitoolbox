@@ -6,7 +6,7 @@ import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 import * as api from '../api'
 import { FakeTabChannelHub, fakeForeignLeader, settle } from './fakes/fakeTabChannel'
 
-const NAME = 'nalar-sse-bus'
+const NAME = 'pabrik-sse-bus'
 
 /** Fast coordinator timings for tests (production uses the defaults). */
 const FAST = {

@@ -1,6 +1,6 @@
 """Functional tests for the Agent-Routines mirror (Migration 087).
 
-Exercises the new agent-routines CRUD endpoints against a REAL nalar
+Exercises the new agent-routines CRUD endpoints against a REAL pabrik
 binary + REAL SQLite, replaying the EXACT JSON bodies the frontend
 RoutineView Agent tab sends.
 

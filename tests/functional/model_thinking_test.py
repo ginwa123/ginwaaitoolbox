@@ -1,20 +1,20 @@
 """Functional tests for the model-thinking knobs (plan 2026-08-23-model-thinking).
 
-Exercises the nalar config HTTP surface for the new
+Exercises the pabrik config HTTP surface for the new
 `thinking_budget_tokens` and `reasoning_effort` per-profile fields:
 
-  - PUT  /api/config/nalar with profile-level thinking_budget_tokens
+  - PUT  /api/config/pabrik with profile-level thinking_budget_tokens
          + reasoning_effort round-trips through GET.
-  - PUT  /api/config/nalar rejects thinking_budget_tokens=0 with 400
+  - PUT  /api/config/pabrik rejects thinking_budget_tokens=0 with 400
          (InvalidThinkingBudgetTokens).
-  - PUT  /api/config/nalar rejects thinking_budget_tokens > 2_000_000
+  - PUT  /api/config/pabrik rejects thinking_budget_tokens > 2_000_000
          with 400 (InvalidThinkingBudgetTokens).
-  - PUT  /api/config/nalar rejects garbage reasoning_effort ("super")
+  - PUT  /api/config/pabrik rejects garbage reasoning_effort ("super")
          with 400.
 
-The harness boots nalar with `stub_llm_profile=True` which pre-installs
-a `stub` profile at `<temp_dir>/.config/nalar/config.json`. Each test
-boots a fresh nalar (function-scoped fixture).
+The harness boots pabrik with `stub_llm_profile=True` which pre-installs
+a `stub` profile at `<temp_dir>/.config/pabrik/config.json`. Each test
+boots a fresh pabrik (function-scoped fixture).
 """
 
 from __future__ import annotations
@@ -25,23 +25,23 @@ from harness import FunctionalHarness
 
 
 @pytest.fixture
-def config_harness(default_nalar_bin) -> FunctionalHarness:
-    """Boot nalar with `stub_llm_profile=True` so the harness
+def config_harness(default_pabrik_bin) -> FunctionalHarness:
+    """Boot pabrik with `stub_llm_profile=True` so the harness
     pre-installs a `stub` profile. We mirror the macOS dance from
-    `nalar_config_test.py` to ensure the stub is found on every
+    `pabrik_config_test.py` to ensure the stub is found on every
     platform."""
     import os
     import platform
     import shutil
 
     h = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
     )
 
     if platform.system() == "Darwin":
-        linux_cfg = h.temp_dir / ".config" / "nalar" / "config.json"
-        mac_cfg = h.temp_dir / "Library" / "Application Support" / "nalar" / "config.json"
+        linux_cfg = h.temp_dir / ".config" / "pabrik" / "config.json"
+        mac_cfg = h.temp_dir / "Library" / "Application Support" / "pabrik" / "config.json"
         if linux_cfg.exists():
             mac_cfg.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(linux_cfg, mac_cfg)
@@ -86,11 +86,11 @@ def test_profile_thinking_budget_and_effort_round_trip(
         },
     }
     config_harness.http(
-        "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+        "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
     )
 
     # GET returns the saved profile with both fields.
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     profiles = r.get("profiles") or {}
     assert "alpha" in profiles, (
         f"PUT'd profile missing from GET: {list(profiles.keys())}"
@@ -134,7 +134,7 @@ def test_profile_thinking_budget_zero_rejected(
     # to 400 with a body. We just verify it's a 400 and the body
     # mentions either "InvalidThinkingBudgetTokens" or "thinking_budget".
     response = config_harness.http(
-        "PUT", "/api/config/nalar", json_body=put_body,
+        "PUT", "/api/config/pabrik", json_body=put_body,
         expect=400,  # we'll check the status code manually
     )
     assert response.status == 400, (
@@ -172,7 +172,7 @@ def test_profile_thinking_budget_too_large_rejected(
         },
     }
     response = config_harness.http(
-        "PUT", "/api/config/nalar", json_body=put_body, expect=400,
+        "PUT", "/api/config/pabrik", json_body=put_body, expect=400,
     )
     assert "thinking_budget" in response.body.decode('utf-8', errors='replace').lower(), (
         f"Error body should mention the bad field; got: {response.body.decode('utf-8', errors='replace')[:200]}"
@@ -203,7 +203,7 @@ def test_profile_reasoning_effort_invalid_value_rejected(
         },
     }
     response = config_harness.http(
-        "PUT", "/api/config/nalar", json_body=put_body, expect=400,
+        "PUT", "/api/config/pabrik", json_body=put_body, expect=400,
     )
     body = response.body.decode('utf-8', errors='replace')
     assert "reasoning_effort" in body.lower() or "invalidreasoning" in body.lower(), (
@@ -237,10 +237,10 @@ def test_profile_thinking_knobs_default_to_null_when_omitted(
         },
     }
     config_harness.http(
-        "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+        "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
     )
 
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     alpha = (r.get("profiles") or {}).get("alpha")
     assert alpha is not None
     # On the wire, the field IS present (we default to null) so the
@@ -251,10 +251,10 @@ def test_profile_thinking_knobs_default_to_null_when_omitted(
 
 # ─── Test 6: explicit JSON null for the new fields is accepted ──────────
 # Regression test for the "cannot save profile" bug (task_1787586032476_9)
-# where PUT /api/config/nalar returned 400 InvalidThinkingBudgetTokens
+# where PUT /api/config/pabrik returned 400 InvalidThinkingBudgetTokens
 # for legitimate `null` values. Root cause: the on-disk shape validator
 # (`validateModelThinkingOnDiskProfileMap` in
-# nalar_config_put.zig) used a `switch` whose `else` arm rejected any
+# pabrik_config_put.zig) used a `switch` whose `else` arm rejected any
 # non-integer JSON value, including `.null`. JSON `null` IS the
 # legitimate "no override" sentinel for both
 # `thinking_budget_tokens` (matches `LlmProfile.thinking_budget_tokens:
@@ -287,10 +287,10 @@ def test_profile_thinking_budget_null_is_accepted(
         },
     }
     config_harness.http(
-        "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+        "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
     )
 
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     alpha = (r.get("profiles") or {}).get("alpha")
     assert alpha is not None
     assert alpha.get("thinking_budget_tokens") is None, (
@@ -324,10 +324,10 @@ def test_profile_reasoning_effort_null_is_accepted(
         },
     }
     config_harness.http(
-        "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+        "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
     )
 
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     beta = (r.get("profiles") or {}).get("beta")
     assert beta is not None
     assert beta.get("thinking_budget_tokens") == 4096
@@ -389,16 +389,16 @@ def test_multiple_profiles_with_null_thinking_budget_is_accepted(
         },
     }
     config_harness.http(
-        "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+        "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
     )
 
     # All 5 user-supplied profiles survive the PUT. The harness-installed
     # `stub` profile may also be present (PUT replaces the map, but
     # the harness's pre-installed profile is read back into the merge
     # target before the new map overwrites — see
-    # `nalar_config_put.zig:179-187`). Either way the 5 user profiles
+    # `pabrik_config_put.zig:179-187`). Either way the 5 user profiles
     # MUST all be present.
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     profiles = r.get("profiles") or {}
     for expected_name in (
         "p1-nothing", "p2-just-budget", "p3-just-effort", "p4-both-set", "p5-both-null-again"

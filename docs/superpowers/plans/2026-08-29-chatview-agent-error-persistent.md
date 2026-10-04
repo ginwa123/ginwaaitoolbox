@@ -348,7 +348,7 @@ Three layered affordances, all driven by the same store read:
        the meta row where users naturally scan for status. Shows
        `3/10 retries` while retrying, swaps to `workflow halted` on
        the TooManyRetries bail (when the content has no [Retry N/M]
-       prefix and starts with `[Agent Nalar System error]`). -->
+       prefix and starts with `[Agent Pabrik System error]`). -->
   <span
     v-if="agentError"
     class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
@@ -383,7 +383,7 @@ Three layered affordances, all driven by the same store read:
   - Call `agentErrorStore.setError(task.id, '[Retry 3/10] StreamInterrupted (callDynamicAgentNew). Retrying in 5000ms. Server said: …')`. Assert indicator renders; tooltip shows `retry 3/10` chip + `StreamInterrupted (callDynamicAgentNew)` headline.
   - Assert card root has `data-has-agent-error="true"` (or class has `has-error`).
   - Assert meta-row pill renders `3/10 retries`.
-  - Call `agentErrorStore.setError(task.id, '[Agent Nalar System error] workflow halted after 10 consecutive retries. Reason for last retry: StreamInterrupted. Server said: …')`. Assert pill swaps to `workflow halted`; no retry chip in tooltip.
+  - Call `agentErrorStore.setError(task.id, '[Agent Pabrik System error] workflow halted after 10 consecutive retries. Reason for last retry: StreamInterrupted. Server said: …')`. Assert pill swaps to `workflow halted`; no retry chip in tooltip.
   - Call `agentErrorStore.clearForSession(task.id)`. Assert all indicators (icon, border, pill) disappear.
   - Multi-task isolation: render two cards with different task ids; set error on task A; assert only A's card shows the indicator.
   - `prefers-reduced-motion: reduce`: mock `window.matchMedia('(prefers-reduced-motion: reduce)').matches === true`; assert `.error-pulse` does NOT apply the animation (computed style `animation-name === 'none'`). Uses `vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, ... })))`.

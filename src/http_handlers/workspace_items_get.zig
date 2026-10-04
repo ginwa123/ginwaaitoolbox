@@ -1,9 +1,9 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
-const llm_history = nalarcore.llm_history;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
+const llm_history = pabrikcore.llm_history;
 const workspace_default = @import("workspace_items_default.zig");
 
 pub const WorkspaceItemsListError = error{
@@ -45,7 +45,7 @@ pub const WorkspaceItemsGetError = error{
 pub fn workspaceItemsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
@@ -62,7 +62,7 @@ pub fn workspaceItemsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRe
             sqlite_db,
             workspace_id,
             di.environment,
-            nalarcore.getLlmConfig(di).tools,
+            pabrikcore.getLlmConfig(di).tools,
         );
         if (ensured) |project| {
             defer project.deinit(allocator);
@@ -90,7 +90,7 @@ pub fn workspaceItemsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRe
     return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeWorkspaceItemListObjectResponse(allocator, items) });
 }
 
-fn useCaseList(allocator: std.mem.Allocator, sqlite_db: *nalarcore.sqlite.SqliteBackend, workspace_id: []const u8) WorkspaceItemsListError![]const llm_history.WorkspaceItemInfo {
+fn useCaseList(allocator: std.mem.Allocator, sqlite_db: *pabrikcore.sqlite.SqliteBackend, workspace_id: []const u8) WorkspaceItemsListError![]const llm_history.WorkspaceItemInfo {
     return ai_mod.workspace_items.listWorkspaceItems(allocator, sqlite_db, workspace_id) catch {
         return error.DatabaseError;
     };
@@ -100,7 +100,7 @@ fn useCaseList(allocator: std.mem.Allocator, sqlite_db: *nalarcore.sqlite.Sqlite
 pub fn workspaceItemsGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const item_id = req.params.get("item_id") orelse "";
@@ -136,7 +136,7 @@ pub fn workspaceItemsGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReq
     }) });
 }
 
-fn useCaseGet(allocator: std.mem.Allocator, sqlite_db: *nalarcore.sqlite.SqliteBackend, item_id: []const u8) WorkspaceItemsGetError!llm_history.WorkspaceItemInfo {
+fn useCaseGet(allocator: std.mem.Allocator, sqlite_db: *pabrikcore.sqlite.SqliteBackend, item_id: []const u8) WorkspaceItemsGetError!llm_history.WorkspaceItemInfo {
     const opt = ai_mod.workspace_items.getWorkspaceItem(allocator, sqlite_db, item_id) catch {
         return error.DatabaseError;
     };

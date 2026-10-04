@@ -212,7 +212,7 @@ The new wiring is purely additive: a new mount that reads from stores that are a
 | DELETE | `src/apps/desktop/src/__tests__/KanbanView.chatPane.spec.ts` | Tests for the deleted chat-pane branch |
 | NEW  | `src/apps/desktop/src/__tests__/KanbanChatDialog.spec.ts` | New behavioural tests for the dialog (open, close on backdrop/Esc/✕, content swaps on task switch, header hidden, header has task name, v-model:show + close both work) |
 | EDIT | `docs/SPEC.md` | Update §3.7 (Kanban layout) entry to reflect the dialog change; add §10.2.1 PR index row |
-| EDIT | `NALAR.md` | Append "### 2026-08-06: kanban chat-as-dialog" changelog entry |
+| EDIT | `PABRIK.md` | Append "### 2026-08-06: kanban chat-as-dialog" changelog entry |
 
 Total: **7 files** (2 NEW, 4 EDIT, 1 DELETE). No backend changes. No migration. No Zig changes.
 

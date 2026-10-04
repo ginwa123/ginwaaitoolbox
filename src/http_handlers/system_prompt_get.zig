@@ -26,17 +26,17 @@
 //! reading the system message).
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
-const llm_history = nalarcore.llm_history;
-const agent = nalarcore.agent;
-const tool_models = nalarcore.tool_models;
+const llm_history = pabrikcore.llm_history;
+const agent = pabrikcore.agent;
+const tool_models = pabrikcore.tool_models;
 
 const buildMessages = @import("../agentic_loop/prompts_build_messages_for_agent_prompt.zig").buildMessages;
 
 const agentic_loop = @import("../agentic_loop/workflow.zig");
-const SqliteBackend = nalarcore.sqlite.SqliteBackend;
+const SqliteBackend = pabrikcore.sqlite.SqliteBackend;
 
 /// JSON response struct. `size_bytes` is the byte length of the rendered
 /// `system_prompt` so callers can sanity-check they got a non-empty prompt
@@ -62,7 +62,7 @@ pub fn systemPromptGetHandler(
         });
     }
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
     const io = di.io;
 
@@ -175,7 +175,7 @@ pub fn systemPromptGetHandler(
 //   5. `getMessages` and `buildMessages` failures map to 500.
 //   6. The route path is `/test/system-prompt/:session_id`.
 // 
-// Standing up a sqlite DB + migrations + `ContextIPCTui` singleton to
+// Standing up a sqlite DB + migrations + `App` singleton to
 // behavioural-test the handler is out of scope (matches
 // `routines_run_test.zig`, `memories_crud_test.zig`, etc.). The static
 // checks below cover the same ground for less code.
@@ -257,9 +257,9 @@ test "system_prompt_get handler gets the singleton for db and io" {
 
     if (std.mem.indexOf(u8, source, "getSingleton") == null) {
         std.debug.print(
-            "\n!! {s} does not call nalarcore.getSingleton() !!\n" ++
+            "\n!! {s} does not call pabrikcore.getSingleton() !!\n" ++
                 "   The handler has no other source for the SQLite DB or Io\n" ++
-                "   runtime. Add `const di = try nalarcore.getSingleton();`\n" ++
+                "   runtime. Add `const di = try pabrikcore.getSingleton();`\n" ++
                 "   and read sqlite_db/io from it.\n",
             .{HANDLER_PATH},
         );

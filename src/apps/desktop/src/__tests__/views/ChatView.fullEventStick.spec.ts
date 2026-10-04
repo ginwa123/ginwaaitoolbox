@@ -181,7 +181,7 @@ function installApiMocks(): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  vi.spyOn(api, 'getNalarConfig').mockResolvedValue({ profiles: {} } as any)
+  vi.spyOn(api, 'getPabrikConfig').mockResolvedValue({ profiles: {} } as any)
 }
 
 async function mountChatView(

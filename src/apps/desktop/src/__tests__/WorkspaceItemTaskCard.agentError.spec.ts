@@ -35,7 +35,7 @@ const RETRY_CONTENT =
   'Server said: {"error":{"message":"Provider returned error","code":429}}'
 
 const BAIL_CONTENT =
-  '[Agent Nalar System error] workflow halted after 10 consecutive retries.\n' +
+  '[Agent Pabrik System error] workflow halted after 10 consecutive retries.\n' +
   'Reason for last retry: StreamInterrupted (source: callDynamicAgentNew).\n' +
   'Server said: upstream provider rate-limited'
 

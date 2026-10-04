@@ -48,7 +48,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const migration = @import("../migrations/migration.zig");
 const llm_history = @import("llm_history.zig");
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
 
 /// Batch file diff endpoint — collapses the SidebarDiffPanel N+1 fan-out
 /// (one `GET /api/git/file/diff` per changed file) into at most 2 git

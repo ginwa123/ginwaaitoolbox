@@ -1,17 +1,19 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Maximum size for NALAR.md file (100KB)
+/// Maximum size for PABRIK.md file (100KB)
 pub const MAX_AGENT_SIZE: usize = 100 * 1024;
 
 /// App name for config directory
-pub const APP_NAME = "nalar";
+pub const APP_NAME = "pabrik";
+
 
 /// Local agents directory
-pub const LOCAL_AGENTS_DIR = ".nalar/agents";
+pub const LOCAL_AGENTS_DIR = ".pabrik/agents";
 
 /// Agents file name inside each agent folder
-pub const AGENT_FILE_NAME = "NALAR.md";
+pub const AGENT_FILE_NAME = "PABRIK.md";
+
 
 /// Agent information structure
 pub const AgentInfo = struct {
@@ -101,7 +103,7 @@ pub fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedAgentFrontm
     allocator.free(fm.description);
 }
 
-/// Get the local agents directory path (.nalar/agents/)
+/// Get the local agents directory path (.pabrik/agents/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
 pub fn getLocalAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
     // Get current working directory using Io
@@ -112,7 +114,7 @@ pub fn getLocalAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 
     };
     const cwd = cwd_buf[0..cwd_len];
 
-    // Build path: .nalar/agents/
+    // Build path: .pabrik/agents/
     const path = std.fs.path.join(allocator, &[_][]const u8{
         cwd,
         LOCAL_AGENTS_DIR,
@@ -125,9 +127,9 @@ pub fn getLocalAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 
 }
 
 /// Get the global agents path following XDG standards
-/// Linux: ~/.config/nalar/agents/
-/// macOS: ~/Library/Application Support/nalar/agents/
-/// Windows: %APPDATA%/nalar/agents/
+/// Linux: ~/.config/pabrik/agents/
+/// macOS: ~/Library/Application Support/pabrik/agents/
+/// Windows: %APPDATA%/pabrik/agents/
 /// Returns allocated string that caller must free, or null if home/env not found
 pub fn getGlobalAgentsPath(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) ?[]const u8 {
     var config_dir: ?[]const u8 = null;
@@ -164,7 +166,6 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator, environment: ?*const st
         },
         else => { // Linux, FreeBSD, etc.
             if (environment) |env| {
-                // XDG_CONFIG_HOME or default to ~/.config
                 if (env.get("XDG_CONFIG_HOME")) |xdg_config| {
                     config_dir = std.fs.path.join(allocator, &[_][]const u8{ xdg_config, APP_NAME }) catch null;
                     if (config_dir != null) needs_free = true;
@@ -182,7 +183,6 @@ pub fn getGlobalAgentsPath(allocator: std.mem.Allocator, environment: ?*const st
     const dir = config_dir orelse return null;
     defer if (needs_free) allocator.free(dir);
 
-    // Build full path: config_dir/agents
     const path = std.fs.path.join(allocator, &[_][]const u8{
         dir,
         "agents",
@@ -236,7 +236,7 @@ pub fn freeAgentsPath(allocator: std.mem.Allocator, path: []const u8) void {
 }
 
 /// List all agent files in the agents directory
-/// Returns allocated array of file paths to NALAR.md files inside agent folders
+/// Returns allocated array of file paths to PABRIK.md files inside agent folders
 /// Empty files are excluded from the list
 pub fn listAgentFiles(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map) ?[][]const u8 {
     const dir_path = resolveAgentsPath(allocator, io, environment) orelse return null;
@@ -262,10 +262,10 @@ pub fn listAgentFiles(allocator: std.mem.Allocator, io: std.Io, environment: ?*c
 
         const folder_name = entry.name;
 
-        // Build path to NALAR.md inside the folder
+        // Build path to PABRIK.md inside the folder
         const agent_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, folder_name, AGENT_FILE_NAME }) catch continue;
 
-        // Check if NALAR.md exists and is non-empty
+        // Check if PABRIK.md exists and is non-empty
         const file = std.Io.Dir.cwd().openFile(io, agent_file_path, .{}) catch {
             allocator.free(agent_file_path);
             continue;

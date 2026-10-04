@@ -1,8 +1,8 @@
 """Subagents are per-profile only (plan 2026-09-04-subagents-per-profile).
 
-Wire contract over HTTP (harness boots a fresh nalar per test):
+Wire contract over HTTP (harness boots a fresh pabrik per test):
 
-  - GET  /api/config/nalar returns top-level `sub_agents: null` always;
+  - GET  /api/config/pabrik returns top-level `sub_agents: null` always;
     each profile carries its own `sub_agents` inside `profiles`.
   - PUT granular profile update WITHOUT `sub_agents` preserves the
     profile's existing on-disk list (no clobber regression).
@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 
 from harness import FunctionalHarness
-from nalar_config_test import config_harness  # noqa: F401  (shared fixture)
+from pabrik_config_test import config_harness  # noqa: F401  (shared fixture)
 
 
 SA = {
@@ -33,7 +33,7 @@ SA = {
 
 
 def _profiles(h) -> dict:
-    r = h.http("GET", "/api/config/nalar", expect=200).json()
+    r = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("sub_agents") is None, (
         f"top-level sub_agents must be null on the wire, got: {r.get('sub_agents')!r}"
     )
@@ -47,7 +47,7 @@ def test_per_profile_subagents_round_trip_via_object_map(
     shows the list under that profile and null at the top level."""
     config_harness.http(
         "PUT",
-        "/api/config/nalar",
+        "/api/config/pabrik",
         json_body={
             "profiles": {
                 "stub": {
@@ -72,7 +72,7 @@ def test_granular_update_without_subagents_preserves_list(
     profile's existing list (clobber regression)."""
     config_harness.http(
         "PUT",
-        "/api/config/nalar",
+        "/api/config/pabrik",
         json_body={
             "profiles": {
                 "stub": {
@@ -89,7 +89,7 @@ def test_granular_update_without_subagents_preserves_list(
     # Granular update touches only the model; sub_agents omitted.
     config_harness.http(
         "PUT",
-        "/api/config/nalar",
+        "/api/config/pabrik",
         json_body={
             "profiles": [
                 {
@@ -119,7 +119,7 @@ def test_granular_update_with_subagents_replaces_list(
     """Granular `update` WITH `sub_agents` replaces the profile's list."""
     config_harness.http(
         "PUT",
-        "/api/config/nalar",
+        "/api/config/pabrik",
         json_body={
             "profiles": {
                 "stub": {
@@ -136,7 +136,7 @@ def test_granular_update_with_subagents_replaces_list(
     sa2 = dict(SA, name="helper", system_prompt="You help.")
     config_harness.http(
         "PUT",
-        "/api/config/nalar",
+        "/api/config/pabrik",
         json_body={
             "profiles": [
                 {
@@ -172,9 +172,9 @@ def _candidate_config_paths(h):
     Seed/assert across all candidates instead of guessing one.
     """
     return [
-        h.temp_dir / ".config" / "nalar" / "config.json",
-        h.temp_dir / "Library" / "Application Support" / "nalar" / "config.json",
-        h.temp_dir / "AppData" / "Roaming" / "nalar" / "config.json",
+        h.temp_dir / ".config" / "pabrik" / "config.json",
+        h.temp_dir / "Library" / "Application Support" / "pabrik" / "config.json",
+        h.temp_dir / "AppData" / "Roaming" / "pabrik" / "config.json",
     ]
 
 
@@ -205,7 +205,7 @@ def test_put_strips_deprecated_top_level_key_from_disk(
         seeded += 1
     assert seeded > 0, "harness stub config missing at every candidate path"
 
-    config_harness.http("PUT", "/api/config/nalar", json_body={}, expect=200)
+    config_harness.http("PUT", "/api/config/pabrik", json_body={}, expect=200)
 
     # Wire contract first (platform-independent): the stub profile must
     # show the migrated list and the top level must read null. If this

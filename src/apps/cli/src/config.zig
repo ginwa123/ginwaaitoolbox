@@ -2,8 +2,8 @@
 //!
 //! Resolution order (highest priority first):
 //!   1. CLI flags (`--server`, `--session`, `--profile`)
-//!   2. Environment variables: `NALARCLI_SERVER`, `NALARCLI_SESSION_ID`,
-//!      `NALARCLI_PROFILE`
+//!   2. Environment variables: `PABRIKCLI_SERVER`, `PABRIKCLI_SESSION_ID`,
+//!      `PABRIKCLI_PROFILE`
 //!   3. Compile-time defaults (see `default_server`).
 //!
 //! Defines a `Config` struct + a `load` helper. Tests live in
@@ -24,9 +24,9 @@ pub const Config = struct {
     profile: ?[]const u8 = null,
 };
 
-pub const env_server = "NALARCLI_SERVER";
-pub const env_session = "NALARCLI_SESSION_ID";
-pub const env_profile = "NALARCLI_PROFILE";
+pub const env_server = "PABRIKCLI_SERVER";
+pub const env_session = "PABRIKCLI_SESSION_ID";
+pub const env_profile = "PABRIKCLI_PROFILE";
 
 /// Look up an env var. Returns null if unset or empty.
 fn getEnvOrNull(environment: *const std.process.Environ.Map, key: []const u8) ?[]const u8 {
@@ -81,7 +81,7 @@ test "load: all defaults when no flags and no env" {
 test "load: flag overrides env and default" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
-    try env.put("NALARCLI_SERVER", "http://env:1234");
+    try env.put("PABRIKCLI_SERVER", "http://env:1234");
 
     var cfg = try load(
         testing.allocator,
@@ -98,7 +98,7 @@ test "load: flag overrides env and default" {
 test "load: env overrides default when no flag" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
-    try env.put("NALARCLI_SERVER", "http://env:9090");
+    try env.put("PABRIKCLI_SERVER", "http://env:9090");
 
     var cfg = try load(
         testing.allocator,
@@ -115,8 +115,8 @@ test "load: env overrides default when no flag" {
 test "load: session + profile fall through to env" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
-    try env.put("NALARCLI_SESSION_ID", "session-env");
-    try env.put("NALARCLI_PROFILE", "profile-env");
+    try env.put("PABRIKCLI_SESSION_ID", "session-env");
+    try env.put("PABRIKCLI_PROFILE", "profile-env");
 
     var cfg = try load(
         testing.allocator,
@@ -134,8 +134,8 @@ test "load: session + profile fall through to env" {
 test "load: flag session/profile override env" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
-    try env.put("NALARCLI_SESSION_ID", "session-env");
-    try env.put("NALARCLI_PROFILE", "profile-env");
+    try env.put("PABRIKCLI_SESSION_ID", "session-env");
+    try env.put("PABRIKCLI_PROFILE", "profile-env");
 
     var cfg = try load(
         testing.allocator,
@@ -153,7 +153,7 @@ test "load: flag session/profile override env" {
 test "load: empty env value is treated as missing" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
-    try env.put("NALARCLI_SESSION_ID", "");
+    try env.put("PABRIKCLI_SESSION_ID", "");
 
     var cfg = try load(
         testing.allocator,

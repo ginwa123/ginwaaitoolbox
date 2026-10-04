@@ -4,7 +4,7 @@
 
 **Goal:** Add an `enabled` toggle per MCP server so users can disable a server without deleting it; disabled servers are hidden from the agent (no tools listed, no calls dispatched) but stay in `config.json` and the settings UI.
 
-**Architecture:** Add optional `enabled?: boolean` (default `true` = missing means enabled) to the backend `McpServerConfig` + JSON parsers + mirror rebuild, skip `enabled == false` in runtime enumeration (`buildMCPToolsRun`) and reject at call dispatch (`handle_mcp_tool`), and add a row-level toggle + modal checkbox in the frontend that round-trips through the existing bulk `PUT /api/config/nalar`.
+**Architecture:** Add optional `enabled?: boolean` (default `true` = missing means enabled) to the backend `McpServerConfig` + JSON parsers + mirror rebuild, skip `enabled == false` in runtime enumeration (`buildMCPToolsRun`) and reject at call dispatch (`handle_mcp_tool`), and add a row-level toggle + modal checkbox in the frontend that round-trips through the existing bulk `PUT /api/config/pabrik`.
 
 **Tech Stack:** Zig 0.16 backend (`src/modules/config/Config.zig`, `src/ai_workflow/tui/agentic_loop/`), Vue 3 + TypeScript frontend (`src/apps/desktop/src/`), Python functional harness (`tests/functional/harness.py`).
 
@@ -12,9 +12,9 @@
 
 - Backward compat: missing `enabled` MUST mean enabled. Never require a migration; never rewrite old `config.json` entries on load.
 - Omit-when-true on write: serialize `enabled: false` only; omit when true to keep `config.json` clean and diffs small.
-- No per-server endpoint: all frontend mutations stay local-array + one bulk `PUT /api/config/nalar` (existing pattern). No new routes.
+- No per-server endpoint: all frontend mutations stay local-array + one bulk `PUT /api/config/pabrik` (existing pattern). No new routes.
 - Disabled = invisible to agent: no `tools/list` enumeration, no `tools/call` dispatch, no stdio spawn, no HTTP connect. Disabled servers must not cost a child process or socket.
-- Disable must teardown: toggling to disabled evicts cached stdio child / HTTP client (reuse existing `markStale`/`evict` + `clearMcpToolsCache` path in `nalar_config_put.zig:501-509`).
+- Disable must teardown: toggling to disabled evicts cached stdio child / HTTP client (reuse existing `markStale`/`evict` + `clearMcpToolsCache` path in `pabrik_config_put.zig:501-509`).
 - Strict TDD: failing test first for every behavior change (Zig inline tests + vitest + python functional).
 - Do NOT touch port 8081. Functional tests use harness-picked ports (8080..8199 excl. 8081).
 - Per-request arena: no `defer allocator.free` on `ctx.allocator` memory in handlers (arena frees it). Keep `rows.deinit()` for SQLite stmts.
@@ -29,11 +29,11 @@
 | `src/modules/config/Config.zig:1442-1556` | `AddMcpServerStdioInput` + `addMcpServerStdio` | New servers default enabled (no input change needed; ensure rebuild keeps it) |
 | `src/ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig:413-511` | `buildMCPToolsRun` enumeration | Skip `enabled == false` before spawn/connect |
 | `src/ai_workflow/tui/agentic_loop/handle_mcp_tool.zig:48-53` | call dispatch | Reject call to disabled server with clear XML error |
-| `src/ai_workflow/tui/http_handlers/nalar_config_put.zig:346-369,501-509` | PUT persistence + cache clear | Verify `enabled` survives deep-copy (it will, generic `json.Value`); verify stale-evict covers toggled server |
+| `src/ai_workflow/tui/http_handlers/pabrik_config_put.zig:346-369,501-509` | PUT persistence + cache clear | Verify `enabled` survives deep-copy (it will, generic `json.Value`); verify stale-evict covers toggled server |
 | `src/apps/desktop/src/api/index.ts:3707-3730,3755-3759` | `McpServer` + raw wire union | Add `enabled?: boolean` to both |
-| `src/apps/desktop/src/components/nalar/McpServersSection.vue:6-10,60-99` | list row | Add toggle button/switch left of Edit, new `toggle` emit, dimmed style when disabled |
-| `src/apps/desktop/src/components/NalarSettings.vue:192-258,449-493` | parse/serialize/CRUD | Hydrate `enabled ?? true`, round-trip omit-when-true, carry on save; add `toggleMcpServer(name)` handler |
-| `src/apps/desktop/src/components/nalar/McpServerModal.vue` | add/edit modal | Add `Enabled` checkbox (companion to row toggle) into `McpServerModalValue` + `onSave` |
+| `src/apps/desktop/src/components/pabrik/McpServersSection.vue:6-10,60-99` | list row | Add toggle button/switch left of Edit, new `toggle` emit, dimmed style when disabled |
+| `src/apps/desktop/src/components/PabrikSettings.vue:192-258,449-493` | parse/serialize/CRUD | Hydrate `enabled ?? true`, round-trip omit-when-true, carry on save; add `toggleMcpServer(name)` handler |
+| `src/apps/desktop/src/components/pabrik/McpServerModal.vue` | add/edit modal | Add `Enabled` checkbox (companion to row toggle) into `McpServerModalValue` + `onSave` |
 | `src/modules/agent/tools/add_mcp_server.zig:70-95` | agent tool input | Optional: accept `enabled?` (default true). Only if cheap; otherwise skip — agent-added servers are enabled by definition |
 
 ## Wire Shape
@@ -105,17 +105,17 @@ graphify [STDIO] [Disabled badge if off]  $ <command...>  [toggle] [Edit] [⌫]
 
 ## Task 5 — Backend verification: PUT round-trip + cache evict (no code expected)
 
-- [ ] Read `src/ai_workflow/tui/http_handlers/nalar_config_put.zig:346-369` (deep-copy) and `:501-509` (clearMcpToolsCache + markStale/evict).
-- [ ] Static-contract check: `enabled` is a generic `json.Value` boolean so deep-copy preserves it — add a static test asserting a PUT body with `"enabled": false` survives to disk (follow `nalar_config_put` test pattern) OR document why no test is needed.
+- [ ] Read `src/ai_workflow/tui/http_handlers/pabrik_config_put.zig:346-369` (deep-copy) and `:501-509` (clearMcpToolsCache + markStale/evict).
+- [ ] Static-contract check: `enabled` is a generic `json.Value` boolean so deep-copy preserves it — add a static test asserting a PUT body with `"enabled": false` survives to disk (follow `pabrik_config_put` test pattern) OR document why no test is needed.
 - [ ] Confirm toggle-to-disabled triggers the same stale-evict as any other PUT edit (it should — wholesale replace + per-server evict). If evict is keyed on removed servers only, extend to changed servers.
 - [ ] Write functional test `tests/functional/mcp_server_toggle_test.py` (harness boots fresh binary, isolated tmp HOME, never port 8081): (a) PUT config with disabled server → GET returns `enabled:false`; (b) agent tool list excludes disabled server's tools; (c) PUT flip to enabled → tools reappear. Replay the EXACT JSON body the frontend sends (see Task 7 serializer).
-- [ ] Run: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/mcp_server_toggle_test.py -v`. Confirm green.
+- [ ] Run: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/mcp_server_toggle_test.py -v`. Confirm green.
 - [ ] Commit: `mcp toggle: functional toggle round-trip + enumeration`.
 
 ## Task 6 — Frontend: type + parse/serialize plumbing
 
-- [ ] Read `src/apps/desktop/src/api/index.ts:3707-3759` and `NalarSettings.vue:192-258`.
-- [ ] Write failing vitest (extend `McpServersSection.spec.ts` or NalarSettings spec — check existing): `parseMcpServers({a: {command:'x', enabled:false}})` → `[{name:'a', enabled:false}]`; missing `enabled` → `enabled: undefined` (treated as true); `serializeMcpServers` omits `enabled` when true/undefined, emits `false` explicitly.
+- [ ] Read `src/apps/desktop/src/api/index.ts:3707-3759` and `PabrikSettings.vue:192-258`.
+- [ ] Write failing vitest (extend `McpServersSection.spec.ts` or PabrikSettings spec — check existing): `parseMcpServers({a: {command:'x', enabled:false}})` → `[{name:'a', enabled:false}]`; missing `enabled` → `enabled: undefined` (treated as true); `serializeMcpServers` omits `enabled` when true/undefined, emits `false` explicitly.
 - [ ] Run it, confirm it fails.
 - [ ] Implement: add `enabled?: boolean` to `McpServer` + raw wire union; hydrate `enabled: raw.enabled ?? true` (or leave undefined — pick one and keep parse/serialize symmetric); serializer omit-when-true.
 - [ ] Run `pnpm test:unit` for touched specs. Run `npx vue-tsc --noEmit -p tsconfig.app.json`.
@@ -123,7 +123,7 @@ graphify [STDIO] [Disabled badge if off]  $ <command...>  [toggle] [Edit] [⌫]
 
 ## Task 7 — Frontend: row toggle button + dimmed state
 
-- [ ] Read `src/apps/desktop/src/components/nalar/McpServersSection.vue:53-114`.
+- [ ] Read `src/apps/desktop/src/components/pabrik/McpServersSection.vue:53-114`.
 - [ ] Write failing vitest in `McpServersSection.spec.ts`: row with `enabled:false` shows `toggle-btn` in off state + dimmed class + `Disabled` pill; clicking `toggle-btn` emits `toggle` with server; row with missing `enabled` renders as enabled.
 - [ ] Run it, confirm it fails.
 - [ ] Implement: add `toggle` to `defineEmits`; add `<button data-testid="toggle-btn">` left of `edit-btn` in `:84` cluster (switch styling, `aria-pressed`, `title`); add `Disabled` pill + `opacity-60` when `server.enabled === false`.
@@ -132,10 +132,10 @@ graphify [STDIO] [Disabled badge if off]  $ <command...>  [toggle] [Edit] [⌫]
 
 ## Task 8 — Frontend: orchestrator handler + modal checkbox
 
-- [ ] Read `NalarSettings.vue:415-493` (CRUD) and `McpServerModal.vue` transport toggle + `onSave`.
+- [ ] Read `PabrikSettings.vue:415-493` (CRUD) and `McpServerModal.vue` transport toggle + `onSave`.
 - [ ] Write failing vitest: `toggleMcpServer(name)` flips `enabled` in `mcpServersList` and marks dirty (via `syncToConfig` watch); modal `Enabled` checkbox binds into `McpServerModalValue` and survives `onSave` → parent `saveMcpServer` carries it.
 - [ ] Run it, confirm it fails.
-- [ ] Implement: `toggleMcpServer(name)` in `NalarSettings.vue` (map + flip, default true→false); wire `@toggle` on `<McpServersSection>` mount (`:610-616`); add `Enabled (agent can call this server)` checkbox to both modal branches + `enabled` in `McpServerModalValue` + `onSave` passthrough; `saveMcpServer` validation unchanged (name/command/url rules as-is).
+- [ ] Implement: `toggleMcpServer(name)` in `PabrikSettings.vue` (map + flip, default true→false); wire `@toggle` on `<McpServersSection>` mount (`:610-616`); add `Enabled (agent can call this server)` checkbox to both modal branches + `enabled` in `McpServerModalValue` + `onSave` passthrough; `saveMcpServer` validation unchanged (name/command/url rules as-is).
 - [ ] Run `pnpm test:unit` (full), `vue-tsc` clean.
 - [ ] Commit: `mcp toggle: orchestrator handler + modal checkbox`.
 
@@ -143,9 +143,9 @@ graphify [STDIO] [Disabled badge if off]  $ <command...>  [toggle] [Edit] [⌫]
 
 - [ ] `zig build test --summary all` — all pass, 0 fail.
 - [ ] `pnpm test:unit` — all pass.
-- [ ] `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/mcp_server_toggle_test.py tests/functional/mcp_stdio_test.py tests/functional/mcp_http_test.py tests/functional/nalar_config_test.py -v` — all green (no regressions in sibling suites).
-- [ ] `zig build nalar-desktop --summary all` — builds clean (frontend changes embedded).
-- [ ] Update `NALAR.md` changelog (one entry, same style as prior MCP entries) + `docs/SPEC.md` if it documents `mcp_servers` shape.
+- [ ] `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/mcp_server_toggle_test.py tests/functional/mcp_stdio_test.py tests/functional/mcp_http_test.py tests/functional/pabrik_config_test.py -v` — all green (no regressions in sibling suites).
+- [ ] `zig build pabrik-desktop --summary all` — builds clean (frontend changes embedded).
+- [ ] Update `PABRIK.md` changelog (one entry, same style as prior MCP entries) + `docs/SPEC.md` if it documents `mcp_servers` shape.
 - [ ] Commit: `mcp toggle: verification + changelog`.
 
 ## Out of Scope (explicitly NOT in this plan)

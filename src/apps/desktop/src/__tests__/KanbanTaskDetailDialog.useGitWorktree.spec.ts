@@ -147,7 +147,7 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
     ).toBeNull()
   })
 
-  it('prefills the path under ~/.config/nalar/.worktrees when toggled on', async () => {
+  it('prefills the path under ~/.config/pabrik/.worktrees when toggled on', async () => {
     mountDialog()
     await flushPromises()
     setName('My task')
@@ -158,7 +158,7 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
       '[data-testid="kanban-task-detail-use-git-worktree-path"]',
     )
     expect(input).not.toBeNull()
-    expect(input!.value).toContain('.config/nalar/.worktrees')
+    expect(input!.value).toContain('.config/pabrik/.worktrees')
     expect(input!.value).toContain('my-task')
     expect(input!.value).toMatch(/my-task-\d+$/)
   })
@@ -180,7 +180,7 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
       '[data-testid="kanban-task-detail-use-git-worktree-path"]',
     )
     expect(input).not.toBeNull()
-    expect(input!.value).toMatch(/^\/home\/testuser\/\.config\/nalar\/\.worktrees\/my-task-\d+$/)
+    expect(input!.value).toMatch(/^\/home\/testuser\/\.config\/pabrik\/\.worktrees\/my-task-\d+$/)
   })
 
   it('expands a ~/ path to absolute on create-and-run emit', async () => {
@@ -196,7 +196,7 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
     await flushPromises()
     setWorktreeToggle(true)
     await flushPromises()
-    setWorktreePath('~/.config/nalar/.worktrees/custom')
+    setWorktreePath('~/.config/pabrik/.worktrees/custom')
     await flushPromises()
     findInDom<HTMLButtonElement>(
       '[data-testid="kanban-task-detail-create-and-run"]',
@@ -205,7 +205,7 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
     const emitted = wrapper!.emitted('create-and-run')
     expect(emitted).toBeTruthy()
     expect((emitted![0]![0] as { worktreePath: string }).worktreePath).toBe(
-      '/home/testuser/.config/nalar/.worktrees/custom',
+      '/home/testuser/.config/pabrik/.worktrees/custom',
     )
   })
 

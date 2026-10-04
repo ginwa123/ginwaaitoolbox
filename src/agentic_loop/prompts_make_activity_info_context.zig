@@ -1,7 +1,7 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 
 /// Build activity info string for the agent prompt
 /// Uses worker table as the SOLE source of active workers info

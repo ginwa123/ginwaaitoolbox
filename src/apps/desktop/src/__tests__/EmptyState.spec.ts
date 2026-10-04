@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 
-import EmptyState from '../components/nalar/EmptyState.vue'
+import EmptyState from '../components/pabrik/EmptyState.vue'
 
 describe('EmptyState', () => {
   it('renders the title and description', () => {

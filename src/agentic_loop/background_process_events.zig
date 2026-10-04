@@ -20,8 +20,8 @@
 //! and future granular handling.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const event_bus_mod = nalarcore.event_bus;
+const pabrikcore = @import("pabrikcore");
+const event_bus_mod = pabrikcore.event_bus;
 const on_event_sent = @import("on_event_sent.zig");
 const testing = std.testing;
 

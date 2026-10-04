@@ -6,7 +6,7 @@ for testing use another port like 8080
 ## Verification — Always Use Functional Tests, Never a Live Server
 
 When verifying HTTP behavior (route order, wire payloads, error messages, JSON
-serialization, authentication), do NOT spin up a live `nalar` binary and `curl`
+serialization, authentication), do NOT spin up a live `pabrik` binary and `curl`
 it. Three recurring failure modes only surface from a real wire round-trip and
 NONE of them are visible from unit tests:
 
@@ -25,7 +25,7 @@ NONE of them are visible from unit tests:
    exercised by the frontend's real wire body.
 
 **What to do instead — write an isolated functional test** that boots a fresh
-`nalar` binary against an isolated tmpdir HOME per test, then replays the EXACT
+`pabrik` binary against an isolated tmpdir HOME per test, then replays the EXACT
 JSON body the frontend sends:
 
 ```python
@@ -46,11 +46,11 @@ def test_text_mode_save_clears_file_path_and_sets_content(harness):
 
 The harness at `tests/functional/harness.py` does all the heavy lifting:
 - Picks a free port in 8080..8199 (excluding 8081 — see the mandatory note above).
-- Sets `HOME` to an isolated tmpdir (`/tmp/nalar-func-<uuid>/`) — the harness's
+- Sets `HOME` to an isolated tmpdir (`/tmp/pabrik-func-<uuid>/`) — the harness's
   `is_safe_tmp()` validator gates every `rmtree` so your real `$HOME` is never
   touched (see `tests/functional/README.md` ⛔ section).
 - Tears down the binary + tmpdir on test exit (even on assert-fail).
-- Runs `zig-out/bin/nalarcore-linux-x86_64` (or whatever `$NALAR_BIN` points at).
+- Runs `zig-out/bin/pabrikcore-linux-x86_64` (or whatever `$PABRIK_BIN` points at).
 
 For static checks (route order, function signatures, error mappings), prefer a
 Zig static-contract test in the same file as the impl (`<feature>_test.zig`
@@ -58,7 +58,7 @@ inline with `pub const` exports + greps). For Zig-only behavior, an in-memory
 SQLite test in the same `useCase` file is enough — but for any HTTP route or
 wire payload, ALWAYS graduate to the python functional harness.
 
-**Anti-pattern: `nohup ./zig-out/bin/nalar... --port 8080` + `curl`.** Leaks the
+**Anti-pattern: `nohup ./zig-out/bin/pabrik... --port 8080` + `curl`.** Leaks the
 process across tool calls, conflicts with the harness, and is exactly what
 missed the bugs in PR #291.
 
@@ -297,6 +297,6 @@ union (a retry is not a scroll reason — use `console.warn`); `oxlint`'s
 `no-useless-catch` rejects a `catch (e) { throw e }` wrapper; and prettier
 wraps long `v-if` expressions across lines, so source-contract regexes must be
 whitespace-tolerant. See
-`.nalar/skills/chatview-empty-state-gate/SKILL.MD` for a worked example.
+`.pabrik/skills/chatview-empty-state-gate/SKILL.MD` for a worked example.
 
 

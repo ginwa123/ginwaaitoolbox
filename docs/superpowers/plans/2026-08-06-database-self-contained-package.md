@@ -29,7 +29,7 @@ The user reports two issues with `zig build`:
    on a fresh checkout.
 
 2. **Platform detection**: `zig build` always builds the Linux x86_64
-   cross-target (`install:linux` step → `nalarcore-linux-x86_64`),
+   cross-target (`install:linux` step → `pabrikcore-linux-x86_64`),
    regardless of the host OS. On macOS/Windows, the user gets a
    Linux cross-compiled binary instead of a native one by default.
    The user wants `zig build` to be host-aware.
@@ -74,14 +74,14 @@ src/
 
 **Build flow**:
 
-- `zig build` on Linux host → builds `nalar` (native target),
-  `nalar-desktop` (native), `nalarcli` (native), prints summary.
+- `zig build` on Linux host → builds `pabrik` (native target),
+  `pabrik-desktop` (native), `pabrikcli` (native), prints summary.
   No cross-compile to Linux x86_64 by default (still available via
   explicit `zig build install:linux`).
-- `zig build` on macOS host → builds `nalarcore-macos-aarch64` (or
-  `-macos-x86_64` for Intel), `nalar-desktop`, `nalarcli`.
-- `zig build` on Windows host → builds `nalarcore-windows-x86_64.exe`,
-  `nalar-desktop`, `nalarcli`.
+- `zig build` on macOS host → builds `pabrikcore-macos-aarch64` (or
+  `-macos-x86_64` for Intel), `pabrik-desktop`, `pabrikcli`.
+- `zig build` on Windows host → builds `pabrikcore-windows-x86_64.exe`,
+  `pabrik-desktop`, `pabrikcli`.
 - Cross-compile still works via explicit
   `zig build install:linux` / `install:macos` / `install:windows`.
 
@@ -248,7 +248,7 @@ in-tree.
 Add the `databases` package via `b.dependency()`, then add its
 module to the imports of:
 
-1. `mod` (the main `nalarcore` module — used by `exe`, `desktop_exe`,
+1. `mod` (the main `pabrikcore` module — used by `exe`, `desktop_exe`,
    `cli_exe`, all `install:*` cross-compile artifacts).
 2. `mod_tests_module` (used by `mod_tests` for `zig build test`).
 
@@ -263,12 +263,12 @@ const databases_dep = b.dependency("databases", .{
 });
 const databases_mod = databases_dep.module("databases");
 
-const mod = b.addModule("nalarcore", .{
+const mod = b.addModule("pabrikcore", .{
     .root_source_file = b.path("src/root.zig"),
     .target = target,
     .optimize = optimize,
 });
-mod.addImport("nalarcore", mod);
+mod.addImport("pabrikcore", mod);
 mod.addImport("databases", databases_mod);
 ```
 
@@ -280,7 +280,7 @@ const mod_tests_module = b.createModule(.{
     .target = test_target,
     .optimize = optimize,
 });
-mod_tests_module.addImport("nalarcore", mod_tests_module);
+mod_tests_module.addImport("pabrikcore", mod_tests_module);
 mod_tests_module.addImport("databases", databases_mod);
 // REMOVE the previous switch-on-test_target linking block for
 // sqlite3/openssl/pq (lines ~790-820 in main build.zig) — the
@@ -346,18 +346,18 @@ so they remain unconditional.
 
 ### Step 9 — Update `build_banner` to show the host-specific binary name
 
-The shell banner currently hardcodes "nalarcore-linux-x86_64" /
-"nalar-desktop" / "nalarcli". Replace with a computed value:
+The shell banner currently hardcodes "pabrikcore-linux-x86_64" /
+"pabrik-desktop" / "pabrikcli". Replace with a computed value:
 
 ```zig
 const host_binary_name = switch (builtin.host.result.os.tag) {
-    .linux => "nalarcore-linux-x86_64",
+    .linux => "pabrikcore-linux-x86_64",
     .macos => if (builtin.host.result.cpu.arch == .aarch64)
-        "nalarcore-macos-aarch64"
+        "pabrikcore-macos-aarch64"
     else
-        "nalarcore-macos-x86_64",
-    .windows => "nalarcore-windows-x86_64.exe",
-    else => "nalarcore-unknown",
+        "pabrikcore-macos-x86_64",
+    .windows => "pabrikcore-windows-x86_64.exe",
+    else => "pabrikcore-unknown",
 };
 ```
 
@@ -416,16 +416,16 @@ grep -c "warning: unable to open library directory" /tmp/zig-build.log
 ls -la zig-out/bin/
 
 # 4. The binary should still RUN:
-./zig-out/bin/nalarcore-linux-x86_64 --help 2>&1 | head -n 5
+./zig-out/bin/pabrikcore-linux-x86_64 --help 2>&1 | head -n 5
 # Expected: usage message + warning: scheduler: resetStuckRunning failed: DatabaseNotFound
 
 # 5. Cross-compile smoke (catches compile errors that lazy analysis
 #    hides — per AGENTS.md cross-platform section):
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # Expected: clean exit
 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # Expected: clean exit
 
 # 6. Platform detection works (the install_linux step should be skipped on macOS):
@@ -437,10 +437,10 @@ zig build-obj -fno-emit-bin -target aarch64-macos -lc \
 
 | Host OS | `zig build` produces |
 |---|---|
-| Linux x86_64 | `nalarcore-linux-x86_64`, `nalar-desktop`, `nalarcli` |
-| macOS arm64 | `nalarcore-macos-aarch64`, `nalar-desktop`, `nalarcli` |
-| macOS x86_64 | `nalarcore-macos-x86_64`, `nalar-desktop`, `nalarcli` |
-| Windows x86_64 | `nalarcore-windows-x86_64.exe`, `nalar-desktop.exe`, `nalarcli.exe` |
+| Linux x86_64 | `pabrikcore-linux-x86_64`, `pabrik-desktop`, `pabrikcli` |
+| macOS arm64 | `pabrikcore-macos-aarch64`, `pabrik-desktop`, `pabrikcli` |
+| macOS x86_64 | `pabrikcore-macos-x86_64`, `pabrik-desktop`, `pabrikcli` |
+| Windows x86_64 | `pabrikcore-windows-x86_64.exe`, `pabrik-desktop.exe`, `pabrikcli.exe` |
 
 Cross-compile artifacts (`install:linux` / `install:macos` /
 `install:windows` / `install:macos-arm`) still work via explicit
@@ -539,7 +539,7 @@ Cross-compile artifacts (`install:linux` / `install:macos` /
   `scripts/build-vendor-mingw.sh`) — out of scope; the package's
   build.zig references the top-level `vendor/sqlite3/sqlite3.c`
   which `fetch-vendor-sqlite3.sh` already populates.
-- The `nalarcli` binary's reference to the same `databases` deps —
+- The `pabrikcli` binary's reference to the same `databases` deps —
   it's a HTTP-only CLI that doesn't touch sqlite3 directly, so no
   import is needed there.
 - Renaming the package directory `databases/` → `database/`

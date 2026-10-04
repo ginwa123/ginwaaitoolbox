@@ -107,7 +107,7 @@ The override is gated on `session_name == "New Session"`, so:
 ### Functional (`tests/functional/kanban_task_session_name_test.py`, 7 tests)
 
 One test per create path, all reading `sessions.name` straight from
-the SQLite DB (`harness.temp_dir / ".config" / "nalar" / "agent.db"`)
+the SQLite DB (`harness.temp_dir / ".config" / "pabrik" / "agent.db"`)
 so we exercise the actual wire round-trip against a real binary:
 
 | Test | Path | Asserts |
@@ -148,10 +148,10 @@ points the SELECT at a different table all fail at `zig build test`
 zig build test --summary all
   → 2688/2694 pass, 6 skipped, 0 failed
 
-NALAR_BIN=./zig-out/bin/nalar python3 -m pytest tests/functional/kanban_task_session_name_test.py -v
+PABRIK_BIN=./zig-out/bin/pabrik python3 -m pytest tests/functional/kanban_task_session_name_test.py -v
   → 7/7 passed in 1.50s
 
-NALAR_BIN=./zig-out/bin/nalar python3 -m pytest tests/functional/{kanban_create_session_user_message,kanban_lifecycle,kanban_task_get,kanban_advanced} -v
+PABRIK_BIN=./zig-out/bin/pabrik python3 -m pytest tests/functional/{kanban_create_session_user_message,kanban_lifecycle,kanban_task_get,kanban_advanced} -v
   → 32/32 passed (no regressions in existing kanban tests)
 ```
 

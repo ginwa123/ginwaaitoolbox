@@ -2,7 +2,7 @@
 
 Each test:
 
-1. Boots a fresh nalar + Vite via the ``ui_harness`` fixture.
+1. Boots a fresh pabrik + Vite via the ``ui_harness`` fixture.
 2. Opens a Python ``sqlite3`` connection to the harness's
    isolated ``agent.db`` and INSERTs pre-shaped ``sessions`` +
    ``llm_history`` rows that simulate a real conversation.
@@ -45,7 +45,7 @@ def _seed_db_path(h: UIHarness) -> Path:
     before boot. We pass that dir to ``DbSeed``, which
     re-validates as belt-and-suspenders.
     """
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _wait_for_text(page, text: str, timeout_ms: int = 10000) -> None:

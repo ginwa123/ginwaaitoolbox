@@ -144,7 +144,7 @@ def _read_session_name(harness: FunctionalHarness, session_id: str) -> str | Non
     INSERTed yet — happens for the ``mode='create'``-without-unattended
     lazy path until the user types their first chat message).
     """
-    db_path = harness.temp_dir / ".config" / "nalar" / "agent.db"
+    db_path = harness.temp_dir / ".config" / "pabrik" / "agent.db"
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
@@ -539,11 +539,11 @@ def test_chat_first_message_after_lazy_create_binds_session_name_to_task_name(
     )
 
 
-# ─── llm_harness fixture (boots nalar with stub-llm-profile) ────────────────
+# ─── llm_harness fixture (boots pabrik with stub-llm-profile) ────────────────
 
 
 @pytest.fixture
-def llm_harness(default_nalar_bin: Any) -> Any:
+def llm_harness(default_pabrik_bin: Any) -> Any:
     """A harness booted with the LLM stub profile so create_and_run's
     workflow doesn't try to call a real LLM. The wire works; the LLM
     call fails silently — we don't care about LLM outcomes here, only
@@ -551,7 +551,7 @@ def llm_harness(default_nalar_bin: Any) -> Any:
     worker starts (or fails).
     """
     h = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
     )
     try:

@@ -10,7 +10,7 @@
 //!      reload `di.llm_config` so subsequent agent iterations see the
 //!      new server via `buildMCPToolsRun` (which reads `mcpServers()` from
 //!      the live config) — this is the critical live-reload step. The
-//!      HTTP PUT endpoint at `nalar_config_put.zig` uses the same pattern;
+//!      HTTP PUT endpoint at `pabrik_config_put.zig` uses the same pattern;
 //!      see that file for the full write/atomic-swap sequence.
 //!   4. Wrap the result in the standard `<tool>...</tool>` envelope.
 //!
@@ -27,14 +27,14 @@
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const config_mod = nalarcore.config;
-const add_mcp_server_mod = nalarcore.add_mcp_server;
+const agent = pabrikcore.agent;
+const config_mod = pabrikcore.config;
+const add_mcp_server_mod = pabrikcore.add_mcp_server;
 const AddMcpServerInput = add_mcp_server_mod.AddMcpServerInput;
 const wrapToolOutput = tools.wrapToolOutput;
 
@@ -217,10 +217,10 @@ fn substitutePersistedStatus(
 // Disk persistence + live-reload helper
 // ───────────────────────────────────────────────────────────────────────
 
-/// Persist the live config to `~/.config/nalar/config.json` and hot-reload
+/// Persist the live config to `~/.config/pabrik/config.json` and hot-reload
 /// `di.llm_config` via `setLlmConfig` so subsequent agent iterations see
 /// the new server through `buildMCPToolsRun`. Mirrors the write sequence
-/// in `nalar_config_put.zig` (PUT /api/config/nalar):
+/// in `pabrik_config_put.zig` (PUT /api/config/pabrik):
 /// read → mutate `mcp_servers` → write → re-parse + swap `llm_config`.
 ///
 /// Returns the status string the agent sees in the `<persisted>` field.
@@ -228,7 +228,7 @@ fn substitutePersistedStatus(
 /// `defer`. On success the slice contains `"true"`; on any failure path
 /// it contains `"false: <reason>"` (allocated via `allocPrint`).
 fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
-    const di = nalarcore.getSingleton() catch return ctx.allocator.dupe(u8, "false: getSingleton failed") catch return ctx.allocator.dupe(u8, "false") catch unreachable;
+    const di = pabrikcore.getSingleton() catch return ctx.allocator.dupe(u8, "false: getSingleton failed") catch return ctx.allocator.dupe(u8, "false") catch unreachable;
     // Auth mode: persist into the session owner's users.config_json
     // (Migration 092) instead of config.json, and skip the global
     // live-reload (config is per-user). config.json is never touched.
@@ -317,7 +317,7 @@ fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
         return failStatus(ctx.allocator, "OOM", @errorName(err));
     };
     new_ptr.* = new_cfg;
-    nalarcore.setLlmConfig(di, new_ptr);
+    pabrikcore.setLlmConfig(di, new_ptr);
 
     // Fetch-once cache (plan: mcp-fetch-once-cache): lazy-invalidate so
     // the next workflow run refetches once and picks up the new server.
@@ -336,8 +336,8 @@ fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
 /// is per-user in auth mode — but invalidates the MCP tools cache.
 /// Returns an owned status slice on `ctx.allocator` (`"true"` or
 /// `"false: <reason>"`), same contract as `persistAndReloadStatus`.
-fn persistAuthModeStatus(ctx: ToolExecContext, di: *nalarcore.ContextIPCTui) ![]u8 {
-    const user_config_store = nalarcore.user_config_store;
+fn persistAuthModeStatus(ctx: ToolExecContext, di: *pabrikcore.App) ![]u8 {
+    const user_config_store = pabrikcore.user_config_store;
     // 1. Resolve the session owner.
     var owner: ?[]u8 = null;
     defer if (owner) |o| ctx.allocator.free(o);
@@ -528,7 +528,7 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_json: []const u8, server_name:
     }
 
     // Via the singleton struct (see root.zig `mcpStdioRegistry`).
-    const reg = nalarcore.mcpStdioRegistry(ctx.allocator);
+    const reg = pabrikcore.mcpStdioRegistry(ctx.allocator);
     var lease = reg.acquire(server_name, argv, .{}) catch return inner_json;
     defer lease.release();
     const client = lease.client();
@@ -616,7 +616,7 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_json: []const u8, server_name:
 const migration = @import("../migrations/migration.zig");
 
 const TestCtx = struct {
-    db: nalarcore.sqlite.SqliteBackend,
+    db: pabrikcore.sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
 };
 
@@ -625,7 +625,7 @@ fn setupDb() !TestCtx {
     var threaded = std.Io.Threaded.init(alloc, .{});
     errdefer threaded.deinit();
     const io = threaded.io();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
@@ -636,10 +636,10 @@ fn setupDb() !TestCtx {
     return .{ .db = db, .threaded = threaded };
 }
 
-fn makeTestCtx(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend) ToolExecContext {
+fn makeTestCtx(allocator: std.mem.Allocator, db: *pabrikcore.sqlite.SqliteBackend) ToolExecContext {
     var dummy_f32: f32 = 0.0;
     var dummy_bool: bool = false;
-    var dummy_active_loops: nalarcore.ai_mod.active_loops = undefined;
+    var dummy_active_loops: pabrikcore.ai_mod.active_loops = undefined;
     return .{
         .allocator = allocator,
         .io = std.testing.io,
@@ -843,10 +843,10 @@ test "substitutePersistedStatus: missing placeholder returns error" {
     try testing.expectError(error.MissingPersistedPlaceholder, result);
 }
 
-// F6 caveat: `persistAndReloadStatus` requires `nalarcore.getSingleton()`
-// (the live ContextIPCTui) so it can't be unit-tested in isolation —
+// F6 caveat: `persistAndReloadStatus` requires `pabrikcore.getSingleton()`
+// (the live App) so it can't be unit-tested in isolation —
 // the path is exercised end-to-end when an LLM actually calls
-// `add_mcp_server` in production. The functional harness boots nalar
+// `add_mcp_server` in production. The functional harness boots pabrik
 // with a stub LLM that never responds to chat completions, so a
 // chat-driven test would have to add a fake LLM harness of its own.
 // Out of scope for this PR.

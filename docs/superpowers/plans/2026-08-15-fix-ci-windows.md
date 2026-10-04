@@ -121,7 +121,7 @@ The CI workflow file is YAML, not Zig — so traditional `zig build test` doesn'
 
 After pushing the fix:
 - The next CI run on `worktree/fix-ci-windows` (or wherever) should show `Install vcpkg + MSVC build tools (Windows)` and `Install vcpkg ports + WebView2 + ripgrep (Windows)` both succeeding.
-- The Windows job should complete past the install step and reach `Build nalar + nalar-desktop binaries`.
+- The Windows job should complete past the install step and reach `Build pabrik + pabrik-desktop binaries`.
 - Each new step's script is <60 lines with simple control flow + single-quote-friendly syntax; PowerShell 5.1's parser handles them reliably.
 
 ## Backout

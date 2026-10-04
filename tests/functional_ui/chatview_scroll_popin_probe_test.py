@@ -16,8 +16,8 @@ Two failure signatures, one per mechanism:
 
 Run (frontend is served from THIS worktree; backend binary may come
 from anywhere since only frontend code is under test):
-    NALAR_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/nalarcore-linux-x86_64 \\
-        /tmp/nalar-ui-venv/bin/python -m pytest \\
+    PABRIK_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/pabrikcore-linux-x86_64 \\
+        /tmp/pabrik-ui-venv/bin/python -m pytest \\
         tests/functional_ui/chatview_scroll_popin_probe_test.py -v
 """
 
@@ -38,7 +38,7 @@ from db_seed import DbSeed
 @pytest.fixture(autouse=True)
 def _arm_sse_emit_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Arm the test-only SSE emit gate BEFORE the harness boots."""
-    monkeypatch.setenv("NALAR_TEST_SSE_EMIT", "1")
+    monkeypatch.setenv("PABRIK_TEST_SSE_EMIT", "1")
 
 TALL_BODY = (
     "Message {i} paragraph one.\n\n"
@@ -53,7 +53,7 @@ SHORT_BODIES = ("ok", "go on", "Done.", "On it.", "thanks", "noted")
 
 
 def _seed_db_path(h) -> Path:
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _seed_mixed_session(h, workspace_id: str, session_id: str, count: int = 700) -> None:

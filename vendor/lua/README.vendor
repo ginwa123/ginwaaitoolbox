@@ -8,7 +8,7 @@ of the upstream tarball).
 
 Contents: the full src/*.c + src/*.h library set, EXCLUDING the two
 standalone mains lua.c and luac.c (interpreter/compiler frontends we
-never build — nalar only embeds the library).
+never build — pabrik only embeds the library).
 
 Why vendored: hooks embed Lua on every target (Linux/macOS/Windows).
 System Lua lives in different places per OS (or nowhere), so compiling

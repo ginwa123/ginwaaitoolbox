@@ -1,8 +1,8 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
-const event_bus_mod = nalarcore.event_bus;
+const sqlite = pabrikcore.sqlite;
+const event_bus_mod = pabrikcore.event_bus;
 
 const onEventSendSessions = @import("sse_on_event_send_session.zig").onEventSendSessions;
 

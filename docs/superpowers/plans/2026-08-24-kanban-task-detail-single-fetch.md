@@ -138,7 +138,7 @@ pub fn getWorkspaceItemTaskById(
   3. wrong item id in path → 404,
   4. unknown task_id → 404,
   5. `GET .../tasks?limit=100` still works (list route unshadowed).
-  Run: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/kanban_task_get_test.py -v`
+  Run: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/kanban_task_get_test.py -v`
 - [ ] Commit: `git add -A && git commit -m "kanban: GET /tasks/:task_id single-task endpoint + functional test"`
 
 ---
@@ -224,7 +224,7 @@ async function refreshTask(
 
 - [ ] Full backend: `zig build test --summary all 2>&1 | tail -n 5` → 0 fail, 0 new leaks.
 - [ ] Full frontend: `bun run test:unit 2>&1 | tail -n 5` → all pass.
-- [ ] Functional: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/kanban_task_get_test.py -v` → 5/5 pass.
+- [ ] Functional: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/kanban_task_get_test.py -v` → 5/5 pass.
 - [ ] Manual smoke (user's dev flow, port 8080 — NEVER 8081): open kanban with 270+ tasks, click a card → DevTools Network shows ONE `tasks/task_xxx` request, NO `tasks?limit=100` request. Dialog still shows live unattended toggle + tags + images + branch badge.
 - [ ] Add AGENTS.md changelog entry (follow the existing "What landed / Wire / Files / Plan" format).
 - [ ] Commit: `git add -A && git commit -m "docs: changelog for kanban single-task fetch"`

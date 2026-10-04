@@ -21,7 +21,7 @@ currently look like three unrelated controls:
 | Create task & run agent    | `transparent`           | `text` (bright)    |
 | Start agent                | `transparent`           | `text` (bright)    |
 
-The codebase convention (used in `NalarSaveBar`, `McpServersSection`,
+The codebase convention (used in `PabrikSaveBar`, `McpServersSection`,
 `ProfilesSection`, `McpHeadersEditor`) is `transparent` + `text-muted` for
 secondary outline buttons — so **Cancel** (card-bg) and the two "run agent"
  buttons

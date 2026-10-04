@@ -1,6 +1,6 @@
 """Workspace-level routines (Migration 084) wire contract.
 
-Exercises the new workspace-routine endpoints against a REAL nalar
+Exercises the new workspace-routine endpoints against a REAL pabrik
 binary + REAL SQLite, replaying the EXACT JSON bodies the frontend
 RoutineView will send — plus deletion proofs that the old per-task
 surface is gone.

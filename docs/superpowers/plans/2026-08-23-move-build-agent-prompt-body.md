@@ -66,8 +66,8 @@ function body. Internally it uses these helpers, **all already defined in `promp
 | `hasTool`            | `prompts.zig:133-138`         | `fn`        | Tool-name lookup helper                                       |
 | `appendSection`      | `prompts.zig:51-58`           | `const`     | Skip-empty + `"\n\n"` separator writer                       |
 | `getCurrentOs`       | `prompts.zig:10-22`           | `fn`        | Returns `"Linux"` / `"macOS"` / etc.                          |
-| `loadGlobalKnowledge`| `prompts.zig:159-219`         | `pub fn`    | Reads `~/.config/nalar/memories/*.md`, returns empty on err  |
-| `loadLocalKnowledge` | `prompts.zig:221-268`         | `pub fn`    | Reads `<cwd>/.nalar/memories/*.md`, returns empty on err      |
+| `loadGlobalKnowledge`| `prompts.zig:159-219`         | `pub fn`    | Reads `~/.config/pabrik/memories/*.md`, returns empty on err  |
+| `loadLocalKnowledge` | `prompts.zig:221-268`         | `pub fn`    | Reads `<cwd>/.pabrik/memories/*.md`, returns empty on err      |
 | `appendToolListing`  | `prompts.zig:512-532`         | `fn`        | Renders `## Available Tools` bullet list                      |
 | `appendSkillsListing`| `prompts.zig:550-604`         | `fn`        | Renders `## Available Skills` (global + local paths)          |
 | `SubAgentListingRow` | `prompts.zig:615-627`         | `pub const` | Row type for sub-agent listing                                |
@@ -114,7 +114,7 @@ Verified by `rg 'prompt\.build_agent_prompt|prompts\.build_agent_prompt' src/`:
 
 | Caller                                                    | Imports as               |
 | --------------------------------------------------------- | ------------------------ |
-| `src/ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig:166` (1 call) | `prompt = nalarcore.prompt` |
+| `src/ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig:166` (1 call) | `prompt = pabrikcore.prompt` |
 | `src/modules/agent/prompts_test.zig` — **22 calls** across the 1640+ test lines            | `prompts = @import("prompts.zig")` |
 
 No other production or test code in the tree imports `build_agent_prompt`. The wire path is
@@ -134,7 +134,7 @@ narrow: one production caller + one in-module test file.
 3. All 22 existing tests in `prompts_test.zig` for `build_agent_prompt` **continue to pass
    unchanged in intent** — the test surface is preserved (possibly re-pointed to the new helper).
 4. All 2,401+ existing `zig build test` cases **continue to pass** with no new failures.
-5. The `zig build nalar-desktop` chain **continues to succeed** (webapp / codegen paths unchanged).
+5. The `zig build pabrik-desktop` chain **continues to succeed** (webapp / codegen paths unchanged).
 
 ### 3.2 Non-goals
 
@@ -179,7 +179,7 @@ The narrow set of static-content re-exports + the universal rules / prompt-templ
 that downstream code still consumes:
 
 - `UniversalRules`, `PromptAutoFix`, `Agent`, `ParallelWork`, `Classification`, `Execution`,
-  `Escalation`, `MemoryPrompt`, `NalarMdAutoUpdate`, `GitPrompt`, `GlobalMemorySystem`,
+  `Escalation`, `MemoryPrompt`, `PabrikMdAutoUpdate`, `GitPrompt`, `GlobalMemorySystem`,
   `LocalMemorySystem`, `CompactionAgent`, `GenerateSessionNameAgent`, `ResponseFormatting`,
   `UpdateActivityRule`, `SearchToolRule`, the legacy history tool rule, `MemoryToolRule` (`prompts.zig:25-43`).
 
@@ -214,7 +214,7 @@ modules (verified by reading lines 1-67 of the file). The move only requires:
 - `const prompts_const = @import("prompts/prompts.zig");` (for the universal-rules / prompt-template
   re-exports that `PROMPT_SECTIONS` references)
 - `const memory_prompts = @import("prompts/memory.zig");` (for `memory_prompts.skills_system_prompt`)
-- `const tool_models = nalarcore.tool_models;` (already imported, line 10)
+- `const tool_models = pabrikcore.tool_models;` (already imported, line 10)
 - `const tool_list_skills_mod = @import("tools/list_skills.zig");` (for `appendSkillsListing`)
 - `const builtin = @import("builtin");` (already needed for `getCurrentOs` via a Zig builtin)
 
@@ -358,7 +358,7 @@ rg -n '^pub fn build_agent_prompt\b' \
 # Expected: exactly 1 hit.
 
 # 3. Frontend chain still compiles.
-zig build nalar-desktop --summary all
+zig build pabrik-desktop --summary all
 # Expected: 10/10 steps succeeded.
 
 # 4. Behavior parity (manual prompt diff): a static snapshot test that
@@ -370,7 +370,7 @@ zig build nalar-desktop --summary all
 #    during the move.)
 ```
 
-**WARNING — DO NOT** spin up `nalar --port 8080` + `curl` to verify (see the verification rule at
+**WARNING — DO NOT** spin up `pabrik --port 8080` + `curl` to verify (see the verification rule at
 the top of `AGENTS.md`). Functional behavior is asserted through the Zig unit + static-contract
 tests above.
 
@@ -452,7 +452,7 @@ byte-level diff of just the moved block must show 0 changes.
 | Gate                                                    | Pass criterion                                                            |
 | ------------------------------------------------------- | ------------------------------------------------------------------------- |
 | `zig build test --summary all`                          | Same or higher pass count as `main` (currently 2401), 0 fail, 0 leak     |
-| `zig build nalar-desktop --summary all`                 | 10/10 steps green (no webapp / codegen regressions)                       |
+| `zig build pabrik-desktop --summary all`                 | 10/10 steps green (no webapp / codegen regressions)                       |
 | `rg '^pub fn build_agent_prompt\b' src/modules/agent/prompts.zig` | Zero matches — function moved out cleanly                            |
 | `rg '^pub fn build_agent_prompt\b' src/ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig` | Exactly 1 match                                                         |
 | `rg 'prompt\.build_agent_prompt\|prompts\.build_agent_prompt' src/` | All 22 hits in `prompts_test.zig` updated to `prompt_mod.build_agent_prompt`; the 1 hit in `prompts_build_messages_for_agent_prompt.zig` updated to bare `build_agent_prompt` (local) |

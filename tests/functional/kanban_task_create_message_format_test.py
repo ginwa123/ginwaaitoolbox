@@ -244,7 +244,7 @@ def test_create_and_run_appends_worktree_path_when_provided(
         mode="create_and_run",
         queue_message=(
             "Task : Isolated work\nDescription: blablabla\n\n"
-            "#Notes UseGitWorktree\nPath: ~/.config/nalar/.worktrees/isolated-work"
+            "#Notes UseGitWorktree\nPath: ~/.config/pabrik/.worktrees/isolated-work"
         ),
     )
     task_id = resp["task"]["id"]
@@ -252,7 +252,7 @@ def test_create_and_run_appends_worktree_path_when_provided(
     msgs = _wait_for_user_message(worker_harness, task_id)
     assert msgs[0].get("content") == (
         "Task : Isolated work\nDescription: blablabla\n\n"
-        "#Notes UseGitWorktree\nPath: ~/.config/nalar/.worktrees/isolated-work"
+        "#Notes UseGitWorktree\nPath: ~/.config/pabrik/.worktrees/isolated-work"
     )
 
 
@@ -279,7 +279,7 @@ def test_create_and_run_appends_worktree_base_branch_when_provided(
         mode="create_and_run",
         queue_message=(
             "Task : Isolated work\nDescription: blablabla\n\n"
-            "#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/x\n"
+            "#Notes UseGitWorktree\nPath: /home/you/.config/pabrik/.worktrees/x\n"
             "Base: origin/main"
         ),
     )
@@ -288,7 +288,7 @@ def test_create_and_run_appends_worktree_base_branch_when_provided(
     msgs = _wait_for_user_message(worker_harness, task_id)
     assert msgs[0].get("content") == (
         "Task : Isolated work\nDescription: blablabla\n\n"
-        "#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/x\n"
+        "#Notes UseGitWorktree\nPath: /home/you/.config/pabrik/.worktrees/x\n"
         "Base: origin/main"
     )
 

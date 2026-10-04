@@ -8,7 +8,7 @@
 
 **Architecture:** New tables `agents` (1-1 with `workspace_items`), `agent_knowledge` (N-1 with agents), `agent_tools` (N-1 with agents). New backend helpers: `prompts_make_agent_knowledge.zig` (reads files at chat-start, injects as `## Agent Knowledge` system-prompt section) and `agent_tools_allowed.zig` (returns enabled tool names for an agent). Runtime filter reuses the **existing** `filterAndMergeTools` in `workflow.zig:1478` — already supports `""` (no tools), `"all"` (all), comma-separated (specific). For Agent sessions we resolve the allowlist from DB and pass it as the `allowed_tools` workflow arg. New frontend: `AddAgentDialog`, `AgentKnowledgeDialog`, `AgentView` (Knowledge + Tools panels + chat list), `AgentChatDialog`, and `agentTools` Pinia store holding the canonical tool registry.
 
-**Tech Stack:** Zig 0.16 (backend), Vue 3.5 + TypeScript + Pinia 2 + Vitest (frontend). No new npm deps. Backend reuses `nalarcore.http_response` error envelope + `nalarcore.sqlite.SqliteBackend`.
+**Tech Stack:** Zig 0.16 (backend), Vue 3.5 + TypeScript + Pinia 2 + Vitest (frontend). No new npm deps. Backend reuses `pabrikcore.http_response` error envelope + `pabrikcore.sqlite.SqliteBackend`.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-agent-mode-design.md`
 

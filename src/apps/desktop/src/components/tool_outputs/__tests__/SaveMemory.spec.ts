@@ -386,12 +386,12 @@ describe('SaveMemory.vue — id + tags live in the header', () => {
     const wrapper = mount(SaveMemory, {
       props: {
         content: makeSuccessContent(),
-        parameters: makeParams(BODY, 'demo|tool-test|nalar'),
+        parameters: makeParams(BODY, 'demo|tool-test|pabrik'),
       },
     })
     const header = wrapper.find('[data-testid="save-memory-header-label"]')
     expect(header.find('[data-testid="save-memory-tag-0"]').text()).toBe('demo')
-    expect(header.find('[data-testid="save-memory-tag-2"]').text()).toBe('nalar')
+    expect(header.find('[data-testid="save-memory-tag-2"]').text()).toBe('pabrik')
   })
 
   it('collapses a long tag list to 3 chips + a +N chip', () => {

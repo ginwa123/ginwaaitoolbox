@@ -63,10 +63,10 @@ docs/superpowers/plans/2026-09-01-kanban-list-limit.md        # This plan
 - [ ] Step 4: Update `toXml` to emit `<pagination>` block + truncated hint
 - [ ] Step 5: Update `KanbanList.vue` to render pagination hint (optional, display-only)
 - [ ] Step 6: Add tests: default limit caps at 20, limit=5 returns 5, offset=20 returns next page, total_count correct, column_id+limit composes, limit>100 clamped, offset beyond total returns empty
-- [ ] Step 7: Verify `zig build test --summary all` + `zig build nalar-desktop --summary all` + manual `kanban_list` call
+- [ ] Step 7: Verify `zig build test --summary all` + `zig build pabrik-desktop --summary all` + manual `kanban_list` call
 
 ## Verification
 
 - `zig build test --summary all` — new tests pass, existing 6+ tests still pass
-- `zig build nalar-desktop --summary all` — 21/21 steps OK
+- `zig build pabrik-desktop --summary all` — 21/21 steps OK
 - Manual: `kanban_list` with no limit returns 20 tasks + `<total_count>330</total_count><has_more>true</has_more>`; with `limit=5 offset=10` returns 5 tasks starting at position 10; with `column_id=col_...` returns only that column's tasks capped by limit

@@ -1,14 +1,14 @@
 <!--
   AddMemoryDialog — modal for creating a new LOCAL memory file.
 
-  A local memory lives in `<cwd>/.nalar/memories/<name>.md` (see
+  A local memory lives in `<cwd>/.pabrik/memories/<name>.md` (see
   `LOCAL_MEMORIES_DIR` in `src/modules/agent/tools/memories.zig`).
   The agent's `loadLocalKnowledge` picks up every `.md` in that
   directory on every chat and injects them as the "Local
   Knowledge" section of the system prompt (see
   `src/modules/agent/prompts.zig:263`).
 
-  Distinct from the global memories (in `~/.config/nalar/memories/`)
+  Distinct from the global memories (in `~/.config/pabrik/memories/`)
   managed via the MemoriesSettings page — global memories apply
   to every project on the machine, while local memories are
   scoped to a specific project directory.
@@ -76,7 +76,7 @@ const emit = defineEmits<{
    * directly and emits the API-returned path (the `content` arg is
    * the value sent to the API; same as the dialog's textarea).
    * In `mode='task'`, the dialog doesn't call the API; the path
-   * is the locally-computed `<cwd>/.nalar/memories/<name>` and
+   * is the locally-computed `<cwd>/.pabrik/memories/<name>` and
    * the parent uses all 3 args to call addTask.
    *
    * Single 3-tuple shape (instead of a union of 2-tuple / 3-tuple)
@@ -168,7 +168,7 @@ const handleCreate = async () => {
     // task_create.zig will write the .md file and insert the
     // task row in one POST.
     if (props.mode === 'task') {
-      const finalPath = `${cwd.value}/.nalar/memories/${trimmedName}`
+      const finalPath = `${cwd.value}/.pabrik/memories/${trimmedName}`
       emit('create', trimmedName, content.value, finalPath)
       handleClose()
       return
@@ -267,7 +267,7 @@ watch(() => props.show, async (show) => {
               style="color: var(--semantic-text-dim);"
             >
               The memory file is created at
-              <code class="font-mono break-all">{{ cwd || '(pick a folder below)' }}/.nalar/memories/</code>
+              <code class="font-mono break-all">{{ cwd || '(pick a folder below)' }}/.pabrik/memories/</code>
             </p>
           </div>
 

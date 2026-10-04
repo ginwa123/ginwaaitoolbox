@@ -37,7 +37,7 @@ pub const ThinkingModeError = error{InvalidThinkingMode};
 ///   - anything else → `error.InvalidThinkingMode`
 ///
 /// Whitespace at either end is tolerated (single space) so a hand-
-/// edited `~/.config/nalar/config.json` with a stray trailing newline
+/// edited `~/.config/pabrik/config.json` with a stray trailing newline
 /// doesn't surface as a misconfig.
 ///
 /// Returns a borrowed pointer into `raw` for the matched values — the
@@ -82,7 +82,7 @@ pub const ReasoningEffortError = error{InvalidReasoningEffort};
 /// The returned slice is one of the four literal strings above
 /// (pointing into `.rodata`). Callers that need to store the value
 /// long-term (e.g. inside `LlmProfile.reasoning_effort: ?[]const u8`)
-/// must `dupe` it. The frontend `ApiNalarProfile` mirror uses the
+/// must `dupe` it. The frontend `ApiPabrikProfile` mirror uses the
 /// same 4-value enum so this round-trips through JSON unchanged.
 ///
 /// We are intentionally case-sensitive: the frontend always sends

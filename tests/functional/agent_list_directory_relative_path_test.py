@@ -21,7 +21,7 @@ wrapper forwarded that relative string straight into
 
 Because the abort happened INSIDE the worker thread (a sub-agent thread in
 the reported trace), no `catch` up the stack could intercept it: the whole
-`nalar` process died mid-turn.
+`pabrik` process died mid-turn.
 
 Why a wire test and not just the Zig unit tests
 ==============================================
@@ -37,7 +37,7 @@ can prove:
      `cwd_session`), because the fix resolves against `ctx.cwd` — not the
      server's process cwd.
 
-Method: boot a real nalar against an isolated tmpdir HOME, PUT a profile
+Method: boot a real pabrik against an isolated tmpdir HOME, PUT a profile
 whose `base_url` is a stub SSE upstream, then POST the real
 `/api/llm/session` wire body. The stub answers the agent's first tool-bearing
 request with an OpenAI-style `tool_calls` delta for `list_directory` with
@@ -46,7 +46,7 @@ aborted the process — and answers the follow-up request (the one carrying
 the tool result) with a plain stop message.
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/agent_list_directory_relative_path_test.py -v
 """
 
@@ -227,10 +227,10 @@ def _wait_for_tool_row(
     return None
 
 
-def test_list_directory_relative_path_does_not_abort_worker(default_nalar_bin: Any) -> None:
+def test_list_directory_relative_path_does_not_abort_worker(default_pabrik_bin: Any) -> None:
     """The exact crash call, end-to-end: worker alive + path resolved."""
     server = _start_stub()
-    harness = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    harness = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         stub_port = server.server_address[1]
         stub_url = f"http://127.0.0.1:{stub_port}/v1/chat/completions"
@@ -238,7 +238,7 @@ def test_list_directory_relative_path_does_not_abort_worker(default_nalar_bin: A
         # 1. Point a profile at the stub (mirrors anthropic_chat_headers_test).
         harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 "api_endpoint": stub_url,
                 "api_key": "sk-stub-test",
@@ -290,7 +290,7 @@ def test_list_directory_relative_path_does_not_abort_worker(default_nalar_bin: A
         # The process must still be alive: pre-fix this aborted.
         log_tail = harness.tail_log(4000)
         assert harness.health(), (
-            "nalar died during the turn — the relative-path abort is back.\n"
+            "pabrik died during the turn — the relative-path abort is back.\n"
             f"--- log tail ---\n{log_tail[-4000:]}"
         )
         for marker in CRASH_MARKERS:

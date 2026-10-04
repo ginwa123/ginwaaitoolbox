@@ -1,7 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
 
 /// Git file diff response - returns unified diff output
 pub const GitFileDiffResponse = struct {

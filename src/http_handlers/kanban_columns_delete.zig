@@ -38,11 +38,11 @@
 //!   (Chunk 3, Task 3.6)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../agentic_loop/kanban_model.zig");
-const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
+const on_event_sent_kanban = pabrikcore.ai_mod.on_event_sent_kanban;
 
 /// HTTP response shape for column-delete.
 const DeleteColumnResponse = struct {
@@ -122,7 +122,7 @@ pub const KanbanColumnDeleteResult = union(enum) {
 ///      gate-tripped path.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: DeleteColumnInput,
 ) KanbanColumnDeleteError!KanbanColumnDeleteResult {
     // 1. Validate. Business rule: both ids are required to locate
@@ -188,7 +188,7 @@ pub fn kanbanColumnsDeleteHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Read + validate path params.

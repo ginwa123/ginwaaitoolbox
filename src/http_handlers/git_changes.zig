@@ -1,8 +1,8 @@
 const std = @import("std");
-const nalar_core = @import("nalarcore");
+const pabrik_core = @import("pabrikcore");
 const mod = @import("mod.zig");
 const http_response = mod.http_response;
-const gserverz = nalar_core.gserverz;
+const gserverz = pabrik_core.gserverz;
 
 /// Git file change structure
 pub const GitFileChange = struct {

@@ -20,7 +20,7 @@ The user said *"follow the ui kanban agent"* — interpreted as: keep the **exac
 - **No port 8081**: smoke tests use port 8080.
 - **Behavioural Vue tests use `@vue/test-utils` `mount` with `setActivePinia(createPinia())`** in `beforeEach`. Mock `useRoute` / `useRouter` via `vi.mock('vue-router', ...)` (mirror `KanbanSettingsView.spec.ts`).
 - **TDD discipline**: every implementation task starts with a failing test, then minimal code to make it pass, then a commit.
-- **Teleport-based dialog tests** must use `attachTo: document.body` and `document.querySelector(...)` for DOM assertions (skill `.nalar/skills/vue-teleport-vitest-document-queryselector/SKILL.MD`).
+- **Teleport-based dialog tests** must use `attachTo: document.body` and `document.querySelector(...)` for DOM assertions (skill `.pabrik/skills/vue-teleport-vitest-document-queryselector/SKILL.MD`).
 - **Pure architectural relocation**: no UX/visual change to the agent panels themselves (Knowledge rows, System Prompt rows, Tools checkboxes, sub-dialogs) — they are byte-identical in content, only their **container** changes (full-page panel instead of centered modal).
 - **URL is source of truth**: the active tab is `route.query.tab`; every click on a tab calls `router.replace`; the `ref<SettingsMode>` is initialized from + synced to `route.query.tab`. No in-memory flag drift between URL and component state.
 - **API endpoints unchanged**: `getAgentKanban`, `addAgentKanbanKnowledge`, `enableAgentKanbanTool`, etc. all already exist (Migration 081). Don't add new endpoints or modify existing ones.
@@ -40,7 +40,7 @@ The user said *"follow the ui kanban agent"* — interpreted as: keep the **exac
 | `src/apps/desktop/src/components/AppLayout.vue` | EDIT | Remove `import KanbanAgentSettings`, `showKanbanAgentSettings` ref, `handleOpenKanbanAgentSettings`, `handleCloseKanbanAgentSettings`, the `<KanbanAgentSettings>` mount, and the `@open-agent-settings` listener on `<KanbanView>`. |
 | `src/apps/desktop/src/components/kanban/KanbanAgentSettings.vue` | DELETE | Replaced by `KanbanAgentPanel.vue` (its body, no chrome). |
 | `docs/SPEC.md` | EDIT | Append new entry to the kanban settings §X changelog / spec index. |
-| `NALAR.md` | EDIT | Append "### 2026-08-27: kanban agent config moved into Settings page (third tab)" changelog entry. |
+| `PABRIK.md` | EDIT | Append "### 2026-08-27: kanban agent config moved into Settings page (third tab)" changelog entry. |
 
 Total: **9 files** (2 NEW, 4 EDIT, 1 DELETE, 2 doc). No backend changes, no migration, no Zig changes.
 
@@ -208,7 +208,7 @@ Total: **9 files** (2 NEW, 4 EDIT, 1 DELETE, 2 doc). No backend changes, no migr
 
 **Files:**
 - `docs/SPEC.md` — EDIT
-- `NALAR.md` — EDIT
+- `PABRIK.md` — EDIT
 
 **Steps:**
 
@@ -219,7 +219,7 @@ Total: **9 files** (2 NEW, 4 EDIT, 1 DELETE, 2 doc). No backend changes, no migr
    cd src/apps/desktop && npm run test:unit                                  # 3 new + extended tests green
    cd src/apps/desktop && npm run type-check                                 # vue-tsc clean (no orphan type references)
    cd src/apps/desktop && npm run build                                      # production build succeeds (codegen + asset embed)
-   NALAR_BIN=$(pwd)/../../zig-out/bin/nalarcore-linux-x86_64 \
+   PABRIK_BIN=$(pwd)/../../zig-out/bin/pabrikcore-linux-x86_64 \
      python3 -m pytest tests/functional/agent_kanbans_test.py -v             # wire contract still passes
    ```
 2. **Manual smoke test (build the desktop binary, point at port 8080):**
@@ -232,13 +232,13 @@ Total: **9 files** (2 NEW, 4 EDIT, 1 DELETE, 2 doc). No backend changes, no migr
    - Reload the page while on Agent tab → tab still Agent (URL-backed).
    - Click the `⚙️ Settings` button on the kanban toolbar → lands on `?tab=columns` (default).
    - Click `🧠 Local Memories` tab → URL becomes `?tab=memories`; reload preserves.
-3. **Delete stray `.js` files** emitted by vue-tsc (skill `.nalar/skills/vue-tsc-build-emits-js-files/SKILL.MD`):
+3. **Delete stray `.js` files** emitted by vue-tsc (skill `.pabrik/skills/vue-tsc-build-emits-js-files/SKILL.MD`):
    ```bash
    cd /home/ginwa/ginwaaitoolbox && git status --porcelain | rg '\.js$' | rg -v '^..\s+(node_modules|zig-out|\.zig-cache)/' | awk '{print $2}' | xargs -r git rm
    ```
 4. **Update `docs/SPEC.md`**: append a row to the changelog/spec index — *"2026-08-27: Kanban agent config merged into dedicated Settings page as a 3rd `🤖 Agent` tab (replaces `KanbanAgentSettings` modal). URL `?tab=columns|memories|agent`. `🤖 Agent` toolbar button navigates instead of opening a modal."*
-5. **Update `NALAR.md`**: append a new "### 2026-08-27: kanban agent config moved into Settings page (third tab)" changelog entry following the same shape as the existing entries (Files, Wire, Branch, Task, Plan, Verification).
-6. **Commit:** `kanban-agent-as-tab: docs (SPEC.md changelog + NALAR.md entry)`. Push branch `worktree/kanban-agent-as-tab`, open PR for human review.
+5. **Update `PABRIK.md`**: append a new "### 2026-08-27: kanban agent config moved into Settings page (third tab)" changelog entry following the same shape as the existing entries (Files, Wire, Branch, Task, Plan, Verification).
+6. **Commit:** `kanban-agent-as-tab: docs (SPEC.md changelog + PABRIK.md entry)`. Push branch `worktree/kanban-agent-as-tab`, open PR for human review.
 
 ---
 
@@ -271,6 +271,6 @@ Total: **9 files** (2 NEW, 4 EDIT, 1 DELETE, 2 doc). No backend changes, no migr
 - [ ] `npm run build` green (no asset embed errors)
 - [ ] `tests/functional/agent_kanbans_test.py` 8/8 passing (wire contract unchanged)
 - [ ] Manual smoke test in dev: Agent button navigates, mutations persist, back button works, reload preserves tab
-- [ ] `docs/SPEC.md` + `NALAR.md` updated
+- [ ] `docs/SPEC.md` + `PABRIK.md` updated
 - [ ] Stray `.js` files cleaned up before commit
 - [ ] Branch `worktree/kanban-agent-as-tab` pushed; PR opened for human review; kanban card moved to `in_review_task`

@@ -16,8 +16,8 @@
 //! end, so neither layer needs explicit `free`s.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// HTTP request body for knowledge-reorder. Decoupled from the
@@ -62,7 +62,7 @@ pub const KnowledgeReorderInput = struct {
 /// below for the contract.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: KnowledgeReorderInput,
 ) KnowledgeReorderError!void {
     if (input.agent_id.len == 0) return error.AgentIdRequired;
@@ -99,7 +99,7 @@ pub fn agentKnowledgeReorderHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const agent_id = req.params.get("agent_id") orelse "";
@@ -155,7 +155,7 @@ pub fn agentKnowledgeReorderHandler(
 //   4. Transactional rollback: a failing UPDATE rolls back all
 //      earlier UPDATEs in the same transaction
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 

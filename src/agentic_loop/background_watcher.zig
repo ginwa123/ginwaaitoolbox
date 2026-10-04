@@ -24,12 +24,12 @@
 //! exit. Notify buffers live in a per-watch arena.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const logger_mod = nalarcore.loggermod;
-const event_bus_mod = nalarcore.event_bus;
-const bg_proc = nalarcore.ai_mod.background_process;
-const cleanup = nalarcore.cleanup_stale_background_process;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const logger_mod = pabrikcore.loggermod;
+const event_bus_mod = pabrikcore.event_bus;
+const bg_proc = pabrikcore.ai_mod.background_process;
+const cleanup = pabrikcore.cleanup_stale_background_process;
 // NOTE: do NOT use `bg_proc.isProcessRunning` — `background_process.zig`
 // resolves it via `root_mod.helpers.process_status`, but root dropped the
 // `helpers` re-export (root.zig:637), so that decl no longer compiles when
@@ -113,7 +113,7 @@ pub fn watchAndNotify(args: WatchCoreArgs) bool {
 /// Io-task-owned args — every slice is heap-duped with `di.allocator` at
 /// schedule time and freed by the task on exit.
 const WatchArgs = struct {
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []u8,
     pid: u32,
     pid_str: []u8,
@@ -165,7 +165,7 @@ fn watchFn(args: WatchArgs) void {
 /// Must be called AFTER `background_process.save` succeeds, with the
 /// borrowed slices still alive (they are duped synchronously here).
 pub fn spawnCompletionWatcher(
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []const u8,
     pid: u32,
     command: []const u8,
@@ -177,7 +177,7 @@ pub fn spawnCompletionWatcher(
 /// Schedule with an explicit poll interval / cap (test hook; production passes
 /// the defaults via `spawnCompletionWatcher`).
 pub fn spawnCompletionWatcherWithPoll(
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []const u8,
     pid: u32,
     command: []const u8,

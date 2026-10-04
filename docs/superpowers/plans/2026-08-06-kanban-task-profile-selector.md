@@ -4,9 +4,9 @@
 
 **Goal:** Add a profile-model picker to the New Task dialog (`KanbanTaskDetailDialog`, create mode only). User pre-selects which `LlmConfig.profiles_models[name]` profile the agent should use; choice flows through `POST /api/llm/session` and persists on the new session so the chatview's picker reflects it on landing.
 
-**Architecture:** Dialog loads profiles via `api.getNalarConfig()` (mirroring `ChatView.loadProfiles`). Local `selectedProfile: string` ref (default `''`). The picker is rendered in the same row as the existing Unattended-mode toggle (Q2 = 2a). Selected profile is added to both `create` and `create-and-run` emit payloads. `KanbanView.handleCreateTaskSave` forwards it to `workspacesStore.runAgentOnNewTask`, which forwards to `api.sendChatMessage`. No backend changes.
+**Architecture:** Dialog loads profiles via `api.getPabrikConfig()` (mirroring `ChatView.loadProfiles`). Local `selectedProfile: string` ref (default `''`). The picker is rendered in the same row as the existing Unattended-mode toggle (Q2 = 2a). Selected profile is added to both `create` and `create-and-run` emit payloads. `KanbanView.handleCreateTaskSave` forwards it to `workspacesStore.runAgentOnNewTask`, which forwards to `api.sendChatMessage`. No backend changes.
 
-**Tech Stack:** Vue 3 + TypeScript + Pinia + Vitest (`@vue/test-utils`). No new dependencies. Reuses existing `api.getNalarConfig()` and `api.sendChatMessage(selectedProfile)` patterns.
+**Tech Stack:** Vue 3 + TypeScript + Pinia + Vitest (`@vue/test-utils`). No new dependencies. Reuses existing `api.getPabrikConfig()` and `api.sendChatMessage(selectedProfile)` patterns.
 
 ## Design Decisions (review before execution)
 
@@ -15,7 +15,7 @@
 | D1 | **Create mode only** (Q1 = 1a) | Matches user's screenshot scope; chatview picker covers edit-mode use cases. | Both modes — duplicates chatview picker; bigger scope. |
 | D2 | **Same row as Unattended toggle** (Q2 = 2a) | Compact, visually pairs the two controls. The dialog is already long. | Separate row above — more vertical space; less critical. |
 | D3 | **Path A: only thread via `runAgentOnNewTask`** (create-and-run path). Plain create loses profile choice. | Minimal scope; plain-create users can set profile later from chatview. | Path B: persist on task create (backend + migration). Bigger scope. |
-| D4 | **Reuse `ChatView.loadProfiles()` pattern** | Same `api.getNalarConfig()` call. Tested already. | New `/api/profiles` endpoint — YAGNI. |
+| D4 | **Reuse `ChatView.loadProfiles()` pattern** | Same `api.getPabrikConfig()` call. Tested already. | New `/api/profiles` endpoint — YAGNI. |
 | D5 | **Default value is `''`** (backend default / "Default (top-level config)") | Matches chatview's existing convention. | Default to first profile — magic; surprising. |
 | D6 | **Empty-profile list → still render the picker with just "Default"** | User can still proceed; non-blocking failure mode. | Disable picker on empty — over-restrictive. |
 | D7 | **Tests live in dedicated `*.spec.ts` files** (behavioural) | User rule (2026-07-29): no static-contract tests. | Inline tests — inconsistent with existing patterns. |
@@ -27,7 +27,7 @@
 - **TDD discipline**: every implementation step starts with a failing test.
 - **`bun run build` IS the type-check**: every commit must pass vue-tsc.
 - **Teleport-based components**: `KanbanTaskDetailDialog` uses `<Teleport to="body">`. Use `attachTo: document.body` + `document.querySelector` for DOM assertions.
-- **Behavioural Vue tests**: `setActivePinia(createPinia())` in `beforeEach`. Mock `api.getNalarConfig` via `vi.spyOn(api, 'getNalarConfig')`.
+- **Behavioural Vue tests**: `setActivePinia(createPinia())` in `beforeEach`. Mock `api.getPabrikConfig` via `vi.spyOn(api, 'getPabrikConfig')`.
 
 ---
 
@@ -42,7 +42,7 @@ EDIT src/apps/desktop/src/__tests__/workspacesStoreRunAgent.spec.ts       (+ sel
 EDIT src/apps/desktop/src/__tests__/KanbanView.createAndRun.spec.ts      (+ selectedProfile flow test)
 
 EDIT docs/SPEC.md                                                        (+ §3.7.6 entry; PR index row)
-EDIT NALAR.md                                                            (+ Recent changes entry once shipped)
+EDIT PABRIK.md                                                            (+ Recent changes entry once shipped)
 ```
 
 Total: **8 files** (1 NEW, 7 EDIT).
@@ -69,7 +69,7 @@ Fix:
 
 ## Task 1 — Dialog profile picker UI + selectedProfile ref (TDD)
 
-> **Outcome**: `KanbanTaskDetailDialog` (create mode only) renders a profile picker next to the Unattended-mode toggle. Loads profiles via `api.getNalarConfig`. Selection updates a local `selectedProfile` ref. Both `create` and `create-and-run` emits carry `selectedProfile`. Behavioural tests cover: picker visible in create mode only, profile loads, selection, emit shape, edit mode hides picker.
+> **Outcome**: `KanbanTaskDetailDialog` (create mode only) renders a profile picker next to the Unattended-mode toggle. Loads profiles via `api.getPabrikConfig`. Selection updates a local `selectedProfile` ref. Both `create` and `create-and-run` emits carry `selectedProfile`. Behavioural tests cover: picker visible in create mode only, profile loads, selection, emit shape, edit mode hides picker.
 
 ### Step 1.1 — Write the failing tests
 
@@ -109,7 +109,7 @@ describe('KanbanTaskDetailDialog — profile picker', () => {
     setActivePinia(createPinia())
     // Default mock: one profile + top-level defaults so the picker has
     // both "Default" and one profile entry.
-    vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
+    vi.spyOn(api, 'getPabrikConfig').mockResolvedValue({
       profiles: {
         '900r1bu': { model: 'MiniMax-M3', base_url: 'https://api.minimax.io/v1' },
       },
@@ -281,8 +281,8 @@ describe('KanbanTaskDetailDialog — profile picker', () => {
     expect(payload.selectedProfile).toBe('')
   })
 
-  it('handles api.getNalarConfig failure gracefully (no profiles)', async () => {
-    vi.spyOn(api, 'getNalarConfig').mockRejectedValue(new Error('boom'))
+  it('handles api.getPabrikConfig failure gracefully (no profiles)', async () => {
+    vi.spyOn(api, 'getPabrikConfig').mockRejectedValue(new Error('boom'))
     mountDialog()
     await flushPromises()
     const btn = findInDom<HTMLButtonElement>(
@@ -334,7 +334,7 @@ const loadProfiles = async () => {
   if (!isCreateMode.value) return
   profilesLoading.value = true
   try {
-    const config = await api.getNalarConfig()
+    const config = await api.getPabrikConfig()
     const profiles = (config.profiles ?? {}) as Record<
       string,
       { model?: string; base_url?: string }
@@ -584,7 +584,7 @@ git -c user.name=ginwa -c user.email=ginwa@local commit -m "feat(kanban): profil
 
 Adds a profile-model picker to the New Task dialog (create mode
 only). Mirrors ChatView's picker pattern: loads profiles via
-api.getNalarConfig(); renders a dropdown with 'Default (top-level
+api.getPabrikConfig(); renders a dropdown with 'Default (top-level
 config)' + each profile; selection updates a local selectedProfile
 ref; both create + create-and-run emits carry selectedProfile.
 
@@ -829,7 +829,7 @@ cd src/apps/desktop && timeout 120 bun run build 2>&1 | tail -n 5
 ```
 
 - [ ] vue-tsc clean
-- [ ] No `.js` files emitted next to `.ts` source files (per `.nalar/skills/vue-tsc-build-emits-js-files/SKILL.MD`)
+- [ ] No `.js` files emitted next to `.ts` source files (per `.pabrik/skills/vue-tsc-build-emits-js-files/SKILL.MD`)
 
 ### Step 3.3 — Backend smoke (no changes, verify)
 
@@ -846,7 +846,7 @@ timeout 180 zig build install:linux:system 2>&1 | tail -n 5
 ### Step 3.4 — Manual smoke (port 8080)
 
 ```bash
-mkdir -p /tmp/nalar-smoke && HOME=/tmp/nalar-smoke timeout 600 /path/to/zig-out/bin/nalar --port 8080 &
+mkdir -p /tmp/pabrik-smoke && HOME=/tmp/pabrik-smoke timeout 600 /path/to/zig-out/bin/pabrik --port 8080 &
 sleep 4
 ```
 
@@ -860,8 +860,8 @@ In the webapp:
 Cleanup:
 
 ```bash
-kill $NALAR_PID 2>/dev/null
-rm -rf /tmp/nalar-smoke
+kill $PABRIK_PID 2>/dev/null
+rm -rf /tmp/pabrik-smoke
 ```
 
 ### Step 3.5 — Final docs update
@@ -879,7 +879,7 @@ Edit `docs/SPEC.md`:
 ```
 #### 3.7.6 New Task dialog — profile-model picker (2026-08-06)
 
-The New Task dialog (create mode) gains a profile-model picker. Loads profiles via `api.getNalarConfig()`; mirrors ChatView's pattern. Selected profile is threaded through `POST /api/llm/session` and persisted on the new session via `sessions.selected_profile_model` (per PR #158).
+The New Task dialog (create mode) gains a profile-model picker. Loads profiles via `api.getPabrikConfig()`; mirrors ChatView's pattern. Selected profile is threaded through `POST /api/llm/session` and persisted on the new session via `sessions.selected_profile_model` (per PR #158).
 
 **Layout.** Same row as the Unattended-mode toggle (compact 2-column). Picker on the left, toggle on the right.
 
@@ -894,14 +894,14 @@ The New Task dialog (create mode) gains a profile-model picker. Loads profiles v
 
 4. Update §10.1 status count (143 → 145 if we treat the picker as a separate PR, or just bump the comment).
 
-Edit `NALAR.md`:
+Edit `PABRIK.md`:
 
 Append a changelog entry:
 
 ```markdown
 ### 2026-08-06: kanban new task profile picker
 
-**What landed.** Profile-model picker in the New Task dialog (create mode only). Mirrors ChatView's picker pattern. Loads profiles via `api.getNalarConfig`; renders a dropdown with "Default (top-level config)" + each profile. Selection updates a local `selectedProfile` ref; both `create` and `create-and-run` emits carry `selectedProfile`. Same row as Unattended-mode toggle (Q2 = 2a — compact 2-column layout).
+**What landed.** Profile-model picker in the New Task dialog (create mode only). Mirrors ChatView's picker pattern. Loads profiles via `api.getPabrikConfig`; renders a dropdown with "Default (top-level config)" + each profile. Selection updates a local `selectedProfile` ref; both `create` and `create-and-run` emits carry `selectedProfile`. Same row as Unattended-mode toggle (Q2 = 2a — compact 2-column layout).
 
 **Persistence.** Path A: profile is set only when the user clicks "Create task & run agent" (which calls `runAgentOnNewTask` → `api.sendChatMessage(selectedProfile)`). Plain "Create task" without an agent run captures the choice but does NOT persist (user can set from chatview later). The chatview's profile picker reflects the new profile immediately when the user lands on the new chat.
 
@@ -914,15 +914,15 @@ Append a changelog entry:
 ### Step 3.6 — Final commit + push
 
 ```bash
-git add docs/SPEC.md NALAR.md
-git -c user.name=ginwa -c user.email=ginwa@local commit -m "docs: SPEC.md + NALAR.md entries for kanban task profile selector
+git add docs/SPEC.md PABRIK.md
+git -c user.name=ginwa -c user.email=ginwa@local commit -m "docs: SPEC.md + PABRIK.md entries for kanban task profile selector
 
 SPEC.md:
   - New §3.7 plans mapping row
   - New §3.7.6 'profile picker' subsection
   - PR index #TBD -> #160
 
-NALAR.md:
+PABRIK.md:
   - 2026-08-06 changelog entry
 
 Plan: docs/superpowers/plans/2026-08-06-kanban-task-profile-selector.md
@@ -939,5 +939,5 @@ git push origin worktree/kanban-create-task-run-agent
 
 - **Profile picker in edit mode** (Q1 = 1a). Follow-up.
 - **Path B: persist `selected_profile_model` on task create** (would need backend + migration). Follow-up.
-- **Profile creation from the picker** (today: "Add one in Settings" link to NalarSettings).
+- **Profile creation from the picker** (today: "Add one in Settings" link to PabrikSettings).
 - **Profile filtering / search.** Out of scope.

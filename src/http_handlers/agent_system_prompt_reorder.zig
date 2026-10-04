@@ -19,8 +19,8 @@
 //! Task: task_1787408958280_1
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// HTTP request body for system-prompt-reorder. Decoupled from the
@@ -63,7 +63,7 @@ pub const SystemPromptReorderInput = struct {
 /// position 0 (not position 1) — see the test below for the contract.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: SystemPromptReorderInput,
 ) SystemPromptReorderError!void {
     if (input.agent_id.len == 0) return error.AgentIdRequired;
@@ -100,7 +100,7 @@ pub fn agentSystemPromptReorderHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const agent_id = req.params.get("agent_id") orelse "";
@@ -153,7 +153,7 @@ pub fn agentSystemPromptReorderHandler(
 //   2. Position assignment: ordered_ids[0] gets the highest position
 //   3. 1-row ordering lands at position 0
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 const Migration080AddAgentSystemPrompt = @import("../migrations/migration.zig").Migration080AddAgentSystemPrompt;

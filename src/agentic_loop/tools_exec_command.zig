@@ -1,13 +1,13 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const tool_models = nalarcore.tool_models;
-const command_tool_mod = nalarcore.command_tool;
+const agent = pabrikcore.agent;
+const tool_models = pabrikcore.tool_models;
+const command_tool_mod = pabrikcore.command_tool;
 const background_process = @import("background_process.zig");
 const background_process_events = @import("background_process_events.zig");
 const background_watcher = @import("background_watcher.zig");
@@ -92,7 +92,7 @@ pub fn runWithContext(
                         // (cron fallback covers production; the watcher core
                         // is covered directly in background_watcher tests).
                         // Dupes into di.allocator (process lifetime) inside.
-                        if (nalarcore.getSingleton() catch null) |di| {
+                        if (pabrikcore.getSingleton() catch null) |di| {
                             background_process_events.emitCreated(allocator, di.event_bus, sess_id, pid, input.command);
                             background_watcher.spawnCompletionWatcher(di, sess_id, pid, input.command, log_path);
                         }

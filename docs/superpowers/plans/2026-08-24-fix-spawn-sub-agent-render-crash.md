@@ -146,7 +146,7 @@ on the same field — same crash).
       array) feeding the `messageGroups` computed — guard never
       throws.
 - [ ] Build + run `zig build test --summary all` (must stay 0 fail / 0
-      leak). Build `zig build nalar-desktop --summary all`. Run
+      leak). Build `zig build pabrik-desktop --summary all`. Run
       `bun run test:unit` (must stay green).
 - [ ] Verify end-to-end with a live probe (raw `curl` on
       `/api/events?channels=llm` + a fresh sub-agent) — confirm the
@@ -200,7 +200,7 @@ Changelog (1):
 ```bash
 # static + unit
 zig build test --summary all
-zig build nalar-desktop --summary all
+zig build pabrik-desktop --summary all
 bun run test:unit
 
 # live wire (after rebuild)

@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the nalar desktop app feel as smooth as Chrome by pinning hardware-accelerated rendering on every platform, fixing per-request asset-handler overhead, and eliminating first-paint / resize jank.
+**Goal:** Make the pabrik desktop app feel as smooth as Chrome by pinning hardware-accelerated rendering on every platform, fixing per-request asset-handler overhead, and eliminating first-paint / resize jank.
 
 **Architecture:** Three layers of fix. (1) Platform shims get explicit GPU/compositing configuration — env vars on Linux WebKitGTK, `ICoreWebView2EnvironmentOptions` browser args on Windows, WKWebView config + a real `WKURLSchemeHandler` on macOS. (2) All three `app://` asset handlers switch from linear scan to O(1) lookup and serve cache headers. (3) Frontend gets a dev-only FPS overlay so regressions are measurable, plus two micro-fixes found in audit. Each task is independently verifiable and lands on its own commit.
 
-**Tech Stack:** Zig 0.16 (linux.zig), Objective-C (nalar_webview.mm), C++/WRL (nalar_webview.cpp), Vue 3 + TypeScript + Vitest (frontend).
+**Tech Stack:** Zig 0.16 (linux.zig), Objective-C (pabrik_webview.mm), C++/WRL (pabrik_webview.cpp), Vue 3 + TypeScript + Vitest (frontend).
 
 ## Global Constraints
 
@@ -28,7 +28,7 @@ The Linux webview sets **zero** environment configuration today (`src/apps/deskt
   - asserts the setenv block appears BEFORE the `gtk_init(` call line number in the file
   - asserts a `gfx_debug` escape hatch exists (env override respected)
 - [ ] Run it, confirm FAIL (`zig test src/apps/desktop_app/platform/linux_gfx_test.zig` or wire into test runner)
-- [ ] Implement in `linux.zig` inside `nalar_webview_create` between lines 251–254 (before `gtk_init` at 255):
+- [ ] Implement in `linux.zig` inside `pabrik_webview_create` between lines 251–254 (before `gtk_init` at 255):
   - respect user override: skip any var already present in environ (use `std.posix.getenv` check)
   - default-set: `GDK_BACKEND=x11` only if unset AND Wayland detection fails is NOT needed — instead leave GDK_BACKEND alone unless `cfg.force_x11`; set `WEBKIT_DISABLE_DMABUF_RENDERER=1` and `WEBKIT_FORCE_COMPOSITING_MODE=1`
   - NOTE: which combination wins is driver-dependent — implement all three behind a small `applyLinuxGfxEnv()` helper with clear comments, gated by a new `Config.gfx_preset` enum (`auto` default | `compat` | `debug`)
@@ -41,22 +41,22 @@ The Linux webview sets **zero** environment configuration today (`src/apps/deskt
 Current: linear `std.mem.eql` scan over assets at `linux.zig:508`. Fine at hundreds of entries but O(n) per request on main thread.
 
 - [ ] Write failing test asserting a sorted-index or StringHashMap lookup replaces the linear loop (static contract: no `for (ctx.assets[0..ctx.count])` remains in `uriSchemeCallback`)
-- [ ] Implement: build `std.StringHashMapUnmanaged(u32)` once in `nalar_webview_create` after SchemeContext alloc; store pointer in SchemeContext; callback does O(1) get
+- [ ] Implement: build `std.StringHashMapUnmanaged(u32)` once in `pabrik_webview_create` after SchemeContext alloc; store pointer in SchemeContext; callback does O(1) get
 - [ ] Verify: existing scheme tests still pass; manual load of app://index.html works
 - [ ] Commit: `linux: O(1) app:// asset lookup via StringHashMap`
 
 ## Task 3 — macOS: WKURLSchemeHandler + config fixes
 
-macOS currently intercepts `app://` via navigation-delegate policy (`nalar_webview.mm:295-364`) which serializes sub-resource fetches, uses linear strcmp scan (`:329-349`), ignores `user_agent`, ignores `enable_developer_extras`, and leaves `drawsBackground` white-flash default.
+macOS currently intercepts `app://` via navigation-delegate policy (`pabrik_webview.mm:295-364`) which serializes sub-resource fetches, uses linear strcmp scan (`:329-349`), ignores `user_agent`, ignores `enable_developer_extras`, and leaves `drawsBackground` white-flash default.
 
-- [ ] Write failing static-contract test `src/apps/desktop_app/platform/macos/nalar_webview_static_test.zig` (delimiter-balance aware, strip `@"..."` strings first):
+- [ ] Write failing static-contract test `src/apps/desktop_app/platform/macos/pabrik_webview_static_test.zig` (delimiter-balance aware, strip `@"..."` strings first):
   - asserts `setURLSchemeHandler:forURLScheme:` present
   - asserts `WKURLSchemeHandler` protocol class exists with `startURLSchemeTask:`/`stopURLSchemeTask:`
   - asserts nav-delegate linear-scan block removed (no `strcmp(asset->path` in decidePolicyForNavigationAction)
   - asserts `developerExtrasEnabled` KVC wired from `_config.enable_developer_extras`
   - asserts `applicationNameForUserAgent` set from `_config.user_agent`
-- [ ] Implement in `nalar_webview.mm`:
-  - New `NalarAppSchemeHandler : NSObject <WKURLSchemeHandler>` holding an `NSDictionary<NSString*, NSData*>` built once from the asset table (O(1) lookup)
+- [ ] Implement in `pabrik_webview.mm`:
+  - New `PabrikAppSchemeHandler : NSObject <WKURLSchemeHandler>` holding an `NSDictionary<NSString*, NSData*>` built once from the asset table (O(1) lookup)
   - Register via `[wkconfig setURLSchemeHandler:handler forURLScheme:@"app"]` at injection point :234–253
   - Delete nav-policy interception block :295–364 (keep delegate for other purposes if needed)
   - Wire `developerExtrasEnabled` + `WebKitDeveloperExtras` defaults when `enable_developer_extras`
@@ -67,14 +67,14 @@ macOS currently intercepts `app://` via navigation-delegate policy (`nalar_webvi
 
 ## Task 4 — Windows: WebView2 EnvironmentOptions + resize/background fixes
 
-Windows shim passes NULL options (`nalar_webview.cpp:417-420`), re-sets bounds on every WM_SIZE during drag (:141-150), flashes white on cold start (COLOR_WINDOW brush :321, no put_DefaultBackgroundColor).
+Windows shim passes NULL options (`pabrik_webview.cpp:417-420`), re-sets bounds on every WM_SIZE during drag (:141-150), flashes white on cold start (COLOR_WINDOW brush :321, no put_DefaultBackgroundColor).
 
-- [ ] Write failing static-contract test `src/apps/desktop_app/platform/windows/nalar_webview_static_test.zig`:
+- [ ] Write failing static-contract test `src/apps/desktop_app/platform/windows/pabrik_webview_static_test.zig`:
   - asserts `CreateCoreWebView2EnvironmentWithOptions` call passes non-NULL options (not `NULL,    // environmentOptions`)
   - asserts `put_AdditionalBrowserArguments` present
   - asserts WM_SIZE handler coalesces (SetTimer or SIZE_ source check present)
   - asserts `put_DefaultBackgroundColor` called in controller callback
-- [ ] Implement in `nalar_webview.cpp`:
+- [ ] Implement in `pabrik_webview.cpp`:
   - Build `ComPtr<ICoreWebView2EnvironmentOptions>` between lines 415–417; keep alive through completion lambda
   - Args: enable GPU compositing explicitly (`--disable-gpu-compositing` NOT set; instead ensure nothing disables it) + disable unused Edge features (`--disable-features=msSmartScreenProtection`) — conservative set only, document trade-offs in comment
   - WM_SIZE: coalesce via SetTimer(16ms) → apply bounds on WM_TIMER; kill timer on WM_EXITSIZEMOVE
@@ -105,7 +105,7 @@ ChatView passes `buffer: 30` (was bumped 20→30 on 2026-08-23 as insurance). Wi
 
 **STATUS: DEFERRED TO HUMAN MEASUREMENT** — the overlay now exists but reading it requires eyes on a real long-chat scroll. Procedure:
 
-1. `zig build nalar-desktop && ./zig-out/bin/nalar-desktop` (dev build includes the overlay chip, top-right)
+1. `zig build pabrik-desktop && ./zig-out/bin/pabrik-desktop` (dev build includes the overlay chip, top-right)
 2. Open the longest chat you have; note steady-state FPS while scrolling fast up/down (chip updates 1×/sec)
 3. Edit `src/apps/desktop/src/components/views/ChatView.vue` buffer prop (`buffer: 30` → try 15, then 45), rebuild, repeat
 4. Record numbers below; keep whichever wins or revert to 30 if indistinguishable

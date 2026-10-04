@@ -1,13 +1,14 @@
 //! Shared auth helpers for opt-in `--auth` mode.
 //!
 //! `users` (Migration 077) stores identity; `auth_sessions` (Migration 089)
-//! stores one row per active `nalar_session` cookie (SHA-256 hash -> user).
+//! stores one row per active `pabrik_session` cookie (SHA-256 hash -> user).
 //! When `--auth` is off, middleware passes everything through.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-pub const cookie_name = "nalar_session";
+pub const cookie_name = "pabrik_session";
+
 pub const session_max_age_secs: u32 = 30 * 24 * 3600; // 30 days
 
 /// Paths that never require auth even when `--auth` is on.
@@ -20,7 +21,7 @@ pub fn isAuthExempt(path: []const u8) bool {
     return false;
 }
 
-/// Extract `nalar_session` cookie value. Returns null for missing,
+/// Extract `pabrik_session` cookie value. Returns null for missing,
 /// empty, or malformed Cookie headers (empty is treated as absent,
 /// never as a value — see the `""`-as-value pitfall).
 pub fn parseSessionToken(headers: anytype) ?[]const u8 {
@@ -63,7 +64,7 @@ pub const SessionLookup = struct {
 /// Caller owns the duped slices in the returned struct (free with allocator).
 pub fn lookupSession(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     raw_token: []const u8,
 ) ?SessionLookup {
     if (raw_token.len == 0) return null;
@@ -190,7 +191,7 @@ pub fn isSharedOwner(user_id: []const u8) bool {
 /// "Session not found" before the handler's ensure can run.
 pub fn sessionExistsById(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) bool {
     if (session_id.len == 0) return false;
@@ -216,7 +217,7 @@ pub fn sessionExistsById(
 /// newly added child route cannot forget the check.
 pub fn canSeeWorkspace(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     workspace_id: []const u8,
     owner: []const u8,
 ) bool {
@@ -243,7 +244,7 @@ pub fn canSeeWorkspace(
 /// the middleware choke point for every route carrying `:session_id`.
 pub fn canSeeSession(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
     owner: []const u8,
 ) bool {
@@ -264,7 +265,7 @@ pub fn canSeeSession(
 
 /// Resolve the owner id for the current request, server-side.
 ///
-/// The ONLY accepted source is the `nalar_session` cookie — never a body
+/// The ONLY accepted source is the `pabrik_session` cookie — never a body
 /// field, query param, or header, all of which the client controls.
 ///
 /// - auth disabled                            -> `system_user_id`
@@ -278,7 +279,7 @@ pub fn canSeeSession(
 /// Returns an owned slice — free it with `allocator.free`.
 pub fn resolveRequestUserId(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     auth_enabled: bool,
     headers: anytype,
 ) ![]const u8 {
@@ -300,7 +301,7 @@ pub fn resolveRequestUserId(
 /// initialised (unit tests) or the id does not fit — callers treat null as
 /// "no identity", which is the auth-off behaviour.
 pub fn resolveOwnerInto(buf: []u8, headers: anytype) ?[]const u8 {
-    const di = nalarcore.getSingleton() catch return null;
+    const di = pabrikcore.getSingleton() catch return null;
     const owner = resolveRequestUserId(di.allocator, di.db, di.auth_enabled, headers) catch return null;
     defer di.allocator.free(owner);
     if (owner.len > buf.len) return null;
@@ -359,9 +360,9 @@ test "parseSessionToken handles empty as absent" {
     try std.testing.expect(parseSessionToken(m) == null);
     try m.put("Cookie", "");
     try std.testing.expect(parseSessionToken(m) == null);
-    try m.put("Cookie", "nalar_session=");
+    try m.put("Cookie", "pabrik_session=");
     try std.testing.expect(parseSessionToken(m) == null);
-    try m.put("Cookie", "other=1; nalar_session=abc123; x=2");
+    try m.put("Cookie", "other=1; pabrik_session=abc123; x=2");
     const v = parseSessionToken(m) orelse return error.Missing;
     try std.testing.expectEqualStrings("abc123", v);
 }
@@ -401,7 +402,7 @@ test "canSeeSession: own + shared visible, another user's hidden, system sees al
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     defer db.deinit();
     try db.init(io, ":memory:");
     try db.exec(alloc, "CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT)", &.{});
@@ -440,7 +441,7 @@ test "resolveRequestUserId maps a valid cookie to the owning user" {
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     defer db.deinit();
     try db.init(io, ":memory:");
 
@@ -472,7 +473,7 @@ test "resolveRequestUserId maps a valid cookie to the owning user" {
 
     var headers = std.StringHashMap([]const u8).init(alloc);
     defer headers.deinit();
-    try headers.put("Cookie", "nalar_session=deadbeef");
+    try headers.put("Cookie", "pabrik_session=deadbeef");
     const owner = try resolveRequestUserId(alloc, &db, true, headers);
     defer alloc.free(owner);
     try std.testing.expectEqualStrings("user_a", owner);
@@ -480,7 +481,7 @@ test "resolveRequestUserId maps a valid cookie to the owning user" {
     // An unknown token is not an error — it resolves to the shared bucket.
     var anon = std.StringHashMap([]const u8).init(alloc);
     defer anon.deinit();
-    try anon.put("Cookie", "nalar_session=unknown");
+    try anon.put("Cookie", "pabrik_session=unknown");
     const stranger = try resolveRequestUserId(alloc, &db, true, anon);
     defer alloc.free(stranger);
     try std.testing.expectEqualStrings(system_user_id, stranger);

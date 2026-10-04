@@ -11,7 +11,7 @@
  * `mode: 'send_backward'` (▼).
  *
  * 2 behavioural tests (the project convention is behavioural only —
- * see ~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md).
+ * see ~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'

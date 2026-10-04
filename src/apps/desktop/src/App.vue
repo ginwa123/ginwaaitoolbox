@@ -93,14 +93,14 @@ onMounted(() => {
   // `main.ts` installed the client with no-op stubs
   // (getRoutePath/getSessionId both return null); we replace them
   // here with live getters. The logCtx object lives on
-  // `window.__nalarLogCtx` (set by main.ts) so it survives the
+  // `window.__pabrikLogCtx` (set by main.ts) so it survives the
   // remount — only the callback functions need to point at the
   // current component scope's reactive refs.
   const route = useRoute()
   const navigationStore = useNavigationStore()
   const logCtx = (
     window as unknown as {
-      __nalarLogCtx:
+      __pabrikLogCtx:
         | {
             getRoutePath: () => string | null
             getSessionId: () => string | null
@@ -108,7 +108,7 @@ onMounted(() => {
         | null
         | undefined
     }
-  ).__nalarLogCtx
+  ).__pabrikLogCtx
   if (logCtx) {
     // route.fullPath already includes path + query + hash — concatenating
     // route.path in front duplicates the path ("/app" + "/app?view=..." =

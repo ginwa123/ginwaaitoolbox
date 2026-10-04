@@ -1,16 +1,16 @@
 const std = @import("std");
 const testing = std.testing;
 
-const memory_files = [_][]const u8{ "NALAR.md", "CLAUDE.md", "AGENTS.md" };
+const memory_files = [_][]const u8{ "PABRIK.md", "CLAUDE.md", "AGENTS.md" };
 
 /// Build a working-directory context by concatenating the contents of
-/// `NALAR.md`, `CLAUDE.md`, and `AGENTS.md` in the given `cwd`.
+/// `PABRIK.md`, `CLAUDE.md`, and `AGENTS.md` in the given `cwd`.
 ///
 /// Files that do not exist are **skipped silently** — this function
 /// never creates or force-creates a memory file. (Historically this
 /// helper would call `createFileAbsolute` on a `FileNotFound`, which
 /// polluted freshly-cloned repos with empty `AGENTS.md` / `CLAUDE.md`
-/// / `NALAR.md` placeholders every time the agent started a session.)
+/// / `PABRIK.md` placeholders every time the agent started a session.)
 ///
 /// Any I/O error other than `FileNotFound` is propagated. Returns an
 /// empty slice when none of the three files exist.
@@ -129,7 +129,7 @@ test "makeWorkingDirectoryContext: never creates a missing memory file (the smok
 
     // Before the call: directory is empty.
     try testing.expect(!try listDirContainsAnyOf(env.root_abs, &.{
-        "NALAR.md", "CLAUDE.md", "AGENTS.md",
+        "PABRIK.md", "CLAUDE.md", "AGENTS.md",
     }));
 
     // Call the helper. None of the three memory files exist.
@@ -138,7 +138,7 @@ test "makeWorkingDirectoryContext: never creates a missing memory file (the smok
 
     // After the call: directory is STILL empty — no AGENTS.md was created.
     try testing.expect(!try listDirContainsAnyOf(env.root_abs, &.{
-        "NALAR.md", "CLAUDE.md", "AGENTS.md",
+        "PABRIK.md", "CLAUDE.md", "AGENTS.md",
     }));
     try testing.expectEqualStrings("", result);
 }
@@ -159,9 +159,9 @@ test "makeWorkingDirectoryContext: only AGENTS.md present → returns its conten
     const result = try makeWorkingDirectoryContext(alloc, io, env.root_abs);
     defer alloc.free(result);
 
-    // Only AGENTS.md was created; NALAR.md / CLAUDE.md must NOT be created.
+    // Only AGENTS.md was created; PABRIK.md / CLAUDE.md must NOT be created.
     try testing.expect(try listDirContainsAnyOf(env.root_abs, &.{"AGENTS.md"}));
-    try testing.expect(!try listDirContainsAnyOf(env.root_abs, &.{"NALAR.md"}));
+    try testing.expect(!try listDirContainsAnyOf(env.root_abs, &.{"PABRIK.md"}));
     try testing.expect(!try listDirContainsAnyOf(env.root_abs, &.{"CLAUDE.md"}));
 
     // Result contains the file content with a trailing newline.
@@ -178,8 +178,8 @@ test "makeWorkingDirectoryContext: all three files concatenated in canonical ord
     const io = threaded.io();
 
     // Write files in REVERSE order to verify the function reads them
-    // in NALAR / CLAUDE / AGENTS order regardless of insertion order.
-    inline for ([_][]const u8{ "AGENTS.md", "CLAUDE.md", "NALAR.md" }) |name| {
+    // in PABRIK / CLAUDE / AGENTS order regardless of insertion order.
+    inline for ([_][]const u8{ "AGENTS.md", "CLAUDE.md", "PABRIK.md" }) |name| {
         const p = try std.fs.path.join(alloc, &.{ env.root_abs, name });
         defer alloc.free(p);
         const content = std.fmt.comptimePrint("# {s}\n", .{name[0 .. name.len - 3]});
@@ -190,7 +190,7 @@ test "makeWorkingDirectoryContext: all three files concatenated in canonical ord
     defer alloc.free(result);
 
     try testing.expectEqualStrings(
-        \\# NALAR
+        \\# PABRIK
         \\# CLAUDE
         \\# AGENTS
         \\
@@ -206,7 +206,7 @@ test "makeWorkingDirectoryContext: file without trailing newline still gets a se
     defer threaded.deinit();
     const io = threaded.io();
 
-    const a = try std.fs.path.join(alloc, &.{ env.root_abs, "NALAR.md" });
+    const a = try std.fs.path.join(alloc, &.{ env.root_abs, "PABRIK.md" });
     defer alloc.free(a);
     const b = try std.fs.path.join(alloc, &.{ env.root_abs, "CLAUDE.md" });
     defer alloc.free(b);
@@ -230,7 +230,7 @@ test "makeWorkingDirectoryContext: empty file contributes nothing extra" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const a = try std.fs.path.join(alloc, &.{ env.root_abs, "NALAR.md" });
+    const a = try std.fs.path.join(alloc, &.{ env.root_abs, "PABRIK.md" });
     defer alloc.free(a);
     const b = try std.fs.path.join(alloc, &.{ env.root_abs, "AGENTS.md" });
     defer alloc.free(b);

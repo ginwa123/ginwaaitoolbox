@@ -11,7 +11,7 @@
 
 **Architecture:** New `session_plan` table (session_id TEXT PK, plan_md TEXT NOT NULL DEFAULT '', updated_at DATETIME). Storage layer in `src/ai_workflow/tui/agentic_loop/session_plan.zig` mirroring `agent_memories.zig`'s shape (`savePlan`, `getPlan`, `getPlanOpt`). Two new tool modules in `src/modules/agent/tools/` (`update_plan.zig`, `get_plan.zig`) plus matching exec adapters in `src/ai_workflow/tui/agentic_loop/tools_exec_*.zig`. Tool registration in `tools_equipped.zig` + `tools.zig` + `src/root.zig`. Two system-prompt hooks: a new `prompts_make_plan_context.zig` helper (called from `prompts_build_messages_for_agent_prompt.zig` BEFORE the `final_system.toOwnedSlice` step) injects the current plan as a `## Current Plan` markdown block on every iteration; a new `<plan>` section is added to `enrichCompactionXml` in `workflow_compact_message.zig` so the plan survives compaction. Tool descriptions explicitly tell the agent "call `update_plan` after every checklist item is completed to flip `- [ ]` → `- [x]`".
 
-**Tech Stack:** Zig 0.16 (backend), Vue 3 + TypeScript + Vitest (frontend), SQLite via `nalarcore.sqlite.SqliteBackend`, no new deps. One migration: 076.
+**Tech Stack:** Zig 0.16 (backend), Vue 3 + TypeScript + Vitest (frontend), SQLite via `pabrikcore.sqlite.SqliteBackend`, no new deps. One migration: 076.
 
 ## Global Constraints
 
@@ -20,7 +20,7 @@
 - **No FK on `session_plan.session_id`**: matches the precedent of `llm_history.session_id`, `worker.session_id`, `session_queue_messages.session_id`, `session_activity.session_id` (Migration 073's docstring documents the rationale — "a session could be hard-deleted while keeping its history"). The 1:1 relationship is enforced by the table's PK.
 - **Idempotent migration via `CREATE TABLE IF NOT EXISTS`**: matches Migration 070 (`agent_memories`) and Migration 073 (`session_activity`) patterns.
 - **Backend-only behaviour**: the agent calls the tool via the LLM tool-call loop; we add ZERO new HTTP endpoints (no `POST /api/sessions/:id/plan`).
-- **No new comments above `logger.infoFmt(...)` calls** (see `~/.config/nalar/memories/no-comments-on-logger-calls.md`).
+- **No new comments above `logger.infoFmt(...)` calls** (see `~/.config/pabrik/memories/no-comments-on-logger-calls.md`).
 - **Static-contract tests** for the tool registration (mirror `kanban_tasks_create_test.zig`); live DB tests for the storage layer (mirror `agent_memories.zig`'s test setup).
 - **No port 8081**: smoke tests use port 8080.
 - **Plan MD is agent-trusted**: the storage layer does NOT validate the markdown structure (no checklist parsing, no schema enforcement). The agent is told via the tool description how to format it; the system prompt reinforces the convention.
@@ -67,7 +67,7 @@ NEW  src/apps/desktop/src/components/tool_outputs/UpdatePlan.vue    (optional UI
 NEW  src/apps/desktop/src/components/tool_outputs/GetPlan.vue       (optional UI: renders the fetched plan as a checklist)
 NEW  src/apps/desktop/src/__tests__/ChatView.updatePlan.spec.ts     (optional UI tests)
 EDIT docs/SPEC.md                                                    (§3.X new section + PR index entry)
-EDIT NALAR.md                                                        (Recent changes entry)
+EDIT PABRIK.md                                                        (Recent changes entry)
 ```
 
 Total: **14 NEW files, 11 EDIT files, 1 migration**. No schema change to existing tables.
@@ -108,7 +108,7 @@ Create `src/ai_workflow/tui/agentic_loop/session_plan_test.zig`. Mirror the stru
 ```zig
 const std = @import("std");
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const migration = @import("../../../migrations/migration.zig");
 const session_plan = @import("session_plan.zig");
 
@@ -240,7 +240,7 @@ Create `src/ai_workflow/tui/agentic_loop/session_plan.zig`. Mirror `agent_memori
 //! (`agent_memories.zig`, `session_skills.zig`).
 
 const std = @import("std");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 
 /// One row in `session_plan`. All string fields are allocator-owned and
 /// must be freed by the caller via `deinit`.
@@ -459,7 +459,7 @@ Create `src/modules/agent/tools/update_plan_test.zig`:
 ```zig
 const std = @import("std");
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const migration = @import("../../../migrations/migration.zig");
 const update_plan_mod = @import("update_plan.zig");
 
@@ -567,11 +567,11 @@ Create `src/modules/agent/tools/update_plan.zig`. Mirror `save_memory.zig`'s doc
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const session_plan = nalarcore.session_plan;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const session_plan = pabrikcore.session_plan;
 
-const helpers = nalarcore.helpers;
+const helpers = pabrikcore.helpers;
 const xmlEscape = helpers.xml_escape;
 
 pub const MAX_PLAN_BYTES: usize = session_plan.MAX_PLAN_BYTES;
@@ -743,7 +743,7 @@ Create `src/modules/agent/tools/get_plan_test.zig`:
 ```zig
 const std = @import("std");
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const migration = @import("../../../migrations/migration.zig");
 const get_plan_mod = @import("get_plan.zig");
 const update_plan_mod = @import("update_plan.zig");
@@ -841,9 +841,9 @@ Create `src/modules/agent/tools/get_plan.zig`. Mirror `load_memory.zig`'s struct
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const session_plan = nalarcore.session_plan;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const session_plan = pabrikcore.session_plan;
 
 /// Input for `get_plan`. Empty struct — no params, session_id is implicit.
 pub const GetPlanInput = struct {};
@@ -947,7 +947,7 @@ Create `src/ai_workflow/tui/agentic_loop/tools_exec_update_plan_test.zig`:
 ```zig
 const std = @import("std");
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const migration = @import("../../../migrations/migration.zig");
 const tools = @import("tools.zig");
 const update_plan_mod = @import("../../../modules/agent/tools/update_plan.zig");
@@ -961,7 +961,7 @@ fn setupDb(allocator: std.mem.Allocator) !*sqlite.SqliteBackend {
     return db;
 }
 
-fn fakeToolCall(name: []const u8, args: []const u8) @import("nalarcore").agent.ToolCall {
+fn fakeToolCall(name: []const u8, args: []const u8) @import("pabrikcore").agent.ToolCall {
     return .{
         .id = "call_1",
         .type = "function",
@@ -1006,7 +1006,7 @@ test "execUpdatePlan: writes to session_plan and returns wrapped success" {
     try testing.expect(std.mem.indexOf(u8, result.output, "<updated_at>") != null);
 
     // Verify the row landed in session_plan
-    const got = try @import("nalarcore").session_plan.getPlan(allocator, db, "sess_exec");
+    const got = try @import("pabrikcore").session_plan.getPlan(allocator, db, "sess_exec");
     defer allocator.free(got);
     try testing.expectEqualStrings("# Plan\n- [ ] step", got);
 }
@@ -1029,13 +1029,13 @@ Create `src/ai_workflow/tui/agentic_loop/tools_exec_update_plan.zig`. Mirror `to
 
 ```zig
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const update_plan_mod = nalarcore.update_plan;
+const agent = pabrikcore.agent;
+const update_plan_mod = pabrikcore.update_plan;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execUpdatePlan(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -1081,13 +1081,13 @@ Create `src/ai_workflow/tui/agentic_loop/tools_exec_get_plan.zig`. Same pattern,
 
 ```zig
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const get_plan_mod = nalarcore.get_plan;
+const agent = pabrikcore.agent;
+const get_plan_mod = pabrikcore.get_plan;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execGetPlan(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -1121,8 +1121,8 @@ Edit `src/ai_workflow/tui/agentic_loop/tools_equipped.zig`. Add the module impor
 
 ```zig
 // 2026-08-19 — session_plan agent tools.
-const update_plan_mod = nalarcore.update_plan;
-const get_plan_mod = nalarcore.get_plan;
+const update_plan_mod = pabrikcore.update_plan;
+const get_plan_mod = pabrikcore.get_plan;
 ```
 
 Add entries to `equips()` (inside the `comptime &[_]AgentTool{ ... }` block, grouped near `update_activity` which is also an "agent control" tool that influences future behaviour):
@@ -1183,7 +1183,7 @@ Thin exec adapters parse the JSON input, call the pure fn with
 ctx.session_id (D3), and wrap results via wrapToolOutput. Tools
 registered in tools_equipped.zig's equips() + UNIFIED_TOOL_REGISTRY()
 and re-exported through tools.zig + src/root.zig (the
-nalarcore.update_plan / nalarcore.get_plan / nalarcore.session_plan
+pabrikcore.update_plan / pabrikcore.get_plan / pabrikcore.session_plan
 aliases).
 
 Exec-wrapper tests pin the wire contract end-to-end: success path
@@ -1207,7 +1207,7 @@ Create `src/ai_workflow/tui/agentic_loop/prompts_make_plan_context_test.zig`. Mi
 ```zig
 const std = @import("std");
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const migration = @import("../../../migrations/migration.zig");
 const plan_ctx = @import("prompts_make_plan_context.zig");
 const update_plan_mod = @import("../../../modules/agent/tools/update_plan.zig");
@@ -1268,9 +1268,9 @@ Create `src/ai_workflow/tui/agentic_loop/prompts_make_plan_context.zig`. Mirror 
 
 ```zig
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const session_plan = nalarcore.session_plan;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const session_plan = pabrikcore.session_plan;
 
 /// Build a "## Current Plan" section for the system prompt. Reads
 /// `session_plan` for the current session and renders the markdown
@@ -1461,7 +1461,7 @@ pub fn fetchSessionPlan(
 Add the import at the top of the file:
 
 ```zig
-const session_plan_mod = nalarcore.session_plan;
+const session_plan_mod = pabrikcore.session_plan;
 ```
 
 ### Step 6.3 — Add `plan` parameter to `enrichCompactionXml`
@@ -1560,7 +1560,7 @@ cd /home/ginwa/.worktrees/agent-plan-tool && timeout 180 zig build test --summar
 Boot the desktop app on port 8080. Start an agent, give it a multi-step task. Once the agent calls `update_plan`, then artificially trigger compaction by sending a long message or pressing the manual `/compact` button (if available). Verify the new `<compact_messages>` envelope in `llm_history` contains `<plan>...</plan>`:
 
 ```bash
-sqlite3 ~/.local/share/nalar/data.db "SELECT substr(response_content, 1, 500) FROM llm_history WHERE role='user' AND response_content LIKE '%compact_messages%' ORDER BY created_at DESC LIMIT 1;"
+sqlite3 ~/.local/share/pabrik/data.db "SELECT substr(response_content, 1, 500) FROM llm_history WHERE role='user' AND response_content LIKE '%compact_messages%' ORDER BY created_at DESC LIMIT 1;"
 ```
 
 Expected output includes `<plan updated_at="..."><content><![CDATA[...]]></content></plan>`.
@@ -1743,9 +1743,9 @@ Task 8 of 9"
 
 ---
 
-## Task 9 — Docs: SPEC.md + NALAR.md
+## Task 9 — Docs: SPEC.md + PABRIK.md
 
-> **Outcome**: SPEC.md has a new section (§3.X) documenting the plan tool + the system-prompt + compaction-enrichment integration. NALAR.md has a Recent-changes bullet. The PR index entry is added.
+> **Outcome**: SPEC.md has a new section (§3.X) documenting the plan tool + the system-prompt + compaction-enrichment integration. PABRIK.md has a Recent-changes bullet. The PR index entry is added.
 
 ### Step 9.1 — Update SPEC.md
 
@@ -1781,9 +1781,9 @@ Also add a PR index entry near the existing 2026-08-19 entries:
 | `2026-08-19-session-plan-agent-tool.md` | ✅ | `update_plan` + `get_plan` agent tools + `session_plan` table (1:1 with sessions). Plan re-injected on every iteration + survives compaction. See §3.7.X above. |
 ```
 
-### Step 9.2 — Update NALAR.md
+### Step 9.2 — Update PABRIK.md
 
-Edit `NALAR.md`. Append a new "Recent changes" entry at the top of the list:
+Edit `PABRIK.md`. Append a new "Recent changes" entry at the top of the list:
 
 ```markdown
 - **Agent tools `update_plan` + `get_plan` — session-scoped markdown plan with checklist** (2026-08-19): Two new agent-callable tools (`update_plan` overwrites the plan; `get_plan` fetches it) backed by a new `session_plan` SQLite table (1:1 with `sessions`, session_id TEXT PK, plan_md TEXT NOT NULL, updated_at DATETIME). The plan is plain markdown with a `- [ ]` / `- [x]` checklist; the agent overwrites on every call (UPSERT, 256 KiB cap). Plan is re-injected into every agent iteration (system prompt via `prompts_make_plan_context.zig`) AND embedded as a `<plan>` section in the compaction envelope (via `enrichCompactionXml`) so the next agent after compaction knows what the prior agent was doing. `update_plan` returns `<session_id>` + `<updated_at>`; `get_plan` returns the plan wrapped in CDATA or `<empty/>` when absent. No FK constraint (sessions `session_activity` precedent). `session_id` is implicit (pulled from `ToolExecContext`); the LLM never passes it. Optional UI: `UpdatePlan.vue` + `GetPlan.vue` Vue components render the tool result as a collapsible checklist card in the chatview. Migration: 076 (`create_session_plan`). Branch: `worktree/agent-plan-tool`. Plan: `docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md`.
@@ -1792,13 +1792,13 @@ Edit `NALAR.md`. Append a new "Recent changes" entry at the top of the list:
 ### Step 9.3 — Commit
 
 ```bash
-git add docs/SPEC.md NALAR.md
+git add docs/SPEC.md PABRIK.md
 
-git -c user.name=ginwa -c user.email=ginwa@local commit -m "docs: SPEC.md + NALAR.md for update_plan + get_plan tools
+git -c user.name=ginwa -c user.email=ginwa@local commit -m "docs: SPEC.md + PABRIK.md for update_plan + get_plan tools
 
 SPEC.md §3.7.X documents the new tools, the 1:1 table, the two
 injection points (system prompt + compaction envelope), and the
-backward-compat story. PR index entry added. NALAR.md Recent
+backward-compat story. PR index entry added. PABRIK.md Recent
 changes summarises the user-visible behaviour for humans.
 
 Plan: docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md
@@ -1902,7 +1902,7 @@ cd /home/ginwa/.worktrees/agent-plan-tool && grep -rn "update_plan\|get_plan" sr
 | `src/apps/desktop/src/components/views/ChatView.vue` | + tool dispatcher branches + renderResponse branches |
 | `src/apps/desktop/src/__tests__/ChatView.updatePlan.spec.ts` | NEW — behavioural test |
 | `docs/SPEC.md` | + §3.7.X new section + PR index entry |
-| `NALAR.md` | + Recent changes bullet |
+| `PABRIK.md` | + Recent changes bullet |
 
 **Total: 13 NEW, 10 EDIT, 1 migration.** No schema change to existing tables. No new dependencies.
 

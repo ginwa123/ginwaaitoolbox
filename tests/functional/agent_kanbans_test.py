@@ -1,6 +1,6 @@
 """Functional tests for the Agent-Kanbans mirror (Migration 081).
 
-Exercises the new agent-kanbans CRUD endpoints against a REAL nalar
+Exercises the new agent-kanbans CRUD endpoints against a REAL pabrik
 binary + REAL SQLite, replaying the EXACT JSON bodies the frontend
 KanbanAgentSettings dialog sends.
 

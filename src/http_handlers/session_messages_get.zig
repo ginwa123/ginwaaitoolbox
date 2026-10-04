@@ -1,10 +1,10 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const helpers = @import("helpers");
-const ai_mod = nalarcore.ai_mod;
-const config = nalarcore.config;
+const ai_mod = pabrikcore.ai_mod;
+const config = pabrikcore.config;
 const llm_history = ai_mod.llm_history;
 
 /// Get messages for a session
@@ -44,7 +44,7 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         }
     };
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 2026-08-21-fix-ui-context-window — resolve the session's selected
@@ -57,7 +57,7 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     // → null → Defaults-tab → built-in default (old behavior).
     //
     // `LlmProfile` is nested inside `LlmConfig` — refer to it as
-    // `config.LlmConfig.LlmProfile`. The bare `nalarcore.config.LlmProfile`
+    // `config.LlmConfig.LlmProfile`. The bare `pabrikcore.config.LlmProfile`
     // path compiles in `zig build test` (lib module lookup) but Zig 0.16's
     // `zig build-exe` (exe module lookup) rejects it because the parent
     // struct in the root module is `modules.config.Config` and has no
@@ -66,7 +66,7 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     // `resolveSessionProfile` walks session selection → active_profile →
     // null, matching the workflow loop — so a Default chat with
     // active_profile=alpha shows alpha's 950k window, not 500k.
-    const cfg = nalarcore.getLlmConfig(di);
+    const cfg = pabrikcore.getLlmConfig(di);
     const profile_name = llm_history.getSessionProfileName(allocator, sqlite_db, session_id) catch "";
     const profile: ?config.LlmConfig.LlmProfile =
         llm_history.resolveSessionProfile(cfg, profile_name);
@@ -198,7 +198,7 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 // Why we test against `getSessionMessagesSorted` + a manual JSON
 // builder (not the full HTTP handler)
 // ─────────────────────────────────────
-// `sessionMessagesHandler` calls `nalarcore.getSingleton()` to grab
+// `sessionMessagesHandler` calls `pabrikcore.getSingleton()` to grab
 // the live DB handle, which is global process state and out of scope
 // for a unit test. The data layer (`getSessionMessagesSorted`) is
 // the only place where the field can be loaded — everything else is
@@ -206,7 +206,7 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 // handler is one struct field away from emitting it.
 
 const testing = std.testing;
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
@@ -416,7 +416,7 @@ test "getSessionMessagesSorted: profile override flows into max_capacity_total_t
     var env_map = std.process.Environ.Map.init(arena_alloc);
     try env_map.put("HOME", "/tmp");
     try env_map.put("XDG_CONFIG_HOME", "/tmp");
-    var cfg = try nalarcore.config.LlmConfig.init(arena_alloc, testing.io, config_path, &env_map);
+    var cfg = try pabrikcore.config.LlmConfig.init(arena_alloc, testing.io, config_path, &env_map);
     defer cfg.deinit();
 
     const profile = cfg.profiles_models.get("900ribu") orelse unreachable;

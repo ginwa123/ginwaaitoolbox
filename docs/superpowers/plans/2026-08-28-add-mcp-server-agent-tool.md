@@ -10,9 +10,9 @@
 
 2. **Tool module** — `src/modules/agent/tools/add_mcp_server.zig`. Defines `AddMcpServerInput`, `add_mcp_server_tool: AgentTool` (the LLM-facing JSON schema), and `executeAddMcpServerToString(allocator, config, io, input) ![]const u8` — calls the primitive + returns the XML envelope (`<add_mcp_server><name>...</name>...<error>...</error></add_mcp_server>`). NO listing of the new server's tools here — moved to the exec wrapper to avoid polluting the global `StdioRegistry` from unit tests (the global's arena is only cleaned up in `deinitGlobal`, which tests never call).
 
-3. **Exec wrapper** — `src/ai_workflow/tui/agentic_loop/tools_exec_add_mcp_server.zig`. Parses the LLM JSON args, calls the pure fn, performs the best-effort tools listing (production-only; skipped when `ctx.environment == null` as our test-mode signal), writes to `~/.config/nalar/config.json`, then calls `setLlmConfig(di, new_ptr)` to atomically swap the live config — the same write+reload sequence `PUT /api/config/nalar` already uses.
+3. **Exec wrapper** — `src/ai_workflow/tui/agentic_loop/tools_exec_add_mcp_server.zig`. Parses the LLM JSON args, calls the pure fn, performs the best-effort tools listing (production-only; skipped when `ctx.environment == null` as our test-mode signal), writes to `~/.config/pabrik/config.json`, then calls `setLlmConfig(di, new_ptr)` to atomically swap the live config — the same write+reload sequence `PUT /api/config/pabrik` already uses.
 
-**Persistence:** The disk-write path mirrors `nalar_config_put.zig` exactly. Read `config.json` (if exists), mutate the `mcp_servers` map while preserving siblings (active_profile, profiles_models, sub_agents), write back atomically (truncate + write), re-parse + `setLlmConfig` to hot-reload. Any disk-write failure is logged + surfaced in `<persisted>false: <reason></persisted>` rather than failing the whole tool call (the in-memory mutation already succeeded; the agent's next iteration will see the new server regardless).
+**Persistence:** The disk-write path mirrors `pabrik_config_put.zig` exactly. Read `config.json` (if exists), mutate the `mcp_servers` map while preserving siblings (active_profile, profiles_models, sub_agents), write back atomically (truncate + write), re-parse + `setLlmConfig` to hot-reload. Any disk-write failure is logged + surfaced in `<persisted>false: <reason></persisted>` rather than failing the whole tool call (the in-memory mutation already succeeded; the agent's next iteration will see the new server regardless).
 
 **Wire shape:** Mirror of the frontend `McpServerModal` so the HTTP sibling task adds the `url` + `headers` branches without changing the schema. `<add_mcp_server><name>...</name><transport>stdio</transport><command>...</command><args>...</args><cwd>...</cwd><persisted>true|false</persisted><tools>...</tools><note>...</note></add_mcp_server>` — or `<add_mcp_server><error>...</error></add_mcp_server>` for validation failures. `<persisted>` reports disk-write outcome separately from the in-memory mutation (which always succeeds before the disk write).
 
@@ -25,7 +25,7 @@
 - **MCP server config schema** — `src/modules/config/Config.zig:380-410` (`McpServerConfig` with `url?`, `headers?`, `command?`, `args?`, `cwd?`; `parseMcpServerConfig` accepts either branch).
 - **`LlmConfig.mcpServers_parsed`** — the JSON mirror `buildMCPToolsRun` reads. Currently rebuilt only at config-load time (`Config.zig:541-563`); my primitive rebuilds it after each insert.
 - **Existing layered tool pattern** — `save_memory.zig` (pure fn) + `tools_exec_save_memory.zig` (exec wrapper) + `tools_wrap_output.zig` (standard envelope). My code mirrors this 3-tier split.
-- **Live-reload via `setLlmConfig`** — `src/root.zig:258-271` atomically swaps `di.llm_config`; the previous config is deinit'd in the background. Used by `PUT /api/config/nalar` (`nalar_config_put.zig:417-430`).
+- **Live-reload via `setLlmConfig`** — `src/root.zig:258-271` atomically swaps `di.llm_config`; the previous config is deinit'd in the background. Used by `PUT /api/config/pabrik` (`pabrik_config_put.zig:417-430`).
 
 ---
 
@@ -47,13 +47,13 @@ src/modules/agent/test_runner.zig                            # Register the new 
 src/ai_workflow/tui/agentic_loop/test_runner.zig             # Register the new exec wrapper's inline tests
 src/ai_workflow/tui/agentic_loop/tools.zig                   # Re-export `execAddMcpServer` for the registry
 src/ai_workflow/tui/agentic_loop/tools_equipped.zig          # Register `add_mcp_server` in `equips()` and `UNIFIED_TOOL_REGISTRY()`
-src/root.zig                                                 # Module export for `nalarcore.add_mcp_server`
-NALAR.md                                                     # Recent changes entry
+src/root.zig                                                 # Module export for `pabrikcore.add_mcp_server`
+PABRIK.md                                                     # Recent changes entry
 ```
 
 ### NOT changed (HTTP sibling task lands these without altering the wire shape)
 
-- `src/apps/desktop/src/components/nalar/McpServerModal.vue` — frontend modal already uses the same `{name, transport, command, args, cwd}` shape that the agent tool now accepts.
+- `src/apps/desktop/src/components/pabrik/McpServerModal.vue` — frontend modal already uses the same `{name, transport, command, args, cwd}` shape that the agent tool now accepts.
 - `src/apps/desktop/src/api/index.ts` `McpServer` type — already covers both stdio + http.
 
 ---
@@ -77,7 +77,7 @@ NALAR.md                                                     # Recent changes en
 
 - **Per-request Arena Cleanup** — Handlers allocate from `ctx.allocator` (arena) → NO `defer allocator.free` inside HTTP handlers or tool exec for slices owned by the allocator. The exec wrapper does own the slices it allocates via `ctx.allocator` (because `wrapToolOutput` returns an owned slice and `ToolExecResult.output_allocated = true`); the per-request arena frees them on scope exit.
 - **Tests live INLINE at the bottom of impl files** (`test "..." { }` blocks). HTTP-handler test files use `_ = @import(...)` in `src/ai_workflow/tui/test_runner.zig`. New tool modules register in `src/modules/agent/test_runner.zig`; new exec wrappers in `src/ai_workflow/tui/agentic_loop/test_runner.zig`.
-- **No new CHANGELOG file** — update `NALAR.md` (§"Recent changes") with one entry that lands on the same commit as the wire-up task.
+- **No new CHANGELOG file** — update `PABRIK.md` (§"Recent changes") with one entry that lands on the same commit as the wire-up task.
 - **Empty-slice-as-NULL rule** — `SqliteBackend.exec` binds `""` as SQL NULL → irrelevant here (no DB writes).
 - **SSE wire-format contract** — we add NO new SSE event names.
 - **DONT KILL THE PORT 8081 SERVER** — functional harness uses ports 8080..8199.
@@ -110,7 +110,7 @@ Define `AddMcpServerInput { name, transport, command, args?, cwd?, url, headers?
 
 ### Step 5: Functional test
 
-`tests/functional/agent_add_mcp_server_test.py` — boots nalar with a stub LLM profile, PUTs a config with a stdio MCP server, GETs back + reads on-disk `config.json` directly (proves both API + disk paths), then adds a second server and verifies the first is preserved (regression guard for `rebuildMcpServersParsed`).
+`tests/functional/agent_add_mcp_server_test.py` — boots pabrik with a stub LLM profile, PUTs a config with a stdio MCP server, GETs back + reads on-disk `config.json` directly (proves both API + disk paths), then adds a second server and verifies the first is preserved (regression guard for `rebuildMcpServersParsed`).
 
 ### Step 6: Verification
 
@@ -118,11 +118,11 @@ Define `AddMcpServerInput { name, transport, command, args?, cwd?, url, headers?
 - `pnpm test:unit`: must pass with no regressions (no frontend changes).
 - `pytest tests/functional/agent_add_mcp_server_test.py -v`: 1 new test passes.
 - `pytest tests/functional/mcp_stdio_test.py -v`: 6 existing pass (regression guard).
-- `zig build nalar-desktop --summary all`: 22/22 steps succeed (binary compiles + links).
+- `zig build pabrik-desktop --summary all`: 22/22 steps succeed (binary compiles + links).
 
-### Step 7: Update `NALAR.md` + move kanban card
+### Step 7: Update `PABRIK.md` + move kanban card
 
-Add the Recent-changes entry at the top of `NALAR.md` (§"Recent changes"). Move the kanban card from `in progress` to `in_review_task` column.
+Add the Recent-changes entry at the top of `PABRIK.md` (§"Recent changes"). Move the kanban card from `in progress` to `in_review_task` column.
 
 ---
 
@@ -144,7 +144,7 @@ zig build test --summary all                                    # 2875/2881 pass
 pnpm test:unit                                                  # 2758/2758 passing (no frontend changes)
 pytest tests/functional/mcp_stdio_test.py -v                    # 6/6 passing (regression)
 pytest tests/functional/agent_add_mcp_server_test.py -v        # 1/1 passing (new)
-zig build nalar-desktop --summary all                           # 22/22 steps succeed (binary builds)
+zig build pabrik-desktop --summary all                           # 22/22 steps succeed (binary builds)
 ```
 
 **Plan:** docs/superpowers/plans/2026-08-28-add-mcp-server-agent-tool.md

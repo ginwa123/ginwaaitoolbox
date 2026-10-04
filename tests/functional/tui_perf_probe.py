@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""pty-driven performance probe for `nalar-tui`.
+"""pty-driven performance probe for `pabrik-tui`.
 
-Why a pty and not the HTTP harness: `nalar-tui` refuses to start unless stdin
+Why a pty and not the HTTP harness: `pabrik-tui` refuses to start unless stdin
 is a TTY, and its two reported symptoms are only observable through a real
 terminal —
 
@@ -25,12 +25,12 @@ Measured baselines (2026-09-13 audit, 200x50 terminal, before the fix):
 After the fix: idle ~0, ~1 KB/key, p50 ~1 ms.
 
 Usage:
-    python3 tests/functional/tui_perf_probe.py --binary zig-out/bin/nalar-tui
+    python3 tests/functional/tui_perf_probe.py --binary zig-out/bin/pabrik-tui
     python3 tests/functional/tui_perf_probe.py --binary ... --json
 
 Exit code is non-zero when a threshold is violated, so this doubles as a
 regression gate (see `tui_perf_test.py`). Requires a POSIX pty; skipped by the
-pytest wrapper when `nalar-tui` has not been built (`zig build install:tui`).
+pytest wrapper when `pabrik-tui` has not been built (`zig build install:tui`).
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def _vm_rss_kb(pid: int) -> int:
 
 
 class TuiPty:
-    """`nalar-tui` running inside a pty, with a background output drain.
+    """`pabrik-tui` running inside a pty, with a background output drain.
 
     The drain matters: the app writes its frame diff to the pty, and if nobody
     reads, the pty buffer fills and the app blocks in write() — which would
@@ -217,7 +217,7 @@ def run(binary: str, server: str, rows: int, cols: int) -> dict:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--binary", default=os.environ.get("NALAR_TUI_BIN", "zig-out/bin/nalar-tui"))
+    ap.add_argument("--binary", default=os.environ.get("PABRIK_TUI_BIN", "zig-out/bin/pabrik-tui"))
     ap.add_argument("--server", default="http://127.0.0.1:9",
                     help="backend URL; keep it unreachable for a hermetic probe")
     ap.add_argument("--rows", type=int, default=DEFAULT_ROWS)
@@ -234,7 +234,7 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print("nalar-tui perf probe  (%dx%d, %s)" % (result["cols"], result["rows"], result["binary"]))
+        print("pabrik-tui perf probe  (%dx%d, %s)" % (result["cols"], result["rows"], result["binary"]))
         print("  idle leak          : %.1f KB/s" % result["idle_kb_per_s"])
         print("  per keystroke      : %.2f KB" % result["typing_kb_per_key"])
         print("  keystroke latency  : p50 %.2f ms  p90 %.2f ms  max %.2f ms"

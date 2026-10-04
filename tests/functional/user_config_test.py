@@ -1,9 +1,9 @@
 """Functional tests for `--auth` per-user config (users.config_json).
 
-Boots a REAL nalar binary + REAL SQLite via the harness (never a live
+Boots a REAL pabrik binary + REAL SQLite via the harness (never a live
 dev server, never port 8081). Replays the EXACT wire flows the settings
-page uses: GET /api/config/nalar, PUT /api/config/nalar, DELETE
-/api/config/nalar/profiles/:name.
+page uses: GET /api/config/pabrik, PUT /api/config/pabrik, DELETE
+/api/config/pabrik/profiles/:name.
 
 Covers:
   * AUTH-GET-DEFAULTS — fresh admin GETs defaults (no config_json yet).
@@ -65,8 +65,8 @@ def _login(port: int, email: str, password: str) -> str:
     )
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
 def _profile_body(name: str, model: str) -> dict:
@@ -90,12 +90,12 @@ def _config_file(home: Path) -> Path:
 
     Mirrors that function's platform switch:
 
-      * macOS   — ``~/Library/Application Support/nalar``. ``XDG_CONFIG_HOME``
+      * macOS   — ``~/Library/Application Support/pabrik``. ``XDG_CONFIG_HOME``
         is NOT consulted on this branch, so the harness's
         ``<home>/.config`` shadow is irrelevant.
-      * Windows — ``%APPDATA%/nalar``, which the harness points at
+      * Windows — ``%APPDATA%/pabrik``, which the harness points at
         ``<home>/AppData/Roaming``.
-      * else    — ``$XDG_CONFIG_HOME/nalar`` else ``$HOME/.config/nalar``; the
+      * else    — ``$XDG_CONFIG_HOME/pabrik`` else ``$HOME/.config/pabrik``; the
         harness points ``XDG_CONFIG_HOME`` at ``<home>/.config``.
 
     Derived from ``home`` alone rather than ``os.environ``: the harness only
@@ -106,18 +106,18 @@ def _config_file(home: Path) -> Path:
     where the assertion then read a path the server never wrote.
     """
     if sys.platform == "darwin":
-        return Path(home) / "Library" / "Application Support" / "nalar" / "config.json"
+        return Path(home) / "Library" / "Application Support" / "pabrik" / "config.json"
     if os.name == "nt":
-        return Path(home) / "AppData" / "Roaming" / "nalar" / "config.json"
-    return Path(home) / ".config" / "nalar" / "config.json"
+        return Path(home) / "AppData" / "Roaming" / "pabrik" / "config.json"
+    return Path(home) / ".config" / "pabrik" / "config.json"
 
 
-def test_auth_get_defaults(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_auth_get_defaults(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "admin@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "admin@example.com", "supersecret123")
         token = _login(h.port, "admin@example.com", "supersecret123")
-        status, _, body = _raw("GET", h.port, "/api/config/nalar", cookie=f"nalar_session={token}")
+        status, _, body = _raw("GET", h.port, "/api/config/pabrik", cookie=f"pabrik_session={token}")
         assert status == 200, body[:500]
         cfg = json.loads(body.decode())
         assert cfg.get("profiles") in (None, {})
@@ -125,34 +125,34 @@ def test_auth_get_defaults(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_auth_put_isolation(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_auth_put_isolation(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "a@example.com", "supersecret123")
-        _create_admin(default_nalar_bin, h.temp_dir, "b@example.com", "supersecret123", force=True)
+        _create_admin(default_pabrik_bin, h.temp_dir, "a@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "b@example.com", "supersecret123", force=True)
         tok_a = _login(h.port, "a@example.com", "supersecret123")
         tok_b = _login(h.port, "b@example.com", "supersecret123")
 
         status, _, body = _raw(
-            "PUT", h.port, "/api/config/nalar",
+            "PUT", h.port, "/api/config/pabrik",
             body=_profile_body("alpha", "model-a"),
-            cookie=f"nalar_session={tok_a}",
+            cookie=f"pabrik_session={tok_a}",
         )
         assert status == 200, body[:500]
         status, _, body = _raw(
-            "PUT", h.port, "/api/config/nalar",
+            "PUT", h.port, "/api/config/pabrik",
             body=_profile_body("beta", "model-b"),
-            cookie=f"nalar_session={tok_b}",
+            cookie=f"pabrik_session={tok_b}",
         )
         assert status == 200, body[:500]
 
-        status, _, body = _raw("GET", h.port, "/api/config/nalar", cookie=f"nalar_session={tok_a}")
+        status, _, body = _raw("GET", h.port, "/api/config/pabrik", cookie=f"pabrik_session={tok_a}")
         assert status == 200
         cfg_a = json.loads(body.decode())
         assert cfg_a["profiles"]["alpha"]["model"] == "model-a"
         assert "beta" not in cfg_a["profiles"]
 
-        status, _, body = _raw("GET", h.port, "/api/config/nalar", cookie=f"nalar_session={tok_b}")
+        status, _, body = _raw("GET", h.port, "/api/config/pabrik", cookie=f"pabrik_session={tok_b}")
         assert status == 200
         cfg_b = json.loads(body.decode())
         assert cfg_b["profiles"]["beta"]["model"] == "model-b"
@@ -161,59 +161,59 @@ def test_auth_put_isolation(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_auth_put_leaves_config_file_untouched(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_auth_put_leaves_config_file_untouched(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "admin@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "admin@example.com", "supersecret123")
         token = _login(h.port, "admin@example.com", "supersecret123")
         cfg_path = _config_file(h.temp_dir)
         before = cfg_path.read_bytes() if cfg_path.exists() else None
         status, _, body = _raw(
-            "PUT", h.port, "/api/config/nalar",
+            "PUT", h.port, "/api/config/pabrik",
             body=_profile_body("alpha", "model-a"),
-            cookie=f"nalar_session={token}",
+            cookie=f"pabrik_session={token}",
         )
         assert status == 200, body[:500]
         after = cfg_path.read_bytes() if cfg_path.exists() else None
         assert after == before, "PUT in --auth mode must not touch config.json"
         # But the DB-backed GET reflects the save.
-        status, _, body = _raw("GET", h.port, "/api/config/nalar", cookie=f"nalar_session={token}")
+        status, _, body = _raw("GET", h.port, "/api/config/pabrik", cookie=f"pabrik_session={token}")
         assert status == 200
         assert json.loads(body.decode())["profiles"]["alpha"]["model"] == "model-a"
     finally:
         h.teardown()
 
 
-def test_auth_unauth_config_endpoints_are_401(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_auth_unauth_config_endpoints_are_401(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
         for method, path, body in (
-            ("GET", "/api/config/nalar", None),
-            ("PUT", "/api/config/nalar", {"active_profile": None}),
-            ("DELETE", "/api/config/nalar/profiles/x", None),
+            ("GET", "/api/config/pabrik", None),
+            ("PUT", "/api/config/pabrik", {"active_profile": None}),
+            ("DELETE", "/api/config/pabrik/profiles/x", None),
         ):
             status, _, _ = _raw(method, h.port, path, body=body)
             assert status == 401, f"{method} {path} should be 401 without cookie"
-        status, _, _ = _raw("GET", h.port, "/api/config/nalar", cookie="nalar_session=")
+        status, _, _ = _raw("GET", h.port, "/api/config/pabrik", cookie="pabrik_session=")
         assert status == 401
     finally:
         h.teardown()
 
 
-def test_auth_delete_profile(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_auth_delete_profile(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "admin@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "admin@example.com", "supersecret123")
         token = _login(h.port, "admin@example.com", "supersecret123")
-        cookie = f"nalar_session={token}"
+        cookie = f"pabrik_session={token}"
         status, _, body = _raw(
-            "PUT", h.port, "/api/config/nalar",
+            "PUT", h.port, "/api/config/pabrik",
             body=_profile_body("todelete", "m"), cookie=cookie,
         )
         assert status == 200, body[:500]
-        status, _, body = _raw("DELETE", h.port, "/api/config/nalar/profiles/todelete", cookie=cookie)
+        status, _, body = _raw("DELETE", h.port, "/api/config/pabrik/profiles/todelete", cookie=cookie)
         assert status == 200, body[:500]
-        status, _, body = _raw("GET", h.port, "/api/config/nalar", cookie=cookie)
+        status, _, body = _raw("GET", h.port, "/api/config/pabrik", cookie=cookie)
         assert status == 200
         assert "todelete" not in (json.loads(body.decode()).get("profiles") or {})
     finally:
@@ -223,7 +223,7 @@ def test_auth_delete_profile(default_nalar_bin: Path):
 def test_off_mode_put_still_writes_file(harness: FunctionalHarness):
     cfg_path = _config_file(harness.temp_dir)
     before = cfg_path.read_bytes() if cfg_path.exists() else None
-    r = harness.http("PUT", "/api/config/nalar", json_body=_profile_body("filemode", "mf"), expect=200)
+    r = harness.http("PUT", "/api/config/pabrik", json_body=_profile_body("filemode", "mf"), expect=200)
     assert r.status == 200
     after = cfg_path.read_bytes() if cfg_path.exists() else None
     assert after is not None and after != before, "off-mode PUT must still write config.json"

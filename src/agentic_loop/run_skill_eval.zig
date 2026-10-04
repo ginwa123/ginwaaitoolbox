@@ -18,6 +18,23 @@
 //! keeps the wire surface to `properties: {}` — nothing to validate, nothing
 //! to get wrong.
 //!
+//! ## The body comes from the session's workspace
+//!
+//! A skill is a row in one workspace-scoped table, not a file in one of two
+//! directories. The body this eval hashes and analyses is read with
+//! `skills_store.getSkillByName(allocator, db, workspace_id, name)`, where
+//! `workspace_id` is resolved from `session_id` — the same row, behind the
+//! same guard, that `use_skill` materialised for the agent.
+//!
+//! That is why `skill_key` carries the workspace. Two workspaces may each
+//! hold a skill called `pdf` with different bodies, and `skill_eval_facts` is
+//! keyed on `(skill_key, content_hash, context_key)`: with a name-only key the
+//! second workspace's eval reused the first one's cached verdict, serving a
+//! judgement computed against text it never read.
+//!
+//! `args.cwd` still reaches `drift.analyse` — for the paths a body
+//! REFERENCES, not for where the body lives. See the comment at the call.
+//!
 //! ## Two tiers, one tool
 //!
 //! Tier 0 (`skill_evals_drift.zig`) is deterministic: it checks whether the
@@ -35,10 +52,10 @@
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const agent = nalarcore.agent;
-const logger_mod = nalarcore.loggermod;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const agent = pabrikcore.agent;
+const logger_mod = pabrikcore.loggermod;
 const AgentTool = @import("../modules/agent/tools/schemas.zig").AgentTool;
 
 const tools = @import("tools.zig");
@@ -49,6 +66,13 @@ const skill_eval_events = @import("skill_eval_events.zig");
 const skill_eval_judge = @import("skill_eval_judge.zig");
 const batch = @import("sub_agent_batch.zig");
 const migration = @import("../migrations/migration.zig");
+
+// A skill is a row in one workspace-scoped table (Migration 101), not a file
+// in one of two directories. The body is read through the same store and the
+// same workspace guard `use_skill` goes through, so this eval judges exactly
+// the text the agent was handed.
+const skills_store = @import("skills_store.zig");
+const workspace_scope = @import("workspace_scope.zig");
 
 const Verdict = skill_evals_db.Verdict;
 
@@ -117,7 +141,7 @@ pub const RunArgs = struct {
     fact_lease_seconds: u32 = 300,
     /// The SSE bus, when the caller has one. Null in unit tests and in any
     /// caller with no bus; the emit is then a no-op.
-    event_bus: ?*nalarcore.event_bus.EventBus = null,
+    event_bus: ?*pabrikcore.event_bus.EventBus = null,
     /// Tier 1: fan out one judge sub-agent per skill. Off by default because
     /// it spends tokens — up to `max_skills` sub-agent runs per eval. The
     /// deterministic half is a complete eval on its own, so nothing is lost
@@ -181,7 +205,7 @@ fn runJudgeTier(
     run_id: []const u8,
     candidates: []const JudgeCandidate,
 ) !u32 {
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         // No live context means no workflow, so no sub-agent can run. The
         // deterministic results stay as they are; this is not a failure of
         // the eval, only of the opt-in tier.
@@ -392,6 +416,20 @@ pub fn runEval(
     defer skill_evals_db.freeSessionSkillSet(allocator, set);
     if (set.len == 0) return .{ .nothing_loaded = true };
 
+    // Which workspace this SESSION belongs to, resolved once for the whole
+    // run. Skills are rows in one workspace-scoped table, so every body read
+    // below is a lookup by (workspace_id, name) and one query for the run
+    // beats one per skill.
+    //
+    // Fails closed: a session with no workspace leaves this null, and every
+    // skill then lands on the honest needs_human branch rather than being
+    // read out of SOME workspace that happens to own the name.
+    const workspace_id = workspace_scope.resolveWorkspaceId(allocator, db, args.session_id) catch |err| blk: {
+        if (logger) |l| l.warnFmt("skill eval: could not resolve a workspace for session '{s}': {s}", .{ args.session_id, @errorName(err) });
+        break :blk null;
+    };
+    defer if (workspace_id) |w| allocator.free(w);
+
     const context_key = if (args.cwd.len > 0)
         try std.fmt.allocPrint(allocator, "{s}@", .{args.cwd})
     else
@@ -469,29 +507,68 @@ pub fn runEval(
         const result_id = try std.fmt.allocPrint(allocator, "{s}_r{d}", .{ run_id, ordinal });
         defer allocator.free(result_id);
 
-        const skill_key = try std.fmt.allocPrint(allocator, "global:{s}", .{use.skill_name});
+        // The identity of the question, in one string: the workspace that OWNS
+        // the skill, then its name. The workspace is load-bearing.
+        // `skill_eval_facts` is keyed on (skill_key, content_hash,
+        // context_key), and two workspaces may each hold a skill called `pdf`
+        // with different bodies — so a name-only key made the second
+        // workspace's eval read the FIRST one's cached fact and serve its
+        // verdict as if it had been computed on this body.
+        const skill_key = if (workspace_id) |w|
+            try std.fmt.allocPrint(allocator, "{s}:{s}", .{ w, use.skill_name })
+        else
+            // No workspace means no row can be found for anything, so this
+            // run's results are all needs_human regardless. The key still has
+            // to be stable, and `<no-workspace>` is not a shape a workspace id
+            // can take, so these rows can never be confused with a real
+            // workspace's results for the same skill name.
+            try std.fmt.allocPrint(allocator, "<no-workspace>:{s}", .{use.skill_name});
         defer allocator.free(skill_key);
 
-        // Current body: local scope first, then global — the same order
-        // `use_skill` resolves with, so we judge the file the agent would get.
-        // `args.cwd` is the SESSION's repo, not the server process's: resolving
-        // against the process cwd reports every project-local skill as
-        // unreadable whenever the server was started somewhere else, and the
-        // verdict is then recorded as needs_human about a file that was on disk
-        // the whole time.
-        const body_opt = nalarcore.skill_mod.parse_skill(allocator, io, use.skill_name, args.cwd, false, args.environment) orelse
-            nalarcore.skill_mod.parse_skill(allocator, io, use.skill_name, args.cwd, true, args.environment);
+        // The current body is the row `use_skill` materialised for the agent,
+        // read through the same store and the same workspace guard — so there
+        // is no local-then-global walk left to disagree with, and no way to
+        // evaluate a body from a workspace this session does not belong to.
+        var owned_row: ?skills_store.SkillRow = null;
+        defer if (owned_row) |r| skills_store.freeSkillRow(allocator, r);
+        var missing_reason: []const u8 = "";
+        if (workspace_id) |w| {
+            owned_row = skills_store.getSkillByName(allocator, db, w, use.skill_name) catch |err| switch (err) {
+                // An absent row and an unreadable query are the same thing to
+                // this loop — there is no body to hash. Only an allocation
+                // failure is a real error.
+                error.OutOfMemory => return error.OutOfMemory,
+                error.NotFound, error.QueryFailed, error.WorkspaceIdNameRequired => @as(?skills_store.SkillRow, null),
+            };
+            if (owned_row) |r| {
+                // An empty body is not a body. Hashing "" would publish a fact
+                // about nothing and report the skill as merely unremarkable.
+                if (r.content.len == 0) {
+                    skills_store.freeSkillRow(allocator, r);
+                    owned_row = null;
+                    missing_reason = "the skill row has an empty body, so there is nothing to evaluate";
+                }
+            } else {
+                missing_reason = "the skill is not installed in this workspace";
+            }
+        } else {
+            missing_reason = "this session is not linked to any workspace, so the skill cannot be read";
+        }
 
-        if (body_opt == null) {
-            // The skill is gone from disk, or unreadable. That is a finding in
-            // itself, and it is honest to say so rather than to invent a body.
-            try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "needs_human", .needs_human, "", "", "", "the skill body could not be read");
+        if (owned_row == null) {
+            // No body. That is a finding in itself, and the rationale names
+            // WHICH of the reasons applies rather than inventing a body or
+            // blaming a file that does not exist in any workspace.
+            try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "needs_human", .needs_human, "", "", "", missing_reason);
             outcome.needs_human += 1;
             outcome.evaluated += 1;
             continue;
         }
-        const body = body_opt.?;
-        defer allocator.free(body);
+        // Byte-exact, and deliberately so: this slice is hashed into the
+        // identity of the question AND stored as the `content_at_use` a human
+        // reads to judge the verdict. No trimming, no frontmatter stripping,
+        // no newline normalisation anywhere on this path.
+        const body = owned_row.?.content;
 
         var hash_buf: [64]u8 = undefined;
         skill_evals_db.sha256Hex(body, &hash_buf);
@@ -507,6 +584,14 @@ pub fn runEval(
             break :blk skill_evals_db.FactClaim.held;
         };
 
+        // `args.cwd` still belongs here, and it is no longer about where the
+        // body LIVES — the body is a row and has no location. `analyse`
+        // resolves the paths the body REFERENCES ("read src/foo.zig") against
+        // a repo root, and a skill body is a set of claims about a codebase,
+        // which is still a directory. It is the SESSION's repo rather than the
+        // server process's for the reason it always was: judging against the
+        // process cwd reports every referenced path as missing whenever the
+        // server was started somewhere else.
         var analysis = try drift.analyse(allocator, io, args.cwd, body);
         defer analysis.deinit(allocator);
 
@@ -683,7 +768,7 @@ pub fn execRunSkillEval(ctx: tools.ToolExecContext, tc: agent.ToolCall) !tools.T
     const enabled = evals_cfg.enabled;
     // The SSE bus, when the singleton is up. Null in tests and in any
     // dispatch with no live context — the emit is then a no-op.
-    const bus: ?*nalarcore.event_bus.EventBus = if (nalarcore.getSingleton()) |di| di.event_bus else |_| null;
+    const bus: ?*pabrikcore.event_bus.EventBus = if (pabrikcore.getSingleton()) |di| di.event_bus else |_| null;
     const outcome = runEval(ctx.allocator, ctx.io, ctx.db, ctx.logger, .{
         .session_id = ctx.session_id,
         .cwd = ctx.cwd,
@@ -815,13 +900,17 @@ test "runEval reports nothing_loaded for a session with no ledger rows" {
     try testing.expectEqualStrings("0", row.values[0]);
 }
 
-test "a skill whose body cannot be read is an honest needs_human, not a guess" {
+test "a skill this workspace does not have is an honest needs_human, not a guess" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    // In the ledger, but there is no such skill on disk anywhere.
+    // In the ledger, but this workspace holds no skill by that name. Nothing
+    // is unreadable any more — there is simply no row to read, and saying so
+    // is the difference between a finding a human can act on and one that
+    // sends them looking for a file that does not exist.
+    try seedWorkspace(alloc, &ctx.db, "sess_1", "ws_a");
     try seedLoaded(alloc, &ctx.db, ctx.threaded.io(), "sess_1", "definitely-not-a-real-skill-xyz");
     const out = try runEval(alloc, ctx.threaded.io(), &ctx.db, null, .{
         .session_id = "sess_1",
@@ -836,13 +925,206 @@ test "a skill whose body cannot be read is an honest needs_human, not a guess" {
     try testing.expectEqual(@as(u32, 0), out.keep);
     try testing.expectEqual(@as(i64, 1), try countResults(alloc, &ctx.db));
 
-    var q = try ctx.db.query(alloc, "SELECT status, verdict, rationale FROM skill_eval_results", &.{});
+    var q = try ctx.db.query(alloc, "SELECT status, verdict, rationale, skill_key FROM skill_eval_results", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
     try testing.expectEqualStrings("needs_human", row.values[0]);
     try testing.expectEqualStrings("needs_human", row.values[1]);
-    try testing.expectEqualStrings("the skill body could not be read", row.values[2]);
+    try testing.expectEqualStrings("the skill is not installed in this workspace", row.values[2]);
+    // The key names the workspace, so this row can never be mistaken for
+    // another workspace's result about the same skill name.
+    try testing.expectEqualStrings("ws_a:definitely-not-a-real-skill-xyz", row.values[3]);
+}
+
+test "a session with no workspace says that, instead of blaming a body" {
+    // Two different problems, two different fixes: "no workspace" is a
+    // wiring problem the user can fix, "the file is gone" sends them hunting
+    // for a file that was never where they thought it was. Collapsing the two
+    // is the lie this asserts against.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // No `workspace_item_tasks` row and no cwd match: unresolvable, and the
+    // resolver fails closed rather than guessing a workspace.
+    try seedLoaded(alloc, &ctx.db, ctx.threaded.io(), "sess_orphan", "some-skill");
+    const out = try runEval(alloc, ctx.threaded.io(), &ctx.db, null, .{
+        .session_id = "sess_orphan",
+        .cwd = "/tmp",
+        .environment = null,
+        .enabled = true,
+    });
+    defer out.deinit(alloc);
+
+    try testing.expectEqual(@as(u32, 1), out.needs_human);
+
+    var q = try ctx.db.query(alloc, "SELECT rationale, skill_key FROM skill_eval_results", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("this session is not linked to any workspace, so the skill cannot be read", row.values[0]);
+    // A sentinel a workspace id cannot collide with, so these rows stay out
+    // of any real workspace's fact cache.
+    try testing.expectEqualStrings("<no-workspace>:some-skill", row.values[1]);
+}
+
+test "an empty skill body is not evaluated as if it were a good one" {
+    // `content` defaults to `''` and a model routinely writes the body after
+    // the row exists. Hashing "" would publish a fact about nothing and
+    // report the skill as merely unremarkable — a `keep` nobody earned.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    try seedWorkspace(alloc, &ctx.db, "sess_empty_body", "ws_empty");
+    try seedSkillRow(alloc, &ctx.db, "ws_empty", "draft-skill", "");
+    try seedLoaded(alloc, &ctx.db, io, "sess_empty_body", "draft-skill");
+
+    const out = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_empty_body",
+        .cwd = ".",
+        .environment = null,
+        .enabled = true,
+    });
+    defer out.deinit(alloc);
+
+    try testing.expectEqual(@as(u32, 1), out.needs_human);
+    try testing.expectEqual(@as(u32, 0), out.keep);
+
+    // No fact was published about a body that does not exist.
+    var fq = try ctx.db.query(alloc, "SELECT COUNT(*) FROM skill_eval_facts", &.{});
+    defer fq.deinit();
+    const frow = (try fq.next()) orelse return error.RowMissing;
+    defer frow.deinit(alloc);
+    try testing.expectEqualStrings("0", frow.values[0]);
+
+    var q = try ctx.db.query(alloc, "SELECT rationale FROM skill_eval_results", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("the skill row has an empty body, so there is nothing to evaluate", row.values[0]);
+}
+
+test "the same skill name in two workspaces gets its own fact, not the other's verdict" {
+    // The regression this pins. `skill_key` used to be "global:<name>", and
+    // `skill_eval_facts` is keyed on (skill_key, content_hash, context_key):
+    // two workspaces each holding a skill called `pdf` with DIFFERENT bodies
+    // computed one fact key, so the second workspace's eval read the first
+    // one's cached verdict and reported it against a body it never read.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    try seedWorkspace(alloc, &ctx.db, "sess_a", "ws_a");
+    try seedWorkspace(alloc, &ctx.db, "sess_b", "ws_b");
+
+    // Workspace A's copy is current; workspace B's names a path that does not
+    // exist. Same name, same repo, different bodies and different verdicts.
+    const a_body =
+        \\---
+        \\name: pdf
+        \\description: A's copy
+        \\---
+        \\## Procedure
+        \\Read src/agentic_loop/skill_evals_drift.zig
+    ;
+    const b_body =
+        \\---
+        \\name: pdf
+        \\description: B's copy
+        \\---
+        \\## Procedure
+        \\Read src/definitely/not/here.zig
+    ;
+    try seedSkillRow(alloc, &ctx.db, "ws_a", "pdf", a_body);
+    try seedSkillRow(alloc, &ctx.db, "ws_b", "pdf", b_body);
+
+    try seedLoaded(alloc, &ctx.db, io, "sess_a", "pdf");
+    try seedLoaded(alloc, &ctx.db, io, "sess_b", "pdf");
+
+    const a = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_a",
+        .cwd = ".",
+        .environment = null,
+        .enabled = true,
+    });
+    defer a.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), a.keep);
+
+    const b = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_b",
+        .cwd = ".",
+        .environment = null,
+        .enabled = true,
+    });
+    defer b.deinit(alloc);
+
+    // Neither run reused the other's fact, and B's rot was found rather than
+    // answered from A's cache.
+    try testing.expectEqual(@as(u32, 0), a.reused_facts);
+    try testing.expectEqual(@as(u32, 0), b.reused_facts);
+    try testing.expectEqual(@as(u32, 1), b.update);
+
+    var fq = try ctx.db.query(alloc, "SELECT COUNT(*) FROM skill_eval_facts", &.{});
+    defer fq.deinit();
+    const frow = (try fq.next()) orelse return error.RowMissing;
+    defer frow.deinit(alloc);
+    try testing.expectEqualStrings("2", frow.values[0]);
+
+    // Each result carries ITS OWN workspace in the key and ITS OWN body as the
+    // before/after a human reads.
+    var q = try ctx.db.query(alloc,
+        \\SELECT skill_key, content_at_use, verdict FROM skill_eval_results ORDER BY skill_key
+    , &.{});
+    defer q.deinit();
+    const ra = (try q.next()) orelse return error.RowMissing;
+    defer ra.deinit(alloc);
+    try testing.expectEqualStrings("ws_a:pdf", ra.values[0]);
+    try testing.expectEqualStrings(a_body, ra.values[1]);
+    try testing.expectEqualStrings("keep", ra.values[2]);
+
+    const rb = (try q.next()) orelse return error.RowMissing;
+    defer rb.deinit(alloc);
+    try testing.expectEqualStrings("ws_b:pdf", rb.values[0]);
+    try testing.expectEqualStrings(b_body, rb.values[1]);
+    try testing.expectEqualStrings("update", rb.values[2]);
+}
+
+test "a skill in ANOTHER workspace is invisible to this session" {
+    // The read is scoped, not filtered afterwards. A session in ws_a must not
+    // be able to evaluate ws_b's body even when the name matches, or the
+    // verdict would be about text this workspace never held.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    try seedWorkspace(alloc, &ctx.db, "sess_a", "ws_a");
+    try seedSkillRow(alloc, &ctx.db, "ws_b", "pdf", "---\nname: pdf\n---\nB's body");
+    try seedLoaded(alloc, &ctx.db, io, "sess_a", "pdf");
+
+    const out = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_a",
+        .cwd = ".",
+        .environment = null,
+        .enabled = true,
+    });
+    defer out.deinit(alloc);
+
+    try testing.expectEqual(@as(u32, 1), out.needs_human);
+    var q = try ctx.db.query(alloc, "SELECT rationale, COALESCE(content_at_use, '') FROM skill_eval_results", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("the skill is not installed in this workspace", row.values[0]);
+    try testing.expectEqualStrings("", row.values[1]);
 }
 
 test "a second call in the same session reuses the run instead of redoing it" {
@@ -923,45 +1205,57 @@ test "max_skills = 0 evaluates nothing and does not crash" {
 
 // ─── the publish / reuse paths ───────────────────────────────────────────
 //
-// These need a skill that actually EXISTS on disk, because every test above
-// names a skill that does not and therefore exits at the "body could not be
-// read" branch. That branch is ~15% of runEval; the publish, reuse and
+// These need a skill that actually EXISTS in the session's workspace,
+// because every test above names one that does not and therefore exits at the
+// "no body" branch. That branch is ~15% of runEval; the publish, reuse and
 // changed-body paths below are the rest, and they are where the fact cache
 // lives.
+//
+// Skills are rows now, so the fixtures are rows too: `seedSkillRow` writes
+// Migration 101's tables on the same in-memory database `setupDb` migrated,
+// which is the pattern `skills_store.zig` uses for its own fixtures. This is
+// a READ path in `runEval`, so seeding SQL directly is honest — the fixtures
+// do not depend on the store's write-side normalisation, so a bug there
+// surfaces in `skills_store`'s tests instead of being hidden by these.
 
-/// Write `<xdg>/nalar/skills/<name>/SKILL.MD` and return the xdg root. The
-/// caller owns the tmpdir and must remove it.
+/// Give `session_id` a workspace through the exact task link a kanban task
+/// session has (`workspace_item_tasks.id` IS the session id) — the first
+/// branch of `workspace_scope.resolveWorkspaceId`. `setupDb` runs every
+/// migration, so these are the real tables and real columns; everything not
+/// named defaults. Calling it twice with the same `ws_id` and two session ids
+/// puts both sessions in ONE workspace, which is the case the fact cache is
+/// supposed to share across.
+fn seedWorkspace(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8, ws_id: []const u8) !void {
+    try db.exec(alloc,
+        \\INSERT OR IGNORE INTO workspaces (id, name) VALUES (?, 'skill eval fixture')
+    , &.{ws_id});
+    const item_id = try std.fmt.allocPrint(alloc, "wi_{s}", .{ws_id});
+    defer alloc.free(item_id);
+    try db.exec(alloc,
+        \\INSERT OR IGNORE INTO workspace_items (id, workspace_id, item_type, name, path)
+        \\VALUES (?, ?, 'kanban', 'skill eval fixture', '')
+    , &.{ item_id, ws_id });
+    try db.exec(alloc,
+        \\INSERT OR IGNORE INTO workspace_item_tasks (id, name, workspace_item_id) VALUES (?, 'skill eval fixture', ?)
+    , &.{ session_id, item_id });
+}
+
+/// One row in `skills`, which is now the whole of a skill. `body` is stored
+/// VERBATIM — frontmatter, indentation and trailing newline included — because
+/// the eval hashes the bytes and a normalising fixture would test a body no
+/// editor can produce.
 ///
-/// The GLOBAL path is used rather than the local one because
-/// `get_local_skills_path` resolves against the PROCESS cwd, which a test
-/// cannot change; the global path is resolved from the environment map the
-/// caller passes in, which a test fully controls.
-fn seedSkillOnDisk(alloc: std.mem.Allocator, io: std.Io, xdg_root: []const u8, name: []const u8, body: []const u8) !void {
-    const dir = try std.fs.path.join(alloc, &.{ xdg_root, "nalar", "skills", name });
-    defer alloc.free(dir);
-    try std.Io.Dir.cwd().createDirPath(io, dir);
-    const file = try std.fs.path.join(alloc, &.{ dir, "SKILL.MD" });
-    defer alloc.free(file);
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = body });
-}
-
-fn makeTmpRoot(alloc: std.mem.Allocator, io: std.Io, tag: []const u8) ![]u8 {
-    var buf: [64]u8 = undefined;
-    const name = try std.fmt.bufPrint(&buf, "skilleval-test-{s}-{d}", .{
-        tag,
-        std.Io.Timestamp.now(io, .real).nanoseconds,
-    });
-    const root = try std.fs.path.join(alloc, &.{ "/tmp", name });
-    try std.Io.Dir.cwd().createDirPath(io, root);
-    return root;
-}
-
-/// An environment map whose XDG_CONFIG_HOME points at `xdg_root`, so
-/// `parse_skill(..., is_global=true, env)` finds the seeded skill.
-fn makeEnv(alloc: std.mem.Allocator, xdg_root: []const u8) !std.process.Environ.Map {
-    var env = std.process.Environ.Map.init(alloc);
-    try env.put("XDG_CONFIG_HOME", xdg_root);
-    return env;
+/// The id is namespaced by workspace as well as by name, which is not
+/// decoration: the same skill name in two workspaces is TWO rows, and a
+/// fixture that minted both from the name alone would silently `OR REPLACE`
+/// the first one away.
+fn seedSkillRow(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, ws_id: []const u8, name: []const u8, body: []const u8) !void {
+    const id = try std.fmt.allocPrint(alloc, "sk_test_{s}_{s}", .{ ws_id, name });
+    defer alloc.free(id);
+    try db.exec(alloc,
+        \\INSERT OR REPLACE INTO skills (id, workspace_id, name, description, content, created_at, updated_at)
+        \\VALUES (?, ?, ?, 'seeded by a skill eval test', COALESCE(NULLIF(?, ''), ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    , &.{ id, ws_id, name, body });
 }
 
 test "a real skill is published as a fact and linked from the result" {
@@ -971,13 +1265,7 @@ test "a real skill is published as a fact and linked from the result" {
     defer ctx.db.deinit();
     const io = ctx.threaded.io();
 
-    const root = try makeTmpRoot(alloc, io, "publish");
-    defer {
-        std.Io.Dir.cwd().deleteTree(io, root) catch {};
-        alloc.free(root);
-    }
-    var env = try makeEnv(alloc, root);
-    defer env.deinit();
+    try seedWorkspace(alloc, &ctx.db, "sess_1", "ws_publish");
 
     // A body whose only reference resolves, so Tier 0 says `keep`.
     const body =
@@ -988,13 +1276,13 @@ test "a real skill is published as a fact and linked from the result" {
         \\## Procedure
         \\Read src/agentic_loop/skill_evals_drift.zig
     ;
-    try seedSkillOnDisk(alloc, io, root, "real-skill", body);
+    try seedSkillRow(alloc, &ctx.db, "ws_publish", "real-skill", body);
     try seedLoaded(alloc, &ctx.db, io, "sess_1", "real-skill");
 
     const out = try runEval(alloc, io, &ctx.db, null, .{
         .session_id = "sess_1",
         .cwd = ".",
-        .environment = &env,
+        .environment = null,
         .enabled = true,
     });
     defer out.deinit(alloc);
@@ -1033,13 +1321,11 @@ test "a second session reuses the shared fact AND links the result to it" {
     defer ctx.db.deinit();
     const io = ctx.threaded.io();
 
-    const root = try makeTmpRoot(alloc, io, "reuse");
-    defer {
-        std.Io.Dir.cwd().deleteTree(io, root) catch {};
-        alloc.free(root);
-    }
-    var env = try makeEnv(alloc, root);
-    defer env.deinit();
+    // BOTH sessions are in ONE workspace: two tasks on one item. That is what
+    // makes the fact shared rather than accidentally separated by a key that
+    // forgot the workspace.
+    try seedWorkspace(alloc, &ctx.db, "sess_a", "ws_shared");
+    try seedWorkspace(alloc, &ctx.db, "sess_b", "ws_shared");
 
     const body =
         \\---
@@ -1049,14 +1335,14 @@ test "a second session reuses the shared fact AND links the result to it" {
         \\## Procedure
         \\Read src/agentic_loop/skill_evals_drift.zig
     ;
-    try seedSkillOnDisk(alloc, io, root, "shared-skill", body);
+    try seedSkillRow(alloc, &ctx.db, "ws_shared", "shared-skill", body);
 
     // Session A computes and publishes the fact.
     try seedLoaded(alloc, &ctx.db, io, "sess_a", "shared-skill");
     const a = try runEval(alloc, io, &ctx.db, null, .{
         .session_id = "sess_a",
         .cwd = ".",
-        .environment = &env,
+        .environment = null,
         .enabled = true,
     });
     defer a.deinit(alloc);
@@ -1067,7 +1353,7 @@ test "a second session reuses the shared fact AND links the result to it" {
     const b = try runEval(alloc, io, &ctx.db, null, .{
         .session_id = "sess_b",
         .cwd = ".",
-        .environment = &env,
+        .environment = null,
         .enabled = true,
     });
     defer b.deinit(alloc);
@@ -1100,17 +1386,11 @@ test "a body edited between the read and the eval is reported as changed" {
     defer ctx.db.deinit();
     const io = ctx.threaded.io();
 
-    const root = try makeTmpRoot(alloc, io, "changed");
-    defer {
-        std.Io.Dir.cwd().deleteTree(io, root) catch {};
-        alloc.free(root);
-    }
-    var env = try makeEnv(alloc, root);
-    defer env.deinit();
+    try seedWorkspace(alloc, &ctx.db, "sess_1", "ws_changed");
 
     // The ledger records a hash of the body the session READ...
     try seedLoaded(alloc, &ctx.db, io, "sess_1", "edited-skill");
-    // ...but the file on disk is now different.
+    // ...but the row the workspace holds is now different.
     const new_body =
         \\---
         \\name: edited-skill
@@ -1119,12 +1399,12 @@ test "a body edited between the read and the eval is reported as changed" {
         \\## Procedure
         \\Read src/agentic_loop/skill_evals_drift.zig
     ;
-    try seedSkillOnDisk(alloc, io, root, "edited-skill", new_body);
+    try seedSkillRow(alloc, &ctx.db, "ws_changed", "edited-skill", new_body);
 
     const out = try runEval(alloc, io, &ctx.db, null, .{
         .session_id = "sess_1",
         .cwd = ".",
-        .environment = &env,
+        .environment = null,
         .enabled = true,
     });
     defer out.deinit(alloc);
@@ -1144,13 +1424,8 @@ test "a skill that was only LISTED is still evaluated when configured" {
     defer ctx.db.deinit();
     const io = ctx.threaded.io();
 
-    const root = try makeTmpRoot(alloc, io, "listed");
-    defer {
-        std.Io.Dir.cwd().deleteTree(io, root) catch {};
-        alloc.free(root);
-    }
-    var env = try makeEnv(alloc, root);
-    defer env.deinit();
+    try seedWorkspace(alloc, &ctx.db, "sess_1", "ws_offered");
+    try seedWorkspace(alloc, &ctx.db, "sess_2", "ws_offered");
 
     const body =
         \\---
@@ -1160,11 +1435,12 @@ test "a skill that was only LISTED is still evaluated when configured" {
         \\## Procedure
         \\Read src/agentic_loop/skill_evals_drift.zig
     ;
-    try seedSkillOnDisk(alloc, io, root, "offered-only", body);
+    try seedSkillRow(alloc, &ctx.db, "ws_offered", "offered-only", body);
 
     // Only a `listed` event — the agent was offered the skill and never read it.
+    // The row carries no `scope` and no `path`: a skill has neither any more.
     const listed =
-        \\{"tool":"search_skills","success":true,"data":{"query":"","skills":[{"name":"offered-only","description":"d","scope":"global","path":"/p"}],"count":1,"total":1},"error":null,"v":1}
+        \\{"tool":"search_skills","success":true,"data":{"query":"","skills":[{"name":"offered-only","description":"d"}],"count":1,"total":1},"error":null,"v":1}
     ;
     skill_evals_db.recordSkillToolEvents(alloc, &ctx.db, null, .{
         .io = io,
@@ -1180,7 +1456,7 @@ test "a skill that was only LISTED is still evaluated when configured" {
     const with_listed = try runEval(alloc, io, &ctx.db, null, .{
         .session_id = "sess_1",
         .cwd = ".",
-        .environment = &env,
+        .environment = null,
         .enabled = true,
         .include_listed_only = true,
     });
@@ -1191,7 +1467,7 @@ test "a skill that was only LISTED is still evaluated when configured" {
     const without = try runEval(alloc, io, &ctx.db, null, .{
         .session_id = "sess_2",
         .cwd = ".",
-        .environment = &env,
+        .environment = null,
         .enabled = true,
         .include_listed_only = false,
     });
@@ -1253,8 +1529,9 @@ test "judge_enabled with no live agent context still completes the deterministic
     });
     defer outcome.deinit(alloc);
 
-    // The skill body does not exist on disk, so Tier 0 records a
-    // `needs_human` result — and the judge tier did not disturb it.
+    // The session is in no workspace at all, so there is no row to read and
+    // Tier 0 records a `needs_human` result — and the judge tier did not
+    // disturb it.
     try testing.expectEqual(@as(i64, 1), try countResults(alloc, &ctx.db));
 
     const rows = try skill_evals_db.listResults(alloc, &ctx.db, outcome.run_id);
@@ -1307,14 +1584,11 @@ test "a result row stores the exact body its base_content_hash was computed from
     defer ctx.db.deinit();
     const io = ctx.threaded.io();
 
-    const root = try makeTmpRoot(alloc, io, "content-at-use");
-    defer {
-        std.Io.Dir.cwd().deleteTree(io, root) catch {};
-        alloc.free(root);
-    }
-    var env = try makeEnv(alloc, root);
-    defer env.deinit();
+    try seedWorkspace(alloc, &ctx.db, "sess_ca", "ws_snapshot");
 
+    // Frontmatter, blank lines and all — the row stores what a human typed,
+    // and this test is the one place that proves nothing is normalised on the
+    // way in.
     const body =
         \\---
         \\name: snapshot-skill
@@ -1323,13 +1597,13 @@ test "a result row stores the exact body its base_content_hash was computed from
         \\## Procedure
         \\Read src/agentic_loop/skill_evals_drift.zig
     ;
-    try seedSkillOnDisk(alloc, io, root, "snapshot-skill", body);
+    try seedSkillRow(alloc, &ctx.db, "ws_snapshot", "snapshot-skill", body);
     try seedLoaded(alloc, &ctx.db, io, "sess_ca", "snapshot-skill");
 
     const out = try runEval(alloc, io, &ctx.db, null, .{
         .session_id = "sess_ca",
         .cwd = ".",
-        .environment = &env,
+        .environment = null,
         .enabled = true,
     });
     defer out.deinit(alloc);
@@ -1366,22 +1640,16 @@ test "a result whose body could not be read stores no before" {
     defer ctx.db.deinit();
     const io = ctx.threaded.io();
 
-    const root = try makeTmpRoot(alloc, io, "content-missing");
-    defer {
-        std.Io.Dir.cwd().deleteTree(io, root) catch {};
-        alloc.free(root);
-    }
-    var env = try makeEnv(alloc, root);
-    defer env.deinit();
+    try seedWorkspace(alloc, &ctx.db, "sess_cm", "ws_missing");
 
-    // Ledger says the session read it; nothing was written to disk, so the
-    // body read fails and the row lands on the needs_human branch.
+    // Ledger says the session read it; this workspace has no such skill, so
+    // the body read fails and the row lands on the needs_human branch.
     try seedLoaded(alloc, &ctx.db, io, "sess_cm", "never-written");
 
     const out = try runEval(alloc, io, &ctx.db, null, .{
         .session_id = "sess_cm",
         .cwd = ".",
-        .environment = &env,
+        .environment = null,
         .enabled = true,
     });
     defer out.deinit(alloc);

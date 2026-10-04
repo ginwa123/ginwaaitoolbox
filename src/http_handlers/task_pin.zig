@@ -18,8 +18,8 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 
 pub const TaskPinError = error{
     TaskIdRequired,
@@ -56,8 +56,8 @@ fn useCase(
 ) TaskPinError!TaskPinResult {
     if (input.task_id.len == 0) return error.TaskIdRequired;
 
-    const di = nalarcore.getSingleton() catch return error.PinUpdateFailed;
-    const new_pos = nalarcore.ai_mod.workspace_item_tasks.setTaskPinned(
+    const di = pabrikcore.getSingleton() catch return error.PinUpdateFailed;
+    const new_pos = pabrikcore.ai_mod.workspace_item_tasks.setTaskPinned(
         allocator,
         di.db,
         input.task_id,

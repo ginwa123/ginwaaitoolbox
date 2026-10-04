@@ -80,7 +80,7 @@ label in `--semantic-text-dim`, and a trailing action.
 | Count | `workspace.items.length`, `text-[11px]` opacity 0.7 | `ProjectsList.vue:389-395` |
 | Add | literal `+`, `title="Add Item"` | `ProjectsList.vue:400-412` |
 
-Expansion is persisted to `localStorage` under `nalar-sidebar-projects-expanded`
+Expansion is persisted to `localStorage` under `pabrik-sidebar-projects-expanded`
 and **defaults to expanded** (`stores/sidebar.ts`, via
 `toggleProjectsSection()` at `ProjectsList.vue:143-145`).
 
@@ -127,7 +127,7 @@ the drawer is unchanged, but two things moved and one seam got **better**:
 |---|---|
 | #682 `change back button to hamburger button` | **The chat route now has its own recents drawer.** `shell/RecentsDrawer.kt` was added; `RecentsDrawerContent` (`:42`) is the single shared wrapper with **two** call sites. Chunk 4 now edits *that* file, not `MobileHomeScreen`'s two sites — one edit reaches both drawers. |
 | #683 `get list recent follow query params like vue` | Recents ordering/cache changed (`d376adf0`, order by `updated_at`). Line numbers in `RecentsSidebar.kt` shifted ~20 lines. No structural change to the sidebar. |
-| #684 `the android very laggy if move another session` | `0fde07f7`, "stop the UI thread doing the session switch". Touches `ChatViewModel`/`NalarNavGraph`, not the drawer. Relevant only as precedent: the codebase is actively hostile to UI-thread work, which is a point in favour of the shared-ViewModel decision in §"Open questions" 2. |
+| #684 `the android very laggy if move another session` | `0fde07f7`, "stop the UI thread doing the session switch". Touches `ChatViewModel`/`PabrikNavGraph`, not the drawer. Relevant only as precedent: the codebase is actively hostile to UI-thread work, which is a point in favour of the shared-ViewModel decision in §"Open questions" 2. |
 
 **All `file:line` citations into `RecentsSidebar.kt` in this document are
 approximate and should be re-anchored by name at implementation time** — the
@@ -138,12 +138,12 @@ Backend citations (`src/main.zig`, `src/http_handlers/*`) are unaffected.
 
 ## Background — what the Android drawer does today
 
-`app/src/main/java/com/nalar/mobile/recents/RecentsSidebar.kt` (808 lines) renders
+`app/src/main/java/com/pabrik/mobile/recents/RecentsSidebar.kt` (808 lines) renders
 exactly two things:
 
 ```
 RecentsSidebar.kt:82-126   fun RecentsSidebar( … 22 params … )   ← the only public composable
-RecentsSidebar.kt:127-132   Column: fillMaxSize · NalarBackground · padding(horizontal = 12.dp)
+RecentsSidebar.kt:127-132   Column: fillMaxSize · PabrikBackground · padding(horizontal = 12.dp)
 RecentsSidebar.kt:134       Spacer(12.dp)
 RecentsSidebar.kt:136-154     SidebarBody(Modifier.weight(1f))      :173-360
 RecentsSidebar.kt:158-164     AccountFooter(…)                      :371-430
@@ -155,7 +155,7 @@ RecentsSidebar.kt:158-164     AccountFooter(…)                      :371-430
 2. `:230-234` — `WorkspaceDropdown(…)` (`:475-578`)
 3. `:236-245` — `StaleDataNotice` when rows survived a failed refresh
 4. `:246` — `Spacer(24.dp)`
-5. `:248-255` — `Text("Recent")`, `labelLarge`, `NalarDim`, `heading()` semantics
+5. `:248-255` — `Text("Recent")`, `labelLarge`, `PabrikDim`, `heading()` semantics
 6. `:257` — `Spacer(8.dp)`
 7. `:285-359` — `LazyColumn` of `ChatRow`s (`:580-683`)
 
@@ -424,13 +424,13 @@ expands to its chats.
 
 ### Chunk 1 — the wire layer
 
-**New file** `app/src/main/java/com/nalar/mobile/projects/ProjectsApi.kt`
+**New file** `app/src/main/java/com/pabrik/mobile/projects/ProjectsApi.kt`
 
 - `object ProjectsApi`
   - `const ITEMS_PATH_TEMPLATE = "/api/workspaces/%s/items"`
   - `const TASKS_PATH_LIMIT = 20` (matches `tasks_list.zig` `DEFAULT_PAGE_SIZE`)
   - `fun itemsPath(workspaceId: String): String` — path segment through
-    `UriEncoding.encode` (`NalarNavGraph.kt:146-163`), **not** `URLEncoder`
+    `UriEncoding.encode` (`PabrikNavGraph.kt:146-163`), **not** `URLEncoder`
   - `fun tasksPath(workspaceId: String, itemId: String, cursor: String?, limit: Int = TASKS_PATH_LIMIT): String`
   - `fun parseItems(body: String): List<ProjectSummary>`
   - `fun parseProjectChats(body: String, itemId: String): ProjectChatsPage`
@@ -440,7 +440,7 @@ containing a `/` would silently produce a different route. The encoder is
 non-const (`UriEncoding.encode` is a function), so this is a function by
 construction.
 
-**New file** `app/src/main/java/com/nalar/mobile/projects/ProjectsModels.kt`
+**New file** `app/src/main/java/com/pabrik/mobile/projects/ProjectsModels.kt`
 
 ```kotlin
 data class ProjectSummary(
@@ -471,7 +471,7 @@ Every timestamp goes through the **existing** `RecentsApi.parseTimestampEpochMil
 bare-unix-millis forms. Do not re-implement it. Make it `internal` if it is
 private today; do not copy it.
 
-**New file** `app/src/main/java/com/nalar/mobile/projects/ProjectsClient.kt`
+**New file** `app/src/main/java/com/pabrik/mobile/projects/ProjectsClient.kt`
 
 Mirrors `RecentsClient.kt` exactly: `RecentsResult.Loaded | SignedOut |
 Unavailable`, cookie-only auth from `SessionCookieStore`, no `Authorization`
@@ -504,7 +504,7 @@ facing error is the kind of lie this codebase's comments repeatedly refuse.
 - `ensureProjectChatsLoaded(itemId)` — what the **new screen** calls on mount.
   No-ops when `projectChats` already holds the project, so
   drawer-expand → `See all` → screen is one fetch, not two. A deep link into
-  `nalar://project/…` with nothing cached falls through to a real fetch.
+  `pabrik://project/…` with nothing cached falls through to a real fetch.
 - `onSignedOut` (`:484-506`) clears the new state alongside the existing resets
 - `factory` (`:521-535`) composes `ProjectsClient(RecordingAuthTransport(HttpsAuthTransport(AuthConfig.BASE_URL)))`
   — the `RecordingAuthTransport` wrap is what makes the new calls show up in the
@@ -530,7 +530,7 @@ This task is that deliberate change. Two options:
 | | Scope | Cost |
 |---|---|---|
 | **(a) Extend `RecentsCache`** | Add `readProjects` / `writeProjects` / `readProjectChats` / `writeProjectChats` to the existing interface, plus a Room entity + DAO. | Violates the stated contract; the contract exists to keep this interface honest. |
-| **(b) New `ProjectsCache`** (chosen) | Its own `interface ProjectsCache` + `RoomProjectsCache` + a table in `NalarCacheDatabase`, encrypted with the **same** `SealingCipher` and key alias. | One more interface, but `RecentsCache`'s KDoc stays true. |
+| **(b) New `ProjectsCache`** (chosen) | Its own `interface ProjectsCache` + `RoomProjectsCache` + a table in `PabrikCacheDatabase`, encrypted with the **same** `SealingCipher` and key alias. | One more interface, but `RecentsCache`'s KDoc stays true. |
 
 Choose **(b)**. The existing KDoc is a correct and useful warning; "we read it
 and decided to break it anyway, in place" is strictly worse than adding the
@@ -578,11 +578,11 @@ be wired at **both** call sites, permanent drawer included.
 New private composables, following the file's existing conventions (private,
 `modifier: Modifier = Modifier` **last**, long prose KDoc explaining *why*, a
 `testTag` on every interactive node, inline shape/colour literals rather than
-`NalarShapes`):
+`PabrikShapes`):
 
 - `ProjectsSectionHeader(expanded, itemCount, onToggle)` — `labelMedium` eyebrow,
-  `NalarDim`, `Icons.Filled.ExpandMore` (expanded → rotated 90°), count in
-  `NalarMuted`
+  `PabrikDim`, `Icons.Filled.ExpandMore` (expanded → rotated 90°), count in
+  `PabrikMuted`
 - `ProjectRow(project, isExpanded, isRunning, onClick)` — glyph, name, active
   fill, trailing expand/collapse chevron
 - `ProjectChatRow(chat, isSelected, isRunning, onClick)` — reuse the *visual*
@@ -625,7 +625,7 @@ exactly the duplication the KDoc warns against, and it would leave the Projects
 section missing from the chat screen's drawer.
 
 `onOpenAllChats` is a **destination** callback, so it must also be supplied at
-**both** of `RecentsDrawerContent`'s call sites (`NalarNavGraph.kt`, the shell
+**both** of `RecentsDrawerContent`'s call sites (`PabrikNavGraph.kt`, the shell
 branch and the `chat/{sessionId}` branch) — the permanent drawer gets no
 `onOpenChat` today because it has no sheet to dismiss, but navigating is
 meaningful there too.
@@ -635,7 +635,7 @@ meaningful there too.
 This is the chunk that exists because the human chose **"a button, not a Load
 more row"**. It is the only new destination this feature adds.
 
-**Edit** `NalarNavGraph.kt`
+**Edit** `PabrikNavGraph.kt`
 
 ```kotlin
 const val PROJECT = "project/{workspaceId}/{itemId}"
@@ -646,17 +646,17 @@ fun project(workspaceId: String, itemId: String): String =
 ```
 
 Both ids go through `UriEncoding.encode` (`:146-163`) — the existing
-unreserved-only encoder — and a deep link `nalar://project/{workspaceId}/{itemId}`
+unreserved-only encoder — and a deep link `pabrik://project/{workspaceId}/{itemId}`
 so the screen is linkable, matching the app's existing
-`nalar://chat/{sessionId}` / `nalar://network` policy (README §Deep links).
+`pabrik://chat/{sessionId}` / `pabrik://network` policy (README §Deep links).
 
-The new `composable(...)` is a **sibling** of `NalarRoutes.CHAT` (`:306-305`),
+The new `composable(...)` is a **sibling** of `PabrikRoutes.CHAT` (`:306-305`),
 not nested under it. Its Back behaviour falls out of the existing
 `goBackToPreviousOrShell()` (`:120-136`) for free: Back from the project screen
 returns to the shell, and Back from the shell exits — no new `BackAction`, no
 edit to `backActionFor`.
 
-**New file** `app/src/main/java/com/nalar/mobile/projects/ProjectChatsScreen.kt`
+**New file** `app/src/main/java/com/pabrik/mobile/projects/ProjectChatsScreen.kt`
 
 - A `Scaffold` with a `TopAppBar` (back arrow + the project name) over one
   `LazyColumn` of `ProjectChatRow`s.
@@ -674,8 +674,8 @@ edit to `backActionFor`.
 - Empty state: `No chats in this project yet.` The endpoint can legitimately
   return zero for a fresh `kanban` or `agent`.
 
-**Edit** `NalarNavGraph.kt` `:276-301` — pass
-`onOpenAllChats = { ws, item -> navController.navigate(NalarRoutes.project(ws, item)) }`
+**Edit** `PabrikNavGraph.kt` `:276-301` — pass
+`onOpenAllChats = { ws, item -> navController.navigate(PabrikRoutes.project(ws, item)) }`
 into `MobileHomeScreen`. Note the ordering already in that block: for chat the
 code calls `onOpenSession(sessionId)` *before* `navigate`, with a comment saying
 the route stays on the back stack so returning must not show an empty transcript
@@ -684,7 +684,7 @@ Back from the project screen returns to a project that has no chats painted.
 
 ### Chunk 6 — tests
 
-**Unit** (`app/src/test/java/com/nalar/mobile/projects/`) — JUnit 4,
+**Unit** (`app/src/test/java/com/pabrik/mobile/projects/`) — JUnit 4,
 `org.junit.Assert.*`, hand-rolled fakes, the two-`TestCoroutineScheduler`
 `Schedulers` helper from `HomeViewModelCacheTest.kt:37-49`:
 
@@ -717,7 +717,7 @@ Back from the project screen returns to a project that has no chats painted.
   - `signingOutClearsProjects`
 - `RoomProjectsCacheTest` — Robolectric, mirroring `RoomRecentsCacheTest.kt`
 
-**Instrumentation** (`app/src/androidTest/java/com/nalar/mobile/projects/`):
+**Instrumentation** (`app/src/androidTest/java/com/pabrik/mobile/projects/`):
 
 - `ProjectsSectionTest`
   - `projectsSectionShowsTheSelectedWorkspacesItems`
@@ -745,7 +745,7 @@ Back from the project screen returns to a project that has no chats painted.
   - `aFailedPageKeepsTheRowsAndOffersRetryInPlace` — no error banner over real
     rows
   - `aProjectWithNoChatsSaysNoChatsInThisProjectYet`
-- `NalarNavGraphProjectTest`
+- `PabrikNavGraphProjectTest`
   - `backFromTheProjectChatsScreenReturnsToTheShell`
   - `backFromTheShellAfterTheProjectScreenStillExits` — the
     `goBackToPreviousOrShell()` contract (`:120-136`) must not dead-end
@@ -781,8 +781,8 @@ pipeline.
 **Files changed:** `recents/HomeViewModel.kt`, `recents/RecentsApi.kt`,
 `recents/RecentsCache.kt`, `recents/RecentsSidebar.kt`,
 `shell/RecentsDrawer.kt`, `shell/MobileHomeScreen.kt`,
-`network/NalarNavGraph.kt`, `cache/CacheEntities.kt`,
-`cache/NalarCacheDatabase.kt`, `MainActivity.kt`, and four existing test files.
+`network/PabrikNavGraph.kt`, `cache/CacheEntities.kt`,
+`cache/PabrikCacheDatabase.kt`, `MainActivity.kt`, and four existing test files.
 
 **Verification:** `:app:compileDebugKotlin` and `:app:testDebugUnitTest` pass —
 **779 tests, 0 failures**, of which 49 are new.
@@ -844,12 +844,12 @@ recent JDK; the second stops the next Android change from being unverifiable.
 
 | Risk | Mitigation |
 |---|---|
-| **Route-order shadowing.** `matchRoute` walks routes in registration order. | Two new paths are built by hand, so both must be encoded. The API path is `/api/workspaces/{ws}/items/{item}/tasks`; the Compose route is `project/{workspaceId}/{itemId}`. Every segment goes through `UriEncoding.encode` (`NalarNavGraph.kt:146-163`), which is unreserved-only, so a `/` in an id cannot split a segment. Pinned by `itemsPathEncodes…` and by the deep-link instrumentation test. |
+| **Route-order shadowing.** `matchRoute` walks routes in registration order. | Two new paths are built by hand, so both must be encoded. The API path is `/api/workspaces/{ws}/items/{item}/tasks`; the Compose route is `project/{workspaceId}/{itemId}`. Every segment goes through `UriEncoding.encode` (`PabrikNavGraph.kt:146-163`), which is unreserved-only, so a `/` in an id cannot split a segment. Pinned by `itemsPathEncodes…` and by the deep-link instrumentation test. |
 | **Empty slice as SQL NULL.** Not reachable — the Android client is a JSON consumer and sends no SQL. But `name`/`path` arrive as JSON `null`, which the *parser* must map to `""`, not to a crash or a literal `"null"`. Pinned by `parseItemsLeavesNameAndPathEmptyWhenTheServerSendsNull`. |
 | **The scroll watcher paging Recent from the bottom of Projects.** | `contentType` per row type + a type check inside the `snapshotFlow`. Pinned by `scrollingTheProjectsSectionDoesNotPageTheRecentList`. |
 | **The screen and the drawer paging the same project from two scrollers.** | Each list owns its own `contentType` sentinel and its own latch. They never share one. |
-| **Back from the project screen lands on a project with no chats painted.** | `NalarNavGraph.kt:283-289` already documents this trap for chat ("open the session *before* navigating"). The same ordering is required for the project route. Pinned by `returningFromTheProjectScreenFindsTheProjectStillExpandedInTheDrawer`. |
-| **`onOpenAllChats` missing from a drawer.** | It must be supplied at **both** of `RecentsDrawerContent`'s call sites in `NalarNavGraph.kt` (the shell branch and the `chat/{sessionId}` branch). The shell's permanent drawer gets no `onOpenChat` because it has no sheet to dismiss, but navigating is meaningful there too. |
+| **Back from the project screen lands on a project with no chats painted.** | `PabrikNavGraph.kt:283-289` already documents this trap for chat ("open the session *before* navigating"). The same ordering is required for the project route. Pinned by `returningFromTheProjectScreenFindsTheProjectStillExpandedInTheDrawer`. |
+| **`onOpenAllChats` missing from a drawer.** | It must be supplied at **both** of `RecentsDrawerContent`'s call sites in `PabrikNavGraph.kt` (the shell branch and the `chat/{sessionId}` branch). The shell's permanent drawer gets no `onOpenChat` because it has no sheet to dismiss, but navigating is meaningful there too. |
 | **The Projects section only reaching one of the two drawers.** | `RecentsDrawerContent` (`shell/RecentsDrawer.kt:42`) is the single shared wrapper; the two params go there, not into `MobileHomeScreen`'s two call sites. Its KDoc (`:29-40`) exists precisely to stop a second copy of this wiring. |
 | **`RecentsCache` scope creep.** | Chunk 3 chooses a separate `ProjectsCache` specifically so the existing KDoc stays true. |
 | **The `RecentsSidebar` 22-param wall.** | Chunk 4 introduces `ProjectsState` / `ProjectsActions`; two new params, not nine. |
@@ -861,7 +861,7 @@ The four design questions from the first draft are answered (see the decision
 table at the top). Questions 1 and 2 were then put back to me; both are now
 decided with reasons rather than left open.
 
-### 1. Route shape → **fully qualified: `nalar://project/{workspaceId}/{itemId}`**
+### 1. Route shape → **fully qualified: `pabrik://project/{workspaceId}/{itemId}`**
 
 I checked whether the workspace could be left out and resolved from app state.
 It cannot, and the reason is structural rather than stylistic:
@@ -871,7 +871,7 @@ It cannot, and the reason is structural rather than stylistic:
 > — including the read one, `GET /api/workspaces/:workspace_id/items/:item_id`
 > (`:691`). There is no `GET /api/items/:id` and no `GET /api/items/:id/tasks`.
 
-So `nalar://project/{itemId}` cannot build its own request. A deep link can
+So `pabrik://project/{itemId}` cannot build its own request. A deep link can
 arrive at a **cold process** (a link tapped in another app, or
 `adb shell am start`), and at that moment `HomeViewModel` has not run and
 `workspaces` is empty — there is nothing to resolve the workspace from. The only
@@ -880,7 +880,7 @@ precisely the every-workspace-every-task fetch §"The one call we do **not** mak
 refuses to do.
 
 The contrast with the existing routes is what makes this principled rather than
-arbitrary. `nalar://chat/{sessionId}` is genuinely single-id because
+arbitrary. `pabrik://chat/{sessionId}` is genuinely single-id because
 `GET /api/llm/session/{id}/messages?limit=1` needs nothing but the session id. A
 project is not single-id, so it takes two.
 
@@ -911,7 +911,7 @@ class, so every field change emits a fresh object and every collector recomposes
 The fix is to not hand the screen the whole state:
 
 ```kotlin
-// in NalarNavGraph, for the project route only
+// in PabrikNavGraph, for the project route only
 val page by homeViewModel.uiState
     .map { it.projectChats[itemId] }        // StateFlow<ProjectChatsPage?>
     .collectAsStateWithLifecycle()
@@ -945,7 +945,7 @@ being ownership.
 - Android: `RecentsSidebar.kt` (all), `MobileHomeScreen.kt:155-162` / `:188-275` / `:305-321`,
   `HomeViewModel.kt:28-74` / `:248-268` / `:400-481` / `:484-506` / `:521-535`,
   `RecentsApi.kt:29` / `:45-61` / `:190-213`, `RecentsClient.kt:49-93`,
-  `RecentsCache.kt:13-27`, `NalarNavGraph.kt:65-76` / `:255-301`, `ui/Color.kt:5-17`,
+  `RecentsCache.kt:13-27`, `PabrikNavGraph.kt:65-76` / `:255-301`, `ui/Color.kt:5-17`,
   `ui/Theme.kt:37-86`
 - Backend: `src/main.zig:689` / `:794`, `http_response.zig:8` / `:484-489` / `:497-545`,
   `workspace_items_get.zig:20-43`, `tasks_list.zig:1-18`, `workspaces_list.zig:8-18` / `:42`,

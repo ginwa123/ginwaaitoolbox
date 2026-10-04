@@ -2,7 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import ToolsSection from '../components/nalar/ToolsSection.vue'
+import ToolsSection from '../components/pabrik/ToolsSection.vue'
 import * as api from '../api'
 
 vi.mock('../api', () => ({

@@ -1,6 +1,6 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const helpers = @import("helpers");
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
@@ -21,16 +21,16 @@ const agents = struct {
     /// Caller owns the returned memory and must free it with allocator.free()
     pub fn parseAgent(allocator: std.mem.Allocator, io: std.Io, _: ?*const std.process.Environ.Map, agent_name: []const u8) ?[]const u8 {
         // Placeholder implementation - will be replaced when agents.zig is available
-        // Try to find agent in .nalar/agents/<agent_name>/NALAR.md
-        const LOCAL_AGENTS_DIR = ".nalar/agents";
-        const AGENT_FILE_NAME = "NALAR.md";
+        // Try to find agent in .pabrik/agents/<agent_name>/PABRIK.md
+        const LOCAL_AGENTS_DIR = ".pabrik/agents";
+        const AGENT_FILE_NAME = "PABRIK.md";
 
         // Get current working directory
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
         const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch return null;
         const cwd = cwd_buf[0..cwd_len];
 
-        // Build path: cwd/.nalar/agents/<agent_name>/NALAR.md
+        // Build path: cwd/.pabrik/agents/<agent_name>/PABRIK.md
         const agent_path = std.fs.path.join(allocator, &[_][]const u8{
             cwd,
             LOCAL_AGENTS_DIR,
@@ -53,17 +53,16 @@ const agents = struct {
     pub fn listAgents(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map) []AgentInfo {
         _ = environment;
         // Placeholder implementation - will be replaced when agents.zig is available
-        const LOCAL_AGENTS_DIR = ".nalar/agents";
 
         // Get current working directory
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
         const cwd_len = std.Io.Dir.cwd().realPath(io, &cwd_buf) catch return &[_]AgentInfo{};
         const cwd = cwd_buf[0..cwd_len];
 
-        // Build path: cwd/.nalar/agents
+        // Build path: cwd/.pabrik/agents
         const agents_path = std.fs.path.join(allocator, &[_][]const u8{
             cwd,
-            LOCAL_AGENTS_DIR,
+            ".pabrik/agents",
         }) catch return &[_]AgentInfo{};
         defer allocator.free(agents_path);
 
@@ -78,9 +77,9 @@ const agents = struct {
         while (iter.next(io) catch null) |entry| {
             if (entry.kind != .directory) continue;
 
-            // Try to read NALAR.md to get name and description
+            // Try to read PABRIK.md to get name and description
             const agent_file_path = std.fs.path.join(allocator, &[_][]const u8{
-                agents_path, entry.name, "NALAR.md",
+                agents_path, entry.name, "PABRIK.md",
             }) catch continue;
             defer allocator.free(agent_file_path);
 

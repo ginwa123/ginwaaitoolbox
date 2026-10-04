@@ -457,7 +457,7 @@ class TestParentEnvIsRestoredExactly:
         tmp = pathlib.Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
         return FunctionalHarness(
             port=8080,
-            nalar_bin=pathlib.Path("nalar-does-not-exist"),
+            pabrik_bin=pathlib.Path("nalar-does-not-exist"),
             temp_dir=tmp,
             orig_home=real_home,
             log_path=tmp / "nalar.log",
@@ -689,7 +689,7 @@ class TestParentEnvIsRestoredExactly:
         tmp = pathlib.Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
         h = FunctionalHarness(
             port=9999,
-            nalar_bin=pathlib.Path("nalar-does-not-exist"),
+            pabrik_bin=pathlib.Path("nalar-does-not-exist"),
             temp_dir=tmp,
             orig_home=_REAL_HOME,
             log_path=tmp / "nalar.log",
@@ -901,7 +901,7 @@ class TestStopBinaryKillsTheWholeTree:
 
         h = FunctionalHarness(
             port=1,
-            nalar_bin=pathlib.Path("nalar-does-not-exist"),
+            pabrik_bin=pathlib.Path("nalar-does-not-exist"),
             temp_dir=pathlib.Path(tempfile.gettempdir()) / "never-created",
             orig_home=_REAL_HOME,
             log_path=pathlib.Path(os.devnull),
@@ -1063,11 +1063,11 @@ class TestWindowsJobObject:
                 pass
 
     def test_boot_assigns_nalar_to_a_job_and_teardown_closes_it(
-        self, default_nalar_bin
+        self, default_pabrik_bin
     ) -> None:
         from harness import FunctionalHarness
 
-        h = FunctionalHarness.boot(default_nalar_bin)
+        h = FunctionalHarness.boot(default_pabrik_bin)
         try:
             assert h._job_handle is not None, (
                 "boot() did not put the server in a KILL_ON_JOB_CLOSE job, so "
@@ -1119,15 +1119,15 @@ class TestOverlappingBootHarnesses:
         ),
     )
     def test_environment_is_pristine_after_both_orders(
-        self, default_nalar_bin
+        self, default_pabrik_bin
     ) -> None:
         from harness import _SHADOWED_ENV_KEYS, FunctionalHarness
 
         for order in ("inner-first", "outer-first"):
             real = {k: os.environ.get(k) for k in _SHADOWED_ENV_KEYS}
             try:
-                outer = FunctionalHarness.boot(default_nalar_bin)
-                inner = FunctionalHarness.boot(default_nalar_bin)
+                outer = FunctionalHarness.boot(default_pabrik_bin)
+                inner = FunctionalHarness.boot(default_pabrik_bin)
                 if order == "inner-first":
                     inner.teardown()
                     outer.teardown()
@@ -1162,7 +1162,7 @@ class TestOverlappingBootHarnesses:
         ),
     )
     def test_baseline_is_released_so_a_later_run_starts_clean(
-        self, default_nalar_bin
+        self, default_pabrik_bin
     ) -> None:
         """The refcount has to return to zero, or the baseline goes stale.
 
@@ -1176,7 +1176,7 @@ class TestOverlappingBootHarnesses:
 
         from harness import FunctionalHarness
 
-        h = FunctionalHarness.boot(default_nalar_bin)
+        h = FunctionalHarness.boot(default_pabrik_bin)
         assert harness_mod._ENV_BASELINE_OWNERS >= 1, (
             "boot() must register a baseline participant while it is alive"
         )
@@ -1216,12 +1216,12 @@ class TestBootLeavesTheParentEnvironmentAlone:
     """
 
     def test_every_variable_survives_a_boot_teardown_round_trip(
-        self, default_nalar_bin
+        self, default_pabrik_bin
     ) -> None:
         from harness import FunctionalHarness
 
         before = dict(os.environ)
-        h = FunctionalHarness.boot(default_nalar_bin)
+        h = FunctionalHarness.boot(default_pabrik_bin)
         try:
             # Sanity: the boot really did shadow something, so a no-op round
             # trip cannot make this pass vacuously.
@@ -1262,7 +1262,7 @@ class TestBootLeavesTheParentEnvironmentAlone:
             + "\n  ".join(f"{k}: {before[k]!r} -> {after.get(k)!r}" for k in changed)
         )
 
-    def test_two_boots_in_a_row_both_work(self, default_nalar_bin) -> None:
+    def test_two_boots_in_a_row_both_work(self, default_pabrik_bin) -> None:
         """The symptom of losing `PATH`/`SystemRoot`: only the 2nd boot fails.
 
         Kept as its own test because it is what actually surfaced the bug, and
@@ -1276,7 +1276,7 @@ class TestBootLeavesTheParentEnvironmentAlone:
         from harness import FunctionalHarness
 
         for attempt in (1, 2):
-            h = FunctionalHarness.boot(default_nalar_bin)
+            h = FunctionalHarness.boot(default_pabrik_bin)
             try:
                 assert h.health() is not None
             finally:

@@ -1,13 +1,13 @@
 const std = @import("std");
-const nalar_mod = @import("nalarcore");
-const agent = nalar_mod.agent;
-const logger_mod = nalar_mod.loggermod;
-const sqlite = nalar_mod.sqlite;
+const pabrik_mod = @import("pabrikcore");
+const agent = pabrik_mod.agent;
+const logger_mod = pabrik_mod.loggermod;
+const sqlite = pabrik_mod.sqlite;
 const save_message = @import("llm_history.zig");
 const custom_http_client = @import("kabelweb").client;
-const config_mod = nalar_mod.config;
-const mcp_stdio = nalar_mod.mcp_stdio;
-const mcp_http = nalar_mod.mcp_http;
+const config_mod = pabrik_mod.config;
+const mcp_stdio = pabrik_mod.mcp_stdio;
+const mcp_http = pabrik_mod.mcp_http;
 
 /// Handle an MCP tool call by forwarding it to the MCP server
 ///
@@ -133,7 +133,7 @@ pub fn handle_mcp_tool_run(
     // wire main.zig's shutdown hook to call HttpRegistry.deinitGlobal() —
     // for now, same pattern as mcp_stdio.StdioRegistry.
     // Via the singleton struct (see root.zig `mcpHttpRegistry`).
-    const http_registry = nalar_mod.mcpHttpRegistry(allocator);
+    const http_registry = pabrik_mod.mcpHttpRegistry(allocator);
     const http_client = http_registry.getOrConnect(
         server_name,
         url,
@@ -238,7 +238,7 @@ fn callViaStdio(
 
     // stdio transport: long-lived child per server, lazy spawn + respawn.
     // Via the singleton struct (see root.zig `mcpStdioRegistry`).
-    const reg = nalar_mod.mcpStdioRegistry(allocator);
+    const reg = pabrik_mod.mcpStdioRegistry(allocator);
 
     // Retry loop for cold-start / stale child. Use NDJSON framing (like
     // the discovery path) — Python and Node SDKs both default to NDJSON.

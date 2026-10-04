@@ -1,25 +1,25 @@
-# `nalarcli` — native Zig CLI for the nalar HTTP API
+# `pabrikcli` — native Zig CLI for the pabrik HTTP API
 
 Wraps the backend's REST API from the terminal. Built with the same
 libcurl-backed `kabelweb.client` module the rest of the project
 uses, so libcurl paths are reused (no duplicate `-Dcurl-prefix` /
 `-Dcurl-vcpkg-root` wiring).
 
-## `nalar-tui` — interactive chat TUI
+## `pabrik-tui` — interactive chat TUI
 
-Alongside `nalarcli`, this package ships **`nalar-tui`**: a
+Alongside `pabrikcli`, this package ships **`pabrik-tui`**: a
 Claude-Code-style interactive chat client powered by a from-scratch
 Bubble-Tea-inspired `tui` module (`src/apps/cli/src/tui/`).
 
 | Step | Command |
 |---|---|
-| Build & install | `zig build install:tui` → `zig-out/bin/nalar-tui` |
+| Build & install | `zig build install:tui` → `zig-out/bin/pabrik-tui` |
 | Run | `zig build run:tui -- [flags]` |
 | Test | `zig build test:tui --summary all` |
 
 ```bash
-nalar-tui --server http://localhost:8081            # new session
-nalar-tui --session session-1724580000000           # resume a session
+pabrik-tui --server http://localhost:8081            # new session
+pabrik-tui --session session-1724580000000           # resume a session
 ```
 
 Keys: **Enter** sends, **Ctrl-C / Ctrl-D** quits, **↑/↓** input
@@ -55,12 +55,12 @@ standalone `build.zig` here). Three entries:
 
 | Step | Command |
 |---|---|
-| Build & install | `zig build install:cli` → `zig-out/bin/nalarcli` |
+| Build & install | `zig build install:cli` → `zig-out/bin/pabrikcli` |
 | Run | `zig build run:cli -- [args]` |
 | Test | `zig build test:cli --summary all` |
 
 The parent `build:all` step also builds the CLI (alongside the
-service binary + nalar-desktop), so a plain `zig build` produces
+service binary + pabrik-desktop), so a plain `zig build` produces
 all three binaries.
 
 ## Subcommands
@@ -74,14 +74,14 @@ all three binaries.
 | `pr-status [<pr>]` | GET `/api/git/pr/status` | Show PR open/merged/closed status (`gh pr view` wrapper). Alias: `pr`. |
 | `help` | — | Print usage. |
 
-Run `nalarcli help` for the full flag list.
+Run `pabrikcli help` for the full flag list.
 
 ## Config
 
 | Source | Server | Session | Profile |
 |---|---|---|---|
 | Flag | `--server <url>` | `--session <id>` | `--profile <name>` |
-| Env | `NALARCLI_SERVER` | `NALARCLI_SESSION_ID` | `NALARCLI_PROFILE` |
+| Env | `PABRIKCLI_SERVER` | `PABRIKCLI_SESSION_ID` | `PABRIKCLI_PROFILE` |
 | Default | `http://localhost:8081` | (auto-create per `send`) | (server's default) |
 
 Resolution order: flags → env → defaults.

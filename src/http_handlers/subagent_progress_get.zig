@@ -22,10 +22,10 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const helpers = @import("helpers");
-const ai_mod = nalarcore.ai_mod;
+const ai_mod = pabrikcore.ai_mod;
 const subagent_progress = ai_mod.subagent_progress;
 
 /// Get the live snapshot for one spawn_sub_agent batch.

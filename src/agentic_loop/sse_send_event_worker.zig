@@ -1,8 +1,8 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const SseEvent = @import("sse.zig").SseEvent;
 
-const event_bus_mod = nalarcore.event_bus;
+const event_bus_mod = pabrikcore.event_bus;
 const testing = std.testing;
 
 pub const OnEventInputWorkers = struct {

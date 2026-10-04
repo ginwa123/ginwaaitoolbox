@@ -18,7 +18,7 @@
  * These are source-level tests, following the ChatView convention (see
  * `ChatView.lazyPrefetch.spec.ts` for why): the mount-based ChatView specs
  * cannot get past the IndexedDB-backed history load in this environment. The
- * behavioural proof over a real browser — a real nalar, a real Vite, a real
+ * behavioural proof over a real browser — a real pabrik, a real Vite, a real
  * Chromium — is `tests/functional_ui/chatview_send_scrolls_to_bottom_ui_test.py`.
  */
 import { describe, expect, it } from 'vitest'

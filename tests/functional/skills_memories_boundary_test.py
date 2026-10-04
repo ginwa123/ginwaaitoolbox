@@ -1,17 +1,17 @@
 """Functional tests for the skills/memories filesystem boundary (plan 2026-09-25, W2.6).
 
-Boots a REAL nalar binary via the harness (never a live dev server, never
+Boots a REAL pabrik binary via the harness (never a live dev server, never
 port 8081). Two authenticated admins share ONE server process and ONE OS
 account, so this is the wire-level proof of what W2.6 can and cannot scope.
 
 WHY THIS FILE ASSERTS A BOUNDARY RATHER THAN ISOLATION
 ------------------------------------------------------
-`/api/skills*` and `/api/memories*` are **filesystem-scoped**, not DB rows:
+`/api/memories*` is **filesystem-scoped**, not DB rows:
 
-  * global skills/memories live in `~/.config/nalar/skills|memories/` — one
-    directory per OS account, shared by every browser user on the machine;
-  * local skills/memories live in `{cwd}/.nalar/skills|memories/` — and
-    `cwd` is caller-supplied.
+  * global memories live in `~/.config/pabrik/memories/` — one directory per
+    OS account, shared by every browser user on the machine;
+  * local memories live in `{cwd}/.pabrik/memories/` — and `cwd` is
+    caller-supplied.
 
 There is no `user_id` column to filter on, so "scope them per user" would
 mean inventing a per-user filesystem root — which is the **deferred D9
@@ -22,13 +22,25 @@ A fake fix here would be worse than none: it would make the system *look*
 isolated while the same bytes stay readable by path. So this file pins the
 boundary as a documented, tested fact:
 
-  * GLOBAL-SHARED  — B's `GET /api/skills` / `/api/memories` sees the same
-                     global entries as A's (the shared OS-account directory).
+  * GLOBAL-SHARED  — B's `GET /api/memories` sees the same global entries as
+                     A's (the shared OS-account directory).
   * LOCAL-CWD      — the local list follows the caller-supplied `?cwd=`, so
                      B can point at A's workspace directory and read its
-                     `.nalar/` files. This is the D9 boundary, asserted so a
+                     `.pabrik/` files. This is the D9 boundary, asserted so a
                      future change that closes it must update this test.
   * AUTH-OFF       — without `--auth` the same endpoints still work.
+
+SKILLS LEFT THIS FILE
+---------------------
+Skills used to sit here too, sharing both properties: a skill was a file
+under `~/.config/pabrik/skills/`, so `/api/skills` merged two directories on
+the way in and had no workspace to scope to. They are rows in the
+workspace-scoped `skills` table now (Migration 101,
+`/api/workspaces/:workspace_id/skills`), so there is no cross-user directory
+to share and no D9 boundary left to assert for skills. What replaced it
+here is the negative: the directory-tier route is GONE, for every user and
+with or without auth. The workspace-level isolation assertions live in
+`skills_sqlite_test.py`.
 
 Both users are created with `create-admin`, so the assertions here are also
 the admin-vs-admin assertions: `admin` grants NO cross-user visibility.
@@ -84,8 +96,8 @@ def _login(port: int, email: str, password: str) -> str:
     )
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
 def _two_users(bin_path: Path):
@@ -98,30 +110,30 @@ def _two_users(bin_path: Path):
 
 
 def _write_local_memory(cwd: Path, name: str, body: str) -> None:
-    d = cwd / ".nalar" / "memories"
+    d = cwd / ".pabrik" / "memories"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{name}.md").write_text(body, encoding="utf-8")
 
 
-def test_global_skills_and_memories_are_shared_across_users(default_nalar_bin: Path):
+def test_global_skills_and_memories_are_shared_across_users(default_pabrik_bin: Path):
     """The global dir is one per OS account — both users see the same entries.
 
     This is the D9 boundary, not a bug in the row-level isolation: there is
     no `user_id` on a file. Asserted so the boundary is visible and a future
     per-user filesystem root must update this test.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
         # A creates a global memory via the API.
         status, _, body = _raw(
             "POST", h.port, "/api/memories",
             body={"name": "shared-note.md", "content": "# shared\n\nbody"},
-            cookie=f"nalar_session={tok_a}",
+            cookie=f"pabrik_session={tok_a}",
         )
         assert status in (200, 201), body[:500]
 
         # B sees it in the global list — same OS-account directory.
-        status, _, b_body = _raw("GET", h.port, "/api/memories", cookie=f"nalar_session={tok_b}")
+        status, _, b_body = _raw("GET", h.port, "/api/memories", cookie=f"pabrik_session={tok_b}")
         assert status == 200, b_body[:300]
         assert "shared-note" in b_body.decode(), (
             "global memories are one directory per OS account; B must see A's "
@@ -129,23 +141,30 @@ def test_global_skills_and_memories_are_shared_across_users(default_nalar_bin: P
             "update this test and the plan's D9 section."
         )
 
-        # Same for skills: both users get a 200 with the same global set.
+        # Skills are no longer in this file's boundary: they are
+        # workspace-scoped rows, so there is no global directory left to
+        # share. What is asserted instead is that the directory-tier route
+        # is gone for BOTH users — a route that still answered would mean
+        # the migration left a filesystem read path reachable, which is
+        # exactly the leak this table was built to close.
         for who, tok in (("A", tok_a), ("B", tok_b)):
-            status, _, s_body = _raw("GET", h.port, "/api/skills", cookie=f"nalar_session={tok}")
-            assert status == 200, f"{who} skills list: {s_body[:300]}"
+            status, _, s_body = _raw("GET", h.port, "/api/skills", cookie=f"pabrik_session={tok}")
+            assert status == 404, (
+                f"{who} still has a directory-scoped /api/skills: {s_body[:300]}"
+            )
     finally:
         h.teardown()
 
 
-def test_local_memories_follow_the_caller_supplied_cwd(default_nalar_bin: Path, tmp_path: Path):
-    """`?cwd=` is caller-supplied, so B can read A's workspace `.nalar/` files.
+def test_local_memories_follow_the_caller_supplied_cwd(default_pabrik_bin: Path, tmp_path: Path):
+    """`?cwd=` is caller-supplied, so B can read A's workspace `.pabrik/` files.
 
     This is the D9 filesystem boundary in its sharpest form: the local
     memories endpoint is a path-scoped file read, and the path comes from the
     request. Asserted (not "fixed") because closing it means a per-user
     filesystem root or a workspace-root allowlist — a separate decision.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
         a_dir = tmp_path / "a-workspace"
         a_dir.mkdir()
@@ -154,7 +173,7 @@ def test_local_memories_follow_the_caller_supplied_cwd(default_nalar_bin: Path, 
         # A reads its own local memories.
         status, _, a_body = _raw(
             "GET", h.port, f"/api/local-memories?cwd={a_dir}",
-            cookie=f"nalar_session={tok_a}",
+            cookie=f"pabrik_session={tok_a}",
         )
         assert status == 200, a_body[:300]
         assert "a-secret" in a_body.decode()
@@ -162,7 +181,7 @@ def test_local_memories_follow_the_caller_supplied_cwd(default_nalar_bin: Path, 
         # B points at A's directory and reads the same file — the boundary.
         status, _, b_body = _raw(
             "GET", h.port, f"/api/local-memories?cwd={a_dir}",
-            cookie=f"nalar_session={tok_b}",
+            cookie=f"pabrik_session={tok_b}",
         )
         assert status == 200, b_body[:300]
         assert "a-secret" in b_body.decode(), (
@@ -174,12 +193,23 @@ def test_local_memories_follow_the_caller_supplied_cwd(default_nalar_bin: Path, 
         h.teardown()
 
 
-def test_skills_and_memories_auth_off_is_unchanged(default_nalar_bin: Path):
-    """Regression: without `--auth` both endpoints still work."""
-    h = FunctionalHarness.boot(default_nalar_bin)
+def test_skills_and_memories_auth_off_is_unchanged(default_pabrik_bin: Path):
+    """Regression: without `--auth` the endpoints still answer.
+
+    The skills half is now a 404 on the old route plus a 200 on the
+    workspace-scoped one — "auth off" must not accidentally restore the
+    directory walk that the table replaced.
+    """
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         status, _, body = _raw("GET", h.port, "/api/skills")
+        assert status == 404, body[:300]
+        status, _, body = _raw("POST", h.port, "/api/workspaces", body={"name": "auth-off-skills"})
+        assert status in (200, 201), body[:300]
+        ws_id = json.loads(body)["id"]
+        status, _, body = _raw("GET", h.port, f"/api/workspaces/{ws_id}/skills")
         assert status == 200, body[:300]
+        assert json.loads(body) == {"skills": []}, body[:300]
         status, _, body = _raw("GET", h.port, "/api/memories")
         assert status == 200, body[:300]
         # `/api/local-memories` needs a cwd (query or server cwd); pass one.

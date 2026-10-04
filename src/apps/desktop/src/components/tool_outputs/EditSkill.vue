@@ -44,7 +44,7 @@ const handleToggle = (next: boolean) => {
       :primary="parsed.skillName"
       :success="parsed.edited"
       :expanded="isExpanded"
-      :expandable="!parsed.edited || !!parsed.error || !!parsed.path || hasArgs"
+      :expandable="!parsed.edited || !!parsed.error || hasArgs"
       :show-open-in-editor="false"
       @update:expanded="handleToggle"
     />
@@ -60,12 +60,17 @@ const handleToggle = (next: boolean) => {
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
+      <!-- The row moved in place rather than to a new location, so the
+           edited skill is named instead of located. -->
       <div
-        v-if="parsed.edited && parsed.path"
+        v-if="parsed.edited && parsed.skillName"
         class="flex gap-2 px-2 py-1.5 text-green-500 text-dense border-b border-dashed border-[var(--color-border)]"
+        data-testid="edit-skill-name"
       >
-        <span class="font-semibold shrink-0">Path:</span>
-        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)]">{{ parsed.path }}</span>
+        <span class="font-semibold shrink-0">Edited:</span>
+        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)]">{{
+          parsed.skillName
+        }}</span>
       </div>
       <ToolParameters :parameters="parameters" />
     </div>

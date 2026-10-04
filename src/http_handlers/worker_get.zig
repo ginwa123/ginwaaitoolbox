@@ -4,10 +4,9 @@
 //! handler that maps the outcome + errors to status codes / JSON.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_workflow = nalarcore.ai_workflow;
-const llm_history = nalarcore.llm_history;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const llm_history = pabrikcore.llm_history;
 
 pub const WorkerGetError = error{
     ServerNotInitialized,
@@ -30,7 +29,12 @@ fn useCase(
 ) WorkerGetError!WorkerGetResult {
     const server = gserverz.global_server orelse return error.ServerNotInitialized;
     const server_ctx = server.ctx orelse return error.ServerNotInitialized;
-    const ctxTui = @as(*ai_workflow.ContextIPCTui, @ptrCast(@alignCast(server_ctx)));
+    // The singleton type is `pabrikcore.App` (src/app.zig). This cast used to
+    // read `ai_workflow.App`, and `pabrikcore.ai_workflow` never
+    // existed — the agent loop is exposed as `pabrikcore.ai_mod` — so the body
+    // never type-checked. It stayed unanalysed because this handler's route is
+    // not registered, which is why the bad name survived the rename to `App`.
+    const ctxTui = @as(*pabrikcore.App, @ptrCast(@alignCast(server_ctx)));
     const sqlite_db = ctxTui.db;
 
     const worker = llm_history.getWorkerBySessionId(allocator, sqlite_db, session_id) catch return error.QueryFailed;

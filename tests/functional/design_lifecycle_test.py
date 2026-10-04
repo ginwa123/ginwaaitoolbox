@@ -1,7 +1,7 @@
 """Functional tests for design mode lifecycle.
 
 The on-disk HTML files are the differentiator: every design element
-has an .html file at `<item_path>/.nalar/design/<page>/<element>.html`.
+has an .html file at `<item_path>/.pabrik/design/<page>/<element>.html`.
 This suite verifies that the disk state stays in sync with the DB
 state across page/element CRUD, atomic HTML rewrites, and
 geometry PATCHes.
@@ -174,7 +174,7 @@ def test_create_page_with_three_elements(
 def test_element_html_file_written_to_disk(
     harness: FunctionalHarness, item_workspace_path: Path
 ) -> None:
-    """POST /elements writes the HTML to <path>/.nalar/design/<page>/<elem>.html."""
+    """POST /elements writes the HTML to <path>/.pabrik/design/<page>/<elem>.html."""
     ws_id = _create_workspace(harness)
     design_id = _create_design(harness, ws_id, "disk-test", str(item_workspace_path))
     page_id = _create_page(harness, ws_id, design_id, "Disk")
@@ -183,13 +183,13 @@ def test_element_html_file_written_to_disk(
     elem = _add_element(harness, ws_id, design_id, page_id, "hero", "rectangle", html)
 
     # Find the on-disk file. The path pattern is:
-    # <item_path>/.nalar/design/<sanitized_page>/<sanitized_elem>.html
-    elem_dir = item_workspace_path / ".nalar" / "design" / "Disk" / "hero.html"
+    # <item_path>/.pabrik/design/<sanitized_page>/<sanitized_elem>.html
+    elem_dir = item_workspace_path / ".pabrik" / "design" / "Disk" / "hero.html"
     # The element name "hero" doesn't contain slashes, so the file
     # is at <page_dir>/<elem_name>.html
-    candidates = list((item_workspace_path / ".nalar" / "design" / "Disk").glob("*.html"))
+    candidates = list((item_workspace_path / ".pabrik" / "design" / "Disk").glob("*.html"))
     assert len(candidates) >= 1, (
-        f"no .html files found in {item_workspace_path}/.nalar/design/Disk/"
+        f"no .html files found in {item_workspace_path}/.pabrik/design/Disk/"
     )
     # Read the file and verify it matches the input HTML.
     file_content = candidates[0].read_text()
@@ -213,7 +213,7 @@ def test_update_html_atomically_rewrites_file(
     elem = _add_element(harness, ws_id, design_id, page_id, "elem", "rectangle", initial_html)
 
     # Find the file.
-    page_dir = item_workspace_path / ".nalar" / "design" / "Page"
+    page_dir = item_workspace_path / ".pabrik" / "design" / "Page"
     files = list(page_dir.glob("*.html"))
     assert len(files) == 1
     assert files[0].read_text() == initial_html
@@ -251,7 +251,7 @@ def test_geometry_patch_does_not_touch_html(
     html = "<div class='card' data-id='42'>preserved</div>"
     elem = _add_element(harness, ws_id, design_id, page_id, "card", "rectangle", html)
 
-    page_dir = item_workspace_path / ".nalar" / "design" / "Geom"
+    page_dir = item_workspace_path / ".pabrik" / "design" / "Geom"
     files = list(page_dir.glob("*.html"))
     assert len(files) == 1
     file_path = files[0]
@@ -291,7 +291,7 @@ def test_delete_element_removes_html_file(
 
     elem = _add_element(harness, ws_id, design_id, page_id, "doomed", "rectangle", "<div>x</div>")
 
-    page_dir = item_workspace_path / ".nalar" / "design" / "Page"
+    page_dir = item_workspace_path / ".pabrik" / "design" / "Page"
     files = list(page_dir.glob("*.html"))
     assert len(files) == 1
 
@@ -322,7 +322,7 @@ def test_delete_page_removes_entire_directory(
     _add_element(harness, ws_id, design_id, page_id, "a", "rectangle", "<div>A</div>")
     _add_element(harness, ws_id, design_id, page_id, "b", "rectangle", "<div>B</div>")
 
-    page_dir = item_workspace_path / ".nalar" / "design" / "DoomedPage"
+    page_dir = item_workspace_path / ".pabrik" / "design" / "DoomedPage"
     assert page_dir.exists()
     assert len(list(page_dir.glob("*.html"))) == 2
 

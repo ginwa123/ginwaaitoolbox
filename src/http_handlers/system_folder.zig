@@ -1,10 +1,10 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const SystemFolder = nalarcore.system_folder.SystemFolder;
-const SystemFolderError = nalarcore.system_folder.SystemFolderError;
-const FolderEntry = nalarcore.system_folder.FolderEntry;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const SystemFolder = pabrikcore.system_folder.SystemFolder;
+const SystemFolderError = pabrikcore.system_folder.SystemFolderError;
+const FolderEntry = pabrikcore.system_folder.FolderEntry;
 
 /// Escape special characters for JSON string values
 fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
@@ -145,7 +145,7 @@ pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
         }
     }
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const environment = di.environment;
 
 

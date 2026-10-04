@@ -24,11 +24,11 @@
 //! a question may wait indefinitely for the same cost.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
-const llm_history = nalarcore.llm_history;
-const ask_user_mod = nalarcore.ask_user;
+const sqlite = pabrikcore.sqlite;
+const llm_history = pabrikcore.llm_history;
+const ask_user_mod = pabrikcore.ask_user;
 const wrapToolOutput = @import("tools_wrap_output.zig").wrapToolOutput;
 const on_event_sent = @import("on_event_sent.zig");
 const is_worker_running = @import("is_worker_running.zig");
@@ -605,7 +605,7 @@ pub fn loadSessionRunFields(
 /// Guarded by `isWorkerRunning`: a double-click on Send answer must not start
 /// two runs. Returns false when a run was already in flight.
 pub fn resumeSession(
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.App,
     allocator: std.mem.Allocator,
     session_id: []const u8,
 ) !bool {

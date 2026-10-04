@@ -14,7 +14,7 @@ reserved ports, and exhausts gracefully.
 The parallel regression for the sequential path (``_find_free_port``
 with an explicit ``start=``) lives in ``harness_orphan_reap_test.py``.
 
-These tests run WITHOUT a real nalar binary — they exercise the port-
+These tests run WITHOUT a real pabrik binary — they exercise the port-
 finder primitives directly.
 
 Run::
@@ -208,7 +208,7 @@ def test_find_free_port_random_distribution_is_uniform() -> None:
 def test_find_free_port_random_can_pick_time_wait_port() -> None:
     """A TIME_WAIT port (reachable only with SO_REUSEADDR) is a valid pick.
 
-    The whole point of ``SO_REUSEADDR`` in the probe is that nalar (or
+    The whole point of ``SO_REUSEADDR`` in the probe is that pabrik (or
     vite) can subsequently bind the same port despite lingering server-
     side TIME_WAITs. If the picker rejected TIME_WAIT ports, rapid CI
     runs would still saturate the 20k-port window.
@@ -379,7 +379,7 @@ def test_find_free_port_no_args_uses_random() -> None:
     The fix: ``port: int | None = None`` defaults to None, and
     ``_find_free_port(None)`` → random pick.
 
-    We can't easily mock-boot the harness here (no nalar binary in this
+    We can't easily mock-boot the harness here (no pabrik binary in this
     test scope), so we exercise the function directly — but that has
     the same shape as what ``FunctionalHarness.boot()`` calls.
     """

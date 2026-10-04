@@ -6,7 +6,7 @@ while use and close and open again its 404".
 Reported symptoms were a blank window showing a bare `404 Not Found` page.
 
 Root cause (reproduced live): the desktop extracted its embedded webapp into
-a PER-PID temp dir, spawned a DETACHED nalar with `--static-dir <that dir>`,
+a PER-PID temp dir, spawned a DETACHED pabrik with `--static-dir <that dir>`,
 and then deleted the dir when the window closed (`extraction.cleanup`). The
 daemon outlives the desktop by design, so from then on it served nothing:
 `GET /health` was still 200 (an API route, independent of the static dir)
@@ -14,14 +14,14 @@ while `GET /` was `404 Not Found`. The next desktop launch probed `/health`,
 saw 200, attached to that daemon, and opened the webview onto the 404.
 
 These tests pin the wire behaviour that made the bug invisible to a
-health-only check, using a real nalar process against a real --static-dir:
+health-only check, using a real pabrik process against a real --static-dir:
 
-  Test 1 — `--static-dir` serves the app; deleting the dir behind nalar's
+  Test 1 — `--static-dir` serves the app; deleting the dir behind pabrik's
            back turns `GET /` into 404 while `/health` stays 200 (this IS
            the bug), and restoring the dir makes `/` serve again.
-  Test 2 — the fix's invariant: a PERSISTENT static dir survives a nalar
+  Test 2 — the fix's invariant: a PERSISTENT static dir survives a pabrik
            restart, so close-and-reopen keeps serving the app.
-  Test 3 — a nalar started with NO `--static-dir` has the same shape
+  Test 3 — a pabrik started with NO `--static-dir` has the same shape
            (health 200, `/` 404) — the shape the desktop must refuse to
            attach to.
 
@@ -39,7 +39,7 @@ import pytest
 
 from harness import FunctionalHarness
 
-HTML = "<!DOCTYPE html><html><body>nalar app shell</body></html>"
+HTML = "<!DOCTYPE html><html><body>pabrik app shell</body></html>"
 
 
 def _text(resp) -> str:
@@ -52,8 +52,8 @@ def _make_webapp(root: Path) -> Path:
     (root / "assets").mkdir(parents=True, exist_ok=True)
     (root / "index.html").write_text(HTML, encoding="utf-8")
     # The extracted tree always contains a marker file next to the assets.
-    (root / ".nalar-webapp-complete").write_text("test-hash", encoding="utf-8")
-    (root / "assets" / "app.js").write_text("console.log('nalar');", encoding="utf-8")
+    (root / ".pabrik-webapp-complete").write_text("test-hash", encoding="utf-8")
+    (root / "assets" / "app.js").write_text("console.log('pabrik');", encoding="utf-8")
     return root
 
 
@@ -64,7 +64,7 @@ def webapp_dir(tmp_path: Path) -> Path:
 
 def test_static_dir_404s_when_the_dir_is_deleted_health_stays_200(
     webapp_dir: Path,
-    default_nalar_bin: Path,
+    default_pabrik_bin: Path,
 ) -> None:
     """The bug, at the wire level.
 
@@ -73,7 +73,7 @@ def test_static_dir_404s_when_the_dir_is_deleted_health_stays_200(
     health-only attach probe let the desktop open a 404 window.
     """
     h = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
         extra_args=("--static-dir", str(webapp_dir)),
     )
@@ -81,7 +81,7 @@ def test_static_dir_404s_when_the_dir_is_deleted_health_stays_200(
         # 1. Healthy and serving the app.
         r = h.http("GET", "/")
         assert r.status == 200
-        assert "nalar app shell" in _text(r)
+        assert "pabrik app shell" in _text(r)
         assert h.http("GET", "/index.html").status == 200
         assert h.http("GET", "/assets/app.js").status == 200
         assert h.http("GET", "/health").status == 200
@@ -104,14 +104,14 @@ def test_static_dir_404s_when_the_dir_is_deleted_health_stays_200(
         _make_webapp(webapp_dir)
         r = h.http("GET", "/")
         assert r.status == 200
-        assert "nalar app shell" in _text(r)
+        assert "pabrik app shell" in _text(r)
     finally:
         h.teardown()
 
 
 def test_persistent_static_dir_survives_a_restart(
     webapp_dir: Path,
-    default_nalar_bin: Path,
+    default_pabrik_bin: Path,
 ) -> None:
     """The fix's invariant: reopening the app keeps serving it.
 
@@ -120,7 +120,7 @@ def test_persistent_static_dir_survives_a_restart(
     instead of `404 Not Found`.
     """
     first = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
         extra_args=("--static-dir", str(webapp_dir)),
     )
@@ -133,7 +133,7 @@ def test_persistent_static_dir_survives_a_restart(
     assert (webapp_dir / "index.html").exists()
 
     second = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
         extra_args=("--static-dir", str(webapp_dir)),
     )
@@ -144,14 +144,14 @@ def test_persistent_static_dir_survives_a_restart(
 
 
 def test_without_static_dir_health_is_200_but_root_is_404(
-    default_nalar_bin: Path,
+    default_pabrik_bin: Path,
 ) -> None:
-    """A nalar with no --static-dir looks identical to the broken daemon.
+    """A pabrik with no --static-dir looks identical to the broken daemon.
 
     Nothing about `/health` distinguishes it, so an attach decision based
     on health alone cannot tell a usable server from a useless one.
     """
-    h = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    h = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         assert h.http("GET", "/health").status == 200
         r = h.http("GET", "/", expect=(404,))

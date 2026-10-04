@@ -42,11 +42,11 @@
 | `src/modules/agent/openai_responses_test.zig` | NEW | Behavioural tests for Responses builder + parser parity (mirrors `openai_reasoning_test.zig` + `parse_anthropic_sse_test.zig` shape) |
 | `src/modules/agent/test_runner.zig` | EDIT | Register new test file |
 | `src/modules/config/Config.zig` | EDIT (if needed) | Only if a new config field is required for parity (unlikely — keep minimal) |
-| `src/apps/desktop/src/components/nalar/LlmConfigForm.vue` | EDIT | Make reasoning/thinking UI `url_style`-aware (see Task 5) |
-| `src/apps/desktop/src/__tests__/nalarConfigFormThinking.spec.ts` | EDIT | Add per-style visibility tests |
+| `src/apps/desktop/src/components/pabrik/LlmConfigForm.vue` | EDIT | Make reasoning/thinking UI `url_style`-aware (see Task 5) |
+| `src/apps/desktop/src/__tests__/pabrikConfigFormThinking.spec.ts` | EDIT | Add per-style visibility tests |
 | `src/apps/desktop/src/__tests__/LlmConfigForm.spec.ts` | EDIT | Update select-count / visibility asserts for per-style rendering |
 | `docs/superpowers/plans/2026-09-01-migrate-openai-legacy-to-response.md` | NEW | This plan |
-| `NALAR.md` | EDIT | Changelog entry on final commit |
+| `PABRIK.md` | EDIT | Changelog entry on final commit |
 
 ---
 
@@ -117,23 +117,23 @@ Alternative considered: null the hidden field on style switch — rejected, woul
 
 ### Task 5 — Frontend per-style reasoning UI
 
-- [ ] In `src/apps/desktop/src/components/nalar/LlmConfigForm.vue`:
+- [ ] In `src/apps/desktop/src/components/pabrik/LlmConfigForm.vue`:
   - Add computed `isAnthropic` / `isOpenAIStyle` based on `modelValue.url_style`.
   - Gate `thinking_budget_tokens` block with `v-if="isAnthropic && modelValue.thinking !== 'off'"`.
   - Gate `reasoning_effort` block with `v-if="isOpenAIStyle && modelValue.thinking !== 'off'"` (covers both `openai` and `openai-response`).
   - Keep `thinking` select always visible (all three styles use it, even if Responses ignores `enable_thinking` — preserves UX consistency; or hide for `openai-response` if product decides — default keep visible).
   - Update helper texts: budget → "Anthropic only", effort → "OpenAI / Responses only (o1/o3/GPT-5/DeepSeek-R1)".
   - Do NOT null hidden fields on style switch — preserve values.
-- [ ] Update `src/apps/desktop/src/__tests__/nalarConfigFormThinking.spec.ts`: add tests for per-style visibility (anthropic shows budget hides effort, openai shows effort hides budget, openai-response shows effort hides budget).
+- [ ] Update `src/apps/desktop/src/__tests__/pabrikConfigFormThinking.spec.ts`: add tests for per-style visibility (anthropic shows budget hides effort, openai shows effort hides budget, openai-response shows effort hides budget).
 - [ ] Update `src/apps/desktop/src/__tests__/LlmConfigForm.spec.ts`: adjust select-count asserts to be per-style (or assert conditional rendering).
 - [ ] Run `pnpm test:unit` → GREEN.
 
 ### Task 6 — Verification + docs
 
 - [ ] `zig build test --summary all` → 0 fail.
-- [ ] `zig build nalar-desktop --summary all` → 0 fail.
+- [ ] `zig build pabrik-desktop --summary all` → 0 fail.
 - [ ] `pnpm test:unit` → 0 fail.
-- [ ] Append `NALAR.md` changelog: "### 2026-09-01: Migrate OpenAI legacy features to OpenAI Response (keep legacy) — frontend per-style reasoning UI".
+- [ ] Append `PABRIK.md` changelog: "### 2026-09-01: Migrate OpenAI legacy features to OpenAI Response (keep legacy) — frontend per-style reasoning UI".
 - [ ] Commit.
 
 ---

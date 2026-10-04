@@ -37,7 +37,7 @@ def test_relative_base_path_returns_400_without_killing_server(
     assert empty_search.json()["error"] == "path required"
     assert harness.health(), "server died after rejecting an empty search path"
 
-    foreign_file = f"C:nalar-relative-{harness.pid or 0}.txt"
+    foreign_file = f"C:pabrik-relative-{harness.pid or 0}.txt"
     read_response = harness.http(
         "GET",
         "/api/system/folder",

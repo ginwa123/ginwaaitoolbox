@@ -1,4 +1,4 @@
-# Plan — NalarSettings Reset button for active profile
+# Plan — PabrikSettings Reset button for active profile
 
 **Date:** 2026-08-06
 **Branch:** `worktree/investigate-profile-bug`
@@ -9,17 +9,17 @@
 ## Problem
 
 After PR #205 landed, the chatview correctly reflects the active
-profile cascade. But the NalarSettings → Profiles tab only had a
+profile cascade. But the PabrikSettings → Profiles tab only had a
 "Set active" button on each profile row — once a profile was marked
 active, there was no UI path to UNSET it short of hand-editing
-`~/.config/nalar/config.json` to remove the `active_profile` key.
+`~/.config/pabrik/config.json` to remove the `active_profile` key.
 
 The user wanted a one-click Reset button so they can fall back to
 "no active profile" (cascade falls through to top-level config).
 
 ## Investigation
 
-**Current flow when a profile is active** (`NalarSettings.vue`):
+**Current flow when a profile is active** (`PabrikSettings.vue`):
 
 - Header (`ProfilesSection.vue:75-80`): renders an `active-pill` span
   showing the profile name (when `activeProfile` is non-null).
@@ -28,22 +28,22 @@ The user wanted a one-click Reset button so they can fall back to
   active).
 - No Reset button anywhere.
 
-**`setActiveProfile(name)` in NalarSettings.vue:450-461** is the
+**`setActiveProfile(name)` in PabrikSettings.vue:450-461** is the
 existing "instant save" path: optimistically sets the local ref,
-calls `saveNalarConfig({ ..., active_profile: name })`, fires a
+calls `savePabrikConfig({ ..., active_profile: name })`, fires a
 success/error notification. Reuses the same composable
-(`useNalarConfig.save`) under the hood? No — it calls the raw
-`saveNalarConfig` API directly. Same pattern works for the Reset
+(`usePabrikConfig.save`) under the hood? No — it calls the raw
+`savePabrikConfig` API directly. Same pattern works for the Reset
 case.
 
-**Backend's `nalar_config_put.zig:246-252`** already handles
+**Backend's `pabrik_config_put.zig:246-252`** already handles
 `active_profile: null` correctly (coerces to `config_json.active_profile
 = null`, which the `LlmConfig.init` parser turns into a missing
 key — same result as a hand-edited config without the field).
 So the backend needed NO changes.
 
-**`useNalarConfig` composable** has both `save` (saves the dirty
-working copy) and direct `saveNalarConfig` (raw API call). The
+**`usePabrikConfig` composable** has both `save` (saves the dirty
+working copy) and direct `savePabrikConfig` (raw API call). The
 existing `setActiveProfile` uses the raw API because it bypasses
 the "dirty pill" UX (active profile changes are instant — no
 "unsaved changes" indicator). The Reset button follows the same
@@ -81,7 +81,7 @@ separate header section.**
 3. `Clicking Reset emits 'clearActive' event`
 4. `Set-active button stays hidden on the active row` (regression guard)
 
-**`NalarSettings.spec.ts`** (3 new tests):
+**`PabrikSettings.spec.ts`** (3 new tests):
 1. `Clicking Reset saves active_profile: undefined to config`
 2. `Success notification fires after save`
 3. `Failed save rolls back the optimistic local update`
@@ -98,11 +98,11 @@ Total: 7 new tests, all RED before the fix landed.
   Tooltip: "Clear active profile — every chat will use the top-level
   config".
 
-**`NalarSettings.vue`** (+24 lines):
+**`PabrikSettings.vue`** (+24 lines):
 - Added `@clear-active="clearActiveProfile"` on the `<ProfilesSection>`
   binding.
 - Added `clearActiveProfile()` function: optimistic `activeProfile.value
-  = null`, `saveNalarConfig({ ..., active_profile: undefined })`,
+  = null`, `savePabrikConfig({ ..., active_profile: undefined })`,
   fire success notification. On failure, restore the previous value
   and fire error notification (same pattern as `setActiveProfile`).
 
@@ -110,7 +110,7 @@ Total: 7 new tests, all RED before the fix landed.
 
 ```
 ProfilesSection.spec.ts: 20/20 pass (+4 new)
-NalarSettings.spec.ts:    10/10 pass (+3 new)
+PabrikSettings.spec.ts:    10/10 pass (+3 new)
 ```
 
 ### Step 4: Build + full suite
@@ -126,11 +126,11 @@ NalarSettings.spec.ts:    10/10 pass (+3 new)
 ```
 User clicks Reset
   → ProfilesSection emits 'clearActive' (no payload)
-  → NalarSettings.clearActiveProfile()
+  → PabrikSettings.clearActiveProfile()
     → optimistic: activeProfile.value = null (UI updates)
-    → saveNalarConfig({ ..., active_profile: undefined })
-      → PUT /api/config/nalar
-        → nalar_config_put.zig: writes config.json with
+    → savePabrikConfig({ ..., active_profile: undefined })
+      → PUT /api/config/pabrik
+        → pabrik_config_put.zig: writes config.json with
           active_profile: null (or omits the key)
         → live-reloads the LlmConfig (LlmConfig.active_profile
           becomes null)
@@ -140,19 +140,19 @@ User clicks Reset
 ```
 
 The chatview's `effectiveProfile` computed (from PR #205) immediately
-sees `activeProfile = null` (after the next `getNalarConfig()`
+sees `activeProfile = null` (after the next `getPabrikConfig()`
 refresh) and falls back to `selectedProfile ?? 'Default'`. New
 chats / tasks now use the top-level config.
 
 ## Pitfalls (record for future agents)
 
 - **Optimistic update with rollback.** Setting `activeProfile.value
-  = null` before the `saveNalarConfig` call makes the UI feel
+  = null` before the `savePabrikConfig` call makes the UI feel
   instant. On failure, restore from the captured `previous`
   variable. Same pattern as the existing `setActiveProfile`.
 
 - **`active_profile: undefined` vs `active_profile: null`.** The
-  frontend type is `NalarConfig.active_profile?: string` (not
+  frontend type is `PabrikConfig.active_profile?: string` (not
   nullable). Passing `null` triggers a TS2352 type error. Use
   `undefined` and let the spread merge the rest of the config —
   the key is omitted on serialization, which the backend treats
@@ -170,13 +170,13 @@ chats / tasks now use the top-level config.
 
 ## Files
 
-- Modified: `src/apps/desktop/src/components/nalar/ProfilesSection.vue`
+- Modified: `src/apps/desktop/src/components/pabrik/ProfilesSection.vue`
   (+15/-0)
-- Modified: `src/apps/desktop/src/components/NalarSettings.vue`
+- Modified: `src/apps/desktop/src/components/PabrikSettings.vue`
   (+24/-0)
 - Modified: `src/apps/desktop/src/__tests__/ProfilesSection.spec.ts`
   (+50/-0)
-- Modified: `src/apps/desktop/src/__tests__/NalarSettings.spec.ts`
+- Modified: `src/apps/desktop/src/__tests__/PabrikSettings.spec.ts`
   (+77/-0)
 - New: `docs/superpowers/specs/2026-08-06-reset-active-profile-design.md`
 - New: `docs/superpowers/plans/2026-08-06-reset-active-profile.md`
@@ -186,7 +186,7 @@ chats / tasks now use the top-level config.
 
 - Worktree: `worktree/investigate-profile-bug`
 - Branch: `worktree/investigate-profile-bug` (pushed to origin)
-- Commit: `5b474f73 feat(nalar-settings): Reset button to clear active profile`
+- Commit: `5b474f73 feat(pabrik-settings): Reset button to clear active profile`
 - Followed by: docs commits (this PR)
 
 ## Follow-ups (out of scope, deferred)

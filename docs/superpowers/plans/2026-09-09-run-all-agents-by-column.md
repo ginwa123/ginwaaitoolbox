@@ -81,7 +81,7 @@
 
 - [ ] `pnpm test:unit` full — no regressions in `KanbanColumn`, `KanbanView`, `workspaces` specs.
 - [ ] Write python functional test (harness, port != 8081): seed workspace → kanban → column with 3 tasks (2 idle + 1 with worker running via direct `start_agent` 200 first); `POST .../kanban/columns/:col/run_all_agents` → 200 with `started==2 (or 1 + 409-skip semantics)`, `skipped` contains the running id; second identical POST is safe (all-skipped or all-started, no 500); unknown column → 404; also assert `GET .../tasks/:task_id` single route is NOT shadowed by the new route.
-- [ ] Run with `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/<new>_test.py -v`; confirm pass.
+- [ ] Run with `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/<new>_test.py -v`; confirm pass.
 - [ ] `zig build test --summary all` sanity, confirm green.
 - [ ] Commit.
 

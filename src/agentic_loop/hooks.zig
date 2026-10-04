@@ -3,7 +3,7 @@
 //! Two tiers, each an optional `register_hook.lua` whose `init(event, data)`
 //! runs around every tool call:
 //!   1. global:  `<config_dir>/hooks/register_hook.lua`
-//!   2. project: `<cwd>/.nalar/hooks/register_hook.lua` (the tool call's cwd)
+//!   2. project: `<cwd>/.pabrik/hooks/register_hook.lua` (the tool call's cwd)
 //!
 //! The global hook runs first, then the project hook sees whatever the
 //! global hook left (modified args / replaced output chain forward). The
@@ -27,11 +27,11 @@
 //! Linux, macOS, and Windows with no system dependency.
 
 const std = @import("std");
-const nalar = @import("nalarcore");
+const pabrik = @import("pabrikcore");
 const helpers = @import("helpers");
 
-const logger_mod = nalar.loggermod;
-const config_mod = nalar.config;
+const logger_mod = pabrik.loggermod;
+const config_mod = pabrik.config;
 const lua = @import("lua_bindings.zig");
 
 const Logger = logger_mod.Logger;
@@ -101,12 +101,12 @@ pub fn resolveHookFile(allocator: std.mem.Allocator, environment: ?*const std.pr
     return full;
 }
 
-/// Resolve the per-project hook file `<cwd>/.nalar/hooks/register_hook.lua`
+/// Resolve the per-project hook file `<cwd>/.pabrik/hooks/register_hook.lua`
 /// (caller frees). Returns null when cwd is empty or the file does not
 /// exist. No directory walk: the path is exact and predictable.
 pub fn resolveProjectHookFile(allocator: std.mem.Allocator, cwd: []const u8) !?[]u8 {
     if (cwd.len == 0) return null;
-    const full = try std.fs.path.join(allocator, &.{ cwd, ".nalar", "hooks", HOOK_FILENAME });
+    const full = try std.fs.path.join(allocator, &.{ cwd, ".pabrik", "hooks", HOOK_FILENAME });
     errdefer allocator.free(full);
     if (!helpers.fileExists(full)) {
         allocator.free(full);
@@ -605,11 +605,11 @@ test "hooks: data table reaches Lua (tool_name visible)" {
     try testing.expectEqualStrings("saw:read_file:pre_tool_use", pre.mock);
 }
 
-/// Write a per-project hook at <proj>/.nalar/hooks/register_hook.lua.
+/// Write a per-project hook at <proj>/.pabrik/hooks/register_hook.lua.
 /// Returns the project root absolute path (owned).
 fn writeProjectHook(allocator: std.mem.Allocator, proj: std.Io.Dir, io: std.Io, content: []const u8) ![]u8 {
-    try proj.createDirPath(io, ".nalar/hooks");
-    var hooks_dir = try proj.openDir(io, ".nalar/hooks", .{});
+    try proj.createDirPath(io, ".pabrik/hooks");
+    var hooks_dir = try proj.openDir(io, ".pabrik/hooks", .{});
     defer hooks_dir.close(io);
     try writeHookFile(hooks_dir, io, HOOK_FILENAME, content);
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;

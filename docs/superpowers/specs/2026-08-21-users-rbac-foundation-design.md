@@ -2,7 +2,7 @@
 
 > **For agentic workers:** This is a design spec. After the user approves, the next step is to invoke the `superpowers:writing-plans` skill to create a bite-sized implementation plan.
 
-**Goal:** Lay down the schema foundation for a multi-user / multi-tenant nalar — `users` table, `user_companies` table, `user_company_members` join, and `user_id` FKs on `workspaces` + `sessions`. Backfill all legacy rows to a default `user_system` user. **No auth flow, no permission checks, no frontend changes** — every existing endpoint continues to work. This is sub-project 1 of 4; sub-projects 2 (auth), 3 (RBAC enforcement), and 4 (frontend UI) get their own follow-up specs.
+**Goal:** Lay down the schema foundation for a multi-user / multi-tenant pabrik — `users` table, `user_companies` table, `user_company_members` join, and `user_id` FKs on `workspaces` + `sessions`. Backfill all legacy rows to a default `user_system` user. **No auth flow, no permission checks, no frontend changes** — every existing endpoint continues to work. This is sub-project 1 of 4; sub-projects 2 (auth), 3 (RBAC enforcement), and 4 (frontend UI) get their own follow-up specs.
 
 **Architecture:**
 - **Schema-first.** One new migration (`Migration077AddUsersAndRbacSchema`) creates the three tables, adds the two `user_id` columns, creates the indexes, inserts the default `user_system` user, and backfills legacy rows. Wrapped in a single `BEGIN..COMMIT` for atomicity.
@@ -374,7 +374,7 @@ pub const Migration077AddUsersAndRbacSchema = struct {
 
 const std = @import("std");
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const migration = @import("migration.zig");
 
 const Migration077AddUsersAndRbacSchema = migration.Migration077AddUsersAndRbacSchema;
@@ -488,6 +488,6 @@ These are deliberately NOT in this sub-project. Each gets its own spec → plan 
 
 - `project-test-use-migrations-module` — use `MigrationManager.registerAllMigrations + runMigrations` for test setup.
 - `addColumnIfMissing-requires-name-type` — `addColumnIfMissing` builds `ALTER TABLE … ADD COLUMN {definition}`, so the definition MUST include the column name + type.
-- `nalar-fresh-db-migration-cascade` — the fresh-DB install path runs every migration in order; a fresh-DB replay-safe migration must be idempotent.
+- `pabrik-fresh-db-migration-cascade` — the fresh-DB install path runs every migration in order; a fresh-DB replay-safe migration must be idempotent.
 - `nats-frontend-log-dedup` (irrelevant here, but precedent for `INSERT OR IGNORE` re-insert safety).
 - Project memory `sqlite-backend-empty-slice-binds-as-null` — irrelevant here, we use literals not binds.

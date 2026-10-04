@@ -463,7 +463,7 @@ def _get_session_flag_via_db(
     """
     import sqlite3
 
-    db_path = harness.temp_dir / ".config" / "nalar" / "agent.db"
+    db_path = harness.temp_dir / ".config" / "pabrik" / "agent.db"
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
@@ -593,7 +593,7 @@ def test_create_session_without_profile_stays_empty(
 
 
 @pytest.fixture
-def llm_harness(default_nalar_bin: Any) -> Any:
+def llm_harness(default_pabrik_bin: Any) -> Any:
     """A harness booted with the LLM stub profile so create_and_run's
     workflow doesn't try to call a real LLM. The wire works; the LLM
     call fails silently — we don't care about LLM outcomes in this
@@ -602,7 +602,7 @@ def llm_harness(default_nalar_bin: Any) -> Any:
     agentic_loop/workflow.zig:716-740).
     """
     h = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
     )
     try:

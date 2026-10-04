@@ -532,7 +532,7 @@ void readMode
 </template>
 
 <style scoped>
-/* Code token colors — mirrors the `nalar-dark` monaco theme in
+/* Code token colors — mirrors the `pabrik-dark` monaco theme in
  * CodeEditor.vue so diff output matches the full editor. The row
  * red/green background stays the source of truth for removed/added;
  * these tints only color tokens *within* the row. Scoped to this

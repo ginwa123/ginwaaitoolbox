@@ -49,7 +49,7 @@ Both polish issues are independent of the default — they matter for users who 
 
 1. **`show_preview` defaults to the side panel.** A new user (no localStorage entry) opens the chat, the LLM emits a `show_preview` with a wide HTML page → the right-side panel appears with the preview rendered at full panel width, no horizontal scrollbar inside the iframe, the tab strip is visible, the user can resize the panel. The chat bubble shows just the small header card (`show_preview → Migration Plan · 11 KB ✓`), the same as every other tool output (`read_file`, `bash`, `update_plan`).
 
-2. **Inline rendering is still available** — the existing toggle in the panel header (`PreviewSidePanel.vue:239-267`) flips the mode to inline; the new floating "📋 Open preview panel" button (already in `ChatView.vue:3597-3607`) flips it back to side. Anyone who has `localStorage['nalar-preview-display-mode'] === 'inline'` already is **unaffected** — the change is only for new users and for the default.
+2. **Inline rendering is still available** — the existing toggle in the panel header (`PreviewSidePanel.vue:239-267`) flips the mode to inline; the new floating "📋 Open preview panel" button (already in `ChatView.vue:3597-3607`) flips it back to side. Anyone who has `localStorage['pabrik-preview-display-mode'] === 'inline'` already is **unaffected** — the change is only for new users and for the default.
 
 3. **Inline renderer has a centered CTA strip instead of a floating-corner button.** When the inline iframe is mounted, a small horizontal CTA strip renders BELOW the iframe (not inside it) with:
    - "↗ Open in side panel" button (primary) — same handler as the existing `@open` emit, opens the side panel.
@@ -468,7 +468,7 @@ cd /home/ginwa/ginwaaitoolbox
 timeout 180 zig build test --summary all 2>&1 | tail -n 5
 ```
 
-Eyeball smoke on port 8080 (NOT 8081) — `zig build nalar-desktop` + click through the chatview:
+Eyeball smoke on port 8080 (NOT 8081) — `zig build pabrik-desktop` + click through the chatview:
 
 1. Open a fresh browser profile (no localStorage).
 2. Trigger a `show_preview` with HTML content (e.g. an HTML page from a kanban design) — the side panel should appear with the preview, NOT the inline iframe.

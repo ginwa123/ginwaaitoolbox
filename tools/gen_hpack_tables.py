@@ -17,7 +17,7 @@ their expected decoded header lists taken from the RFC's own "Decoded header
 list" tables, cross-checked against `hpack`.
 
 Usage (run from a kabelweb repo checkout — the generated files live
-there now, not in nalar):
+there now, not in pabrik):
     python3 tools/gen_hpack_tables.py \
         --rfc /path/to/rfc7541.txt \
         --out-tables  src/server/http2/generated_tables.zig \

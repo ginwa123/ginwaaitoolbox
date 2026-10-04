@@ -23,9 +23,9 @@
 //!   (Tasks 1+2, Option C).
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const sqlite = pabrikcore.sqlite;
 const http_response = @import("http_response.zig");
 const start_agent = @import("start_agent.zig");
 
@@ -171,7 +171,7 @@ pub fn runAllAgentsWithStarter(
 const LiveCtx = struct {
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.App,
 };
 
 fn liveRun(ptr: ?*anyopaque, task_id: []const u8) PerTaskResult {
@@ -191,7 +191,7 @@ fn liveRun(ptr: ?*anyopaque, task_id: []const u8) PerTaskResult {
 pub fn runAllAgentsUseCase(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.App,
     column_id: []const u8,
 ) !RunAllAgentsOutcome {
     var live = LiveCtx{ .allocator = allocator, .db = db, .di = di };
@@ -226,8 +226,8 @@ pub fn runAllAgentsHandler(
         });
     }
 
-    // 2. Resolve the `ContextIPCTui` singleton (carries the DB handle).
-    const di = nalarcore.getSingleton() catch {
+    // 2. Resolve the `App` singleton (carries the DB handle).
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "singleton not initialized" }),
@@ -389,7 +389,7 @@ fn fakeRun(ptr: ?*anyopaque, task_id: []const u8) PerTaskResult {
     for (c.fail_ids) |f| {
         if (std.mem.eql(u8, f, task_id)) return .failed;
     }
-    if (nalarcore.ai_mod.llm_history.isTaskRunning(testing.allocator, c.db, task_id)) return .skipped;
+    if (pabrikcore.ai_mod.llm_history.isTaskRunning(testing.allocator, c.db, task_id)) return .skipped;
     return .started;
 }
 

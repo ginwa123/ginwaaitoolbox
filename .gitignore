@@ -53,7 +53,7 @@ zig-out
 !/vendor/lua/
 
 # === Local task database (per-developer, not shared) ===
-.nalar/tasks/
+.pabrik/tasks/
 
 # === Test artifacts (created by `zig build test` runs) ===
 test_logger_*.log
@@ -75,7 +75,7 @@ tests/__pycache__/
 # === WebView2 NuGet headers + loader (downloaded by CI's
 # "Stage WebView2 + integrate vcpkg + install ripgrep (Windows)" step;
 # 1.0.2651.64. Re-staged on every Windows CI run from the .nupkg zip;
-# the .dll + .lib are runtime link inputs for nalar-desktop.exe) ===
+# the .dll + .lib are runtime link inputs for pabrik-desktop.exe) ===
 /src/apps/desktop_app/platform/windows/
 # The full path is ignored rather than individual files so the
 # auto-created staging directory is also skipped (the directory gets
@@ -86,7 +86,7 @@ tests/__pycache__/
 # no-op C stub — see build.zig's `.windows =>` else branch + the doc
 # comment at the top of that file. We commit it so the no-stub-build
 # path always works on a fresh checkout (otherwise the
-# `zig build nalar-desktop` step on a Windows dev box without MSVC +
+# `zig build pabrik-desktop` step on a Windows dev box without MSVC +
 # WebView2 fails with "file not found" because the .c source is
 # missing).
 !/src/apps/desktop_app/platform/windows/webview_stub.c

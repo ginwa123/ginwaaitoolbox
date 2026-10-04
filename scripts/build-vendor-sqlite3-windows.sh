@@ -45,7 +45,7 @@ fi
 
 mkdir -p "${AMALG_DIR}" "${WIN_DIR}"
 
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/nalar-sqlite-XXXXXX")
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/pabrik-sqlite-XXXXXX")
 trap 'rm -rf "${TMP}"' EXIT
 
 # 1. Download + extract amalgamation

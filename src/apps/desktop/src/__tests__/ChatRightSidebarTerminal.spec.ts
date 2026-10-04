@@ -214,7 +214,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     await flush()
     expect(wrapper.find('[data-testid="terminal-tab"]').exists()).toBe(true)
     await wrapper.find('[data-testid="chat-right-sidebar-tab-terminal"]').trigger('click')
-    expect(localStorage.getItem('nalar-right-sidebar-panel')).toBe('terminal')
+    expect(localStorage.getItem('pabrik-right-sidebar-panel')).toBe('terminal')
     wrapper.unmount()
   })
 
@@ -402,7 +402,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     await wrapper.find('[data-testid="terminal-new"]').trigger('click')
     await waitForCreates(1)
     socketFor('term-1').serverOpen()
-    expect(localStorage.getItem('nalar-terminal-sessions:chat-abc')).toContain('term-1')
+    expect(localStorage.getItem('pabrik-terminal-sessions:chat-abc')).toContain('term-1')
 
     // Unmount (chat switch): keyed sessions are NOT deleted server-side.
     wrapper.unmount()
@@ -426,7 +426,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
 
   it('drops 404 sessions on restore and stays empty', async () => {
     localStorage.setItem(
-      'nalar-terminal-sessions:chat-gone',
+      'pabrik-terminal-sessions:chat-gone',
       JSON.stringify([{ id: 'old-9', label: 'term 1' }]),
     )
     apiState.output404For = 'old-9'
@@ -440,7 +440,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(createTerminalSession).not.toHaveBeenCalled()
     expect(chips(wrapper)).toHaveLength(0)
     expect(wrapper.find('[data-testid="terminal-empty"]').exists()).toBe(true)
-    expect(localStorage.getItem('nalar-terminal-sessions:chat-gone')).not.toContain('old-9')
+    expect(localStorage.getItem('pabrik-terminal-sessions:chat-gone')).not.toContain('old-9')
     wrapper.unmount()
   })
 
@@ -464,7 +464,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
 
   it('numbers new sessions past restored labels (no duplicate chips)', async () => {
     localStorage.setItem(
-      'nalar-terminal-sessions:chat-nums',
+      'pabrik-terminal-sessions:chat-nums',
       JSON.stringify([
         { id: 'a', label: 'term 2' },
         { id: 'b', label: 'term 5' },
@@ -533,7 +533,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
 
   it('late cwd resolution does not drop restored sessions', async () => {
     localStorage.setItem(
-      'nalar-terminal-sessions:chat-restore-cwd',
+      'pabrik-terminal-sessions:chat-restore-cwd',
       JSON.stringify([{ id: 'term-9', label: 'term 9' }]),
     )
     const wrapper = mount(TerminalTab, {
@@ -558,7 +558,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     // every mount. Those mount-time flips must not wipe the restored
     // session ("always a new term" with worktrees).
     localStorage.setItem(
-      'nalar-terminal-sessions:chat-worktree',
+      'pabrik-terminal-sessions:chat-worktree',
       JSON.stringify([{ id: 'wt-1', label: 'term 1' }]),
     )
     const wrapper = mount(TerminalTab, {

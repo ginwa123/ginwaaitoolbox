@@ -31,9 +31,9 @@
 //! Plan: docs/superpowers/plans/2026-06-30-unify-sse-endpoints.md
 
 const std = @import("std");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
-const ai_mod = nalar_core.ai_mod;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
+const ai_mod = pabrik_core.ai_mod;
 const auth_common = @import("auth_common.zig");
 
 /// Forward an SSE event to every client registered under `routing_key`.
@@ -51,7 +51,7 @@ const auth_common = @import("auth_common.zig");
 /// `session_id` or an unknown owner (auth off) delivers, so the auth-off
 /// path stays byte-identical.
 fn forwardToClients(routing_key: []const u8, data: ai_mod.on_event_sent.SseEvent) void {
-    const di = nalar_core.getSingleton() catch return;
+    const di = pabrik_core.getSingleton() catch return;
     const allocator = di.allocator;
     const server = di.server;
 
@@ -108,8 +108,8 @@ fn forwardToClients(routing_key: []const u8, data: ai_mod.on_event_sent.SseEvent
 /// id does not name a session row, fall back to the payload's `session_id`
 /// field before deciding; a payload that names no session either is
 /// delivered (nothing to scope on).
-fn clientMayReceive(di: *nalar_core.ContextIPCTui, client_id: [16]u8, data: ai_mod.on_event_sent.SseEvent) bool {
-    const owner = nalar_core.getClientOwner(client_id) orelse return true;
+fn clientMayReceive(di: *pabrik_core.App, client_id: [16]u8, data: ai_mod.on_event_sent.SseEvent) bool {
+    const owner = pabrik_core.getClientOwner(client_id) orelse return true;
     if (auth_common.isSharedOwner(owner)) return true;
 
     // Resolve the session this event is about, then ask whether the owner
@@ -139,7 +139,7 @@ fn clientMayReceive(di: *nalar_core.ContextIPCTui, client_id: [16]u8, data: ai_m
 /// Returns an owned-by-arena slice (the fan-out is a short-lived callback).
 fn resolveEventSessionId(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     data: ai_mod.on_event_sent.SseEvent,
 ) ?[]const u8 {
     if (data.session_id.len > 0 and sessionRowExists(allocator, db, data.session_id)) {
@@ -177,7 +177,7 @@ fn payloadFields(allocator: std.mem.Allocator, data: []const u8) ?PayloadFields 
     return out;
 }
 
-fn sessionRowExists(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend, id: []const u8) bool {
+fn sessionRowExists(allocator: std.mem.Allocator, db: *pabrikcore.sqlite.SqliteBackend, id: []const u8) bool {
     if (id.len == 0) return false;
     var q = db.query(allocator, "SELECT 1 FROM sessions WHERE id = ?", &[_][]const u8{id}) catch return false;
     defer q.deinit();
@@ -189,7 +189,7 @@ fn sessionRowExists(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBa
     return false;
 }
 
-fn workerSessionId(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend, worker_id: []const u8) ?[]const u8 {
+fn workerSessionId(allocator: std.mem.Allocator, db: *pabrikcore.sqlite.SqliteBackend, worker_id: []const u8) ?[]const u8 {
     if (worker_id.len == 0) return null;
     var q = db.query(allocator, "SELECT session_id FROM worker WHERE id = ?", &[_][]const u8{worker_id}) catch return null;
     defer q.deinit();
@@ -391,7 +391,7 @@ pub const CallbackUnifiedSkillEvalsStream = struct {
 /// browser's EventSource errors out promptly instead of hanging.
 fn terminateSseStream(ctx: gserverz.HttpContext, event_name: ?[]const u8, data_json: []const u8) void {
     const cid = ctx.client_id orelse return;
-    const di = nalar_core.getSingleton() catch return;
+    const di = pabrik_core.getSingleton() catch return;
     if (event_name) |name| {
         var buf: [256]u8 = undefined;
         const frame = std.fmt.bufPrint(&buf, "event: {s}\ndata: {s}\n\n", .{ name, data_json }) catch return;
@@ -426,7 +426,7 @@ pub fn unifiedEventsStreamHandler(
     defer {
         if (owner_buf) |o| allocator.free(o);
     }
-    if (nalar_core.getSingleton()) |di_gate| {
+    if (pabrik_core.getSingleton()) |di_gate| {
         if (di_gate.auth_enabled) {
             const tok = auth_common.parseSessionToken(req.headers) orelse {
                 terminateSseStream(ctx, "auth_error", "{\"error\":\"Unauthenticated\"}");
@@ -475,7 +475,7 @@ pub fn unifiedEventsStreamHandler(
     defer channels.deinit(allocator);
 
     // 2. Register + subscribe
-    const di = try nalar_core.getSingleton();
+    const di = try pabrik_core.getSingleton();
     const event_bus = di.event_bus;
     const server = di.server;
 
@@ -486,7 +486,7 @@ pub fn unifiedEventsStreamHandler(
         // (W3). Absent/unknown owner => the fan-out delivers, so auth-off
         // (owner_buf == null) stays byte-identical.
         if (owner_buf) |o| {
-            nalar_core.registerClientOwner(client_id_copy, o);
+            pabrik_core.registerClientOwner(client_id_copy, o);
         }
 
         // 2b. Register the client_id under EVERY routing key.
@@ -571,7 +571,7 @@ pub fn unifiedEventsStreamHandler(
 // would require a Linux-only gate. The static check is the
 // higher-value test anyway — it directly tests the bug.
 
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const testing = std.testing;
 
 /// The exact byte sequence the unified SSE handler MUST send as the
@@ -941,8 +941,8 @@ test "parseChannels: trims whitespace around tokens" {
 // leak (an unresolvable event is delivered, so a wrong resolution is a leak,
 // not a dropped frame).
 
-fn testDb(alloc: std.mem.Allocator) !nalarcore.sqlite.SqliteBackend {
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+fn testDb(alloc: std.mem.Allocator) !pabrikcore.sqlite.SqliteBackend {
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     try db.init(std.testing.io, ":memory:");
     try db.exec(alloc, "CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT)", &.{});
     try db.exec(alloc, "CREATE TABLE worker (id TEXT PRIMARY KEY, session_id TEXT)", &.{});

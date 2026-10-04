@@ -1,9 +1,9 @@
 const std = @import("std");
-const nalar = @import("nalarcore");
-const agent = nalar.agent;
-const logger_mod = nalar.loggermod;
-const sqlite = nalar.sqlite;
-const config_mod = nalar.config;
+const pabrik = @import("pabrikcore");
+const agent = pabrik.agent;
+const logger_mod = pabrik.loggermod;
+const sqlite = pabrik.sqlite;
+const config_mod = pabrik.config;
 const tools_equipped = @import("tools_equipped.zig");
 const tools = @import("tools.zig");
 const llm_history = @import("llm_history.zig");
@@ -11,7 +11,7 @@ const SaveSkill = llm_history.saveSkill;
 const SaveAgent = @import("save_agent.zig").SaveAgent;
 const session_helpers = llm_history;
 const get_current_agent_by_session_id = llm_history.get_current_agent_by_session_id;
-const tool_models = nalar.tool_models;
+const tool_models = pabrik.tool_models;
 const getLatestMessage = llm_history.getLatestMessage;
 const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
@@ -1489,8 +1489,8 @@ fn hookTestCtx(
         .session_id = "sess_hook_test",
         .model = "test-model",
         // Nonexistent cwd isolates the project-hook tier: no stray
-        // <cwd>/.nalar/hooks/register_hook.lua can interfere.
-        .cwd = "/tmp/nalar-hook-test-no-such-dir-xyz",
+        // <cwd>/.pabrik/hooks/register_hook.lua can interfere.
+        .cwd = "/tmp/pabrik-hook-test-no-such-dir-xyz",
         .api_key = "",
         .base_url = "",
         .config = undefined,
@@ -1654,8 +1654,8 @@ fn hookDispatchCtx(
         .session_id = "sess_hook_dispatch",
         .model = "test-model",
         // Nonexistent cwd isolates the project-hook tier: no stray
-        // <cwd>/.nalar/hooks/register_hook.lua can interfere.
-        .cwd = "/tmp/nalar-hook-test-no-such-dir-xyz",
+        // <cwd>/.pabrik/hooks/register_hook.lua can interfere.
+        .cwd = "/tmp/pabrik-hook-test-no-such-dir-xyz",
         .api_key = "",
         .base_url = "",
         .config = undefined,
@@ -1740,7 +1740,7 @@ test "hook dispatch: pre deny skips exec (missing file still denies)" {
     const ctx = hookDispatchCtx(dispatch_alloc, &setup, &lg, &fx.env_map);
     // Points at a file that does not exist: without the hook this would
     // be a read_file error envelope, with the hook it must be the deny.
-    const tc = try readFileCall(dispatch_alloc, "/tmp/nalar-hook-test-does-not-exist-12345.txt");
+    const tc = try readFileCall(dispatch_alloc, "/tmp/pabrik-hook-test-does-not-exist-12345.txt");
     const result = try dispatchTool(ctx, tc);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"success\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "reads blocked") != null);
@@ -1771,7 +1771,7 @@ test "hook dispatch: pre modify rewrites args seen by exec" {
     defer fx.deinit();
 
     const ctx = hookDispatchCtx(dispatch_alloc, &setup, &lg, &fx.env_map);
-    const tc = try readFileCall(dispatch_alloc, "/tmp/nalar-hook-test-original-12345.txt");
+    const tc = try readFileCall(dispatch_alloc, "/tmp/pabrik-hook-test-original-12345.txt");
     const result = try dispatchTool(ctx, tc);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "OTHER CONTENT") != null);
 }

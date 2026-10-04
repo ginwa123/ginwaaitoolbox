@@ -16,7 +16,7 @@
 - `sessions` full shape: `(id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop)` with `VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)` — verbatim from `kanban_tasks_create.zig:248-249`.
 - `llm_history` user-row shape: `(id, session_id, model, response_content, finish_reason, role, agent, parent_id, parent_session_id, is_input, image_url, is_feed_to_llm, created_at_nano, created_iso)` with `VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, ?, 1, ?, '')` — verbatim from `kanban_tasks_create.zig:336-340`. `model=''` literal (NOT NULL + empty-slice-binds-as-NULL quirk).
 - SSE contract: `session_created` via `onEventSendSessions(action="created")` must be added in pairs (backend emitter + `additionalEventTypes` + dispatch chain in `src/apps/desktop/src/api/index.ts`) — verify the frontend already registers `session_created`; if missing, add all three sites together.
-- Functional verification MUST use the python harness on a non-8081 port (`NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/<file> -v`), never `nohup` + `curl` a live server.
+- Functional verification MUST use the python harness on a non-8081 port (`PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/<file> -v`), never `nohup` + `curl` a live server.
 - DONT KILL the port 8081 server.
 
 ## Background / Root Cause
@@ -86,7 +86,7 @@ No changes to: `tools_exec_create_kanban_task.zig` (pass-through), `tools_equipp
 ## Task 6 — Functional verification (wire-level, harness only)
 
 - [ ] Create `tests/functional/agent_create_kanban_task_session_test.py` following `tests/functional/kanban_task_get_test.py` harness pattern: boot isolated HOME + free port (never 8081), create workspace → kanban item → task via the agent-tool-equivalent HTTP `create_session` path, then assert: (a) `GET sessions` row exists with `name == card title`, (b) `GET llm_history` contains the user row `{name}\n\n{description}`, (c) plain create with no flag/profile still yields both rows (the regression this plan fixes).
-- [ ] Run: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/agent_create_kanban_task_session_test.py -v` → all pass.
+- [ ] Run: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/agent_create_kanban_task_session_test.py -v` → all pass.
 - [ ] Run `zig build test --summary all` one final time.
 - [ ] Commit: `test: functional coverage for agent create_kanban_task session seeding`
 

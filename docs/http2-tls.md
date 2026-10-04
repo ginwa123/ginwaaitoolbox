@@ -50,7 +50,7 @@ processes on two ports.
 
 ## CLI contract
 
-Parsed on the main `nalar` entry point, in the same loop as `--port` / `--static-dir` /
+Parsed on the main `pabrik` entry point, in the same loop as `--port` / `--static-dir` /
 `--http2`:
 
 ```
@@ -118,8 +118,8 @@ outside the accept path changes shape.
 
 **Self-signed on first run.** `--tls-selfsigned` generates, on first run only, an **EC
 P-256** self-signed certificate with `SAN DNS:localhost, IP:127.0.0.1`, writes it plus its
-key (mode **0600**) into the app data dir — `$XDG_DATA_HOME/nalar/tls/`, or
-`%LOCALAPPDATA%\nalar\tls\` on Windows — and reuses it on every later run. No elevation,
+key (mode **0600**) into the app data dir — `$XDG_DATA_HOME/pabrik/tls/`, or
+`%LOCALAPPDATA%\pabrik\tls\` on Windows — and reuses it on every later run. No elevation,
 no trust-store writes, no shared private key in the repo. `--tls <cert.pem> <key.pem>` is
 the escape hatch for callers with their own PEM material (corporate CA, mkcert, a real
 domain); it generates nothing.
@@ -164,7 +164,7 @@ option is to keep the UI on `http://`.
 
 ## Verification
 
-The acceptance suite boots the real binary against an isolated `nalar-func-*` tmpdir HOME,
+The acceptance suite boots the real binary against an isolated `pabrik-func-*` tmpdir HOME,
 never a fixed port (never 8081), and tears down in a `finally`. It spawns the binary
 itself instead of using `FunctionalHarness.boot`, because boot's readiness probe is a
 *plaintext* `GET /health`, which a TLS-only listener can never answer. Most tests pass
@@ -175,7 +175,7 @@ uses `--cacert` instead: the certificate-contents test.
 
 ```bash
 zig build install:linux
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
   python3 -m pytest tests/functional/http2_tls_test.py -v
 ```
 
@@ -183,7 +183,7 @@ NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
 
 ```bash
 # start with a self-signed cert; the log prints the cert path
-./zig-out/bin/nalarcore-linux-x86_64 --port 8443 --tls-selfsigned
+./zig-out/bin/pabrikcore-linux-x86_64 --port 8443 --tls-selfsigned
 
 # ALPN h2  → prints "2"
 curl -k --http2   -o /dev/null -w '%{http_version}\n' https://127.0.0.1:8443/health
@@ -196,7 +196,7 @@ curl --cacert /path/to/cert.pem https://127.0.0.1:8443/health
 curl http://127.0.0.1:8443/health
 
 # unchanged defaults (no TLS flags): 1.1, and 2 with --http2 h2c
-./zig-out/bin/nalarcore-linux-x86_64 --port 8080 --http2 h2c
+./zig-out/bin/pabrikcore-linux-x86_64 --port 8080 --http2 h2c
 curl -o /dev/null -w '%{http_version}\n' http://127.0.0.1:8080/health
 curl --http2-prior-knowledge -o /dev/null -w '%{http_version}\n' http://127.0.0.1:8080/health
 ```
@@ -223,7 +223,7 @@ and is a system-wide side effect a desktop app should not perform silently.
 Verified end-to-end on this branch with the real binary:
 
 ```bash
-nalar --port 8080 --tls-selfsigned
+pabrik --port 8080 --tls-selfsigned
 curl -k --http2   -w '%{http_version}' https://127.0.0.1:8080/health   # → 2   (200, real body)
 curl -k --http1.1 -w '%{http_version}' https://127.0.0.1:8080/health   # → 1.1 (200)
 openssl s_client -connect 127.0.0.1:8080 -alpn h2,http/1.1 -brief      # TLSv1.3, ALPN h2

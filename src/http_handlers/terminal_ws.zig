@@ -25,8 +25,8 @@
 //! can re-attach; `DELETE /api/terminal/sessions/:id` kills it).
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const terminal_session = @import("terminal_session.zig");
 const auth_common = @import("auth_common.zig");
 const ws_frames = gserverz.ws_frames;
@@ -161,7 +161,7 @@ pub fn terminalWsHandler(
     // an unknown one, so B cannot stream A's shell.
     var owner_buf: [128]u8 = undefined;
     var owner: []const u8 = "";
-    if (nalarcore.getSingleton()) |di| {
+    if (pabrikcore.getSingleton()) |di| {
         if (di.auth_enabled) {
             const tok = auth_common.parseSessionToken(req.headers) orelse return;
             const sess = auth_common.lookupSession(ctx.allocator, di.db, tok) orelse return;

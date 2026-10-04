@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const SseEvent = @import("sse.zig").SseEvent;
 const SkillInfo = @import("session_skills.zig").SkillInfo;
 
-const agent = nalarcore.agent;
-const event_bus_mod = nalarcore.event_bus;
-const logger_mod = nalarcore.loggermod;
+const agent = pabrikcore.agent;
+const event_bus_mod = pabrikcore.event_bus;
+const logger_mod = pabrikcore.loggermod;
 const helpers = @import("helpers");
 const testing = std.testing;
 

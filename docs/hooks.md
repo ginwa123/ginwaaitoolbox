@@ -8,15 +8,15 @@ function each.
 | Tier | Path |
 |---|---|
 | Global | `<config_dir>/hooks/register_hook.lua` |
-| Project | `<cwd>/.nalar/hooks/register_hook.lua` (the tool call's working directory) |
+| Project | `<cwd>/.pabrik/hooks/register_hook.lua` (the tool call's working directory) |
 
 `<config_dir>` per OS:
 
 | OS | Global path |
 |---|---|
-| Linux | `~/.config/nalar/hooks/register_hook.lua` |
-| macOS | `~/Library/Application Support/nalar/hooks/register_hook.lua` |
-| Windows | `%APPDATA%/nalar/hooks/register_hook.lua` |
+| Linux | `~/.config/pabrik/hooks/register_hook.lua` |
+| macOS | `~/Library/Application Support/pabrik/hooks/register_hook.lua` |
+| Windows | `%APPDATA%/pabrik/hooks/register_hook.lua` |
 
 Both files are optional; missing files are skipped silently. The global
 hook runs first, then the project hook sees whatever the global hook
@@ -104,7 +104,7 @@ slow with `timeout 30s sh -c '...'` on POSIX.
 
 ## Format-on-edit
 
-The project hook at `.nalar/hooks/register_hook.lua` uses exactly this to
+The project hook at `.pabrik/hooks/register_hook.lua` uses exactly this to
 format what the agent edits: prettier for Vue/TS, `zig fmt` for Zig, on
 `post_tool_use` for `write_file` / `text_replace`.
 

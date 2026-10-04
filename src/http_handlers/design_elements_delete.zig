@@ -18,8 +18,8 @@
 //!   (Chunk 3, Task 3.3)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../agentic_loop/design_model.zig");
 
@@ -41,7 +41,7 @@ pub const DesignElementDeleteError = error{
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     element_id: []const u8,
 ) DesignElementDeleteError!void {
     if (element_id.len == 0) return error.ElementIdRequired;
@@ -61,7 +61,7 @@ pub fn designElementsDeleteHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const element_id = req.params.get("element_id") orelse "";

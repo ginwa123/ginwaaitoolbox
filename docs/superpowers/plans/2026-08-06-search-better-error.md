@@ -165,9 +165,9 @@ timeout 180 zig build test --summary all
 
 # Cross-compile smoke
 timeout 60 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 timeout 60 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # both clean (no errors)
 
 # Frontend
@@ -207,5 +207,5 @@ timeout 90 ./node_modules/.bin/vue-tsc --build
 
 - Branch: `worktree/search-better-error`
 - Plan: this file
-- Memory: `.nalar/memories/search-better-error-2026-08-06.md`
+- Memory: `.pabrik/memories/search-better-error-2026-08-06.md`
 - Files changed: 3 modified + 1 new test file

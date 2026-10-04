@@ -14,7 +14,7 @@ branch: ``sandbox="allow-scripts"``, no ``allow-same-origin``).
 
 Each test:
 
-1. Boots a fresh nalar + Vite via the ``ui_harness`` fixture.
+1. Boots a fresh pabrik + Vite via the ``ui_harness`` fixture.
 2. Writes a REAL html file into the harness's isolated tmpdir and
    seeds ``sessions`` + ``llm_history`` rows (assistant tool-call +
    present_files tool result) pointing at it — the exact wire shape
@@ -45,7 +45,7 @@ from ui_harness import UIHarness
 
 def _seed_db_path(h: UIHarness) -> Path:
     """Path to the harness's isolated agent.db (DbSeed re-validates)."""
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 MARKER = "WIREFRAME_INLINE_OK_7f3a"

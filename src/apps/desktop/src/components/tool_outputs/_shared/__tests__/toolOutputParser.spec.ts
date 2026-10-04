@@ -217,31 +217,56 @@ describe('parseRemoveFile', () => {
 })
 
 describe('parseEditSkill', () => {
-  it('parses edited=true', () => {
-    const r = parseEditSkill({ name: 'auth', edited: true, path: '/skills/auth.md' })
+  it('parses edited=true and the name', () => {
+    const r = parseEditSkill({ skill_name: 'auth', name: 'auth', updated: true, edited: true })
     expect(r.skillName).toBe('auth')
     expect(r.edited).toBe(true)
-    expect(r.path).toBe('/skills/auth.md')
+    expect(r.success).toBe(true)
   })
-  it('returns path: null when missing', () => {
+  it('falls back to `name` when skill_name is absent', () => {
     const r = parseEditSkill({ name: 'x', edited: true })
-    expect(r.path).toBeNull()
+    expect(r.skillName).toBe('x')
+  })
+  it('falls back to `name` when skill_name is empty', () => {
+    // `''` is neither null nor undefined, so a `??` chain alone would let
+    // the blank name win and render an unlabelled card.
+    const r = parseEditSkill({ skill_name: '', name: 'x', edited: true })
+    expect(r.skillName).toBe('x')
+  })
+  it('ignores a path left over on an older payload', () => {
+    const r = parseEditSkill({ skill_name: 'auth', edited: true, path: '/skills/auth.md' })
+    expect(r.skillName).toBe('auth')
+    expect('path' in r).toBe(false)
   })
 })
 
 describe('parseAddSkill', () => {
   it('parses created=true', () => {
-    const r = parseAddSkill({ name: 'foo', created: true, path: '/x' })
+    const r = parseAddSkill({ skill_name: 'foo', name: 'foo', created: true })
     expect(r.created).toBe(true)
     expect(r.skillName).toBe('foo')
+  })
+  it('surfaces the error and drops success', () => {
+    const r = parseAddSkill({ skill_name: 'foo', created: false, error: 'name already exists' })
+    expect(r.success).toBe(false)
+    expect(r.error).toBe('name already exists')
+    expect(r.created).toBe(false)
+  })
+  it('never exposes a path', () => {
+    const r = parseAddSkill({ name: 'foo', created: true, path: '/x' })
+    expect('path' in r).toBe(false)
   })
 })
 
 describe('parseRemoveSkill', () => {
   it('parses skill_name and removed', () => {
-    const r = parseRemoveSkill({ skill_name: 'foo', removed: true, path: '/x' })
+    const r = parseRemoveSkill({ skill_name: 'foo', removed: true })
     expect(r.skillName).toBe('foo')
     expect(r.removed).toBe(true)
+  })
+  it('never exposes a path', () => {
+    const r = parseRemoveSkill({ skill_name: 'foo', removed: true, path: '/x' })
+    expect('path' in r).toBe(false)
   })
 })
 
@@ -354,18 +379,17 @@ describe('parseSearch', () => {
 })
 
 describe('parseSearchSkills', () => {
-  it('parses flat skills[] rows with their per-row scope', () => {
+  it('parses flat skills[] rows of name + description and nothing else', () => {
     const r = parseSearchSkills({
       query: 'auth',
       pattern_mode: 'regex',
-      scope: null,
       count: 2,
       total: 2,
       offset: 0,
       limit: 20,
       skills: [
-        { name: 'auth', description: 'handles auth', scope: 'global', path: '/g/SKILL.MD' },
-        { name: 'auth-local', description: '', scope: 'local', path: '/l/SKILL.MD' },
+        { name: 'auth', description: 'handles auth' },
+        { name: 'auth-local', description: '' },
       ],
       truncated: false,
       next_offset: null,
@@ -373,29 +397,34 @@ describe('parseSearchSkills', () => {
     })
     expect(r.query).toBe('auth')
     expect(r.patternMode).toBe('regex')
-    expect(r.scope).toBeNull()
     expect(r.skills).toHaveLength(2)
-    expect(r.skills[0]).toEqual({
-      name: 'auth',
-      description: 'handles auth',
-      scope: 'global',
-      path: '/g/SKILL.MD',
+    expect(r.skills[0]).toEqual({ name: 'auth', description: 'handles auth' })
+    expect(r.skills[1]).toEqual({ name: 'auth-local', description: '' })
+    // No tier and no location survive: a row is a name and a description.
+    expect('scope' in r).toBe(false)
+    expect('scope' in (r.skills[0] as object)).toBe(false)
+    expect('path' in (r.skills[0] as object)).toBe(false)
+  })
+  it('reads rows that still carry the old scope / path keys', () => {
+    // A transcript recorded before the table refactor must not render as
+    // blank rows, so the extra keys are ignored rather than demanded.
+    const r = parseSearchSkills({
+      skills: [{ name: 'auth', description: 'd', scope: 'global', path: '/g/SKILL.MD' }],
     })
-    expect(r.skills[1]).toMatchObject({ scope: 'local' })
+    expect(r.skills).toEqual([{ name: 'auth', description: 'd' }])
   })
   it('keeps the paging fields of a truncated page', () => {
     const r = parseSearchSkills({
       query: 'a',
       pattern_mode: 'all',
       pattern_warning: null,
-      scope: 'local',
       count: 2,
       total: 7,
       offset: 4,
       limit: 2,
       skills: [
-        { name: 'a1', description: '', scope: 'local', path: '/1/SKILL.MD' },
-        { name: 'a2', description: '', scope: 'local', path: '/2/SKILL.MD' },
+        { name: 'a1', description: '' },
+        { name: 'a2', description: '' },
       ],
       truncated: true,
       next_offset: 6,
@@ -407,7 +436,6 @@ describe('parseSearchSkills', () => {
     expect(r.limit).toBe(2)
     expect(r.truncated).toBe(true)
     expect(r.nextOffset).toBe(6)
-    expect(r.scope).toBe('local')
     expect(r.hint).toBe('call again with offset=6')
   })
   it('surfaces a pattern_warning verbatim', () => {
@@ -444,7 +472,7 @@ describe('parseSearchSkills', () => {
     expect(parseSearchSkills('not json').skills).toHaveLength(0)
     // count / total fall back to the rendered row count.
     const rowsOnly = parseSearchSkills({
-      skills: [{ name: 'x', description: 'd', scope: 'global', path: '/p' }],
+      skills: [{ name: 'x', description: 'd' }],
     })
     expect(rowsOnly.count).toBe(1)
     expect(rowsOnly.total).toBe(1)
@@ -455,14 +483,13 @@ describe('parseSearchSkills', () => {
       success: true,
       data: {
         query: 'db',
-        skills: [{ name: 'db', description: 'db stuff', scope: 'global', path: '/db/SKILL.MD' }],
+        skills: [{ name: 'db', description: 'db stuff' }],
       },
     })
     expect(r.query).toBe('db')
     expect(r.skills).toHaveLength(1)
   })
 })
-
 describe('parseKanbanList', () => {
   it('parses workspace/item, columns and tasks', () => {
     const r = parseKanbanList({

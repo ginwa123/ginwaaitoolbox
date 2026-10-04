@@ -21,7 +21,7 @@ and retryable.
 
 What this test proves at the wire
 ---------------------------------
-Both a real nalar process and the real HTTP/worker path are exercised:
+Both a real pabrik process and the real HTTP/worker path are exercised:
 
   1. Turn 1 — the stub upstream answers the NAME request with HTTP 503
      (the provider rejects the extra name call) and answers the main
@@ -229,7 +229,7 @@ def _start_stub(
 
 def _read_names(harness: FunctionalHarness) -> tuple[str | None, str | None]:
     """Return (sessions.name, workspace_item_tasks.name) for the session."""
-    db_path = harness.temp_dir / ".config" / "nalar" / "agent.db"
+    db_path = harness.temp_dir / ".config" / "pabrik" / "agent.db"
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
@@ -300,17 +300,17 @@ def _send_turn(
 
 
 def test_failed_auto_name_call_is_retried_on_the_next_turn(
-    default_nalar_bin: Any,
+    default_pabrik_bin: Any,
 ) -> None:
     """Turn 1's name call is rejected; turn 2 must still name the session."""
     server = _start_stub()
-    harness = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    harness = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         stub_url = f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
         profile = "autoname-stub"
         harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 "api_endpoint": stub_url,
                 "api_key": "sk-stub-test",
@@ -395,7 +395,7 @@ def test_failed_auto_name_call_is_retried_on_the_next_turn(
 
 
 def test_existing_name_is_never_overwritten_by_the_generator(
-    default_nalar_bin: Any,
+    default_pabrik_bin: Any,
 ) -> None:
     """A session that already has a real name must keep it.
 
@@ -405,13 +405,13 @@ def test_existing_name_is_never_overwritten_by_the_generator(
     next turn.
     """
     server = _start_stub()
-    harness = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    harness = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         stub_url = f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
         profile = "autoname-stub"
         harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 "api_endpoint": stub_url,
                 "api_key": "sk-stub-test",
@@ -480,7 +480,7 @@ def test_existing_name_is_never_overwritten_by_the_generator(
 
 
 def test_name_call_is_not_repeated_per_tool_call_iteration(
-    default_nalar_bin: Any,
+    default_pabrik_bin: Any,
 ) -> None:
     """A failing name call must cost ONE LLM round-trip per turn, not one
     per tool-call iteration.
@@ -498,13 +498,13 @@ def test_name_call_is_not_repeated_per_tool_call_iteration(
     observable as the number of name calls.
     """
     server = _start_stub(tool_rounds=3, name_always_fails=True)
-    harness = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    harness = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         stub_url = f'http://127.0.0.1:{server.server_address[1]}/v1/chat/completions'
         profile = "autoname-stub"
         harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 "api_endpoint": stub_url,
                 "api_key": "sk-stub-test",

@@ -31,14 +31,14 @@ describe('api.deleteProfile', () => {
     global.fetch = fetchMock as unknown as typeof fetch
   }
 
-  it('calls DELETE on /api/config/nalar/profiles/:name with URL-encoded name', async () => {
+  it('calls DELETE on /api/config/pabrik/profiles/:name with URL-encoded name', async () => {
     mockFetchOnce(200, { success: true, profile_name: 'my profile', active_profile_was_cleared: false })
 
     await deleteProfile('my profile')
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toContain('/api/config/nalar/profiles/my%20profile')
+    expect(url).toContain('/api/config/pabrik/profiles/my%20profile')
     expect(init.method).toBe('DELETE')
   })
 
@@ -63,6 +63,6 @@ describe('api.deleteProfile', () => {
 
     const [url] = fetchMock.mock.calls[0] as [string, RequestInit]
     // encodeURIComponent produces 'a%2Fb%2Bc' for this input
-    expect(url).toContain('/api/config/nalar/profiles/a%2Fb%2Bc')
+    expect(url).toContain('/api/config/pabrik/profiles/a%2Fb%2Bc')
   })
 })

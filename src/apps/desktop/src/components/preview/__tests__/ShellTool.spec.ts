@@ -41,7 +41,7 @@ const unknownToolEnvelope = JSON.stringify({
   tool: 'bash',
   parameters: {
     command: 'timeout 900 zig build web 2>&1 | head -60',
-    cwd: '/home/ginwa/.config/nalar/.worktrees/glinlandui-web',
+    cwd: '/home/ginwa/.config/pabrik/.worktrees/glinlandui-web',
     mandatory_timeout: 950,
     max_lines: 70,
   },

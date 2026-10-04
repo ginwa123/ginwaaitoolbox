@@ -96,7 +96,7 @@ describe('ChatRightSidebar explorer tab', () => {
     await flushPromises()
     await wrapper.find('[data-testid="chat-right-sidebar-tab-changes"]').trigger('click')
     await flushPromises()
-    expect(localStorage.getItem('nalar-right-sidebar-panel')).toBe('changes')
+    expect(localStorage.getItem('pabrik-right-sidebar-panel')).toBe('changes')
     expect(router.currentRoute.value.query.sidebar).toBe('changes')
     expect(wrapper.find('[data-testid="sidebar-diff-panel"]').exists()).toBe(true)
   })

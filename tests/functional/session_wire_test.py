@@ -8,7 +8,7 @@ Exercises the session-level HTTP surface that's NOT covered by
   - GET  /api/llm/session/:session_id/queue_messages (empty for fresh)
   - GET  /api/workers (returns ≥1 entry; empty after no activity)
 
-Each test boots a fresh nalar (function-scoped fixture).
+Each test boots a fresh pabrik (function-scoped fixture).
 """
 
 from __future__ import annotations

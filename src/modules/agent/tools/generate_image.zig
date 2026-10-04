@@ -738,7 +738,7 @@ fn extractOpenAiErrorMessage(allocator: std.mem.Allocator, body: []const u8) ?[]
 
 const builtin = @import("builtin");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const text_normalize = @import("helpers").text_normalize;
 const generate_image = @import("generate_image.zig");
 
@@ -862,7 +862,7 @@ test "generate_image references kabelweb client (libcurl-backed HTTP)" {
     defer allocator.free(source);
     // The implementation MUST use kabelweb's client
     // (libcurl-backed, cross-platform) — not std.http.Client (which the
-    // nalar_browser tool uses for its localhost server, but is not
+    // pabrik_browser tool uses for its localhost server, but is not
     // appropriate for HTTPS to api.openai.com). Guards against an
     // accidental std-lib-only stub.
     if (!contains(source, "kabelweb")) {
@@ -1127,7 +1127,7 @@ test "saveImageToDisk writes base64 bytes to <cwd>/generated_images/img_<ts>_<id
     defer threaded.deinit();
     const io = threaded.io();
 
-    const tmp_cwd = "/tmp/nalar-generate-image-save";
+    const tmp_cwd = "/tmp/pabrik-generate-image-save";
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     try std.Io.Dir.cwd().createDirPath(io, tmp_cwd);
@@ -1183,7 +1183,7 @@ test "saveImageToDisk rejects when the base64 payload is not valid base64" {
 
     // "not_valid_base64!!!" contains '!' and ' ' which are not in the
     // base64 alphabet. std.base64.standard.Decoder rejects them.
-    const result = generate_image.saveImageToDisk(alloc, io, "/tmp/nalar-generate-image-bad-b64", "not_valid_base64!!!", 0, "image/png");
+    const result = generate_image.saveImageToDisk(alloc, io, "/tmp/pabrik-generate-image-bad-b64", "not_valid_base64!!!", 0, "image/png");
     try testing.expectError(error.InvalidBase64, result);
 }
 

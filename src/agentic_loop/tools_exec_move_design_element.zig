@@ -1,5 +1,5 @@
 //! Tool executor for `move_design_element` — wraps
-//! `nalarcore.move_design_element.executeMoveDesignElementToString`
+//! `pabrikcore.move_design_element.executeMoveDesignElementToString`
 //! into the `ToolExecContext` / `ToolExecResult` shape used by the
 //! agentic loop's tool dispatcher.
 //!
@@ -7,13 +7,13 @@
 //! (Chunk 5, Task 5.2)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const move_design_element_mod = nalarcore.move_design_element;
+const agent = pabrikcore.agent;
+const move_design_element_mod = pabrikcore.move_design_element;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execMoveDesignElement(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

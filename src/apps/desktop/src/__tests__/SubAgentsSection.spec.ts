@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import SubAgentsSection from '../components/nalar/SubAgentsSection.vue'
+import SubAgentsSection from '../components/pabrik/SubAgentsSection.vue'
 import type { SubAgent } from '../api'
 
 const baseAgent: SubAgent = {

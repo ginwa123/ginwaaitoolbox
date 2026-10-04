@@ -1,5 +1,5 @@
 //! `GET /api/memories` — list all global memory files (markdown) in
-//! `$XDG_CONFIG_HOME/nalar/memories/` or `~/.config/nalar/memories/`.
+//! `$XDG_CONFIG_HOME/pabrik/memories/` or `~/.config/pabrik/memories/`.
 //!
 //! Returns JSON: `{"memories":[{"name":"...","title":"...","path":"...","size":N}]}`
 //! Empty list when no memories exist or the folder is missing — never throws.
@@ -11,10 +11,10 @@
 //!     maps errors to status codes, builds the JSON response.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const memories_mod = nalarcore.memories;
-const list_memory_mod = nalarcore.list_memory_tool;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const memories_mod = pabrikcore.memories;
+const list_memory_mod = pabrikcore.list_memory_tool;
 const http_response = @import("http_response.zig");
 
 /// Domain-level error set for `useCase`. The `getSingleton` call may
@@ -22,7 +22,7 @@ const http_response = @import("http_response.zig");
 /// environment may legitimately be missing on a server without a
 /// config dir.
 pub const MemoriesListError = error{
-    /// `nalarcore.getSingleton()` failed (server has not been
+    /// `pabrikcore.getSingleton()` failed (server has not been
     /// initialised yet). Maps to 500.
     ServerNotInitialized,
     /// The singleton has no `*const std.process.Environ.Map` (the
@@ -68,7 +68,7 @@ fn useCase(
 ) MemoriesListError!MemoriesListOutput {
     _ = input;
 
-    const di = nalarcore.getSingleton() catch return error.ServerNotInitialized;
+    const di = pabrikcore.getSingleton() catch return error.ServerNotInitialized;
     const environment = di.environment orelse return error.MissingEnvironment;
 
     const list = memories_mod.listAllMemories(allocator, io, environment);

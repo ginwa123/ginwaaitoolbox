@@ -1,5 +1,5 @@
 const std = @import("std");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 
 pub const Mode = union(enum) {
     none,
@@ -348,10 +348,10 @@ test "isSubagent - case-sensitive (different case is treated as different)" {
 
 // --- Formatter tests (need DB) --------------------------------------------
 
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
 fn setupDb() !struct {
-    db: nalarcore.sqlite.SqliteBackend,
+    db: pabrikcore.sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
 } {
     const alloc = std.testing.allocator;
@@ -359,7 +359,7 @@ fn setupDb() !struct {
     errdefer threaded.deinit();
     const io = threaded.io();
 
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
@@ -378,7 +378,7 @@ fn setupDb() !struct {
 
 fn seedMessage(
     alloc: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     id: []const u8,
     session_id: []const u8,
     created_at: []const u8,

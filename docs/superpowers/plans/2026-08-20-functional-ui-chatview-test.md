@@ -15,7 +15,7 @@
 
 - New test file `tests/functional_ui/chatview_ui_test.py` (≈10 tests) uses the existing `ui_harness` + `page` fixtures from `tests/functional_ui/conftest.py` and the new `chatview_fixtures.py` helpers.
 
-- DB access path: `temp_dir / ".config" / "nalar" / "agent.db"` (the harness already creates this on boot via `FunctionalHarness.boot()`). Tests open it with stdlib `sqlite3`, INSERT, commit, close — then navigate the browser.
+- DB access path: `temp_dir / ".config" / "pabrik" / "agent.db"` (the harness already creates this on boot via `FunctionalHarness.boot()`). Tests open it with stdlib `sqlite3`, INSERT, commit, close — then navigate the browser.
 
 - **Why DB-seed instead of HTTP-seed?** The chatview's `GET /api/llm/session/<id>/messages` reads from `llm_history` exactly the way a real agent would write to it. DB-seeding is:
   1. **Honest** — it tests the *exact* wire shape the production agent emits, including edge cases the LLM never produces (e.g. malformed tool_calls_json, very long reasoning, empty content rows).
@@ -33,7 +33,7 @@
 
 ### The existing UI suite (parent of this plan)
 
-- `tests/functional_ui/ui_harness.py` boots nalar + Vite via `UIHarness.boot(nalar_bin)`.
+- `tests/functional_ui/ui_harness.py` boots pabrik + Vite via `UIHarness.boot(pabrik_bin)`.
 - `tests/functional_ui/conftest.py` provides `ui_harness` (function-scoped) + `browser` (session-scoped) + `page` (function-scoped) + `artifacts_dir` (function-scoped). Screenshots auto-captured to `tests/functional_ui/artifacts/<test>/<timestamp>.png` on failure.
 - `tests/functional_ui/smoke_boot_test.py` (5 tests, pass) and `kanban_lifecycle_ui_test.py` (4 tests, pass) are the existing patterns this plan extends.
 - Isolation: ALL `rmtree` goes through `FunctionalHarness.teardown` (parent of `UIHarness`). The harness's `is_safe_tmp` validates the tempdir before rmtree; this plan does NOT add any new rmtree path.
@@ -129,14 +129,14 @@ This is fine for UI tests — assertions on rendered content are the right level
 ### NEW: `tests/functional_ui/chatview_fixtures.py` (~180 lines)
 
 Pure DB-seed helpers. Exposes one class `ChatviewSeed` with the methods listed above. Each method:
-1. Opens (or reuses) a `sqlite3.Connection` to the harness's `temp_dir / ".config" / "nalar" / "agent.db"`.
+1. Opens (or reuses) a `sqlite3.Connection` to the harness's `temp_dir / ".config" / "pabrik" / "agent.db"`.
 2. Runs the INSERT.
 3. `commit()`s + closes (or leaves the connection open — see below).
 4. Returns the inserted `llm_history.id` (string) so tests can assert on it.
 
 Connection strategy: **one connection per test** (open at start of test, close in `finally`). Helpers accept `conn: sqlite3.Connection` as their first arg — they don't manage connection lifecycle themselves. This keeps them composable and easy to test.
 
-Validation: at the top of every helper, assert the DB file path matches `is_safe_tmp()` + the `nalar-func-` substring (defense in depth — should be impossible because the harness already validated the tempdir, but a regression here would let a test corrupt the real home, so we belt-and-suspenders it).
+Validation: at the top of every helper, assert the DB file path matches `is_safe_tmp()` + the `pabrik-func-` substring (defense in depth — should be impossible because the harness already validated the tempdir, but a regression here would let a test corrupt the real home, so we belt-and-suspenders it).
 
 Method signatures:
 
@@ -175,7 +175,7 @@ Test file. Each test is function-scoped (gets a fresh harness + DB). Structure:
 def test_chatview_renders_empty_state(ui_harness, page):
     h = ui_harness
     session_id = "sess_chatview_empty_001"
-    db = h.temp_dir / ".config" / "nalar" / "agent.db"
+    db = h.temp_dir / ".config" / "pabrik" / "agent.db"
     with ChatviewSeed(db).connect() as conn:
         ChatviewSeed(db).seed_session(conn, session_id, "Empty Chat")
     page.goto(h.web_url(f"/app/chat/{session_id}"))
@@ -190,7 +190,7 @@ Then 9 more scenarios (see §4).
 ### MODIFY: `tests/functional_ui/README.md`
 
 Add a section "Chatview DB-seeded tests" explaining:
-- The DB path (`temp_dir/.config/nalar/agent.db`).
+- The DB path (`temp_dir/.config/pabrik/agent.db`).
 - How to add a new scenario (drop a row, navigate, assert).
 - The list of 10 covered scenarios.
 
@@ -251,8 +251,8 @@ Each test pays ~3s setup (harness boot) + ~5-10s first-call Vite compile (the ch
 - `pytest tests/functional_ui/chatview_ui_test.py -v` → 10 passed.
 - `pytest tests/functional_ui/ -v` → 30 passed (20 existing + 10 new).
 - `pytest tests/functional/harness_safety_test.py -v` → 12 passed (regression check on the parent's `is_safe_tmp` Windows fix).
-- Verify isolation: after a full run, `ls $HOME` shows zero new `.config/nalar/agent.db` or `nalar-func-*` files. (The harness's `is_safe_tmp` guarantees this; the belt-and-suspenders check inside `ChatviewSeed.__init__` makes it explicit.)
-- Cross-platform sanity: confirm `ChatviewSeed(db_path)` works on Windows by reading the validation logic — it should accept `C:\Users\<u>\AppData\Local\Temp\nalar-func-...\agent.db` after the parent fix.
+- Verify isolation: after a full run, `ls $HOME` shows zero new `.config/pabrik/agent.db` or `pabrik-func-*` files. (The harness's `is_safe_tmp` guarantees this; the belt-and-suspenders check inside `ChatviewSeed.__init__` makes it explicit.)
+- Cross-platform sanity: confirm `ChatviewSeed(db_path)` works on Windows by reading the validation logic — it should accept `C:\Users\<u>\AppData\Local\Temp\pabrik-func-...\agent.db` after the parent fix.
 
 ---
 

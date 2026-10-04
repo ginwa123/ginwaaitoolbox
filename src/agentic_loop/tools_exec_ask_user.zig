@@ -10,14 +10,14 @@
 //! `POST /api/llm/session/:id/answer` → `ask_user_pending.rewriteToolResultRow`.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const pending = @import("ask_user_pending.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const ask_user_mod = nalarcore.ask_user;
+const agent = pabrikcore.agent;
+const ask_user_mod = pabrikcore.ask_user;
 const wrapToolOutput = tools.wrapToolOutput;
 
 const TOOL_NAME = ask_user_mod.ASK_USER_TOOL_NAME;
@@ -136,12 +136,12 @@ fn unavailableResult(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 const testing = std.testing;
 const tools_mod = @import("tools.zig");
 
-fn setupDb() !struct { db: nalarcore.sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+fn setupDb() !struct { db: pabrikcore.sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     const alloc = testing.allocator;
     var threaded = std.Io.Threaded.init(alloc, .{});
     errdefer threaded.deinit();
     const io = threaded.io();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
     try db.exec(alloc,
@@ -174,17 +174,17 @@ const CtxHolder = struct {
     loops: @import("ActiveLoops.zig").ActiveLoops = undefined,
     /// A real (silent) logger: the sub-agent path logs a warning, and the
     /// config is what keeps it out of the test output.
-    logger: nalarcore.loggermod.Logger = undefined,
+    logger: pabrikcore.loggermod.Logger = undefined,
 
     fn build(
         self: *CtxHolder,
         allocator: std.mem.Allocator,
         io: std.Io,
-        db: *nalarcore.sqlite.SqliteBackend,
+        db: *pabrikcore.sqlite.SqliteBackend,
         is_sub_agent: bool,
     ) ToolExecContext {
         self.loops = @import("ActiveLoops.zig").ActiveLoops.init(allocator);
-        self.logger = nalarcore.loggermod.Logger.init(allocator, io, .{
+        self.logger = pabrikcore.loggermod.Logger.init(allocator, io, .{
             .min_level = .err,
             .include_timestamp = false,
             .include_request_id = false,

@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.nalar.browser</string>
+    <string>com.pabrik.browser</string>
     <key>CFBundleName</key>
-    <string>Nalar Browser</string>
+    <string>Pabrik Browser</string>
     <key>CFBundleDisplayName</key>
-    <string>Nalar Browser</string>
+    <string>Pabrik Browser</string>
     <key>CFBundleExecutable</key>
-    <string>nalar-browser</string>
+    <string>pabrik-browser</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>

@@ -27,8 +27,8 @@
 //! test block below).
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// Wire shape for a knowledge row in the GET response.
@@ -113,7 +113,7 @@ pub const AgentGetOutput = struct {
 /// through the passed-in allocator.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: AgentGetInput,
 ) AgentGetError!AgentGetOutput {
     if (input.workspace_id.len == 0 or input.item_id.len == 0) {
@@ -225,7 +225,7 @@ fn useCase(
 /// worry about the source row.
 fn loadAgentRow(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     agent_id: []const u8,
 ) AgentGetError!AgentRow {
     var q = db.query(allocator,
@@ -279,7 +279,7 @@ pub fn agentsGetHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
@@ -328,7 +328,7 @@ pub fn agentsGetHandler(
 //   3. ItemNotAgent: workspace_item exists but item_type != 'agent'
 //   4. Happy path: returns agent + knowledge + tools
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 const Migration079AddContentToAgentKnowledge = @import("../migrations/migration.zig").Migration079AddContentToAgentKnowledge;

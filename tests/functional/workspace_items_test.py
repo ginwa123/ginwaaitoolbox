@@ -9,11 +9,11 @@ Exercises the workspace + item HTTP surface that's NOT covered by
                                              + path updates + absent-body
                                              rejection + 404)
   - DELETE /api/workspaces/:ws/items/:id    (item removal + cascade-removes
-                                             on-disk .nalar/design/ for
+                                             on-disk .pabrik/design/ for
                                              design items + 404)
   - POST /api/workspaces/:ws/items/reorder  (reorder of mixed item types)
 
-Each test boots a fresh nalar (function-scoped fixture). Real-data
+Each test boots a fresh pabrik (function-scoped fixture). Real-data
 shapes: 3+ items per workspace; for the cascade test, a design item
 with 3 pages × 2 elements so we have on-disk state worth deleting.
 """
@@ -41,7 +41,7 @@ def _create_item(
     workspace_id: str,
     name: str,
     item_type: str = "chat",
-    path: str = "/tmp/nalar-items-crud",
+    path: str = "/tmp/pabrik-items-crud",
 ) -> dict[str, Any]:
     r = harness.http(
         "POST",
@@ -61,7 +61,7 @@ def _create_design_item(
     """Create a design item pointing at an on-disk path.
 
     Design items need a real path so the on-disk design_io folder
-    `<path>/.nalar/design/` can be created on demand. The path is
+    `<path>/.pabrik/design/` can be created on demand. The path is
     created by the conftest's `item_workspace_path` fixture.
     """
     return _create_item(harness, workspace_id, name, "design", str(path))
@@ -283,7 +283,7 @@ def test_update_item_name_round_trips(
     that and asserts the rename via GET, not via the PUT response.
     """
     ws_id = _create_workspace(harness)
-    item = _create_item(harness, ws_id, "before-rename", "chat", "/tmp/nalar-items-crud")
+    item = _create_item(harness, ws_id, "before-rename", "chat", "/tmp/pabrik-items-crud")
 
     put_body = harness.http(
         "PUT",
@@ -330,7 +330,7 @@ def test_update_item_name_rejects_empty(
     nothing.
     """
     ws_id = _create_workspace(harness)
-    item = _create_item(harness, ws_id, "to-be-renamed", "chat", "/tmp/nalar-items-crud")
+    item = _create_item(harness, ws_id, "to-be-renamed", "chat", "/tmp/pabrik-items-crud")
 
     r = harness.http(
         "PUT",
@@ -362,7 +362,7 @@ def test_update_item_rejects_empty_body(
     nothing is a no-op that must NOT silently succeed.
     """
     ws_id = _create_workspace(harness)
-    item = _create_item(harness, ws_id, "doomed-empty-put", "chat", "/tmp/nalar-items-crud")
+    item = _create_item(harness, ws_id, "doomed-empty-put", "chat", "/tmp/pabrik-items-crud")
 
     r = harness.http(
         "PUT",
@@ -410,7 +410,7 @@ def test_delete_item_removes_from_list(
     `WorkspaceItemResponse` shape from http_response.zig:6).
     """
     ws_id = _create_workspace(harness)
-    item = _create_item(harness, ws_id, "doomed", "chat", "/tmp/nalar-items-crud")
+    item = _create_item(harness, ws_id, "doomed", "chat", "/tmp/pabrik-items-crud")
     assert any(i["id"] == item["id"] for i in _list_items(harness, ws_id))
 
     del_body = harness.http(
@@ -468,7 +468,7 @@ def test_reorder_items_changes_display_order(
     to the top via `ORDER BY position DESC`).
     """
     ws_id = _create_workspace(harness)
-    base = "/tmp/nalar-items-crud"
+    base = "/tmp/pabrik-items-crud"
     # Create 7 items with deterministic names so we can identify them.
     created = []
     for i in range(7):
@@ -528,17 +528,17 @@ def test_reorder_items_changes_display_order(
     )
 
 
-# ─── Test 12: DELETE design item cascade-removes on-disk .nalar/design/ ──
+# ─── Test 12: DELETE design item cascade-removes on-disk .pabrik/design/ ──
 
 
 def test_delete_design_item_cascade_removes_html_files(
     harness: FunctionalHarness, item_workspace_path: Path
 ) -> None:
     """Design item with 3 pages × 2 elements → DELETE item →
-    `<path>/.nalar/design/` directory is gone.
+    `<path>/.pabrik/design/` directory is gone.
 
     workspace_items_delete.zig:77-97 documents the on-disk cleanup:
-    for design items, the handler `rmdir`s `<path>/.nalar/design/`
+    for design items, the handler `rmdir`s `<path>/.pabrik/design/`
     BEFORE the SQL DELETE. The test verifies the cascade by checking
     the directory is gone (all element files inside it are also gone
     as a side-effect of the rmdir).
@@ -560,7 +560,7 @@ def test_delete_design_item_cascade_removes_html_files(
 
     # Verify the on-disk design folder exists with 6 .html files
     # (3 pages × 2 elements per page = 6).
-    design_root = item_workspace_path / ".nalar" / "design"
+    design_root = item_workspace_path / ".pabrik" / "design"
     assert design_root.exists(), (
         f"design folder should exist before delete at {design_root}"
     )
@@ -604,7 +604,7 @@ def test_delete_chat_item_does_not_touch_other_items(
     the other items should still be queryable + listed.
     """
     ws_id = _create_workspace(harness)
-    base = "/tmp/nalar-items-crud"
+    base = "/tmp/pabrik-items-crud"
 
     # 5 items of varied types.
     items = [

@@ -14,8 +14,8 @@
 //! end, so neither layer needs explicit `free`s.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 
@@ -103,7 +103,7 @@ pub const KnowledgeCreateOutput = struct {
 /// through the passed-in allocator.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: KnowledgeCreateInput,
 ) KnowledgeCreateError!KnowledgeCreateOutput {
     if (input.agent_id.len == 0) return error.AgentIdRequired;
@@ -178,7 +178,7 @@ pub fn agentKnowledgeCreateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const agent_id = req.params.get("agent_id") orelse "";
@@ -248,7 +248,7 @@ pub fn agentKnowledgeCreateHandler(
 //   4. AgentNotFound: workspace_item doesn't exist
 //   5. Happy path: first row gets position 0; COALESCE handles empty agents correctly
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 const Migration079AddContentToAgentKnowledge = @import("../migrations/migration.zig").Migration079AddContentToAgentKnowledge;

@@ -248,7 +248,7 @@ describe('AppLayout — page reload of /app/{ws}/projects/{item} restores the ac
       count: workspaceId === WS_ID ? 1 : 0,
     }))
     const localStorageStub = makeLocalStorageStub()
-    localStorageStub.setItem('nalar-active-workspace', OTHER_WS_ID)
+    localStorageStub.setItem('pabrik-active-workspace', OTHER_WS_ID)
     Object.defineProperty(globalThis, 'localStorage', {
       value: localStorageStub,
       writable: true,

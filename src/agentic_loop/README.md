@@ -16,7 +16,7 @@ inline tests for `isSessionKanban` and no separate `_test.zig`.
 `_test.zig` files** in this directory as of the inlining refactor. All test
 code is colocated with the implementation in a single file.
 
-The rest of the nalar codebase (e.g. `src/ai_workflow/tui/compaction_*.zig`,
+The rest of the pabrik codebase (e.g. `src/ai_workflow/tui/compaction_*.zig`,
 `http_handlers/*_test.zig`) generally uses separate `_test.zig` files.
 **`agentic_loop/` is the exception**, not the standard — keep tests inline
 here for consistency with the existing files.
@@ -56,7 +56,7 @@ As of 2026-08-19 (the inline-impl+tests refactor), every `.zig` file in
 `agentic_loop/` owns its own test code. There is no `mod.zig` aggregator
 and no separate `<file>_test.zig` files. The 3 exceptions that stay at
 `tui/` for backwards compat are:
-- `tui/mod.zig` — re-exports the public API surface (`nalarcore.ai_mod.*`).
+- `tui/mod.zig` — re-exports the public API surface (`pabrikcore.ai_mod.*`).
 - `tui/test_runner.zig` — top-level test discovery for tests that live at
   `tui/`.
 - `agentic_loop/test_runner.zig` — discovery for all `agentic_loop/` tests.
@@ -129,7 +129,7 @@ timeout 60 "$TEST_BIN" 2>&1 | rg 'agentic_loop' | sort -u
    self-contained — it owns its impl, types, AND its tests. There is no
    `mod.zig` to register new files in; `tui/mod.zig` imports the file
    directly if its public API needs to be surfaced as
-   `nalarcore.ai_mod.ai_workflow.agentic_loop.foo`.
+   `pabrikcore.ai_mod.ai_workflow.agentic_loop.foo`.
 2. Append `test "..." { ... }` blocks to the **bottom** of `foo.zig`.
    Use `testing.allocator` for any heap allocations; the project's
    `zig-0.16-inmemory-sqlite-test-setup` pattern (`std.Io.Threaded.init +
@@ -209,5 +209,5 @@ agentic_loop files directly). No more separate test files in this directory.
 All 40+ impl files that previously sat at `tui/` top-level (next to the
 two entry-point files `mod.zig` + `test_runner.zig`) now live here. The
 `mod.zig` + `test_runner.zig` at `tui/` are kept as thin re-export /
-test-discovery surfaces so the public `nalarcore.ai_mod.*` API surface
+test-discovery surfaces so the public `pabrikcore.ai_mod.*` API surface
 stays stable.

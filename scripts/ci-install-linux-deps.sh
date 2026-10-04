@@ -75,7 +75,7 @@ sudo apt-get update
 apt_install build-essential pkg-config unzip ripgrep \
             libssl-dev libcurl4-openssl-dev libsqlite3-dev libpq-dev
 
-# nalar-desktop's GTK webview. Zig resolves the hyphenated names
+# pabrik-desktop's GTK webview. Zig resolves the hyphenated names
 # (webkit2gtk-4.1 / gtk-3 / soup-3.0) through pkg-config, so these are
 # only linkable when the matching .pc files are installed.
 apt_install libgtk-3-dev libsoup-3.0-dev

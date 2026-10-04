@@ -99,7 +99,7 @@ const router = createRouter({
 })
 
 // Auth guard: when the backend runs with `--auth`, every `/app*`
-// view requires a valid `nalar_session` cookie. Anonymous visits
+// view requires a valid `pabrik_session` cookie. Anonymous visits
 // redirect to `/login?redirect=<target>` (router.replace, so Back
 // skips the bounce); authed visits to `/login` bounce back to the
 // target. Public when auth is off (`/api/auth/me` 200 +

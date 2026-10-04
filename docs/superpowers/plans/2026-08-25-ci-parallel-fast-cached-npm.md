@@ -13,7 +13,7 @@
 - **Never kill or reconfigure the port-8081 dev server.** Functional tests already pick free ports in 8080–8199 excluding 8081; do not change that.
 - **Do NOT split backend into more jobs** (e.g. test/build/publish as separate jobs). One runner per OS means extra jobs queue behind each other and are strictly slower.
 - **Keep all 3 publish gates intact**: PR builds never publish; only `push`/`workflow_dispatch` to main publishes to the rolling `ci-latest` release (PR #303/#325 contract).
-- **Keep target-triple asset naming** on release binaries (nalar-x86_64-linux-gnu etc., PR #325).
+- **Keep target-triple asset naming** on release binaries (pabrik-x86_64-linux-gnu etc., PR #325).
 - **`shell:` keys stay literal** — no `${{ matrix.* }}` expressions in `shell:` (parse-time rejection, CI run 32588301656). bash = mac/linux, pwsh = windows steps.
 - **Run actionlint before every push** of a workflow edit (asset URL pattern: `actionlint_<ver>_linux_amd64.tar.gz`, v1.7.12).
 - **npm lockfile is canonical**: `src/apps/desktop/package-lock.json`. `bun.lock` gets deleted in Task 6; if it ever reappears, it's a mistake.
@@ -34,8 +34,8 @@ Job wall-clock from run 32743212590 (2026-08-24):
 
 Serial waste identified inside backend Linux/Windows cells:
 
-1. `zig build test --summary all` then `zig build nalar-desktop --summary all` — two separate invocations; the second re-checks/re-links what it can reuse but pays full graph traversal twice plus the always-cold webapp rebuild.
-2. Zig cache uploads/downloads `zig-out` (~90 MB nalar + ~34 MB nalar-desktop binaries) on every run — binaries are build *outputs*, caching them wastes minutes of archive I/O per run.
+1. `zig build test --summary all` then `zig build pabrik-desktop --summary all` — two separate invocations; the second re-checks/re-links what it can reuse but pays full graph traversal twice plus the always-cold webapp rebuild.
+2. Zig cache uploads/downloads `zig-out` (~90 MB pabrik + ~34 MB pabrik-desktop binaries) on every run — binaries are build *outputs*, caching them wastes minutes of archive I/O per run.
 3. Backend duplicates the frontend's node_modules work: bun-cache step + `Install npm + webapp dependencies` tarball-cache step both manage `src/apps/desktop/node_modules`.
 4. `pacman -Sy` refreshes package DB unconditionally even when all packages are present (Linux cell).
 5. `.venv-func` is recreated + pip-installed on every run because the workspace is cleaned between runs; Playwright Chromium (~150 MB) re-downloads too.
@@ -49,21 +49,21 @@ Serial waste identified inside backend Linux/Windows cells:
 - Modify: `.github/workflows/ci.yml`
 
 **Steps:**
-- [ ] In the `backend` job, replace the two steps "Run main test suite" (line ~899) and "Build nalar + nalar-desktop binaries" (line ~937) with ONE step per platform:
+- [ ] In the `backend` job, replace the two steps "Run main test suite" (line ~899) and "Build pabrik + pabrik-desktop binaries" (line ~937) with ONE step per platform:
 
 ```yaml
       - name: Test + build (single zig invocation)
         if: runner.os != 'Windows'
-        run: zig build test nalar-desktop --summary all
+        run: zig build test pabrik-desktop --summary all
 ```
 
-and the Windows twin keeps its Git-bash wrapper but runs `zig build test nalar-desktop --summary all`.
+and the Windows twin keeps its Git-bash wrapper but runs `zig build test pabrik-desktop --summary all`.
 
 - [ ] Rationale comment: one graph traversal compiles test binaries AND the desktop exe; `--summary all` still prints per-step totals. This removes a duplicate dependency-graph walk + duplicate vendor-probe passes.
-- [ ] Verify locally on Linux first: `timeout 900 zig build test nalar-desktop --summary all` completes with both summaries (test results + install steps).
+- [ ] Verify locally on Linux first: `timeout 900 zig build test pabrik-desktop --summary all` completes with both summaries (test results + install steps).
 - [ ] Commit: `ci: single zig invocation for test+build in backend job`
 
-**Note:** If `zig build test nalar-desktop` proves problematic on any cell (step-name collision), fall back to keeping two invocations but moving this task's win into Task 2's cache slimming. Do not force it.
+**Note:** If `zig build test pabrik-desktop` proves problematic on any cell (step-name collision), fall back to keeping two invocations but moving this task's win into Task 2's cache slimming. Do not force it.
 
 ## Task 2 — Slim the Zig cache (drop zig-out, keep .zig-cache + vendor)
 
@@ -84,7 +84,7 @@ Remove `zig-out` and `src/apps/desktop_app/embedded` from the cached paths (embe
 
 - [ ] Bump the cache key prefix `v2-zig-` → `v3-zig-` so stale entries don't collide, and drop `'src/apps/desktop_app/main.zig'` + `'src/apps/desktop/bun.lock'` from `hashFiles(...)` (bun.lock dies in Task 6; main.zig hash doesn't invalidate zig object caches meaningfully). Keep `build.zig`, `build.zig.zon`, and the sqlite fetch script in the hash.
 - [ ] Expected saving: ~124 MB less archive I/O per run per cell (upload AND download), typically 1–3 min on self-hosted disks.
-- [ ] Verify: actionlint clean; push to a branch; confirm the run restores `.zig-cache` (log line "Cache restored from key: v3-zig-...") and that `zig-out/bin/nalar*` still appear after the build step.
+- [ ] Verify: actionlint clean; push to a branch; confirm the run restores `.zig-cache` (log line "Cache restored from key: v3-zig-...") and that `zig-out/bin/pabrik*` still appear after the build step.
 - [ ] Commit: `ci: stop caching zig-out binaries; v3 cache key`
 
 ## Task 3 — Gate `pacman -Sy` behind missing packages (Linux cell)
@@ -108,7 +108,7 @@ Remove `zig-out` and `src/apps/desktop_app/embedded` from the cached paths (embe
 - [ ] In `build.zig`, the functional-test steps create `.venv-func` relative to the repo root (lines ~1927–1933). Add an env-var override so CI can relocate it OUTSIDE the workspace (which gets cleaned between runs):
 
 ```zig
-const venv_dir = std.process.getEnvVarOwned(b.graph.allocator, "NALAR_FUNC_VENV_DIR") catch ".venv-func";
+const venv_dir = std.process.getEnvVarOwned(b.graph.allocator, "PABRIK_FUNC_VENV_DIR") catch ".venv-func";
 ```
 
 then use `venv_dir` in place of the literal `.venv-func` strings in `install_venv.setCwd`, pip targets, and pytest invocations (4–6 sites, lines ~1927–2001). Local behavior unchanged when the env var is unset.
@@ -120,18 +120,18 @@ then use `venv_dir` in place of the literal `.venv-func` strings in `install_ven
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/nalar-ci-venv
+            ~/.cache/pabrik-ci-venv
             ~/.cache/ms-playwright
           key: v1-py-${{ runner.os }}-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
           restore-keys: |
             v1-py-${{ runner.os }}-
 ```
 
-- [ ] Set `NALAR_FUNC_VENV_DIR: ${{ HOME }}/.cache/nalar-ci-venv/venv` as step-level env on BOTH functional-test steps ("Functional tests: real-data isolation suites" line ~1157 and "UI tests: functional-test-ui" line ~1246).
+- [ ] Set `PABRIK_FUNC_VENV_DIR: ${{ HOME }}/.cache/pabrik-ci-venv/venv` as step-level env on BOTH functional-test steps ("Functional tests: real-data isolation suites" line ~1157 and "UI tests: functional-test-ui" line ~1246).
 - [ ] Note: `build.zig` hardcodes `.venv-func/bin/python` style paths — the env override must flow through ALL of them (grep `.venv-func` in build.zig to catch every site; expect ~8 occurrences across the two step definitions).
-- [ ] Verify locally: `NALAR_FUNC_VENV_DIR=/tmp/test-venv zig build functional-test --summary all` creates the venv at /tmp/test-venv and passes; unset var still uses `.venv-func`.
+- [ ] Verify locally: `PABRIK_FUNC_VENV_DIR=/tmp/test-venv zig build functional-test --summary all` creates the venv at /tmp/test-venv and passes; unset var still uses `.venv-func`.
 - [ ] Verify in CI: first run = cache miss (pip install ~40 s), second run = hit (skips straight to pytest). Chromium download skipped on hits (~150 MB saved).
-- [ ] Commit: `build: NALAR_FUNC_VENV_DIR override; ci: cache venv + chromium`
+- [ ] Commit: `build: PABRIK_FUNC_VENV_DIR override; ci: cache venv + chromium`
 
 ## Task 5 — Unify node_modules handling in backend on npm
 
@@ -162,7 +162,7 @@ then use `venv_dir` in place of the literal `.venv-func` strings in `install_ven
 - [ ] The `check_webapp_node` pre-flight (line ~993) already requires node+npm on PATH — keep as-is, it's now the primary guard instead of a bun workaround.
 - [ ] Delete `src/apps/desktop/bun.lock` (`git rm`). package-lock.json (Aug 22) is newer than bun.lock (Jul 26) — npm's lockfile is the live one.
 - [ ] Grep sweep: `rg -n '"bun"' build.zig` must return zero; `rg -ni bun .github/workflows/ci.yml` must return zero.
-- [ ] Verify locally: `rm -rf src/apps/desktop/node_modules && timeout 600 zig build nalar-desktop --summary all` — npm ci runs, vite builds, codegen emits webapp_assets.zig, binary links. Then a second run confirms the conditional-install skip still works (node_modules exists probe).
+- [ ] Verify locally: `rm -rf src/apps/desktop/node_modules && timeout 600 zig build pabrik-desktop --summary all` — npm ci runs, vite builds, codegen emits webapp_assets.zig, binary links. Then a second run confirms the conditional-install skip still works (node_modules exists probe).
 - [ ] Run `zig build test --summary all` to confirm no test regressions from the build.zig edits.
 - [ ] Commit: `build: webapp chain via npm (drop bun); delete stale bun.lock`
 

@@ -51,7 +51,7 @@ export interface AuthMeResult {
   fromCache: boolean
 }
 
-const AUTH_ME_KEY = 'nalar-auth-me:v1'
+const AUTH_ME_KEY = 'pabrik-auth-me:v1'
 const AUTH_ME_TTL_MS = 30_000
 const AUTH_ME_TIMEOUT_MS = 4_000
 

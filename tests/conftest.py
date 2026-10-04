@@ -9,10 +9,10 @@ to sit above both of them.
 
 Its only job is the shard split, delegated to ``func_shard`` so the
 env-var contract and the modulo rule have exactly one implementation and
-can be unit tested without booting a nalar (see
+can be unit tested without booting a pabrik (see
 ``tests/functional/func_shard_test.py``).
 
-With neither ``NALAR_FUNC_SHARD_TOTAL`` nor ``NALAR_FUNC_SHARD_INDEX``
+With neither ``PABRIK_FUNC_SHARD_TOTAL`` nor ``PABRIK_FUNC_SHARD_INDEX``
 set — every local run, and the single-shard CI configuration — this file
 is inert.
 """

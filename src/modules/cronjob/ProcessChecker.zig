@@ -1,5 +1,5 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const process_status = @import("helpers").process_status;
 
 /// Process status enumeration

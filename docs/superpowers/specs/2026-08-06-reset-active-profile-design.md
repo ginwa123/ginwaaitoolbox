@@ -1,4 +1,4 @@
-# NalarSettings Reset button for active profile — design
+# PabrikSettings Reset button for active profile — design
 
 **Date:** 2026-08-06
 **Branch:** `worktree/investigate-profile-bug`
@@ -8,7 +8,7 @@
 ## Problem
 
 After PR #205 (chatview profile cascade display), the chatview chip
-correctly reflects the active profile cascade. But the NalarSettings
+correctly reflects the active profile cascade. But the PabrikSettings
 → Profiles tab only had a "Set active" button on each profile row.
 Once a profile was marked active, the user had no UI path to UNSET
 the active profile (back to "no active profile" — cascade falls
@@ -16,7 +16,7 @@ through to top-level config).
 
 The only ways to clear the active profile before this PR:
 - Set a different profile active (which the user might not want).
-- Hand-edit `~/.config/nalar/config.json` to remove the `active_profile`
+- Hand-edit `~/.config/pabrik/config.json` to remove the `active_profile`
   key.
 
 The user wanted a one-click reset from the UI.
@@ -115,11 +115,11 @@ cleared — using top-level config".
 ```
 User clicks Reset
   → ProfilesSection.vue emits 'clearActive' (no payload)
-  → NalarSettings.vue's @clear-active handler: clearActiveProfile()
+  → PabrikSettings.vue's @clear-active handler: clearActiveProfile()
     1. optimistic: activeProfile.value = null (UI updates)
-    2. saveNalarConfig({ ..., active_profile: undefined })
-       → PUT /api/config/nalar
-         → nalar_config_put.zig: writes config.json with
+    2. savePabrikConfig({ ..., active_profile: undefined })
+       → PUT /api/config/pabrik
+         → pabrik_config_put.zig: writes config.json with
            active_profile: null (or omits the key, same result)
          → live-reloads LlmConfigHolder
     3. on success: emit 'notification' (success message)
@@ -128,27 +128,27 @@ User clicks Reset
 ```
 
 The chatview's `effectiveProfile` computed (from PR #205) sees
-`activeProfile = null` on the next `getNalarConfig()` refresh and
+`activeProfile = null` on the next `getPabrikConfig()` refresh and
 falls back to the per-session `selectedProfile` (or top-level if
 that's also empty).
 
 ## Why `undefined` not `null` for the wire payload
 
-The `NalarConfig` TypeScript type declares:
+The `PabrikConfig` TypeScript type declares:
 
 ```ts
-interface NalarConfig {
+interface PabrikConfig {
   // ...
   active_profile?: string;  // not nullable
   // ...
 }
 ```
 
-`saveNalarConfig({ ..., active_profile: null })` triggers a TS2352
+`savePabrikConfig({ ..., active_profile: null })` triggers a TS2352
 type error: "Type 'null' is not comparable to type 'string | undefined'".
 
 Using `undefined` omits the key on JSON serialization, which the
-backend's `nalar_config_put.zig:246-252` handler treats identically
+backend's `pabrik_config_put.zig:246-252` handler treats identically
 to `null` (both paths write `config_json.active_profile = null`).
 Verified by the test:
 
@@ -174,7 +174,7 @@ expect('active_profile' in savedConfig ? savedConfig.active_profile : undefined)
 - `bun run build` (vue-tsc): clean
 - `bunx vitest run src/__tests__/ProfilesSection.spec.ts`: 20/20
   pass (+4 new Reset tests)
-- `bunx vitest run src/__tests__/NalarSettings.spec.ts`: 10/10
+- `bunx vitest run src/__tests__/PabrikSettings.spec.ts`: 10/10
   pass (+3 new wiring tests)
 - `bunx vitest run` (full suite): 2017 pass / 14 fail. The 14
   are the pre-existing baseline on `main` (AppLayout.urlPersist ×7,
@@ -183,11 +183,11 @@ expect('active_profile' in savedConfig ? savedConfig.active_profile : undefined)
 
 ## Files
 
-- Modified: `src/apps/desktop/src/components/nalar/ProfilesSection.vue`
+- Modified: `src/apps/desktop/src/components/pabrik/ProfilesSection.vue`
   (+15)
-- Modified: `src/apps/desktop/src/components/NalarSettings.vue` (+24)
+- Modified: `src/apps/desktop/src/components/PabrikSettings.vue` (+24)
 - Modified: `src/apps/desktop/src/__tests__/ProfilesSection.spec.ts` (+50)
-- Modified: `src/apps/desktop/src/__tests__/NalarSettings.spec.ts` (+77)
+- Modified: `src/apps/desktop/src/__tests__/PabrikSettings.spec.ts` (+77)
 - New: `docs/superpowers/plans/2026-08-06-reset-active-profile.md`
 - New: `docs/superpowers/specs/2026-08-06-reset-active-profile-design.md`
 

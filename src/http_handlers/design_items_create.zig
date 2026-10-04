@@ -4,7 +4,7 @@
 //! `workspace_items_create_kanban.zig` byte-for-byte except:
 //!   - `item_type` is `'design'`, not `'kanban'`
 //!   - `path` is REQUIRED (not optional): design elements live as
-//!     HTML files at `<path>/.nalar/design/<page>/<element>.html`.
+//!     HTML files at `<path>/.pabrik/design/<page>/<element>.html`.
 //!     Without a path, the user has no way to author design
 //!     elements because the model layer rejects `addElement` with
 //!     `ItemPathMissing` (see design_model.zig). We 400 here so the
@@ -22,8 +22,8 @@
 //!   "no POST /items/design route + no UI".
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 
@@ -31,7 +31,7 @@ const helpers = @import("helpers");
 const CreateDesignBody = struct {
     name: []const u8,
     /// Absolute path on disk that will become the storage root for
-    /// design elements (`<path>/.nalar/design/...`). Required because
+    /// design elements (`<path>/.pabrik/design/...`). Required because
     /// the model layer's `addElement` rejects the operation with
     /// `ItemPathMissing` if NULL — catching the failure at create-time
     /// gives the user a clearer error than failing on first addElement.
@@ -74,7 +74,7 @@ pub const WorkspaceItemsCreateDesignResult = []const u8; // pre-serialized JSON
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: WorkspaceItemsCreateDesignInput,
 ) WorkspaceItemsCreateDesignError!WorkspaceItemsCreateDesignResult {
     if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
@@ -147,7 +147,7 @@ pub fn workspaceItemsCreateDesignHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
@@ -205,7 +205,7 @@ pub fn workspaceItemsCreateDesignHandler(
 // ===== Tests merged from design_items_create_test.zig (2026-09-11 flatten) =====
 // Static regression checks for `workspaceItemsCreateDesignHandler`.
 // Follows the project convention (per memory
-// `nalar-http-handler-thin-wrapper-pattern.md`): for HTTP handlers,
+// `pabrik-http-handler-thin-wrapper-pattern.md`): for HTTP handlers,
 // static-contract tests verify the file's shape — function name,
 // required parsing/serialization helpers, status codes, error
 // mapping — without standing up a real GinwaServer. Behavioral

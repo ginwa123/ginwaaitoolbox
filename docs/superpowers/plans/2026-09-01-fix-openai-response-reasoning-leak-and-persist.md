@@ -69,7 +69,7 @@ The Responses implementation must not reuse the legacy Chat Completions request 
 
 # Important Terminology
 
-`reasoning_content` in Nalar should be treated as:
+`reasoning_content` in Pabrik should be treated as:
 
 > **Model-provided reasoning summary displayed by the application.**
 
@@ -393,7 +393,7 @@ type:"message"
 | `src/ai_workflow/tui/agentic_loop/workflow.zig`                                       | AUDIT/EDIT | Ensure all assistant paths persist reasoning |
 | `src/apps/desktop/src/components/views/ChatView.vue`                                  | AUDIT      | Verify reasoning remains separate            |
 | `docs/superpowers/plans/2026-09-01-fix-openai-response-reasoning-leak-and-persist.md` | EDIT       | Implementation plan                          |
-| `NALAR.md`                                                                            | EDIT       | Changelog                                    |
+| `PABRIK.md`                                                                            | EDIT       | Changelog                                    |
 
 ---
 
@@ -1089,7 +1089,7 @@ Expected:
 Run:
 
 ```bash
-zig build nalar-desktop --summary all
+zig build pabrik-desktop --summary all
 ```
 
 Expected:
@@ -1193,7 +1193,7 @@ and **not**:
 Update:
 
 ```text
-NALAR.md
+PABRIK.md
 ```
 
 with:
@@ -1240,10 +1240,10 @@ After all tests pass:
 * [ ] Frontend renders reasoning separately.
 * [ ] Legacy Chat Completions remains unchanged.
 * [ ] `zig build test --summary all` passes.
-* [ ] `zig build nalar-desktop --summary all` passes.
+* [ ] `zig build pabrik-desktop --summary all` passes.
 * [ ] `pnpm test:unit` passes.
 * [ ] Manual smoke test passes.
-* [ ] NALAR.md updated.
+* [ ] PABRIK.md updated.
 * [ ] Changes committed.
 
 ---

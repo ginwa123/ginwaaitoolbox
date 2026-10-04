@@ -5,8 +5,8 @@
 //! works but nothing enforces the cookie.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const auth_common = @import("auth_common.zig");
 const provisioning = @import("workspace_provisioning.zig");
@@ -32,7 +32,7 @@ pub fn authLoginHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const io = ctx.io;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const db = di.db;
 
     const parsed = std.json.parseFromSliceLeaky(LoginBody, allocator, req.body, .{ .ignore_unknown_fields = true }) catch {

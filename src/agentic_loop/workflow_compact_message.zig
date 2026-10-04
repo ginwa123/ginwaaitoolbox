@@ -16,7 +16,7 @@
 //!     merged here 2026-09-10, task_1789058399888_4).
 //!
 //! Public surface (re-exported by `workflow.zig` and therefore reachable
-//! as `nalarcore.ai_mod.ai_workflow.agentic_loop.<name>`):
+//! as `pabrikcore.ai_mod.ai_workflow.agentic_loop.<name>`):
 //!   - `buildCompactMessagePrompt`, `parseReadFilePath`,
 //!     `fetchUserChatHistory`, `fetchReadFilePaths`,
 //!     `fetchRecentActivities`, `fetchSessionSkills`, `fetchSessionPlan`,
@@ -26,29 +26,29 @@
 //!     `maybeCompactMessagesNew`, `compactMessageInMemoryNew`
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const mark_history_not_for_llmrun = @import("markHistoryNotForLLMRun.zig").markHistoryNotForLLMRun;
 const migration = @import("../migrations/migration.zig");
 
-const LlmConfig = nalarcore.config.LlmConfig;
-const LlmProfile = nalarcore.config.LlmConfig.LlmProfile;
-const SubAgentConfig = nalarcore.config.LlmConfig.SubAgentConfig;
-const LLMModels = nalarcore.llm_models;
-const agent = nalarcore.agent;
-const prompt = nalarcore.agent.prompt;
+const LlmConfig = pabrikcore.config.LlmConfig;
+const LlmProfile = pabrikcore.config.LlmConfig.LlmProfile;
+const SubAgentConfig = pabrikcore.config.LlmConfig.SubAgentConfig;
+const LLMModels = pabrikcore.llm_models;
+const agent = pabrikcore.agent;
+const prompt = pabrikcore.agent.prompt;
 const AgentMessage = agent.AgentMessage;
-const sqlite = nalarcore.sqlite;
-const logger_mod = nalarcore.loggermod;
+const sqlite = pabrikcore.sqlite;
+const logger_mod = pabrikcore.loggermod;
 const Logger = logger_mod.Logger;
-const timestampIso = nalarcore.loggermod.timestampIso;
+const timestampIso = pabrikcore.loggermod.timestampIso;
 const xml_escape = @import("helpers").xml_escape;
 const llm_history = @import("llm_history.zig");
 const insertLLMHistory = @import("insert_llm_histories.zig").inserLLMHistories;
-const event_bus_mod = nalarcore.event_bus;
+const event_bus_mod = pabrikcore.event_bus;
 // 2026-08-19 — session_plan agent tools. `fetchSessionPlan` reads the
 // current plan row from `session_plan` (Migration 076) and `enrichCompactionXml`
 // embeds it as a `<plan>` section in the compaction envelope.
-const session_plan_mod = nalarcore.session_plan;
+const session_plan_mod = pabrikcore.session_plan;
 
 const testing = std.testing;
 
@@ -1026,7 +1026,7 @@ pub fn compactMessageInMemoryNew(
     /// the DB row is written either way; `null` only skips the
     /// SSE fanout. Production callers should source this from
     /// their already-in-scope `event_bus` parameter rather than
-    /// `nalarcore.getSingleton()` so the function stays testable
+    /// `pabrikcore.getSingleton()` so the function stays testable
     /// without the global singleton being initialized.
     event_bus: ?*event_bus_mod.EventBus,
 ) !std.ArrayList(agent.AgentMessage) {
@@ -2231,8 +2231,8 @@ test "buildCompactMessagePrompt: empty-messages list (only system + 1 user) excl
 // ─── Inline tests (formerly compaction_config_threshold_test.zig) ───────
 // Per-profile compaction threshold integration test. Inlined here.
 
-fn makeLlmConfig(allocator: std.mem.Allocator) !*nalarcore.config.LlmConfig {
-    const cfg_ptr = try allocator.create(nalarcore.config.LlmConfig);
+fn makeLlmConfig(allocator: std.mem.Allocator) !*pabrikcore.config.LlmConfig {
+    const cfg_ptr = try allocator.create(pabrikcore.config.LlmConfig);
     cfg_ptr.* = .{
         .allocator = allocator,
         .api_key = try allocator.dupe(u8, "test-key"),
@@ -2242,8 +2242,8 @@ fn makeLlmConfig(allocator: std.mem.Allocator) !*nalarcore.config.LlmConfig {
         .model_compaction_size_kb = 100,
         .notify_on_complete = false,
         .mcpServers_parsed = null,
-        .mcp_servers = nalarcore.config.LlmConfig.McpServersMap.init(allocator),
-        .profiles_models = nalarcore.config.LlmConfig.ProfilesMap.init(allocator),
+        .mcp_servers = pabrikcore.config.LlmConfig.McpServersMap.init(allocator),
+        .profiles_models = pabrikcore.config.LlmConfig.ProfilesMap.init(allocator),
         .sub_agents = &.{},
     };
     return cfg_ptr;

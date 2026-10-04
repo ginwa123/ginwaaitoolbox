@@ -1,8 +1,8 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 
@@ -137,7 +137,7 @@ pub const kanban_list_tool = AgentTool{
 /// Read all tasks for a kanban item from the DB. Includes
 /// `kanban_column_id` + `kanban_position` (the HTTP endpoint
 /// `GET /tasks` does NOT include these — see project memory
-/// `nalar-image-urls-vs-image-url` for the parallel image_url
+/// `pabrik-image-urls-vs-image-url` for the parallel image_url
 /// situation). The list is ordered by (column_id, position) so the
 /// LLM sees tasks in board-reading order.
 ///
@@ -331,10 +331,10 @@ pub fn executeKanbanListToJSON(
     }
 
     // 3. Read columns (sorted by position).
-    const cols = nalarcore.ai_mod.kanban_model.listColumns(allocator, db, input.item_id) catch |err| {
+    const cols = pabrikcore.ai_mod.kanban_model.listColumns(allocator, db, input.item_id) catch |err| {
         return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: listColumns failed: {s}", .{@errorName(err)}));
     };
-    defer nalarcore.ai_mod.kanban_model.freeColumns(allocator, cols);
+    defer pabrikcore.ai_mod.kanban_model.freeColumns(allocator, cols);
 
     // 4. If the kanban is well-formed but legitimately has no columns
     //    (user deleted them all), surface that as a structured hint so
@@ -638,7 +638,7 @@ fn itemExists(
 
 const testing = std.testing;
 const kanban_list = @import("kanban_list.zig");
-const kanban_model = nalarcore.ai_mod.kanban_model;
+const kanban_model = pabrikcore.ai_mod.kanban_model;
 const text_normalize = @import("helpers").text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/kanban_list.zig";
@@ -762,8 +762,8 @@ test "tools_equipped.zig imports kanban_list module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "const kanban_list_mod = nalarcore.kanban_list;")) {
-        std.debug.print("!! tools_equipped.zig does not bind kanban_list_mod = nalarcore.kanban_list !!\n", .{});
+    if (!contains(source, "const kanban_list_mod = pabrikcore.kanban_list;")) {
+        std.debug.print("!! tools_equipped.zig does not bind kanban_list_mod = pabrikcore.kanban_list !!\n", .{});
         return error.KanbanListModBindingMissing;
     }
 }
@@ -815,13 +815,13 @@ test "allAgentTools comptime list contains kanban_list tool def" {
     }
 }
 
-test "nalarcore root.zig exposes kanban_list module" {
+test "pabrikcore root.zig exposes kanban_list module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, "src/root.zig");
     defer allocator.free(source);
     if (!contains(source, "pub const kanban_list = @import(\"modules/agent/tools/kanban_list.zig\");")) {
         std.debug.print("!! root.zig does not expose kanban_list as a top-level module !!\n", .{});
-        return error.NalarcoreExportMissing;
+        return error.PabrikcoreExportMissing;
     }
 }
 

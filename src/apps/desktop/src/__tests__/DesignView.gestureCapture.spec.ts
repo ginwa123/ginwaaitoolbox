@@ -12,7 +12,7 @@
  * `captureReorder` / `captureGroup` call counts and arguments.
  *
  * 4 behavioural tests. Project convention is behavioural only —
- * see ~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md.
+ * see ~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'

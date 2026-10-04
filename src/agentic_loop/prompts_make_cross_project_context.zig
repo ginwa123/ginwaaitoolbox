@@ -1,5 +1,5 @@
 const std = @import("std");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 
 /// Build the dynamic sibling-cwd list for the cross-project prompt.
 ///
@@ -95,7 +95,7 @@ fn resolveAnchor(
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 const testing = std.testing;
-const test_sqlite = @import("nalarcore").sqlite;
+const test_sqlite = @import("pabrikcore").sqlite;
 
 const TestCtx = struct {
     db: test_sqlite.SqliteBackend,

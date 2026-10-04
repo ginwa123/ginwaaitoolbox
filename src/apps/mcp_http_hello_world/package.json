@@ -1,7 +1,7 @@
 {
   "name": "mcp-http-hello-world",
   "version": "0.0.1",
-  "description": "Tiny MCP server used as the self-test target for the nalar MCP Streamable HTTP transport. Registers 3 tools: print_hello, print_name, print_exit. Uses the SDK's StreamableHTTPServerTransport (no protocol-level session per spec revision 2026-07-28).",
+  "description": "Tiny MCP server used as the self-test target for the pabrik MCP Streamable HTTP transport. Registers 3 tools: print_hello, print_name, print_exit. Uses the SDK's StreamableHTTPServerTransport (no protocol-level session per spec revision 2026-07-28).",
   "type": "module",
   "bin": {
     "mcp-http-hello-world": "./dist/index.js"

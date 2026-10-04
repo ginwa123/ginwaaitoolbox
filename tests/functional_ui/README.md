@@ -1,7 +1,7 @@
 # Functional UI Tests
 
-Real-data, isolated-in-`/tmp` end-to-end coverage for the nalar **web
-app** — boots a real `nalar` backend AND a real Vite dev server, then
+Real-data, isolated-in-`/tmp` end-to-end coverage for the pabrik **web
+app** — boots a real `pabrik` backend AND a real Vite dev server, then
 drives the running UI with [Playwright Python](https://playwright.dev/python/).
 
 Mirrors the isolation guarantees of the sibling `tests/functional/`
@@ -53,11 +53,11 @@ PYTHONPATH=tests/functional:. pytest tests/functional_ui/harness_safety_test.py 
 # Expect: 11 passed.
 ```
 
-### Full suite (requires a built nalar + Playwright Chromium)
+### Full suite (requires a built pabrik + Playwright Chromium)
 
 ```bash
 # Option A: use an existing binary
-NALAR_BIN=/path/to/nalar pytest tests/functional_ui/
+PABRIK_BIN=/path/to/pabrik pytest tests/functional_ui/
 
 # Option B: let zig build do everything
 zig build functional-test-ui
@@ -66,21 +66,21 @@ zig build functional-test-ui
 ### Single suite
 
 ```bash
-NALAR_BIN=./zig-out/bin/nalar pytest tests/functional_ui/kanban_lifecycle_ui_test.py -v
+PABRIK_BIN=./zig-out/bin/pabrik pytest tests/functional_ui/kanban_lifecycle_ui_test.py -v
 ```
 
 ### Dry-run mode (skip rmtree; useful for debugging)
 
 ```bash
-NALAR_FUNCTIONAL_DRY_RUN=1 NALAR_BIN=./zig-out/bin/nalar pytest tests/functional_ui/smoke_boot_test.py -v -s
+PABRIK_FUNCTIONAL_DRY_RUN=1 PABRIK_BIN=./zig-out/bin/pabrik pytest tests/functional_ui/smoke_boot_test.py -v -s
 # tempdirs are NOT cleaned up; you can inspect them after the run.
 ```
 
 ### Parallel
 
 ```bash
-NALAR_BIN=./zig-out/bin/nalar pytest tests/functional_ui/ -n auto
-# Each worker gets its own nalar + Vite, its own ports, its own tempdir.
+PABRIK_BIN=./zig-out/bin/pabrik pytest tests/functional_ui/ -n auto
+# Each worker gets its own pabrik + Vite, its own ports, its own tempdir.
 ```
 
 ## Adding a new suite
@@ -89,7 +89,7 @@ NALAR_BIN=./zig-out/bin/nalar pytest tests/functional_ui/ -n auto
 2. Use the `ui_harness` and `page` fixtures from `conftest.py`. They
    provide a fresh `UIHarness` + Playwright `Page` per test.
 3. Write `def test_<scenario>()` functions. Each test is a fresh
-   backend + Vite boot (~5-10s for nalar, +5-15s for Vite's first
+   backend + Vite boot (~5-10s for pabrik, +5-15s for Vite's first
    compile) plus ~10s of UI interaction.
 4. Drive the UI with Playwright's locators (see Playwright's
    [locator docs](https://playwright.dev/python/docs/locators)). Prefer
@@ -128,7 +128,7 @@ def test_create_kanban_task_via_ui(ui_harness: UIHarness, page) -> None:
 When a test starts:
 
 1. `UIHarness.boot()` runs.
-2. `FunctionalHarness.boot()` boots nalar against an isolated tmpdir HOME.
+2. `FunctionalHarness.boot()` boots pabrik against an isolated tmpdir HOME.
 3. `UIHarness.boot()` then resolves the frontend source tree (default:
    `src/apps/desktop/`) and spawns `pnpm run dev --port <vite_port>
    --strictPort --host 127.0.0.1` (2026-08-28 — pnpm migration:
@@ -197,7 +197,7 @@ instead. We now pass the flags directly to vite via
 ### TIME_WAIT reuse
 
 The probe socket sets `SO_REUSEADDR` so it can bind ports in TIME_WAIT
-state. nalar's listener also sets `SO_REUSEADDR`, so it can bind the
+state. pabrik's listener also sets `SO_REUSEADDR`, so it can bind the
 same port despite lingering server-side TIME_WAITs from prior runs.
 Vite's listener honors `SO_REUSEADDR` too.
 
@@ -255,7 +255,7 @@ production agent emits.
 Each test does:
 
 1. Boot harness (function-scoped, fresh `agent.db` per test).
-2. Open Python `sqlite3` against `temp_dir/.config/nalar/agent.db`.
+2. Open Python `sqlite3` against `temp_dir/.config/pabrik/agent.db`.
 3. INSERT `sessions` + `llm_history` rows via the `DbSeed`
    helper in `tests/functional_ui/db_seed.py`.
 4. Navigate headless Chromium to `/app/chat/<session_id>` and
@@ -270,7 +270,7 @@ the test before any INSERT runs.
 ### Available helpers (`db_seed.py`)
 
 ```python
-seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+seed = DbSeed(h.temp_dir / ".config" / "pabrik" / "agent.db")
 with seed.connect() as conn:
     sid = "sess_test_001"
     seed.seed_session(conn, sid, "Test Chat")

@@ -20,7 +20,7 @@ Side-channel coverage (already shipped via workspace_items_test.py):
   - cwd validation (absolute-path / control-char rejection)
   - is_auto_retry_until_stop INSERT OR IGNORE side-effect
 
-Each test boots a fresh nalar (function-scoped fixture).
+Each test boots a fresh pabrik (function-scoped fixture).
 """
 
 from __future__ import annotations

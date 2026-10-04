@@ -138,14 +138,14 @@ describe('TextReplace.vue — diff fallback + filtered Arguments', () => {
   // production crash report.
   it('explicit null diffview props fall through to envelope data (no crash)', async () => {
     const params = JSON.stringify({
-      path: '/tmp/nalar_dummy_test.txt',
+      path: '/tmp/pabrik_dummy_test.txt',
       old_str: 'test again - second replacement works!',
       new_str: 'again - third replacement works! count: 3',
     })
     const wrapper = mount(TextReplace, {
       props: {
         content: {
-          path: '/tmp/nalar_dummy_test.txt',
+          path: '/tmp/pabrik_dummy_test.txt',
           unified: '@@ -1,2 +1,2 @@',
           before: 'test again - second replacement works!',
           after: 'again - third replacement works! count: 3',

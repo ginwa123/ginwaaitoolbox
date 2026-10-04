@@ -94,10 +94,10 @@ $ zig build --list-steps
   fetch-vendor-sqlite3 (SKIPPED)
   fetch-vendor-curl    (SKIPPED)
 
-$ zig build install:cli   # builds nalarcli.exe in zig-out/bin/
+$ zig build install:cli   # builds pabrikcli.exe in zig-out/bin/
   Build Summary: 3/3 steps succeeded
 
-$ zig build test:cli      # compiles + runs nalarcli unit tests
+$ zig build test:cli      # compiles + runs pabrikcli unit tests
   Build system works; test-logic failures remain.
 ```
 

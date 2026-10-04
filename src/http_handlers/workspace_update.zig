@@ -1,9 +1,9 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
+const root_mod = @import("pabrikcore");
 const gserverz = root_mod.gserverz;
-const nalarcore = root_mod;
-const ai_workflow = nalarcore.ai_workflow;
-const http_response = nalarcore.http_response;
+const pabrikcore = root_mod;
+const ai_workflow = pabrikcore.ai_workflow;
+const http_response = pabrikcore.http_response;
 const auth_common = @import("auth_common.zig");
 
 pub const WorkspaceUpdateError = error{
@@ -22,7 +22,7 @@ pub const WorkspaceUpdateError = error{
 /// PUT /api/workspaces/:id
 pub fn workspaceUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const id = req.params.get("id") orelse "";
@@ -62,7 +62,7 @@ const WorkspaceUpdateResult = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    sqlite_db: *nalarcore.sqlite.SqliteBackend,
+    sqlite_db: *pabrikcore.sqlite.SqliteBackend,
     id: []const u8,
     body: []const u8,
     auth_enabled: bool,
@@ -77,7 +77,7 @@ fn useCase(
     };
     defer allocator.free(owner);
 
-    // Per the project memory (nalar-http-handler-thin-wrapper-pattern.md),
+    // Per the project memory (pabrik-http-handler-thin-wrapper-pattern.md),
     // the per-request arena allocator (`allocator`) is the per-request
     // arena, so parseFromSliceLeaky is the correct API — its internal
     // arena lifetime matches our handler's lifetime.

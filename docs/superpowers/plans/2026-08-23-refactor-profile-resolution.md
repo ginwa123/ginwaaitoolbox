@@ -147,7 +147,7 @@ NOTE: simpler + exact — implement it directly as the existing 3-step lookup (s
 - [ ] 3.1 At workflow entry (~line 430), replace lines 431-516 with:
 
 ```zig
-var config = nalarcore.getLlmConfig(di.di);
+var config = pabrikcore.getLlmConfig(di.di);
 var eff = config.resolveEffectiveProfile(params.selected_profile_model);
 
 logger.infoFmt(
@@ -165,7 +165,7 @@ logger.infoFmt(
 
 **Files:** `src/ai_workflow/tui/agentic_loop/workflow.zig` (edit)
 
-- [ ] 4.1 In the loop body, keep the live re-reads (`config = nalarcore.getLlmConfig(di.di)` at 715, `live_selected_profile_model` at 728-733, the missing-profile warning at 738-742) — those are NOT duplication. Replace ONLY the duplicated cascade: lines 743-746 (4× resolveProfileField), 754-804 (thinking/budget/effort hand-rolled), and 823-833 (iter_profile) become:
+- [ ] 4.1 In the loop body, keep the live re-reads (`config = pabrikcore.getLlmConfig(di.di)` at 715, `live_selected_profile_model` at 728-733, the missing-profile warning at 738-742) — those are NOT duplication. Replace ONLY the duplicated cascade: lines 743-746 (4× resolveProfileField), 754-804 (thinking/budget/effort hand-rolled), and 823-833 (iter_profile) become:
 
 ```zig
 eff = config.resolveEffectiveProfile(live_selected_profile_model);

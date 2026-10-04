@@ -1,7 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
 
 /// Domain error set for the worktree-info use case. The handler maps
 /// `NotARepository` to HTTP 404; other failures propagate as 500.
@@ -179,7 +179,7 @@ pub fn gitWorktreeInfoHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 
 // ===== Tests merged from git_worktree_info_test.zig (2026-09-11 flatten) =====
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/git_worktree_info.zig";

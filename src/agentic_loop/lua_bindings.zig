@@ -1,7 +1,7 @@
 //! Hand-declared Lua 5.4 C API bindings (no `@cImport`).
 //!
 //! Follows the same recipe as the OpenSSL bindings (see
-//! `.nalar/skills/openssl-c-bindings-from-zig016/SKILL.MD`): declare each
+//! `.pabrik/skills/openssl-c-bindings-from-zig016/SKILL.MD`): declare each
 //! symbol as an `extern fn` with `callconv(.c)` and verify every constant
 //! against the vendored headers in `vendor/lua/` (Lua 5.4.9, see
 //! `vendor/lua/README.vendor`):

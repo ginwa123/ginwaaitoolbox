@@ -1,8 +1,8 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const SseEvent = @import("sse.zig").SseEvent;
 
-const event_bus_mod = nalarcore.event_bus;
+const event_bus_mod = pabrikcore.event_bus;
 
 pub const OnEventInputSessions = struct {
     action: []const u8, // "created", "updated", "deleted"
@@ -97,8 +97,8 @@ pub fn onEventSendSessions(
 // or rename it to "session_unknown" and one of them fails.
 //
 // The sibling `on_event_sent.zig::onEventSendSessions` uses an identical
-// `event_type_name` if/else but reaches the bus via a `nalarcore.getSingleton()`
-// call that requires a live ContextIPCTui. It's verified by code review of
+// `event_type_name` if/else but reaches the bus via a `pabrikcore.getSingleton()`
+// call that requires a live App. It's verified by code review of
 // the parallel fix (see PR #215). Behavioural coverage of the wire-format
 // mapping for the auto-rename cascade path — which is the user's reported
 // bug — lives here.

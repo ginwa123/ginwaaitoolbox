@@ -1,4 +1,4 @@
-//! `nalarcli` entry point.
+//! `pabrikcli` entry point.
 //!
 //! Boot sequence:
 //!   1. Parse argv → split global flags (`--server`, `--session`,
@@ -93,7 +93,7 @@ pub fn main(init: std.process.Init) !void {
         // `std.process.Init.main` signature is `!void`; returning a
         // non-zero exit would require `fn main() u8` which isn't
         // compatible with `Init`).
-        std.log.err("nalarcli failed", .{});
+        std.log.err("pabrikcli failed", .{});
     }
 }
 

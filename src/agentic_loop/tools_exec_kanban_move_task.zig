@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const kanban_move_task_mod = nalarcore.kanban_move_task;
+const agent = pabrikcore.agent;
+const kanban_move_task_mod = pabrikcore.kanban_move_task;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execKanbanMoveTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

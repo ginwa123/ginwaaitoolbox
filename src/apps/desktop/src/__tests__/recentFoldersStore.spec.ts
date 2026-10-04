@@ -8,7 +8,7 @@
  *   - togglePin(path) — flips pinned, re-sort
  *   - removeRecent(path) — explicit remove (used when the user wants to forget)
  *   - list() — sorted by pinned desc, then lastUsedAt desc
- *   - Persistence: localStorage key 'nalar-folder-picker-recent:v1'
+ *   - Persistence: localStorage key 'pabrik-folder-picker-recent:v1'
  *
  * Persistence is the interesting part — the store hydrates from localStorage
  * on init, and writes back on every mutation (debounced 200ms via the
@@ -42,7 +42,7 @@ describe('useRecentFoldersStore — basics', () => {
 
   it('hydrates from localStorage on first read', () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/a', lastUsedAt: 1000, pinned: true },
         { path: '/home/me/b', lastUsedAt: 500, pinned: false },
@@ -174,7 +174,7 @@ describe('useRecentFoldersStore — basics', () => {
     store.addRecent('/home/me/foo')
     // localStorage write is debounced 200ms — wait for the timer.
     await new Promise((r) => setTimeout(r, 250))
-    const raw = localStorage.getItem('nalar-folder-picker-recent:v1')
+    const raw = localStorage.getItem('pabrik-folder-picker-recent:v1')
     expect(raw).not.toBeNull()
     const entries = JSON.parse(raw!)
     expect(entries).toEqual([

@@ -14,9 +14,9 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const design_model = nalarcore.ai_mod.design_model;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const design_model = pabrikcore.ai_mod.design_model;
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 

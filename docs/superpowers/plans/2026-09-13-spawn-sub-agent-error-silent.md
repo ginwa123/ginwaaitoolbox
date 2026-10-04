@@ -15,12 +15,12 @@
 ## Global Constraints
 
 - **Never touch the process on port 8081.** Functional tests use the harness's random port (8080..8199 minus 8081).
-- For HTTP/wire verification use the python functional harness (`tests/functional/harness.py` + isolated tmpdir HOME), never `nohup ./zig-out/bin/nalar… + curl`.
+- For HTTP/wire verification use the python functional harness (`tests/functional/harness.py` + isolated tmpdir HOME), never `nohup ./zig-out/bin/pabrik… + curl`.
 - Empty-slice-binds-as-NULL: `SqliteBackend.exec` binds `""` as NULL — do not write `""` into NOT NULL columns on the fix path.
 - No `// NEW (plan: …)` comments in source.
 - Cross-platform check for Zig changes (`zig build` on Linux + compile-only cross-check per `zig-cross-platform-verification` skill).
 - `vue-tsc --build` emits stray `.js` next to `.ts` — delete before committing.
-- Verification gates: `zig build test --summary all`, `(cd src/apps/desktop && pnpm test:unit)`, `bun run build`, `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/<file> -v` (rebuild with `zig build install:linux` first).
+- Verification gates: `zig build test --summary all`, `(cd src/apps/desktop && pnpm test:unit)`, `bun run build`, `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/<file> -v` (rebuild with `zig build install:linux` first).
 
 ## Current State (verified 2026-09-13 via 3 parallel explorers + first-hand reads)
 
@@ -94,13 +94,13 @@ New strings the implementer must emit verbatim:
 - [ ] 3. Preserve specific parse-failure reason in tool-result message (no bare `InvalidArguments`). Commit: `fix(spawn): specific parse error reason`
 - [ ] 4. Verify `random_fallback` badge renders + warn is greppable; add envelope note if missing. Commit: `fix(spawn): visible random fallback`
 - [ ] 5. Functional harness test (timeout → failed row + envelope) + inline static-contract tests. Commit: `test(spawn): timeout + failed-emit coverage`
-- [ ] 6. Run gates: `zig build test --summary all`, `pnpm test:unit`, `bun run build`, functional test with fresh `NALAR_BIN`. Commit: `chore(spawn): gate results`
+- [ ] 6. Run gates: `zig build test --summary all`, `pnpm test:unit`, `bun run build`, functional test with fresh `PABRIK_BIN`. Commit: `chore(spawn): gate results`
 
 ## Verification
 
 - `zig build test --summary all` (backend, incl. new inline contract tests).
 - `(cd src/apps/desktop && pnpm test:unit)` + `bun run build` (card still renders; no stray `.js` committed).
-- `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/spawn_subagent_timeout_test.py -v` — asserts `failed` row + `<error>timeout` envelope on a hung child with tiny timeout.
+- `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/spawn_subagent_timeout_test.py -v` — asserts `failed` row + `<error>timeout` envelope on a hung child with tiny timeout.
 - Manual: spawn 2 sub-agents with `timeout_seconds: 5` and a stalled child; card flips `running → failed` with the timeout message instead of freezing at `0s running`.
 - No-regression: normal 2-agent success still shows `done` + `<summary succeeded="2" failed="0" />`; refresh mid-run still rehydrates via snapshot.
 

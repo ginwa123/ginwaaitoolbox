@@ -1,6 +1,6 @@
 """Functional tests for per-user workspace isolation (plan 2026-09-25, W1 + W2.1).
 
-Boots a REAL nalar binary + REAL SQLite via the harness (never a live dev
+Boots a REAL pabrik binary + REAL SQLite via the harness (never a live dev
 server, never port 8081). Two authenticated admins share ONE database, so
 this is the wire-level proof that user A cannot see user B's workspaces.
 
@@ -75,8 +75,8 @@ def _login(port: int, email: str, password: str) -> str:
     )
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
 def _create_workspace(port: int, name: str, cookie: str) -> str:
@@ -101,15 +101,15 @@ def _two_users(bin_path: Path):
     return h, tok_a, tok_b
 
 
-def test_workspaces_list_is_per_user(default_nalar_bin: Path):
+def test_workspaces_list_is_per_user(default_pabrik_bin: Path):
     """A's workspace must not appear in B's list, and vice versa."""
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        ws_a = _create_workspace(h.port, "A private", f"nalar_session={tok_a}")
-        ws_b = _create_workspace(h.port, "B private", f"nalar_session={tok_b}")
+        ws_a = _create_workspace(h.port, "A private", f"pabrik_session={tok_a}")
+        ws_b = _create_workspace(h.port, "B private", f"pabrik_session={tok_b}")
 
-        ids_a = _list_workspace_ids(h.port, f"nalar_session={tok_a}")
-        ids_b = _list_workspace_ids(h.port, f"nalar_session={tok_b}")
+        ids_a = _list_workspace_ids(h.port, f"pabrik_session={tok_a}")
+        ids_b = _list_workspace_ids(h.port, f"pabrik_session={tok_b}")
 
         assert ws_a in ids_a, "A must see the workspace A created"
         assert ws_b in ids_b, "B must see the workspace B created"
@@ -119,28 +119,28 @@ def test_workspaces_list_is_per_user(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_workspace_get_by_foreign_id_is_404(default_nalar_bin: Path):
+def test_workspace_get_by_foreign_id_is_404(default_pabrik_bin: Path):
     """404 rather than 403: B must not learn that A's id exists."""
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        ws_a = _create_workspace(h.port, "A only", f"nalar_session={tok_a}")
+        ws_a = _create_workspace(h.port, "A only", f"pabrik_session={tok_a}")
 
-        own, _, body = _raw("GET", h.port, f"/api/workspaces/{ws_a}", cookie=f"nalar_session={tok_a}")
+        own, _, body = _raw("GET", h.port, f"/api/workspaces/{ws_a}", cookie=f"pabrik_session={tok_a}")
         assert own == 200, body[:300]
 
-        status, _, _ = _raw("GET", h.port, f"/api/workspaces/{ws_a}", cookie=f"nalar_session={tok_b}")
+        status, _, _ = _raw("GET", h.port, f"/api/workspaces/{ws_a}", cookie=f"pabrik_session={tok_b}")
         assert status == 404, f"expected 404 for a foreign workspace, got {status}"
     finally:
         h.teardown()
 
 
-def test_auth_off_is_unchanged(default_nalar_bin: Path):
+def test_auth_off_is_unchanged(default_pabrik_bin: Path):
     """Regression: without `--auth` the create + list round-trip still works.
 
     No identity means the shared sentinel owns the row, so the same request
     that created it still sees it — the pre-isolation behaviour.
     """
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         ws = _create_workspace(h.port, "No-auth workspace", "")
         assert ws in _list_workspace_ids(h.port, "")
@@ -148,44 +148,44 @@ def test_auth_off_is_unchanged(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_foreign_delete_and_rename_are_refused(default_nalar_bin: Path):
+def test_foreign_delete_and_rename_are_refused(default_pabrik_bin: Path):
     """B must not be able to DESTROY or rename A's workspace by guessing its id.
 
     This is the destructive half of "A must not interfere with B": a scoped
     list alone is not enough if DELETE still acts on a raw id.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        ws_a = _create_workspace(h.port, "A do not touch", f"nalar_session={tok_a}")
+        ws_a = _create_workspace(h.port, "A do not touch", f"pabrik_session={tok_a}")
 
         status, _, _ = _raw(
             "PUT", h.port, f"/api/workspaces/{ws_a}",
-            body={"name": "hijacked"}, cookie=f"nalar_session={tok_b}",
+            body={"name": "hijacked"}, cookie=f"pabrik_session={tok_b}",
         )
         assert status == 404, f"expected 404 on a foreign rename, got {status}"
 
         status, _, _ = _raw(
-            "DELETE", h.port, f"/api/workspaces/{ws_a}", cookie=f"nalar_session={tok_b}"
+            "DELETE", h.port, f"/api/workspaces/{ws_a}", cookie=f"pabrik_session={tok_b}"
         )
         assert status == 404, f"expected 404 on a foreign delete, got {status}"
 
         # A's workspace survived both attempts, with its original name.
         status, _, body = _raw(
-            "GET", h.port, f"/api/workspaces/{ws_a}", cookie=f"nalar_session={tok_a}"
+            "GET", h.port, f"/api/workspaces/{ws_a}", cookie=f"pabrik_session={tok_a}"
         )
         assert status == 200, body[:300]
         assert json.loads(body.decode())["name"] == "A do not touch"
 
         # And A can still delete its own workspace.
         status, _, _ = _raw(
-            "DELETE", h.port, f"/api/workspaces/{ws_a}", cookie=f"nalar_session={tok_a}"
+            "DELETE", h.port, f"/api/workspaces/{ws_a}", cookie=f"pabrik_session={tok_a}"
         )
         assert status == 200, "A must still be able to delete its own workspace"
     finally:
         h.teardown()
 
 
-def test_sessions_are_owned_by_their_creator(default_nalar_bin: Path):
+def test_sessions_are_owned_by_their_creator(default_pabrik_bin: Path):
     """Session ownership end to end: stamp, read-by-id, and the LIST filter.
 
     This is the test that covers the list filter's REAL-OWNER branch — every
@@ -193,38 +193,38 @@ def test_sessions_are_owned_by_their_creator(default_nalar_bin: Path):
     so none of them exercise filtering at all. It also proves the create
     handler's owner stamp actually lands.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
         status, _, body = _raw(
-            "POST", h.port, "/api/session", body={}, cookie=f"nalar_session={tok_a}"
+            "POST", h.port, "/api/session", body={}, cookie=f"pabrik_session={tok_a}"
         )
         assert status == 201, body[:500]
         sess = json.loads(body.decode())["id"]
         assert sess, "create must return a session id"
 
         # A can read its own session; B is refused with 404, not 403.
-        ok, _, _ = _raw("GET", h.port, f"/api/llm/session/{sess}", cookie=f"nalar_session={tok_a}")
+        ok, _, _ = _raw("GET", h.port, f"/api/llm/session/{sess}", cookie=f"pabrik_session={tok_a}")
         assert ok == 200, f"creator must read its own session, got {ok}"
         foreign, _, _ = _raw(
-            "GET", h.port, f"/api/llm/session/{sess}", cookie=f"nalar_session={tok_b}"
+            "GET", h.port, f"/api/llm/session/{sess}", cookie=f"pabrik_session={tok_b}"
         )
         assert foreign == 404, f"expected 404 for a foreign session, got {foreign}"
 
         # The LIST: the id appears for its owner and never for the other user.
         # Compared on the raw body so the test does not depend on the JSON
         # envelope's shape.
-        status, _, a_body = _raw("GET", h.port, "/api/session", cookie=f"nalar_session={tok_a}")
+        status, _, a_body = _raw("GET", h.port, "/api/session", cookie=f"pabrik_session={tok_a}")
         assert status == 200, a_body[:300]
         assert sess in a_body.decode(), "own session must appear in own list"
 
-        status, _, b_body = _raw("GET", h.port, "/api/session", cookie=f"nalar_session={tok_b}")
+        status, _, b_body = _raw("GET", h.port, "/api/session", cookie=f"pabrik_session={tok_b}")
         assert status == 200, b_body[:300]
         assert sess not in b_body.decode(), "A's session must NOT appear in B's list"
     finally:
         h.teardown()
 
 
-def test_items_of_a_foreign_workspace_are_refused(default_nalar_bin: Path):
+def test_items_of_a_foreign_workspace_are_refused(default_pabrik_bin: Path):
     """B cannot list, create in, or delete inside A's workspace.
 
     These routes carry `:workspace_id` and previously never checked it, so a
@@ -232,33 +232,33 @@ def test_items_of_a_foreign_workspace_are_refused(default_nalar_bin: Path):
     it. The check now lives in one middleware choke point, which is why a
     single assertion here covers every child route.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        ws_a = _create_workspace(h.port, "A items", f"nalar_session={tok_a}")
+        ws_a = _create_workspace(h.port, "A items", f"pabrik_session={tok_a}")
         items_url = f"/api/workspaces/{ws_a}/items"
 
         # A can list its own items — proves the gate is not a blanket 404.
-        status, _, before = _raw("GET", h.port, items_url, cookie=f"nalar_session={tok_a}")
+        status, _, before = _raw("GET", h.port, items_url, cookie=f"pabrik_session={tok_a}")
         assert status == 200, before[:300]
 
         # B cannot list them.
-        status, _, _ = _raw("GET", h.port, items_url, cookie=f"nalar_session={tok_b}")
+        status, _, _ = _raw("GET", h.port, items_url, cookie=f"pabrik_session={tok_b}")
         assert status == 404, f"expected 404 listing a foreign workspace's items, got {status}"
 
         # B cannot add an item (the middleware rejects before the body is parsed).
         status, _, _ = _raw(
-            "POST", h.port, items_url, body={"name": "intruder"}, cookie=f"nalar_session={tok_b}"
+            "POST", h.port, items_url, body={"name": "intruder"}, cookie=f"pabrik_session={tok_b}"
         )
         assert status == 404, f"expected 404 adding to a foreign workspace, got {status}"
 
         # B cannot act on an item id inside A's workspace either.
         status, _, _ = _raw(
-            "DELETE", h.port, f"{items_url}/whatever", cookie=f"nalar_session={tok_b}"
+            "DELETE", h.port, f"{items_url}/whatever", cookie=f"pabrik_session={tok_b}"
         )
         assert status == 404, f"expected 404 deleting inside a foreign workspace, got {status}"
 
         # A's items are byte-identical before and after B's attempts.
-        status, _, after = _raw("GET", h.port, items_url, cookie=f"nalar_session={tok_a}")
+        status, _, after = _raw("GET", h.port, items_url, cookie=f"pabrik_session={tok_a}")
         assert status == 200, after[:300]
         assert before == after, "A's items changed after B's attempts"
     finally:

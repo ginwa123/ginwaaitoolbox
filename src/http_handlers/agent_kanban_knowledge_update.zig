@@ -16,8 +16,8 @@
 //! Task: task_1787597624259_2
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// HTTP request body.
@@ -82,7 +82,7 @@ pub const KnowledgeUpdateOutput = struct {
 /// requested fields and SELECT-refetch the row. Transport-agnostic.
 pub fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: KnowledgeUpdateInput,
 ) KnowledgeUpdateError!KnowledgeUpdateOutput {
     if (input.kanban_id.len == 0 or input.knowledge_id.len == 0) {
@@ -178,7 +178,7 @@ pub fn agentKanbanKnowledgeUpdateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const kanban_id = req.params.get("kanban_id") orelse "";
@@ -235,7 +235,7 @@ pub fn agentKanbanKnowledgeUpdateHandler(
 //   3. Mode-switch: file_path='' + content set (file→text)
 //   4. Mode-switch: content='' + file_path set (text→file)
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
 

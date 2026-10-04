@@ -1,9 +1,9 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
-const logger_mod = nalarcore.loggermod;
-const event_bus_mod = nalarcore.event_bus;
+const sqlite = pabrikcore.sqlite;
+const logger_mod = pabrikcore.loggermod;
+const event_bus_mod = pabrikcore.event_bus;
 const onEventSendWorkers = @import("sse_send_event_worker.zig").onEventSendWorkers;
 const testing = std.testing;
 

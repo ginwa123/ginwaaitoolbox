@@ -10,14 +10,14 @@
 //! loads/saves the raw JSON string per user.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
 /// Load the raw `config_json` for a user. Returns null when the user
 /// has no row, the column is NULL, or it is empty (all mean
 /// "defaults"). Caller owns the returned slice.
 pub fn loadRaw(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     user_id: []const u8,
 ) !?[]u8 {
     if (user_id.len == 0) return null;
@@ -41,7 +41,7 @@ pub fn loadRaw(
 /// keeps the intent explicit.
 pub fn saveRaw(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     user_id: []const u8,
     json_text: []const u8,
 ) !void {
@@ -65,7 +65,7 @@ pub fn saveRaw(
 // =====================================================================
 
 const testing = std.testing;
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const Migration077 = @import("../../migrations/migration.zig").Migration077AddUsersAndRbacSchema;
 const Migration092 = @import("../../migrations/migration.zig").Migration092AddUserConfigJson;
 

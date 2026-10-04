@@ -20,7 +20,7 @@
 import type { Workspace } from '../api'
 import { userScopedKey } from './userScope'
 
-const WORKSPACES_CACHE_KEY = 'nalar-workspaces:v1'
+const WORKSPACES_CACHE_KEY = 'pabrik-workspaces:v1'
 
 interface CachedWorkspace {
   id: string
@@ -33,7 +33,7 @@ interface CachedWorkspace {
  * Normalizes whatever JSON was stored into the minimal `Workspace`
  * shape the store seeds from. Rows carry `items: []` + `expanded`
  * defaults here — the store restores `expanded` from its own
- * `nalar-workspace-expanded` key and lazily fills `items` per visit,
+ * `pabrik-workspace-expanded` key and lazily fills `items` per visit,
  * so the cache never owns UI state or item trees.
  *
  * Returns null when the payload isn't recognizable at all, so corrupt

@@ -329,7 +329,7 @@ useKanbanScrollRestore(kanbanColumnsContainer, kanbanScrollStorageKey)
 // like `sidebar-width`, and userScopedKey() is reserved for identity data.
 type KanbanLayout = 'columns' | 'rows'
 const LAYOUT_PARAM = 'layout'
-const LAYOUT_STORAGE_KEY = 'nalar-kanban-layout'
+const LAYOUT_STORAGE_KEY = 'pabrik-kanban-layout'
 
 const readStoredLayout = (): KanbanLayout | null => {
   try {
@@ -398,7 +398,7 @@ useKanbanScrollRestore(kanbanRowsContainer, kanbanRowScrollStorageKey, 'y')
 // only — it does NOT go in the URL (same reasoning as group collapse
 // below). It applies to row mode only, so it is inert in column mode
 // and the toggle is hidden there.
-const DENSITY_STORAGE_KEY = 'nalar-kanban-row-density'
+const DENSITY_STORAGE_KEY = 'pabrik-kanban-row-density'
 
 const readStoredDensity = (): KanbanRowDensity | null => {
   try {
@@ -426,7 +426,7 @@ const setRowDensity = (next: KanbanRowDensity) => {
 // Per board, persisted in localStorage as a JSON array of collapsed
 // column ids. Collapse is a density preference, not a view switch, so it
 // deliberately does NOT go in the URL.
-const COLLAPSED_STORAGE_PREFIX = 'nalar-kanban-row-collapsed:'
+const COLLAPSED_STORAGE_PREFIX = 'pabrik-kanban-row-collapsed:'
 
 const readCollapsedIds = (): string[] => {
   try {
@@ -868,7 +868,7 @@ const handleViewTaskDetail = (taskId: string) => {
   // Refetch the task list so the panel shows server-truth on open.
   // The KanbanTaskDetail reads props.task.is_auto_retry_until_stop
   // to render the unattended-mode toggle, and that field can drift
-  // out of sync across clients (e.g. another nalar instance
+  // out of sync across clients (e.g. another pabrik instance
   // toggled the flag, or a sub-agent PUT ran unattended on a
   // shared session). The workspaces store re-fetches the whole
   // task list for the parent item, plucks this task, and patches
@@ -1787,7 +1787,7 @@ const handleCreateTaskSave = async (payload: {
 
 <style scoped>
 /* Custom scrollbar styling for the horizontal column row.
-   WebKit / Blink browsers (and the nalar Electron shell). */
+   WebKit / Blink browsers (and the pabrik Electron shell). */
 .kanban-view :deep(div.overflow-x-auto)::-webkit-scrollbar {
   height: 8px;
 }

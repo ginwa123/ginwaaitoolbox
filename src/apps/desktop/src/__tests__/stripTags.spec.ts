@@ -109,7 +109,7 @@ describe('stripThinkingTags — <html> interplay', () => {
 describe('stripThinkingTags — fenced markdown wrappers', () => {
   it('strips ```html fence around <markdown> (real DB row shape)', () => {
     // Bytes-verbatim copy of row 1787545407823788849 from
-    // task_1787540075329_3 in ~/.config/nalar/agent.db (truncated).
+    // task_1787540075329_3 in ~/.config/pabrik/agent.db (truncated).
     const fenced =
       '```html\n<markdown>\n## Done — tests now inline\n\n**What changed:**\n- item one\n</markdown>\n```'
     const stripped = stripThinkingTags(fenced)

@@ -20,9 +20,9 @@
 //! handler that maps the outcome to the JSON response.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const http_response = nalarcore.http_response;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const http_response = pabrikcore.http_response;
 
 pub const ShutdownError = error{
     GlobalContextNotInitialized,
@@ -37,7 +37,7 @@ pub const ShutdownResponse = struct {
 // =====================================================================
 
 fn useCase() ShutdownError!ShutdownResponse {
-    _ = nalarcore.getSingleton() catch return error.GlobalContextNotInitialized;
+    _ = pabrikcore.getSingleton() catch return error.GlobalContextNotInitialized;
     // Deferred shutdown: do NOT call di.server.shutdown() synchronously.
     // Closing the listener before the 200 body flushes races the
     // worker_pool dispatcher (main.zig listenEventLoop) and surfaces
@@ -60,7 +60,7 @@ fn useCase() ShutdownError!ShutdownResponse {
     const spawn_fn = struct {
         fn run() void {
             helpers.sleepMillis(250);
-            if (nalarcore.getSingleton()) |di| {
+            if (pabrikcore.getSingleton()) |di| {
                 di.server.shutdown();
             } else |_| {}
             helpers.sleepMillis(50);
@@ -70,7 +70,7 @@ fn useCase() ShutdownError!ShutdownResponse {
     if (std.Thread.spawn(.{}, spawn_fn, .{})) |t| {
         t.detach();
     } else |_| {
-        const di = nalarcore.getSingleton() catch return error.GlobalContextNotInitialized;
+        const di = pabrikcore.getSingleton() catch return error.GlobalContextNotInitialized;
         di.server.shutdown();
         std.process.exit(0);
     }

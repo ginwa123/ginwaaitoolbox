@@ -71,7 +71,7 @@ test {
     // src/root.zig, which is the mod test root and so already discovers
     // its own `test` blocks.)
     _ = @import("workflow_compact_message.zig"); // merged single file — helpers + orchestration + all inline tests
-    _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
+    _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / PABRIK.md (inline tests at the bottom of the impl file)
     _ = @import("prompts_make_cross_project_context.zig"); // sibling-cwd loop from workspace_items only (inline in-memory DB tests)
     _ = @import("prompts_make_kanban_context.zig"); // kanban prompt — renders all columns at tail (no cap) so kanban_move_task is 1-call; in-memory DB tests
     // impl + tests are in the same .zig file for Agent Mode helpers.

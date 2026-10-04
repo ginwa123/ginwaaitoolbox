@@ -1077,7 +1077,7 @@ onBeforeUnmount(() => {
           <!--
             Tab strip (Recent / Browse). Sits between the breadcrumb and
             the toolbar. Active tab is underlined violet (matches
-            NalarTabStrip.vue). The default tab is `recent` for the user's
+            PabrikTabStrip.vue). The default tab is `recent` for the user's
             primary flow. The toolbar (search + hidden + refresh) is
             visible only under Browse — Recent has no use for it.
 

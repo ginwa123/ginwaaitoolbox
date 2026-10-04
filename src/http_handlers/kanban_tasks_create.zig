@@ -40,10 +40,11 @@
 //! Plan: docs/superpowers/plans/2026-08-19-kanban-create-task-inits-session.md
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
-const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
+const on_event_sent_kanban = pabrikcore.ai_mod.on_event_sent_kanban;
+const model_guard = @import("../agentic_loop/llm_history_model_guard.zig");
 
 /// HTTP request body for kanban task create. Decoupled from the
 /// internal `TaskCreateRequest` struct so the wire format can evolve
@@ -76,7 +77,7 @@ pub fn kanbanTasksCreateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Validate path params + body presence + JSON shape.
@@ -243,7 +244,7 @@ pub fn kanbanTasksCreateHandler(
         };
         var profile: []const u8 = parsed.selected_profile_model orelse "";
         if (profile.len == 0) {
-            if (nalarcore.getLlmConfig(di).active_profile) |ap| {
+            if (pabrikcore.getLlmConfig(di).active_profile) |ap| {
                 profile = ap;
             }
         }
@@ -336,20 +337,28 @@ pub fn kanbanTasksCreateHandler(
             // finish_reason, role, agent, parent_id,
             // parent_session_id, is_input, image_url, video_url,
             // created_at_nano, created_iso, is_feed_to_llm —
-            // every other column uses its DEFAULT. model uses ''
-            // literal (NOT NULL constraint + the
-            // empty-slice-binds-as-null SQLite backend quirk).
+            // every other column uses its DEFAULT.
             // image_url/video_url are the `||`-joined wire values.
+            //
+            // `model` is the session's REAL effective model (the same cascade
+            // the workflow resolves on its first turn), guarded so it can
+            // never be empty. It used to be a hardcoded `''` literal, which
+            // satisfied NOT NULL but wrote a blank model into chat history —
+            // visible in the UI and useless to anything reading the row.
+            const seed_model = model_guard.resolve(
+                pabrikcore.getLlmConfig(di).resolveEffectiveProfile(profile).model,
+            );
             sqlite_db.exec(
                 allocator,
                 "INSERT INTO llm_history " ++
                     "(id, session_id, model, response_content, finish_reason, role, " ++
                     "agent, parent_id, parent_session_id, is_input, image_url, video_url, " ++
                     "is_feed_to_llm, created_at_nano, created_iso) " ++
-                    "VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, ?, ?, 1, ?, '')",
+                    "VALUES (?, ?, ?, ?, 'null', 'user', 'Agent', ?, ?, 1, ?, ?, 1, ?, '')",
                 &[_][]const u8{
                     id_str,
                     standard_result.task_id,
+                    seed_model,
                     initial_message,
                     standard_result.task_id,
                     standard_result.task_id,
@@ -369,7 +378,7 @@ pub fn kanbanTasksCreateHandler(
         // name from standard_result.name (the bound task name) to
         // match task.id == session.id + session.name = task.name
         // per the 2026-08-13-kanban-task-session-name-match plan.
-        const on_event_sent = nalarcore.ai_mod.on_event_sent;
+        const on_event_sent = pabrikcore.ai_mod.on_event_sent;
         on_event_sent.onEventSendSessions(allocator, .{
             .action = "created",
             .id = standard_result.task_id,

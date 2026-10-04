@@ -5,7 +5,7 @@
 //   - core:        Universal rules, response formatting, update-activity
 //   - agent:       Main orchestration directive
 //   - parallel:    MANDATORY parallel work rules
-//   - memory:      AGENTS.md, tasks, git, NALAR.md, skills system
+//   - memory:      AGENTS.md, tasks, git, PABRIK.md, skills system
 //   - execution:   Classification, execution, escalation
 //   - special:     CompactionAgent, GenerateSessionNameAgent
 // =============================================================================
@@ -49,7 +49,7 @@ pub const Escalation = execution.Escalation;
 
 pub const MemoryPrompt = memory.MemoryPrompt;
 pub const GitPrompt = memory.GitPrompt;
-pub const NalarMdAutoUpdate = memory.NalarMdAutoUpdate;
+pub const PabrikMdAutoUpdate = memory.PabrikMdAutoUpdate;
 pub const GlobalMemorySystem = memory.GlobalMemorySystem;
 pub const LocalMemorySystem = memory.LocalMemorySystem;
 

@@ -16,23 +16,23 @@
 ## 1. Goal, in one paragraph
 
 Today a skill **is a file**: `<skills-root>/<name>/SKILL.MD`, where the root is
-`$XDG_CONFIG_HOME/nalar/skills` (else `$HOME/.config/nalar/skills`) for *global* and
-`<cwd>/.nalar/skills` for *local*. The **filesystem path is the handle the LLM passes
+`$XDG_CONFIG_HOME/pabrik/skills` (else `$HOME/.config/pabrik/skills`) for *global* and
+`<cwd>/.pabrik/skills` for *local*. The **filesystem path is the handle the LLM passes
 around**, and the *skill list* is produced by walking directories and parsing YAML
 frontmatter off every file. This plan moves the source of truth into a new SQLite
 table `skills` (Migration 094). After it lands, `GET /api/skills` is a `SELECT`, the
 `list_skills` tool is a `SELECT`, `use_skill` takes a **`skill_name`** instead of a
 `path`, and the filesystem survives only as (a) a one-time importer at boot and
-(b) a best-effort mirror on write, so a repo-committed `.nalar/skills/` still works
+(b) a best-effort mirror on write, so a repo-committed `.pabrik/skills/` still works
 on a fresh machine.
 
 ## 2. What changes for the user (and what does not)
 
 | Today | After |
 |---|---|
-| Global skills = files under `~/.config/nalar/skills/` | Global skills = rows with `is_global = 1` |
+| Global skills = files under `~/.config/pabrik/skills/` | Global skills = rows with `is_global = 1` |
 | Listing walks a directory tree, opens+stats every file, reads every file a **second** time to parse frontmatter | Listing is one indexed `SELECT` |
-| `use_skill({path: "/home/u/.config/nalar/skills/foo/SKILL.MD"})` — the model must copy an absolute path verbatim; the tool prompt spends 4 lines warning it not to construct one | `use_skill({skill_name: "foo"})` |
+| `use_skill({path: "/home/u/.config/pabrik/skills/foo/SKILL.MD"})` — the model must copy an absolute path verbatim; the tool prompt spends 4 lines warning it not to construct one | `use_skill({skill_name: "foo"})` |
 | `add_skill`/`edit_skill` write a file; a second process could silently clobber it | Writes a row; the file mirror is best-effort |
 | `skill.path` is a real filesystem path the UI renders | `path` becomes **optional provenance** (`source_path`), may be `""` |
 | Skill name collisions across global/local are resolved by directory search order | Resolved explicitly by the `is_global` + `cwd` columns |
@@ -70,12 +70,12 @@ Only `session_skills` (Migration 008) exists. Highest migration is **93**
 
 | Symbol | Line | What |
 |---|---|---|
-| `LOCAL_SKILLS_DIR = ".nalar/skills"` | 59 | local root, relative to cwd |
+| `LOCAL_SKILLS_DIR = ".pabrik/skills"` | 59 | local root, relative to cwd |
 | `SKILL_FILE_NAME = "SKILL.MD"` | 62 | the on-disk file name (uppercase `.MD`) |
 | `MAX_SKILLS_SIZE = 100 * 1024` | 7 | the listing path's read cap |
 | `parseYamlFrontmatter` | 87-145 | returns `{name, description}` — **`tags:` is never read** |
-| `get_global_skills_path_from_env` | 488-503 | `$XDG_CONFIG_HOME/nalar/skills` else `$HOME/.config/nalar/skills` |
-| `get_local_skills_path_for_dir` | 520-522 | `<dir>/.nalar/skills` |
+| `get_global_skills_path_from_env` | 488-503 | `$XDG_CONFIG_HOME/pabrik/skills` else `$HOME/.config/pabrik/skills` |
+| `get_local_skills_path_for_dir` | 520-522 | `<dir>/.pabrik/skills` |
 | `list_skill_files_in_dir` | 527-570 | `openDir` + `iterate` + per-entry `openFile` + `stat`, skips `size == 0` |
 | `list_skills_from_dir_path` | 575-614 | second pass: `readFileAlloc` per file + `parseYamlFrontmatter` |
 
@@ -149,7 +149,7 @@ pub const ToolExecContext = struct {
 
 **This is the single most important fact for feasibility: the agent tools already
 carry a live DB handle.** No plumbing, no signature change, no new context field.
-HTTP handlers get theirs from `nalarcore.getSingleton().db` (`root.zig:24-26`,
+HTTP handlers get theirs from `pabrikcore.getSingleton().db` (`root.zig:24-26`,
 `root.zig:88`); `Db` *is* `SqliteBackend` under the default build
 (`root.zig:741-744`).
 
@@ -226,7 +226,7 @@ A boolean is sufficient here because the row is fully addressed by
 
 | `is_global` | `cwd` | Meaning |
 |---|---|---|
-| `1` | `''` (invariant) | Global root — `$XDG_CONFIG_HOME/nalar/skills` or `$HOME/.config/nalar/skills` |
+| `1` | `''` (invariant) | Global root — `$XDG_CONFIG_HOME/pabrik/skills` or `$HOME/.config/pabrik/skills` |
 | `0` | canonical abspath | Local to exactly that workspace |
 
 `use_skill`'s local-first resolution still says *which* row it loaded: it returns the
@@ -335,7 +335,7 @@ and the HTTP query-param path.
   `<root>/<name>/SKILL.MD`; mirror failure is logged and ignored (log-and-continue,
   never fail the tool call). `remove_skill` deletes the row and best-effort
   `deleteTree`s the folder.
-- **Consequence, stated honestly:** a skill committed to `.nalar/skills/` in a repo
+- **Consequence, stated honestly:** a skill committed to `.pabrik/skills/` in a repo
   still appears on a fresh machine (no row → imported). But hand-editing `SKILL.MD`
   after the row exists does **not** change what the agent sees. Re-import is
   deliberate: `remove_skill`, then let the importer re-add it. *Rejected
@@ -483,7 +483,7 @@ that fails silently).
 
 `skills_list.zig`, `skill_detail.zig`, `skill_delete.zig` each get a
 `useCase(allocator, db, input)` in the `agent_knowledge_*` shape: closed error set,
-`try nalarcore.getSingleton()` → `di.db` **in the handler only**, two exhaustive
+`try pabrikcore.getSingleton()` → `di.db` **in the handler only**, two exhaustive
 `switch`es (status + message) so adding an error variant fails to compile.
 Delete `findSkillByName` and `findSkillFolderByName` — their O(N)-scan bodies are
 replaced by an indexed lookup.
@@ -534,7 +534,7 @@ zig build test --summary all
 cd src/apps/desktop && pnpm test:unit
 cd src/apps/desktop && bun run build          # delete stray .js next to .ts
 zig build install:linux
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/skills_sqlite_test.py -v
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/skills_sqlite_test.py -v
 ```
 
 Plus a cross-platform compile check for every touched Zig file. No
@@ -544,8 +544,8 @@ Plus a cross-platform compile check for every touched Zig file. No
 
 The importer is `INSERT OR IGNORE`, so **a fresh DB is populated from disk on first
 start** and a user with existing files loses nothing. A user who wants disk gone can
-delete `~/.config/nalar/skills/<name>/` after confirming the row exists. The mirror
-means `git status` in a repo that tracks `.nalar/skills/` keeps showing changes — that
+delete `~/.config/pabrik/skills/<name>/` after confirming the row exists. The mirror
+means `git status` in a repo that tracks `.pabrik/skills/` keeps showing changes — that
 is the intended trade (the old plan rejected "table-only, no mirror" for exactly this
 reason: it silently breaks the git-tracked skill workflow).
 
@@ -568,7 +568,7 @@ reason: it silently breaks the git-tracked skill workflow).
 
 | # | Question | **Decided** | Consequence for this document |
 |---|---|---|---|
-| 1 | Does the filesystem mirror stay? | **Keep it** | §4.6 as written. The importer is `INSERT OR IGNORE` at boot; writes mirror to `<root>/<name>/SKILL.MD` best-effort. The trade-off is real and stated in §6: a repo that tracks `.nalar/skills/` keeps seeing changes, and hand-editing a `SKILL.MD` after the row exists no longer changes what the agent sees. |
+| 1 | Does the filesystem mirror stay? | **Keep it** | §4.6 as written. The importer is `INSERT OR IGNORE` at boot; writes mirror to `<root>/<name>/SKILL.MD` best-effort. The trade-off is real and stated in §6: a repo that tracks `.pabrik/skills/` keeps seeing changes, and hand-editing a `SKILL.MD` after the row exists no longer changes what the agent sees. |
 | 2 | `is_global` on the wire, or `scope`? | **`is_global`** | The `scope` TEXT enum is **gone** (§4.2). The column is `is_global INTEGER`, the tool inputs are `is_global: bool`, the wire is `is_global: boolean`, and `SkillDetail` in `api/index.ts:2933-2936` compiles **untouched**. The `DELETE /api/skills?...&is_global=…` query string also needs no change. The only cost is that an integer bind has to be stringified — an existing repo idiom (§4.4). |
 | 3 | Add a `tags` column now? | **Yes** | `tags TEXT NOT NULL DEFAULT ''` in the schema (§4.1), `'||'`-joined like `agent_memories.tags` (§4.3). `parseYamlFrontmatter` learns to parse both frontmatter forms; `add_skill`/`edit_skill` gain a `tags` input; the mirror writer gains a `tags:` line. The consumer is the LLM — the prompt already tells the agent to consult skills by tag, and `list_skills` output is the tool payload. |
 | 4 | Compat shim for `use_skill({path})`? | **No** | `path` is deleted with no fallback (§4.7). An in-flight model gets a validation error naming `skill_name` and self-heals in one turn. A fallback would re-create the dual source of truth this plan exists to remove. |

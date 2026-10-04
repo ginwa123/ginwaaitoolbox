@@ -6,7 +6,7 @@
 
 **Architecture:** Three orthogonal moves:
 
-1. **Move** — relocate each `.zig` from `src/ai_workflow/tui/<file>.zig` to `src/ai_workflow/tui/agentic_loop/<file>.zig`. Re-export from a new `agentic_loop/mod.zig` so the public `nalarcore.ai_mod.<symbol>` API surface stays identical.
+1. **Move** — relocate each `.zig` from `src/ai_workflow/tui/<file>.zig` to `src/ai_workflow/tui/agentic_loop/<file>.zig`. Re-export from a new `agentic_loop/mod.zig` so the public `pabrikcore.ai_mod.<symbol>` API surface stays identical.
 2. **Inline** — for every `<file>_test.zig` that tests a file being moved, append its `test "..."` blocks to the bottom of `<file>.zig` and delete the separate test file. Register the impl file in `agentic_loop/test_runner.zig` so `zig build test` discovers the inline tests.
 3. **Repoint imports** — replace every `@import("../<file>.zig")` and `@import("../../<file>.zig")` inside `agentic_loop/*.zig` with the bare filename; the files now sit in the same directory. Update external call sites in `src/root.zig`, `src/modules/agent/tools/*_test.zig`, `src/ai_workflow/tui/http_handlers/*_test.zig` (any string literal `LLM_HISTORY_PATH`, `DESIGN_MODEL_PATH`, `ON_EVENT_SENT_PATH`, etc.) to the new path.
 
@@ -17,7 +17,7 @@ The split into phases below follows dependency order (no file in a phase imports
 ## Global Constraints
 
 - **Test discovery is opt-in.** Zig 0.16 only auto-discovers `test "..."` blocks in files that are **directly `@import`ed** by the test runner's `test { ... }` block. Every file that gains inline tests MUST be added to `agentic_loop/test_runner.zig` in the same commit that adds the tests, or the tests will silently never run (the `is_session_kanban.zig` 6a6bea58 ship-without-`test_runner` bug).
-- **Backward-compat re-exports.** `tui/mod.zig` re-exports 14 symbols (`models`, `http_handlers`, `ai_workflow`, `llm_history`, `on_event_sent`, `on_event_sent_kanban`, `on_event_design`, `on_event_sent_design`, `show_preview`, `generate_image`, `get_design_context`, `preview_design_page`, `active_loops`, `routines`, `startup`, `kanban_model`, `design_io`, `design_model`, plus the legacy aliases `workspace_items`, `workspace_item_tasks`, `registerSessionClient`, etc.). All of these MUST keep working under their existing `nalarcore.ai_mod.<symbol>` path. The plan accomplishes this by switching `tui/mod.zig` to import from `agentic_loop/mod.zig` instead of from local files.
+- **Backward-compat re-exports.** `tui/mod.zig` re-exports 14 symbols (`models`, `http_handlers`, `ai_workflow`, `llm_history`, `on_event_sent`, `on_event_sent_kanban`, `on_event_design`, `on_event_sent_design`, `show_preview`, `generate_image`, `get_design_context`, `preview_design_page`, `active_loops`, `routines`, `startup`, `kanban_model`, `design_io`, `design_model`, plus the legacy aliases `workspace_items`, `workspace_item_tasks`, `registerSessionClient`, etc.). All of these MUST keep working under their existing `pabrikcore.ai_mod.<symbol>` path. The plan accomplishes this by switching `tui/mod.zig` to import from `agentic_loop/mod.zig` instead of from local files.
 - **No behavior changes.** This refactor moves bytes around — it does NOT fix bugs, add features, or rename any function/struct. Test assertions stay identical.
 - **Path constants in static-contract tests.** Some test files use `const LLM_HISTORY_PATH = "src/ai_workflow/tui/llm_history.zig";` literals to grep the source under test (e.g. `http_handlers/task_create_test.zig:36`, `http_handlers/tasks_list_test.zig:36`). These MUST be updated to the new path in the same commit as the file move. A grep for the old path must return zero hits at the end of each phase.
 - **No new commits mid-phase.** Each phase produces one commit. Don't leave the build red between phases — if you have to break it, revert.
@@ -54,7 +54,7 @@ Top-level files under `src/ai_workflow/tui/` that move (40 total, ~26,311 lines)
 | `extract_base64_image_urls_test.zig` | 766 | `src/helpers/image.zig:6` | Move to `src/helpers/image_test.zig` (NOT into `agentic_loop/`) — it tests a helper, not the agentic loop. Add inline test block to `helpers/image.zig` instead. |
 | `migration_057_test.zig` | 183 | `src/migrations/migration_*.zig` | Move to `src/migrations/migration_057_test.zig` (it lives there conceptually — the migrations module's own `test_runner.zig:43` already imports it via `../ai_workflow/tui/migration_057_test.zig`; flip the path) |
 | `migration_063_runtime_test.zig` | 210 | `src/migrations/migration_063.zig` | Move to `src/migrations/migration_063_runtime_test.zig` |
-| `compaction_config_threshold_test.zig` | 227 | `src/ai_workflow/tui/agentic_loop/workflow_compact_message.zig` (via `LlmConfig.compactionThresholdPercent`) | Inline at the bottom of `agentic_loop/workflow_compact_message.zig`. This file already imports from `nalarcore.llm_models` + `nalarcore.config` so no path changes needed beyond the `@import` in the bottom of `workflow_compact_message.zig`. |
+| `compaction_config_threshold_test.zig` | 227 | `src/ai_workflow/tui/agentic_loop/workflow_compact_message.zig` (via `LlmConfig.compactionThresholdPercent`) | Inline at the bottom of `agentic_loop/workflow_compact_message.zig`. This file already imports from `pabrikcore.llm_models` + `pabrikcore.config` so no path changes needed beyond the `@import` in the bottom of `workflow_compact_message.zig`. |
 | `compaction_long_context_test.zig` | 132 | `agentic_loop/workflow.zig` (the `runLoop` path) | Inline at the bottom of `agentic_loop/workflow.zig` — keep it next to the function it exercises. |
 | `gitignore_vendor_sqlite3_test.zig` | 134 | `build.zig` (vendor sqlite3 fetch) | Delete (per comment in `test_runner.zig:136`, this is a meta-test of build.zig behavior; it can move to a top-level `tests/` dir or be deleted if redundant) |
 | `session_update_test.zig` | 175 | `llm_history.zig` (session update helpers) | Inline at the bottom of `agentic_loop/llm_history.zig` (after Phase 5) |
@@ -64,7 +64,7 @@ Top-level files under `src/ai_workflow/tui/` that move (40 total, ~26,311 lines)
 ### Stay at `src/ai_workflow/tui/` (entry points)
 | File | Why |
 |---|---|
-| `mod.zig` | Re-export surface for `nalarcore.ai_mod.*`. Re-point each `@import` to `agentic_loop/<file>.zig`. |
+| `mod.zig` | Re-export surface for `pabrikcore.ai_mod.*`. Re-point each `@import` to `agentic_loop/<file>.zig`. |
 | `test_runner.zig` | Top-level test discovery for everything under `tui/`. After this refactor it imports (a) `agentic_loop/test_runner.zig` (which discovers all inline tests in the new home) and (b) a few stragglers that live outside `agentic_loop/`. |
 
 ### Subdirs (untouched)
@@ -146,7 +146,7 @@ Files in this phase (6 impl + 2 trivial tests):
   - `pub const models = @import("models.zig");` → `pub const models = @import("agentic_loop/models.zig");`
   - `pub const active_loops = @import("ActiveLoops.zig").ActiveLoops;` → `pub const active_loops = @import("agentic_loop/ActiveLoops.zig").ActiveLoops;`
   - `pub const startup = @import("startup.zig");` → `pub const startup = @import("agentic_loop/startup.zig");`
-  - Verify `main.zig` still compiles: `main.zig:139` does `ai_mod.startup.start(...)` — `ai_mod` is `nalarcore.ai_mod` = `src/ai_workflow/tui/mod.zig`, so the path change propagates transitively.
+  - Verify `main.zig` still compiles: `main.zig:139` does `ai_mod.startup.start(...)` — `ai_mod` is `pabrikcore.ai_mod` = `src/ai_workflow/tui/mod.zig`, so the path change propagates transitively.
 - [ ] **1.9** Register the new inline-test-bearing files in `src/ai_workflow/tui/agentic_loop/test_runner.zig`:
   ```zig
   _ = @import("save_agent.zig");
@@ -472,8 +472,8 @@ Files in this phase (1 impl + 9 tests):
 - [ ] **7.3** `migration_063_runtime_test.zig` (210 lines)
   - **Action:** `git mv src/ai_workflow/tui/migration_063_runtime_test.zig src/migrations/migration_063_runtime_test.zig`. Add `_ = @import("migration_063_runtime_test.zig");` to `src/migrations/test_runner.zig`.
 - [ ] **7.4** `compaction_config_threshold_test.zig` (227 lines, tests `LlmConfig.compactionThresholdPercent`)
-  - **Decision:** the impl lives in `nalarcore.config.LlmConfig` (config module). Tests belong there or next to the agentic_loop workflow that consumes them.
-  - **Action:** Inline the tests at the bottom of `src/ai_workflow/tui/agentic_loop/workflow_compact_message.zig` (the file that calls `compactionThresholdPercent`). Strip the standalone imports — the file already has `nalarcore.config.LlmConfig.LlmProfile` available. Delete the standalone test file.
+  - **Decision:** the impl lives in `pabrikcore.config.LlmConfig` (config module). Tests belong there or next to the agentic_loop workflow that consumes them.
+  - **Action:** Inline the tests at the bottom of `src/ai_workflow/tui/agentic_loop/workflow_compact_message.zig` (the file that calls `compactionThresholdPercent`). Strip the standalone imports — the file already has `pabrikcore.config.LlmConfig.LlmProfile` available. Delete the standalone test file.
   - **Add to `agentic_loop/test_runner.zig`:** the new tests are in `workflow_compact_message.zig` which is already imported.
 - [ ] **7.5** `compaction_long_context_test.zig` (132 lines, tests `runLoop` compaction path)
   - **Action:** Inline at the bottom of `src/ai_workflow/tui/agentic_loop/workflow.zig`. Strip the `const llm_history = @import("llm_history.zig");` import (already available in `workflow.zig`). Delete the standalone test file.
@@ -525,11 +525,11 @@ Files in this phase (1 impl + 9 tests):
 - [ ] **8.4** Update `src/ai_workflow/tui/mod.zig` — final pass:
   - Add a one-line header comment:
     ```zig
-    //! Thin re-export surface for the `nalar_core.ai_mod.*` API.
+    //! Thin re-export surface for the `pabrik_core.ai_mod.*` API.
     //!
     //! As of 2026-08-14, all implementation files live under
     //! `agentic_loop/`; this `mod.zig` re-exports them so existing
-    //! `nalarcore.ai_mod.<symbol>` call sites keep working unchanged.
+    //! `pabrikcore.ai_mod.<symbol>` call sites keep working unchanged.
     ```
   - Replace each `@import("agentic_loop/<file>.zig")` (added in Phases 1-6) with `@import("agentic_loop/mod.zig").<symbol>` for consistency with how `ai_mod.ai_workflow` is wired. (Or keep the direct imports — both work. **Decision:** use `agentic_loop/mod.zig` indirection so adding a new file to `agentic_loop/` doesn't require touching `tui/mod.zig`.)
 - [ ] **8.5** Final run: `zig build test --summary all`. Pass count should match `phase 0 baseline + sum(phases 1-7 test deltas)`. 0 fail.

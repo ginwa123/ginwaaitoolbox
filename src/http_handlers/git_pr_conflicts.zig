@@ -1,9 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
-const pr_provider = nalar_core.pr_provider;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
+const pr_provider = pabrik_core.pr_provider;
 const run_captured = @import("helpers").run_captured;
 
 // ── What this is for ──────────────────────────────────────────────────────
@@ -491,7 +491,7 @@ test "parseConflictPaths: empty stdout is clean, not an error" {
 
 // ===== Synthetic-repo integration tests =====
 
-/// A throwaway directory for fixture repos, OUTSIDE the nalar repository.
+/// A throwaway directory for fixture repos, OUTSIDE the pabrik repository.
 ///
 /// `std.testing.tmpDir` puts its directory under `.zig-cache/tmp/`, which is
 /// *inside* this repo — and a linked worktree is the worst possible place to
@@ -532,9 +532,9 @@ fn makeFixtureDir(allocator: std.mem.Allocator) !FixtureDir {
 /// bug still in place).
 fn makeFixtureDirIn(allocator: std.mem.Allocator, raw_root: []const u8) !FixtureDir {
     // macOS's $TMPDIR is `/var/folders/…/T/` — note the TRAILING SLASH. Naive
-    // concatenation then yields `…/T//nalar-prconflicts-x`, while every later
+    // concatenation then yields `…/T//pabrik-prconflicts-x`, while every later
     // read of `path` (git's argv, `writeFixture`) and git's own
-    // `--show-toplevel` spell it `…/T/nalar-prconflicts-x`. Strip the trailing
+    // `--show-toplevel` spell it `…/T/pabrik-prconflicts-x`. Strip the trailing
     // separators so both sides agree on one spelling.
     const root = std.mem.trimEnd(u8, raw_root, "/");
     if (root.len == 0) return error.NoTempRoot;
@@ -543,7 +543,7 @@ fn makeFixtureDirIn(allocator: std.mem.Allocator, raw_root: []const u8) !Fixture
     testing.io.random(&random_bytes);
     var name_buf: [std.base64.url_safe.Encoder.calcSize(12)]u8 = undefined;
     const name = std.base64.url_safe.Encoder.encode(&name_buf, &random_bytes);
-    const joined = try std.fmt.allocPrint(allocator, "{s}/nalar-prconflicts-{s}", .{ root, name });
+    const joined = try std.fmt.allocPrint(allocator, "{s}/pabrik-prconflicts-{s}", .{ root, name });
     defer allocator.free(joined);
 
     var dir = try std.Io.Dir.cwd().createDirPathOpen(testing.io, joined, .{});
@@ -649,7 +649,7 @@ fn makeRepo(fx: *const FixtureDir) ![]const u8 {
     try git(fx.path, &.{ "init", "-q", "-b", "main" });
     try requireSelfContainedRepo(fx.path);
     try git(fx.path, &.{ "config", "user.email", "test@example.invalid" });
-    try git(fx.path, &.{ "config", "user.name", "nalar test" });
+    try git(fx.path, &.{ "config", "user.name", "pabrik test" });
     try git(fx.path, &.{ "config", "commit.gpgsign", "false" });
     try writeFixture(fx, "shared.txt", "a\nb\nc\n");
     try writeFixture(fx, "base_only.txt", "base\n");
@@ -661,8 +661,8 @@ fn makeRepo(fx: *const FixtureDir) ![]const u8 {
 test "fixture dir survives a symlinked temp root with a trailing slash (macOS shape)" {
     // Regression guard, 2026-10-03. macOS failed every one of these tests with
     // `FixtureInsideRealRepo` because $TMPDIR is BOTH a symlink into /private
-    // AND ends in a slash: the constructed path was `…/T//nalar-prconflicts-x`
-    // while `git rev-parse --show-toplevel` answers `…/T/nalar-prconflicts-x`.
+    // AND ends in a slash: the constructed path was `…/T//pabrik-prconflicts-x`
+    // while `git rev-parse --show-toplevel` answers `…/T/pabrik-prconflicts-x`.
     // The repo was self-contained the whole time; only the two SPELLINGS of the
     // same directory disagreed.
     //
@@ -683,8 +683,8 @@ test "fixture dir survives a symlinked temp root with a trailing slash (macOS sh
 
     var rb: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var wb: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const real_root = try std.fmt.bufPrint(&rb, "{s}/nalar-tmpprobe-real", .{root});
-    const link_root = try std.fmt.bufPrint(&wb, "{s}/nalar-tmpprobe-link", .{root});
+    const real_root = try std.fmt.bufPrint(&rb, "{s}/pabrik-tmpprobe-real", .{root});
+    const link_root = try std.fmt.bufPrint(&wb, "{s}/pabrik-tmpprobe-link", .{root});
     const with_slash = try std.fmt.allocPrint(allocator, "{s}/", .{link_root});
     defer allocator.free(with_slash);
 

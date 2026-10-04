@@ -13,8 +13,8 @@
 //! Task: task_1789505553300_1
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// HTTP request body.
@@ -71,7 +71,7 @@ pub const SystemPromptUpdateOutput = struct {
 /// requested fields and SELECT-refetch the row. Transport-agnostic.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: SystemPromptUpdateInput,
 ) SystemPromptUpdateError!SystemPromptUpdateOutput {
     if (input.routine_id.len == 0 or input.prompt_id.len == 0) {
@@ -154,7 +154,7 @@ pub fn agentRoutineSystemPromptUpdateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const routine_id = req.params.get("routine_id") orelse "";
@@ -207,7 +207,7 @@ pub fn agentRoutineSystemPromptUpdateHandler(
 //   2. Happy path: updates title AND content
 //   3. title-only update keeps content
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration087CreateAgentRoutines = @import("../migrations/migration.zig").Migration087CreateAgentRoutines;
 

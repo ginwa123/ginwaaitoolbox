@@ -25,7 +25,7 @@ hang the suite (caught by pytest's per-test timeout, but the user
 would lose time waiting).
 
 Run:
-    NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
     pytest tests/functional/mcp_test_test.py -v
 """
 
@@ -67,7 +67,7 @@ def _post_test(harness: FunctionalHarness, body: dict, timeout_s: float = 30.0):
     result = resp.json()
     if result.get("ok") is False:
         # Surface the actual error for easier debugging when this test fails.
-        # The harness captures nalar's stderr to a per-test tmpdir that
+        # The harness captures pabrik's stderr to a per-test tmpdir that
         # is wiped on teardown, so the body is the only diagnostic we have.
         print(f"[mcp_test] body: {result}", flush=True)
     return result
@@ -261,7 +261,7 @@ def test_mcp_test_stdio_child_inherits_parent_path(tmp_path, monkeypatch) -> Non
     if sys.platform == "win32":
         pytest.skip("shim server requires /bin/sh, not available on Windows")
     # Place the shim on a PATH entry that is NOT on the glibc default
-    # fallback (`/bin:/usr/bin`). Keep the rest of PATH so nalar's own
+    # fallback (`/bin:/usr/bin`). Keep the rest of PATH so pabrik's own
     # boot (git rev-parse, etc.) still resolves.
     shim_dir = tmp_path / "mcp-shim-bin"
     shim_dir.mkdir()

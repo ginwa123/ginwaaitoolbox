@@ -6,8 +6,8 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 
 pub const QueueMessagesError = error{
     MissingSessionId,
@@ -38,7 +38,7 @@ pub const QueueMessagesResult = []const u8; // pre-serialized JSON
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) QueueMessagesError!QueueMessagesResult {
     const select_sql = "SELECT id, message FROM session_queue_messages WHERE session_id = ? ORDER BY created_at ASC";
@@ -82,7 +82,7 @@ pub fn queueMessagesGetHandler(
         });
     };
 
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }),

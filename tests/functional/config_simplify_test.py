@@ -6,7 +6,7 @@ Verifies the wire round-trip after removing the top-level LLM defaults
 config.json:
 
   1. A config WITHOUT top-level keys but WITH a profile + active_profile
-     boots fine; GET /api/config/nalar returns a profile-only payload.
+     boots fine; GET /api/config/pabrik returns a profile-only payload.
   2. PUT with a body that omits the defaults entirely (exactly what the
      new frontend sends) → 200; the on-disk file does NOT gain any of
      the six removed keys; profiles survive.
@@ -15,7 +15,7 @@ config.json:
   4. PUT live-reload succeeds on a profile-only config (backfill provides
      the credentials the validator requires).
 
-Each test boots a fresh nalar against an isolated tmpdir HOME. Ports are
+Each test boots a fresh pabrik against an isolated tmpdir HOME. Ports are
 picked in 8080..8199 — never 8081.
 """
 
@@ -33,7 +33,7 @@ import pytest
 
 from harness import (
     FunctionalHarness,
-    _default_nalar_bin,
+    _default_pabrik_bin,
     _find_free_port,
     _reap_orphan_test_pids,
     _wait_ready,
@@ -46,27 +46,27 @@ from harness import (
 
 
 def _platform_config_dir(temp_dir: Path) -> Path:
-    """Mirror nalar's `getDefaultConfigDir` (Config.zig) per-OS layout:
-      - macOS   → <HOME>/Library/Application Support/nalar/
-      - Windows → <APPDATA>/nalar/ (the preboot fixture sets the
+    """Mirror pabrik's `getDefaultConfigDir` (Config.zig) per-OS layout:
+      - macOS   → <HOME>/Library/Application Support/pabrik/
+      - Windows → <APPDATA>/pabrik/ (the preboot fixture sets the
         child's APPDATA to <temp_dir>/AppData/Roaming, so this is
         deterministic — it does NOT read the parent's APPDATA, which
         points at the real home)
-      - else    → <XDG_CONFIG_HOME or HOME/.config>/nalar/
+      - else    → <XDG_CONFIG_HOME or HOME/.config>/pabrik/
     """
     import platform as _platform
     system = _platform.system()
     if system == "Darwin":
-        return temp_dir / "Library" / "Application Support" / "nalar"
+        return temp_dir / "Library" / "Application Support" / "pabrik"
     if system == "Windows":
-        return temp_dir / "AppData" / "Roaming" / "nalar"
-    return temp_dir / ".config" / "nalar"
+        return temp_dir / "AppData" / "Roaming" / "pabrik"
+    return temp_dir / ".config" / "pabrik"
 
 
 @pytest.fixture
-def preboot(default_nalar_bin):
+def preboot(default_pabrik_bin):
     """`h = preboot(cfg_dict)` — writes config.json into a fresh tempdir
-    layout (at the PLATFORM-CORRECT path), THEN boots nalar against it.
+    layout (at the PLATFORM-CORRECT path), THEN boots pabrik against it.
     Yields the booted harness.
     """
     booted: list[FunctionalHarness] = []
@@ -89,7 +89,7 @@ def preboot(default_nalar_bin):
             print(f"warning: orphan reap failed: {e}", file=sys.stderr)
 
         chosen_port = _find_free_port()
-        temp_dir = Path(tempfile.mkdtemp(prefix="nalar-func-"))
+        temp_dir = Path(tempfile.mkdtemp(prefix="pabrik-func-"))
         if not is_safe_tmp(str(temp_dir), orig_home):
             raise RuntimeError(f"unsafe tmp path: {temp_dir}")
 
@@ -97,8 +97,8 @@ def preboot(default_nalar_bin):
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "config.json").write_text(json.dumps(cfg, indent=2))
 
-        bin_path = default_nalar_bin
-        log_path = temp_dir / "nalar.log"
+        bin_path = default_pabrik_bin
+        log_path = temp_dir / "pabrik.log"
         log_file = log_path.open("wb")
         # Snapshot parent Windows/XDG vars so teardown() restores them
         # (the fixture never shadows the parent env, unlike boot()).
@@ -112,8 +112,8 @@ def preboot(default_nalar_bin):
         env = os.environ.copy()
         env["HOME"] = str(temp_dir)
         # XDG isolation applies on every platform, not just Windows: on Linux
-        # getDefaultConfigDir resolves $XDG_CONFIG_HOME/nalar before
-        # $HOME/.config/nalar, so a child that inherits the parent's
+        # getDefaultConfigDir resolves $XDG_CONFIG_HOME/pabrik before
+        # $HOME/.config/pabrik, so a child that inherits the parent's
         # XDG_CONFIG_HOME (set to /home/runner/.config on the GH ubuntu
         # runner) writes config.json outside temp_dir and the assertions
         # below read a file this server never wrote. Mirrors
@@ -131,7 +131,7 @@ def preboot(default_nalar_bin):
         env["XDG_DATA_HOME"] = str(xdg_data)
         env["XDG_CACHE_HOME"] = str(xdg_cache)
         if os.name == "nt":
-            # Windows nalar reads %APPDATA%/nalar/config.json
+            # Windows pabrik reads %APPDATA%/pabrik/config.json
             # (Config.zig windows branch) — NOT HOME/.config. Point
             # the child's APPDATA/LOCALAPPDATA/USERPROFILE at
             # the tempdir (mirroring FunctionalHarness.boot); without
@@ -140,7 +140,7 @@ def preboot(default_nalar_bin):
             # the runner's real config gets clobbered by PUTs).
             appdata_roaming = temp_dir / "AppData" / "Roaming"
             appdata_local = temp_dir / "AppData" / "Local"
-            (appdata_roaming / "nalar").mkdir(parents=True, exist_ok=True)
+            (appdata_roaming / "pabrik").mkdir(parents=True, exist_ok=True)
             appdata_local.mkdir(parents=True, exist_ok=True)
             env["USERPROFILE"] = str(temp_dir)
             env["APPDATA"] = str(appdata_roaming)
@@ -170,7 +170,7 @@ def preboot(default_nalar_bin):
 
         h = FunctionalHarness(
             port=chosen_port,
-            nalar_bin=bin_path,
+            pabrik_bin=bin_path,
             temp_dir=temp_dir,
             orig_home=orig_home,
             log_path=log_path,
@@ -214,7 +214,7 @@ def preboot(default_nalar_bin):
 
 def test_profile_only_config_boots_and_get_has_no_default_fields(preboot) -> None:
     """A config.json without top-level api_key/model/base_url/url_style
-    boots cleanly. GET /api/config/nalar → 200 with `profiles` present
+    boots cleanly. GET /api/config/pabrik → 200 with `profiles` present
     and NONE of the removed keys on the wire.
     """
     h = preboot({
@@ -231,7 +231,7 @@ def test_profile_only_config_boots_and_get_has_no_default_fields(preboot) -> Non
         "retry_delay_ms": 1000,
     })
 
-    r = h.http("GET", "/api/config/nalar", expect=200).json()
+    r = h.http("GET", "/api/config/pabrik", expect=200).json()
     profiles = r.get("profiles") or {}
     assert "alpha" in profiles, f"profile missing from GET: {r!r}"
     assert profiles["alpha"]["model"] == "alpha-model"
@@ -270,7 +270,7 @@ def test_put_without_defaults_keeps_file_clean(preboot) -> None:
         "notify_on_complete": False,
         "retry_delay_ms": 500,
     }
-    h.http("PUT", "/api/config/nalar", json_body=put_body, expect=200)
+    h.http("PUT", "/api/config/pabrik", json_body=put_body, expect=200)
 
     on_disk = json.loads(
         (_platform_config_dir(h.temp_dir) / "config.json").read_text()
@@ -309,7 +309,7 @@ def test_old_format_config_still_boots(preboot) -> None:
         "active_profile": "p1",
     })
 
-    r = h.http("GET", "/api/config/nalar", expect=200).json()
+    r = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert "p1" in (r.get("profiles") or {})
     assert r.get("active_profile") == "p1"
 
@@ -335,7 +335,7 @@ def test_put_live_reload_succeeds_on_profile_only_config(preboot) -> None:
     })
 
     body = h.http(
-        "PUT", "/api/config/nalar",
+        "PUT", "/api/config/pabrik",
         json_body={"retry_delay_ms": 250},
         expect=200,
     ).json()

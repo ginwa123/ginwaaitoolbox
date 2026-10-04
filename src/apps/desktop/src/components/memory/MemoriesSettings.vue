@@ -66,7 +66,7 @@ const handleError = (message: string) => {
           </button>
         </div>
         <p class="text-body mb-4 shrink-0" style="color: var(--semantic-text-muted);">
-          Global markdown notes the agent can reference. Files live in <code>~/.config/nalar/memories/</code>.
+          Global markdown notes the agent can reference. Files live in <code>~/.config/pabrik/memories/</code>.
         </p>
         <div class="flex-1 overflow-y-auto min-h-0">
           <MemoryList

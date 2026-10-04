@@ -1,11 +1,11 @@
 // DEPRECATED: use tools_exec_command.execCommand instead — this file is a thin shim keeping the `"pwsh"` exec path: `execPwsh` delegates to `execCommand`.
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const command_exec = @import("tools_exec_command.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
+const agent = pabrikcore.agent;
 
 pub const runWithContext = command_exec.runWithContext;
 

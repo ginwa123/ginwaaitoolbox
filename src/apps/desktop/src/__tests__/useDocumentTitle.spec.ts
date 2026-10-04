@@ -35,7 +35,7 @@ describe('useDocumentTitle — browser tab follows session name', () => {
       writable: true,
       configurable: true,
     })
-    document.title = 'Nalar'
+    document.title = 'Pabrik'
     for (const k of Object.keys(routeQuery)) delete routeQuery[k]
   })
 
@@ -46,14 +46,14 @@ describe('useDocumentTitle — browser tab follows session name', () => {
     navigationStore.setActiveChat('chat_1', 'agent tool present files')
     const wrapper = mountTitleSync()
     await nextTick()
-    expect(document.title).toBe('agent tool present files - Nalar')
+    expect(document.title).toBe('agent tool present files - Pabrik')
     wrapper.unmount()
   })
 
-  it('falls back to plain Nalar with no active view', async () => {
+  it('falls back to plain Pabrik with no active view', async () => {
     const wrapper = mountTitleSync()
     await nextTick()
-    expect(document.title).toBe('Nalar')
+    expect(document.title).toBe('Pabrik')
     wrapper.unmount()
   })
 })

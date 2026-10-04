@@ -2,8 +2,8 @@
 //! `GET /api/auth/me` — return the current user or 401.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const auth_common = @import("auth_common.zig");
 
@@ -13,7 +13,7 @@ pub fn authLogoutHandler(
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     if (auth_common.parseSessionToken(req.headers)) |tok| {
         if (tok.len > 0) {
             var hash_hex: [64]u8 = undefined;
@@ -33,7 +33,7 @@ pub fn authMeHandler(
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     // When auth is off, report anonymous but 200 so the frontend
     // can boot without a redirect.
     if (!di.auth_enabled) {

@@ -13,8 +13,8 @@ which pins the structural contract; jsdom has no layout engine, so only a
 real browser can prove the gap actually closed.
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \\
-        /tmp/nalar-ui-venv/bin/python -m pytest -s \\
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \\
+        /tmp/pabrik-ui-venv/bin/python -m pytest -s \\
         tests/functional_ui/sidebar_documents_placement_test.py -v
 """
 

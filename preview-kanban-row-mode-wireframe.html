@@ -311,11 +311,11 @@
       <tr><td><code>layout</code></td><td><code>rows</code> | <code>columns</code></td><td><code>router.replace</code></td><td><code>columns</code> — stripped from the URL</td></tr>
     </table>
     <ul style="margin-top:8px">
-      <li><b>Precedence:</b> URL → <code>localStorage</code> (<code>nalar-kanban-layout</code>) → <code>columns</code>. A deep link must beat the sticky preference.</li>
+      <li><b>Precedence:</b> URL → <code>localStorage</code> (<code>pabrik-kanban-layout</code>) → <code>columns</code>. A deep link must beat the sticky preference.</li>
       <li><b>Why <code>replace</code>:</b> repo rule — <i>"clicks write it (<code>router.replace</code>, not <code>push</code>, for tab switches)"</i>. <code>push</code> is reserved for opening a record (<code>?detail=</code>).</li>
       <li><b>Why a new param:</b> <code>?sorts=</code> has a validated <code>col_&lt;id&gt;:&lt;field&gt;:&lt;dir&gt;</code> grammar — folding a mode into it breaks the parser.</li>
       <li><b>Bug this plan also fixes:</b> the <code>?sorts=</code> watcher (<code>KanbanView.vue:499-505</code>) rebuilds the query from scratch and <b>already drops <code>?detail=</code></b>. It must be rewritten to use <code>flatQuery()</code> (710) or it will silently reset the layout too.</li>
-      <li><b>Collapse state</b> is <i>not</i> URL state — it is a density preference, stored per board in <code>nalar-kanban-row-collapsed:&lt;itemId&gt;</code>.</li>
+      <li><b>Collapse state</b> is <i>not</i> URL state — it is a density preference, stored per board in <code>pabrik-kanban-row-collapsed:&lt;itemId&gt;</code>.</li>
     </ul>
   </div>
 

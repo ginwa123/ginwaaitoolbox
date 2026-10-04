@@ -26,7 +26,7 @@
 | `src/ai_workflow/tui/agentic_loop/tools_exec_list_sub_agent.zig` | NEW | `execListSubAgent(ctx, tc)` adapter: parse `{}` → call pure fn with `ctx.config` + `ctx.selected_profile_model` → `wrapToolOutput` |
 | `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` | EDIT | +1 import, +1 line in `equips()`, +1 line in `UNIFIED_TOOL_REGISTRY()` |
 | `src/ai_workflow/tui/agentic_loop/tools.zig` | EDIT | +1 re-export `execListSubAgent` |
-| `src/root.zig` | EDIT | +1 re-export (`pub const list_sub_agent = …`) so `nalarcore.list_sub_agent` resolves like `nalarcore.get_plan` |
+| `src/root.zig` | EDIT | +1 re-export (`pub const list_sub_agent = …`) so `pabrikcore.list_sub_agent` resolves like `pabrikcore.get_plan` |
 | `src/apps/desktop/src/components/tool_outputs/ListSubAgent.vue` | NEW | Collapsible card: profile name + count chip + per-row full detail (tuning grid + full persona) |
 | `src/apps/desktop/src/components/tool_outputs/ListSubAgent.spec.ts` | NEW | 7-9 vitest cases (populated, empty, missing profile, null-omission, secrets absent) |
 | `src/apps/desktop/src/components/views/ChatView.vue` | EDIT | `v-else-if="msg.tool_name === 'list_sub_agent'"` branch (both dispatch sites if two exist) |
@@ -80,8 +80,8 @@ Rules:
 
 - [ ] Create `src/ai_workflow/tui/agentic_loop/tools_exec_list_sub_agent.zig` with `pub fn execListSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult` mirroring `tools_exec_get_plan.zig`: expect `{}` args (tolerate missing/empty), call `executeListSubAgent(ctx.allocator, ctx.config, ctx.selected_profile_model)`, wrap via `wrapToolOutput(ctx.allocator, "list_sub_agent", args, true, null, inner)`. Include `makeTestCtx` scaffold (copy from `tools_exec_update_plan.zig:108-127`).
 - [ ] Static-contract tests in the same file: adapter returns `success=true` outer envelope, echoes profile name, empty-profile path returns `<empty/>` (grep-based, same style as `tools_exec_get_plan` tests).
-- [ ] Edit `tools_equipped.zig`: +1 import (`nalarcore.list_sub_agent`), +1 `list_sub_agent_tool` in `equips()`, +1 `{ .name = "list_sub_agent", .exec = tools.execListSubAgent, .tool_def = … }` in `UNIFIED_TOOL_REGISTRY()`.
-- [ ] Edit `tools.zig`: +1 re-export. Edit `src/root.zig`: +1 re-export (verify `nalarcore.get_plan` alias lines ~849-851 and mirror them).
+- [ ] Edit `tools_equipped.zig`: +1 import (`pabrikcore.list_sub_agent`), +1 `list_sub_agent_tool` in `equips()`, +1 `{ .name = "list_sub_agent", .exec = tools.execListSubAgent, .tool_def = … }` in `UNIFIED_TOOL_REGISTRY()`.
+- [ ] Edit `tools.zig`: +1 re-export. Edit `src/root.zig`: +1 re-export (verify `pabrikcore.get_plan` alias lines ~849-851 and mirror them).
 - [ ] Run `zig build test --summary all` green.
 - [ ] Commit: `feat(agent): list_sub_agent exec adapter + registry wiring`.
 
@@ -104,10 +104,10 @@ Rules:
 
 ### Task 5 — Functional wire test + full verification
 
-- [ ] Create `tests/functional/list_sub_agent_test.py` using the harness (`tests/functional/harness.py` — isolated tmpdir HOME, free port excluding 8081, `$NALAR_BIN`): seed a config with 2 subagents on profile P (via `PUT /api/config/nalar` granular `ProfileChange` or direct config.json seed — check `subagents_per_profile_test.py` for the established seed pattern; give one subagent distinctive tuning values + a long system_prompt, the other all-null optionals), then invoke the tool through the real agent wire (preferred) or assert the envelope via the session tool-call path; assert: names listed, count=2, full system_prompt present verbatim, tuning values present, null-optional tags absent, `api_key`/`base_url` strings absent from the full response body.
+- [ ] Create `tests/functional/list_sub_agent_test.py` using the harness (`tests/functional/harness.py` — isolated tmpdir HOME, free port excluding 8081, `$PABRIK_BIN`): seed a config with 2 subagents on profile P (via `PUT /api/config/pabrik` granular `ProfileChange` or direct config.json seed — check `subagents_per_profile_test.py` for the established seed pattern; give one subagent distinctive tuning values + a long system_prompt, the other all-null optionals), then invoke the tool through the real agent wire (preferred) or assert the envelope via the session tool-call path; assert: names listed, count=2, full system_prompt present verbatim, tuning values present, null-optional tags absent, `api_key`/`base_url` strings absent from the full response body.
 - [ ] Second test: empty profile (no subagents) → `<empty/>` envelope, no error.
 - [ ] Third test (rev 2): long system_prompt (>80 chars, incl. a `]]>` sequence if practical) round-trips whole with correct CDATA split and no `...` marker.
-- [ ] Run: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/list_sub_agent_test.py -v` (rebuild via `install:linux` first if the binary is stale — `nalar-desktop` step does NOT rebuild it).
+- [ ] Run: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/list_sub_agent_test.py -v` (rebuild via `install:linux` first if the binary is stale — `pabrik-desktop` step does NOT rebuild it).
 - [ ] Final gates: `zig build test --summary all` + `pnpm test:unit` both green.
 - [ ] Commit: `test(functional): list_sub_agent wire tests`.
 - [ ] Open PR from the worktree so the human reviews in `in_review_task` (per board flow).
@@ -125,5 +125,5 @@ Rules:
 
 - **Output size (accepted, rev 2):** full personas make the envelope larger than the truncated v1. Mitigation: none needed beyond awareness — profiles hold single-digit subagent counts; if a profile ever carries dozens of huge personas and context pressure appears, the follow-up is a `query`/name-only mode, NOT silent re-truncation.
 - **Prompt snapshot churn (low):** Task 3 touches prompt strings; existing `prompts_build_messages…` snapshot tests may fail on exact-match. Mitigation: update expected strings in place, run the single test file first.
-- **Binary staleness in functional tests (known gotcha):** `zig build nalar-desktop` does NOT rebuild `nalarcore-linux-x86_64`. Mitigation: rebuild via `install:linux` before `pytest`, per the 2026-09-04 memory.
+- **Binary staleness in functional tests (known gotcha):** `zig build pabrik-desktop` does NOT rebuild `pabrikcore-linux-x86_64`. Mitigation: rebuild via `install:linux` before `pytest`, per the 2026-09-04 memory.
 - **Secret leak by future field addition (low but real):** a future `SubAgentConfig` field (e.g. `auth_token`) could be copied into the envelope by a careless follow-up. Mitigation: Task 1's secrets test asserts `api_key`/`base_url` absence today; code comment in `executeListSubAgent` — "denylist: api_key + base_url are NEVER emitted — any new credential/connection field must join this denylist, with a test".

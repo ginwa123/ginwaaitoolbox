@@ -1,6 +1,6 @@
 """Safety tests for the FunctionalHarness.
 
-These tests run WITHOUT a nalar binary. They assert the safety
+These tests run WITHOUT a pabrik binary. They assert the safety
 invariants in harness.py — the guards that prevent the harness from
 ever deleting the developer's real $HOME.
 
@@ -24,6 +24,7 @@ import harness
 from harness import (
     ALLOWED_TMP_PREFIXES,
     REQUIRED_TMP_SUBSTR,
+    REQUIRED_TMP_SUBSTR,
     FunctionalHarness,
     FunctionalHarnessError,
     is_safe_tmp,
@@ -41,8 +42,8 @@ def test_is_safe_tmp_rejects_empty_string() -> None:
 
 def test_is_safe_tmp_rejects_non_absolute_path() -> None:
     """Relative paths are never safe (could resolve anywhere)."""
-    assert is_safe_tmp("nalar-func-xxx", "/home/alice") is False
-    assert is_safe_tmp("./tmp/nalar-func-xxx", "/home/alice") is False
+    assert is_safe_tmp("pabrik-func-xxx", "/home/alice") is False
+    assert is_safe_tmp("./tmp/pabrik-func-xxx", "/home/alice") is False
 
 
 def test_is_safe_tmp_rejects_real_home() -> None:
@@ -116,7 +117,7 @@ def tmpdir_alias(monkeypatch: pytest.MonkeyPatch) -> Path:
     leaks a symlink into the system tmpdir every time a test fails, which
     is the kind of litter that outlives the branch that made it.
 
-    The alias is deliberately NOT named ``nalar-func-*`` so it cannot
+    The alias is deliberately NOT named ``pabrik-func-*`` so it cannot
     satisfy the namespace check on its own and mask a broken comparison.
     """
     real_root = Path(tempfile.gettempdir()).resolve()
@@ -169,7 +170,7 @@ def test_canonicalising_both_sides_does_not_widen_the_allowlist(
     """The counterpart: the fix must not accept what it previously rejected.
 
     Canonicalising the allow-list is only safe because the prefix still
-    resolves to a tmpdir. A ``nalar-func-`` path somewhere else entirely
+    resolves to a tmpdir. A ``pabrik-func-`` path somewhere else entirely
     has to stay rejected, or the guard would rmtree wherever it is told.
 
     The path need not exist — ``is_safe_tmp`` is a spelling + allow-list
@@ -262,7 +263,7 @@ def test_teardown_refuses_unsafe_temp_dir() -> None:
         unsafe_home = "/home/alice"
     h = _FH(
         port=9999,
-        nalar_bin=Path("/nonexistent"),
+        pabrik_bin=Path("/nonexistent"),
         temp_dir=unsafe_dir,  # unsafe: not in tmp, no substring
         orig_home=unsafe_home,
         log_path=Path("/dev/null"),
@@ -287,13 +288,13 @@ def test_teardown_with_safe_temp_dir_runs_rmtree(tmp_path: Path) -> None:
     # Use a real sandbox under tmp_path (pytest's tmp_path is itself
     # a tmpdir, but not necessarily matching our safety rules — so
     # we create a subdir that matches).
-    safe = tmp_path / "nalar-func-pytest"
+    safe = tmp_path / "pabrik-func-pytest"
     safe.mkdir()
     inner = safe / "marker.txt"
     inner.write_text("exists")
     h = FunctionalHarness(
         port=9999,
-        nalar_bin=Path("/nonexistent"),
+        pabrik_bin=Path("/nonexistent"),
         temp_dir=safe,
         orig_home="/home/nonexistent",
         log_path=Path("/dev/null"),
@@ -336,7 +337,7 @@ def test_teardown_removes_a_tree_containing_read_only_files(tmp_path: Path) -> N
     """
     import stat
 
-    safe = tmp_path / "nalar-func-readonly"
+    safe = tmp_path / f"{REQUIRED_TMP_SUBSTR}readonly"
     objects = safe / ".git" / "objects" / "08"
     objects.mkdir(parents=True)
     loose = objects / "585692ce06452da6f82ae66b90d98b55536fca"
@@ -353,7 +354,7 @@ def test_teardown_removes_a_tree_containing_read_only_files(tmp_path: Path) -> N
 
     h = FunctionalHarness(
         port=9999,
-        nalar_bin=Path("/nonexistent"),
+        pabrik_bin=Path("/nonexistent"),
         temp_dir=safe,
         orig_home=os.environ.get("HOME") or tempfile.gettempdir(),
         log_path=Path("/dev/null"),
@@ -381,7 +382,7 @@ def test_allowed_tmp_prefixes_contains_gettempdir() -> None:
 
 def test_required_substring_is_namespaced() -> None:
     """REQUIRED_TMP_SUBSTR must end with a separator-like chunk so
-    a path like /tmp/nalar-func / etc. cannot satisfy a substring
+    a path like /tmp/pabrik-func / etc. cannot satisfy a substring
     check that includes a separator."""
     assert REQUIRED_TMP_SUBSTR.endswith("-")
 
@@ -412,7 +413,7 @@ def test_boot_signature_accepts_none_port() -> None:
     Regression guard for the bug where ``port: int = DEFAULT_PORT``
     (=8080) was the default, which then triggered the legacy
     sequential scan even when the caller didn't ask for a port. With
-    that signature, a bare ``FunctionalHarness.boot(nalar_bin)`` call
+    that signature, a bare ``FunctionalHarness.boot(pabrik_bin)`` call
     would always try 8080 first — bypassing the random pool and
     reintroducing the CI pathology the random pool was meant to fix.
     """
@@ -423,19 +424,19 @@ def test_boot_signature_accepts_none_port() -> None:
     assert port_param.default is None, (
         f"FunctionalHarness.boot(port=...) default must be None "
         f"(→ random pick), got {port_param.default!r}. With a non-None "
-        f"default, callers using the documented `boot(nalar_bin)` shape "
+        f"default, callers using the documented `boot(pabrik_bin)` shape "
         f"would silently get the legacy sequential scan from that port."
     )
 
 
 # ─── XDG isolation must not be platform-gated ─────────────────────────────
 #
-# `getDefaultConfigDir` (Config.zig) resolves $XDG_CONFIG_HOME/nalar
-# BEFORE $HOME/.config/nalar on Linux, and the same XDG-first rule is
+# `getDefaultConfigDir` (Config.zig) resolves $XDG_CONFIG_HOME/pabrik
+# BEFORE $HOME/.config/pabrik on Linux, and the same XDG-first rule is
 # hand-duplicated for memories/, skills/ and hooks/. The harness used to
 # shadow the XDG vars into the child env only under `if os.name == "nt"`,
 # so on the GitHub Actions ubuntu runner (which exports
-# XDG_CONFIG_HOME=/home/runner/.config) the nalar child wrote config.json
+# XDG_CONFIG_HOME=/home/runner/.config) the pabrik child wrote config.json
 # into the runner's real home while every test read <temp_dir>/.config.
 # That surfaced as 31 failures in run 36582964531 — all on-disk
 # assertions reading a file the server had never written — and it made

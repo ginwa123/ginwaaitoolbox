@@ -27,7 +27,7 @@ function rawList(): { v: number; active: string; tabs: Tab[]; closed: unknown[] 
   const store = localStorage
   for (let i = 0; i < store.length; i += 1) {
     const key = store.key(i)
-    if (key && key.startsWith('nalar-tabs:v1:')) {
+    if (key && key.startsWith('pabrik-tabs:v1:')) {
       const value = store.getItem(key)
       return value ? JSON.parse(value) : null
     }
@@ -311,7 +311,7 @@ describe('tabs store', () => {
   })
 
   it('starts over when the stored list is corrupt, without throwing', () => {
-    localStorage.setItem(`nalar-tabs:v1:${WINDOW_ID}`, '{')
+    localStorage.setItem(`pabrik-tabs:v1:${WINDOW_ID}`, '{')
     expect(() => useTabsStore()).not.toThrow()
     const tabs = useTabsStore()
     expect(tabs.tabCount).toBe(1)
@@ -322,9 +322,9 @@ describe('tabs store', () => {
     const tabs = useTabsStore()
     expect(tabs.enabled).toBe(false)
     tabs.setEnabled(true)
-    expect(localStorage.getItem('nalar-tabs-enabled')).toBe('true')
+    expect(localStorage.getItem('pabrik-tabs-enabled')).toBe('true')
     tabs.setEnabled(false)
-    expect(localStorage.getItem('nalar-tabs-enabled')).toBe('false')
+    expect(localStorage.getItem('pabrik-tabs-enabled')).toBe('false')
     setActivePinia(createPinia())
     expect(useTabsStore().enabled).toBe(false)
   })
@@ -583,7 +583,7 @@ describe('tabs store', () => {
       tabs.setChatTitle('nope', 'X')
       expect(tabs.tabs.find((t) => t.id === a.id)?.title).toBe('Renamed')
       expect(tabs.tabs.find((t) => t.id === b.id)?.title).toBe('Other')
-      expect(tabs.tabs[0]?.title).toBe('Nalar')
+      expect(tabs.tabs[0]?.title).toBe('Pabrik')
     })
 
     it('keeps drafts per key and survives closing the tab', () => {

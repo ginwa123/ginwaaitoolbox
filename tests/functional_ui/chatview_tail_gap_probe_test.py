@@ -11,7 +11,7 @@ measured ones — so a tail of short rows inherits a tall median and the
 model reserves far more space than the rows really occupy. The browser
 lets the user scroll on into that overshoot.
 
-This probe drives the real app (Vite + nalar + headless Chromium) on a
+This probe drives the real app (Vite + pabrik + headless Chromium) on a
 700-message chat with a SHORT tail (the overshoot shape), scrolls hard to
 the bottom, and asserts:
   * the reachable blank below the real content bottom is ≤ maxTailGap;
@@ -26,8 +26,8 @@ only ever observe the invariant.
 
 Run (frontend served from THIS worktree; the backend binary may come from
 anywhere since only frontend code is under test):
-    NALAR_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/nalarcore-linux-x86_64 \\
-        /tmp/nalar-ui-venv/bin/python -m pytest -s \\
+    PABRIK_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/pabrikcore-linux-x86_64 \\
+        /tmp/pabrik-ui-venv/bin/python -m pytest -s \\
         tests/functional_ui/chatview_tail_gap_probe_test.py -v
 """
 
@@ -58,7 +58,7 @@ SLACK_PX = 24
 
 
 def _seed_db_path(h) -> Path:
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _seed_mixed_session(h, session_id: str, workspace_id: str, count: int = 700) -> None:

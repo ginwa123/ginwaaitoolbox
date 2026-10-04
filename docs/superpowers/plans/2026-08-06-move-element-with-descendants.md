@@ -54,14 +54,14 @@ The new design shifts the cascade to the server. The wire shrinks from N ids + N
 ## Global Constraints
 
 - **Cross-platform**: every feature MUST work on Linux, macOS, AND Windows (per project rule AGENTS.md §"Top-line mandate"). Verify with `zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc ...` and `... -target aarch64-macos -lc ...` at the end of each chunk.
-- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` / `indexOf(u8, source, ...)` patterns anywhere — see `~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md`.
-- **No port 8081**: smoke tests use port 8080 (the always-running dev nalar on 8081 is off-limits).
-- **Behavioural Vue tests use `@vue/test-utils` `mount`** with `setActivePinia(createPinia())` in `beforeEach`. Mock fetch via `vi.fn()` returning `{ ok, status, json, text }` shape (see `.nalar/memories/nalar-frontend-patterns.md` §"`apiFetch` mock helpers need `text()` method").
+- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` / `indexOf(u8, source, ...)` patterns anywhere — see `~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md`.
+- **No port 8081**: smoke tests use port 8080 (the always-running dev pabrik on 8081 is off-limits).
+- **Behavioural Vue tests use `@vue/test-utils` `mount`** with `setActivePinia(createPinia())` in `beforeEach`. Mock fetch via `vi.fn()` returning `{ ok, status, json, text }` shape (see `.pabrik/memories/pabrik-frontend-patterns.md` §"`apiFetch` mock helpers need `text()` method").
 - **Behavioural Zig tests call the function under test** with crafted inputs + assertions on return values. Use `std.testing.allocator` + a `setupDb()` helper if DB is needed (mirror the pattern in `design_model_geometry_batch_test.zig`).
 - **TDD discipline**: every implementation task starts with a failing test, then minimal code to make it pass, then a commit.
-- **`bun run build` IS the type-check**: every frontend commit must pass `bun run build` (which runs `vue-tsc` under node); `bunx vitest run` alone does NOT catch type errors — see `.nalar/memories/nalar-frontend-patterns.md` §"bun run build is the type-check".
+- **`bun run build` IS the type-check**: every frontend commit must pass `bun run build` (which runs `vue-tsc` under node); `bunx vitest run` alone does NOT catch type errors — see `.pabrik/memories/pabrik-frontend-patterns.md` §"bun run build is the type-check".
 - **Lazy analysis trap**: `zig build test` may miss errors in `addExecutable`-only code paths. Run `zig build install:linux:system` at the end of each chunk to catch them.
-- **NO new comments above `logger.infoFmt(...)` calls** (see `~/.config/nalar/memories/no-comments-on-logger-calls.md`).
+- **NO new comments above `logger.infoFmt(...)` calls** (see `~/.config/pabrik/memories/no-comments-on-logger-calls.md`).
 - **Atomicity**: the whole batch is all-or-nothing. Any single bad `element_id` rejects the whole batch with 400/404, no partial writes.
 - **Recursive CTE bounded depth**: the cascade walks the `parent_id` chain downward; bounded by the page's actual nesting depth (typically ≤ 5 in real designs). The CTE uses `LIMIT 10000` as a safety net to prevent runaway queries if the DB ever accumulates cycles (the existing cycle check on `reparentElements` already prevents them, so the LIMIT is defence-in-depth).
 - **Existing endpoints stay intact**: `PATCH .../elements/:id/geometry` (single, used by the single-element drag path) and `POST .../elements/geometry-batch` (used by the geometry panel's manual multi-element select) continue to work — neither is changed. The new endpoint is **additive**.
@@ -100,7 +100,7 @@ NEW  src/apps/desktop/src/__tests__/DesignView.moveBatch.spec.ts
 EDIT src/apps/desktop/src/__tests__/workspacesStoreReparent.spec.ts (+ remove drag-path reliance on expandSelectionWithDescendants; canary test: drag emits moveDesignElementsBatch NOT geometry-batch)
 
 EDIT docs/SPEC.md                                                  (+ feature entry under §3.8 Design Canvas)
-EDIT NALAR.md / AGENTS.md                                          (+ Recent changes entry once shipped)
+EDIT PABRIK.md / AGENTS.md                                          (+ Recent changes entry once shipped)
 ```
 
 ---
@@ -258,7 +258,7 @@ Build the dynamic SET-list for each affected element:
 Use a single `UPDATE ... WHERE id IN (subtree_ids)` per item — SQLite evaluates the recursive CTE inside the WHERE clause. **Alternative** (more explicit): build a `UPDATE design_page_elements SET ... WHERE id IN (?, ?, ?, ...)` with the descendant ids collected first.
 
 - [ ] Run the test again and confirm all 11 tests PASS.
-- [ ] Run `timeout 120 zig build install:linux:system 2>&1 | tail -n 5` to catch lazy-analysis errors (per `.nalar/memories/zig-build-and-test.md`).
+- [ ] Run `timeout 120 zig build install:linux:system 2>&1 | tail -n 5` to catch lazy-analysis errors (per `.pabrik/memories/zig-build-and-test.md`).
 - [ ] Commit: `git add src/ai_workflow/tui/design_model.zig && git commit -m "feat(design): moveElementsWithDescendantsBatch — server-side cascade via recursive CTE"`.
 
 ### Task 1.3 — Wire the SSE event for the batch
@@ -379,9 +379,9 @@ test "useCase handles deeply nested subtree (depth 3)" {
 - [ ] Run `timeout 120 zig build install:linux:system 2>&1 | tail -n 5` to confirm the executable compiles.
 - [ ] Smoke test against port 8080:
   ```bash
-  env -i HOME=/tmp/nalar-move-batch-smoke PATH=$PATH \
-      setsid -f ./zig-out/bin/nalar --port 8080 \
-      > /tmp/nalar-move-batch-smoke.log 2>&1 < /dev/null
+  env -i HOME=/tmp/pabrik-move-batch-smoke PATH=$PATH \
+      setsid -f ./zig-out/bin/pabrik --port 8080 \
+      > /tmp/pabrik-move-batch-smoke.log 2>&1 < /dev/null
   sleep 6
   # Create a workspace + design item + page + group + 2 children via the existing API
   WS=$(curl -sS -X POST http://127.0.0.1:8080/api/workspaces -d '{"name":"smoke"}' -H 'content-type: application/json' | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
@@ -398,7 +398,7 @@ test "useCase handles deeply nested subtree (depth 3)" {
       -d "{\"items\":[{\"element_id\":\"$GROUP\",\"dx\":100,\"dy\":50}]}" \
       -H 'content-type: application/json' | python3 -m json.tool
   # Expect: { "updated": [ group, child1 ] } with group.x=100, group.y=50, child1.x=110, child1.y=70
-  pkill -f "nalar --port 8080"
+  pkill -f "pabrik --port 8080"
   ```
 - [ ] Commit: `git add src/main.zig && git commit -m "feat(design): register POST .../elements/move-batch route"`.
 
@@ -822,12 +822,12 @@ test "useCase handles deeply nested subtree (depth 3)" {
       args: []const u8,
   ) ![]u8 {
       const input = std.json.parseFromSliceLeaky(
-          nalarcore.move_design_element.MoveDesignElementInput,
+          pabrikcore.move_design_element.MoveDesignElementInput,
           allocator, args, .{},
       ) catch return try errorXmlOwned(allocator, try std.fmt.allocPrint(
           allocator, "Invalid JSON: expected {{ element_id, dx, dy }}", .{},
       ));
-      return nalarcore.move_design_element.executeMoveDesignElementToString(
+      return pabrikcore.move_design_element.executeMoveDesignElementToString(
           allocator, db, input,
       );
   }
@@ -869,14 +869,14 @@ Both must succeed. Report pass/fail counts.
 ```bash
 cd /home/ginwa/ginwaaitoolbox/.worktrees/move-with-descendants
 cat > /tmp/test_mod_move_batch.zig <<'EOF'
-const nalarcore = @import("nalarcore");
-const m = nalarcore.ai_mod.design_model;
+const pabrikcore = @import("pabrikcore");
+const m = pabrikcore.ai_mod.design_model;
 pub fn main() void { _ = m; }
 EOF
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-    --dep nalarcore -Mroot=/tmp/test_mod_move_batch.zig -Mnalarcore=src/root.zig 2>&1 | tail -n 5
+    --dep pabrikcore -Mroot=/tmp/test_mod_move_batch.zig -Mpabrikcore=src/root.zig 2>&1 | tail -n 5
 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-    --dep nalarcore -Mroot=/tmp/test_mod_move_batch.zig -Mnalarcore=src/root.zig 2>&1 | tail -n 5
+    --dep pabrikcore -Mroot=/tmp/test_mod_move_batch.zig -Mpabrikcore=src/root.zig 2>&1 | tail -n 5
 ```
 
 Both must exit 0 (no link, just type-check).
@@ -886,13 +886,13 @@ Both must exit 0 (no link, just type-check).
 Already covered in Chunk 2 Task 2.2's smoke test. Re-run with the current binary:
 
 ```bash
-env -i HOME=/tmp/nalar-move-batch-smoke PATH=$PATH \
-    setsid -f ./zig-out/bin/nalar --port 8080 \
-    > /tmp/nalar-move-batch-smoke.log 2>&1 < /dev/null
+env -i HOME=/tmp/pabrik-move-batch-smoke PATH=$PATH \
+    setsid -f ./zig-out/bin/pabrik --port 8080 \
+    > /tmp/pabrik-move-batch-smoke.log 2>&1 < /dev/null
 sleep 6
 # (create workspace + design + page + group + children, exercise /move-batch)
 # Confirm: group.x/y + children.x/y all shifted by (dx, dy)
-pkill -f "nalar --port 8080"
+pkill -f "pabrik --port 8080"
 ```
 
 ### Task 6.5 — Update docs
@@ -970,6 +970,6 @@ pkill -f "nalar --port 8080"
   - `src/apps/desktop/src/components/design/DesignView.vue::handleGroupDrag` (the drag path this plan rewires)
   - `src/apps/desktop/src/composables/useDesignHandlers.ts::reparentLayers` (the composable pattern this plan mirrors)
 - Memory precedents:
-  - `~/.config/nalar/memories/zig-sqlite-patterns.md` §"SQLite Transaction Design" — RAII transaction pattern + atomicity guarantees
-  - `~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md` — all tests in this plan are behavioural
-  - `~/.config/nalar/memories/design-drag-throttle-vs-debounce-requires-local-optimistic-state.md` — the SSE dedupe (1500 ms TTL) that this plan's response mirroring relies on
+  - `~/.config/pabrik/memories/zig-sqlite-patterns.md` §"SQLite Transaction Design" — RAII transaction pattern + atomicity guarantees
+  - `~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md` — all tests in this plan are behavioural
+  - `~/.config/pabrik/memories/design-drag-throttle-vs-debounce-requires-local-optimistic-state.md` — the SSE dedupe (1500 ms TTL) that this plan's response mirroring relies on

@@ -231,7 +231,7 @@ The field is `null` for legacy rows. The frontend treats `null` as
 - `true` when `updated > human` by ≥ 1 second
 
 Functional test coverage: `tests/functional/session_human_touched_at_test.py`
-boots a real `nalar`, sends messages, simulates an error, asserts the
+boots a real `pabrik`, sends messages, simulates an error, asserts the
 column updates on the wire.
 
 Unit test coverage (frontend): `ChatsList.relativeTime.spec.ts` with

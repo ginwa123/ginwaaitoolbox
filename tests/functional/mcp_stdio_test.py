@@ -4,7 +4,7 @@ End-to-end functional test for the MCP stdio transport (plan
 
 This module exercises the full wire path:
 
-  1. **Direct MCP roundtrip** (no nalar involved). Spawn
+  1. **Direct MCP roundtrip** (no pabrik involved). Spawn
      `mcp-hello-world` (built by `zig build mcp-hello-world`) via
      `subprocess.Popen`, send it a Content-Length-framed JSON-RPC
      `tools/list` request, parse the response, and assert all 3 tools
@@ -15,8 +15,8 @@ This module exercises the full wire path:
      JSON-RPC dispatch all work end-to-end. It does NOT depend on a
      real LLM.
 
-  2. **nalar accepts stdio mcp_servers config**. Boot nalar with a
-     stub LLM profile, PUT a NalarConfig body that includes a
+  2. **pabrik accepts stdio mcp_servers config**. Boot pabrik with a
+     stub LLM profile, PUT a PabrikConfig body that includes a
      `mcp_servers` map with one stdio entry (pointing at the
      mcp-hello-world binary), GET the config back, and assert the
      stdio entry round-trips byte-for-byte.
@@ -203,11 +203,11 @@ def test_mcp_hello_world_call_print_name() -> None:
     assert "mcp-hello-world" in text
 
 
-# ─── Test 2: nalar accepts stdio mcp_servers config ──────────────────────
+# ─── Test 2: pabrik accepts stdio mcp_servers config ──────────────────────
 
 
-def test_nalar_config_round_trips_stdio_mcp_servers() -> None:
-    """PUT a NalarConfig with stdio mcp_servers → GET preserves the entry.
+def test_pabrik_config_round_trips_stdio_mcp_servers() -> None:
+    """PUT a PabrikConfig with stdio mcp_servers → GET preserves the entry.
 
     This proves the backend's parseMcpServerConfig accepts the stdio
     shape (command + args) AND the wire round-trips through PUT →
@@ -217,10 +217,10 @@ def test_nalar_config_round_trips_stdio_mcp_servers() -> None:
     binary = _mcp_hello_world_bin()
     harness = FunctionalHarness.boot(stub_llm_profile=True)
     try:
-        # Read whatever config nalar starts with so we can preserve
+        # Read whatever config pabrik starts with so we can preserve
         # the stub profile + active_profile. PUT replaces the body
         # wholesale, so we must echo the existing top-level fields.
-        initial = harness.http("GET", "/api/config/nalar", expect=200).json()
+        initial = harness.http("GET", "/api/config/pabrik", expect=200).json()
 
         stdio_entry = {
             "command": str(binary),
@@ -233,11 +233,11 @@ def test_nalar_config_round_trips_stdio_mcp_servers() -> None:
             },
         }
         harness.http(
-            "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+            "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
         )
 
         # GET round-trips.
-        got = harness.http("GET", "/api/config/nalar", expect=200).json()
+        got = harness.http("GET", "/api/config/pabrik", expect=200).json()
         servers = got.get("mcp_servers") or {}
         assert "hello" in servers, (
             f"stdio MCP server missing from GET response: {list(servers.keys())}"
@@ -258,7 +258,7 @@ def test_nalar_config_round_trips_stdio_mcp_servers() -> None:
         harness.teardown()
 
 
-def test_nalar_config_round_trips_multiple_stdio_mcp_servers() -> None:
+def test_pabrik_config_round_trips_multiple_stdio_mcp_servers() -> None:
     """Two stdio MCP servers with different commands round-trip independently.
 
     Proves the mcp_servers map is keyed by name (each entry is its own
@@ -267,7 +267,7 @@ def test_nalar_config_round_trips_multiple_stdio_mcp_servers() -> None:
     binary = _mcp_hello_world_bin()
     harness = FunctionalHarness.boot(stub_llm_profile=True)
     try:
-        initial = harness.http("GET", "/api/config/nalar", expect=200).json()
+        initial = harness.http("GET", "/api/config/pabrik", expect=200).json()
         put_body = {
             **initial,
             "mcp_servers": {
@@ -284,10 +284,10 @@ def test_nalar_config_round_trips_multiple_stdio_mcp_servers() -> None:
             },
         }
         harness.http(
-            "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+            "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
         )
 
-        got = harness.http("GET", "/api/config/nalar", expect=200).json()
+        got = harness.http("GET", "/api/config/pabrik", expect=200).json()
         servers = got.get("mcp_servers") or {}
         assert "alpha" in servers and "beta" in servers, (
             f"both servers should round-trip: {list(servers.keys())}"
@@ -300,7 +300,7 @@ def test_nalar_config_round_trips_multiple_stdio_mcp_servers() -> None:
         harness.teardown()
 
 
-def test_nalar_config_mixes_http_and_stdio_mcp_servers() -> None:
+def test_pabrik_config_mixes_http_and_stdio_mcp_servers() -> None:
     """A config with both HTTP and stdio servers round-trips correctly.
 
     Proves the discriminator (presence of `command` ⇒ stdio,
@@ -310,7 +310,7 @@ def test_nalar_config_mixes_http_and_stdio_mcp_servers() -> None:
     binary = _mcp_hello_world_bin()
     harness = FunctionalHarness.boot(stub_llm_profile=True)
     try:
-        initial = harness.http("GET", "/api/config/nalar", expect=200).json()
+        initial = harness.http("GET", "/api/config/pabrik", expect=200).json()
         put_body = {
             **initial,
             "mcp_servers": {
@@ -325,10 +325,10 @@ def test_nalar_config_mixes_http_and_stdio_mcp_servers() -> None:
             },
         }
         harness.http(
-            "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+            "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
         )
 
-        got = harness.http("GET", "/api/config/nalar", expect=200).json()
+        got = harness.http("GET", "/api/config/pabrik", expect=200).json()
         servers = got.get("mcp_servers") or {}
         # HTTP entry preserved.
         ctx = servers.get("context7") or {}

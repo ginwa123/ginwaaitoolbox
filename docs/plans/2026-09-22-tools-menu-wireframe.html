@@ -29,7 +29,7 @@
     padding-bottom: 96px; /* room for sticky save bar */
   }
 
-  /* ---------- tab strip (mirrors NalarTabStrip.vue) ---------- */
+  /* ---------- tab strip (mirrors PabrikTabStrip.vue) ---------- */
   .tabstrip {
     display: flex; align-items: center; gap: 4px;
     border-bottom: 1px solid var(--color-border);
@@ -109,7 +109,7 @@
   }
   .group-count.complete { color: var(--color-green); }
 
-  /* ---------- checklist rows (mirrors NalarGeneralSection checkbox row) ---------- */
+  /* ---------- checklist rows (mirrors PabrikGeneralSection checkbox row) ---------- */
   .row {
     display: flex; align-items: flex-start; gap: 12px;
     padding: 9px 16px; cursor: pointer;
@@ -133,7 +133,7 @@
   .pill-main-only { color: var(--color-yellow); border-color: var(--color-yellow); }
   .pill-floor { color: var(--color-violet); border-color: var(--color-violet); }
 
-  /* ---------- sticky save bar (mirrors NalarSaveBar.vue) ---------- */
+  /* ---------- sticky save bar (mirrors PabrikSaveBar.vue) ---------- */
   .savebar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
     display: flex; align-items: center; justify-content: flex-end; gap: 12px;
@@ -157,7 +157,7 @@
 <body>
 
 <!-- ===== tab strip: General | Profiles | MCP Servers | Tools (active) ===== -->
-<nav class="tabstrip" role="tablist" aria-label="Nalar settings sections">
+<nav class="tabstrip" role="tablist" aria-label="Pabrik settings sections">
   <button class="tab" role="tab" aria-selected="false" title="Wireframe shows the Tools tab only">General</button>
   <button class="tab" role="tab" aria-selected="false" title="Wireframe shows the Tools tab only">Profiles</button>
   <button class="tab" role="tab" aria-selected="false" title="Wireframe shows the Tools tab only">MCP Servers</button>
@@ -203,12 +203,12 @@
     Pills: <span class="pill pill-main-only">main-agent only</span> never reach sub-agents;
     <span class="pill pill-floor">mode floor</span> are always re-added in kanban mode.
     Selection persists through the shared Settings save bar
-    (<code style="font-family:var(--font-mono)">PUT /api/config/nalar</code>).
+    (<code style="font-family:var(--font-mono)">PUT /api/config/pabrik</code>).
     Deep link: <code style="font-family:var(--font-mono)">/app/settings?section=tools</code>.
   </p>
 </main>
 
-<!-- ===== sticky save bar (NalarSaveBar pattern) ===== -->
+<!-- ===== sticky save bar (PabrikSaveBar pattern) ===== -->
 <div class="savebar" id="savebar">
   <span class="dirty-count" id="dirty-count"><span class="dot">&#9679;</span><span id="dirty-text">3 unsaved changes</span></span>
   <button class="btn btn-ghost" id="btn-reset" type="button">Reset</button>

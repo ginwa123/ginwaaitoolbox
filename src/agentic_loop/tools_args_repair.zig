@@ -191,7 +191,7 @@ fn escapeLetterForControl(c: u8) ?u8 {
 /// `escapeRawBackslashes` only rewrites backslashes JSON rejects. It
 /// deliberately leaves `\n`, `\t`, `\r` and `\f` alone, because a
 /// multi-line `new_str` genuinely needs them. That leaves one hole: the
-/// reported path contains `.config\nalar`, where `\n` is a legal escape
+/// reported path contains `.config\pabrik`, where `\n` is a legal escape
 /// but the model meant a separator. The arguments then parse, and the
 /// path silently becomes `…\.config<LF>alar` — a different file, with no
 /// error anywhere to explain it.
@@ -231,10 +231,14 @@ fn parsesAsJson(raw: []const u8) bool {
 // ---------------------------------------------------------------------------
 
 test "reported Windows path round-trips: raw backslashes in, real path out" {
+    // The segment letters are load-bearing: `\n` and `\t` are LEGAL JSON
+    // escapes (so the repaired value decodes to an embedded newline + tab that
+    // step 2 must re-expand) while `\p`, `\o`, `\s` and `\c` are illegal. A path
+    // with no legal escape in it would make step 2 vacuous.
     const raw =
-        \\{"path":"C:\Users\gilang.trisetya\.config\nalar\.worktrees\sb02\internal\domain\sales_invoice\test.go","old_str":"a","new_str":"b"}
+        \\{"path":"C:\Users\gilang.trisetya\.config\pabrik\notes\src\test.go","old_str":"a","new_str":"b"}
     ;
-    const want = "C:\\Users\\gilang.trisetya\\.config\\nalar\\.worktrees\\sb02\\internal\\domain\\sales_invoice\\test.go";
+    const want = "C:\\Users\\gilang.trisetya\\.config\\pabrik\\notes\\src\\test.go";
 
     // Precondition: this is exactly what the model emitted, and it does NOT
     // parse. This is the byte sequence behind the "works on Linux, breaks on
@@ -252,7 +256,12 @@ test "reported Windows path round-trips: raw backslashes in, real path out" {
         try testing.expectEqualStrings("b", parsed.value.object.get("new_str").?.string);
     }
 
-    // Step 2 — `.config\nalar` decoded to a real newline, because `\n` is a
+    // Step 2 — `.config\pabrik\notes` decoded to a real newline + tab, because
+    // `\n` and `\t` are legal escapes the repair must not touch (a multi-line
+    // `new_str` needs them). Re-expanding them is what turns the parsed-but-
+    // corrupt path back into the path the model meant. Without this step the
+    // tool would look for a file whose name contains control characters and
+    // report "not found".
     // legal escape the repair must not touch (a multi-line `new_str` needs
     // it). Re-expanding it is what turns the parsed-but-corrupt path back
     // into the path the model meant. Without this step the tool would look

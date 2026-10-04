@@ -20,7 +20,7 @@ the wire:
      `SqliteBackend.exec` binds an empty slice as SQL NULL.
   6. PUT echoing the MASK back preserves the stored credential.
 
-Each test boots a fresh nalar against an isolated tmpdir HOME via the
+Each test boots a fresh pabrik against an isolated tmpdir HOME via the
 shared preboot fixture. Ports come from the harness's random picker
 (never 8081).
 """
@@ -57,7 +57,7 @@ def _base_config(**extra) -> dict:
 
 
 def _settings_body(web_search_marker=...):
-    """The whole-config shape NalarSettings.vue sends on Save."""
+    """The whole-config shape PabrikSettings.vue sends on Save."""
     body = {
         "profiles": {"p1": dict(PROFILE)},
         "active_profile": "p1",
@@ -81,10 +81,10 @@ def _settings_body(web_search_marker=...):
 def test_web_search_round_trips_through_put_and_get(preboot) -> None:
     h = preboot(_base_config())
 
-    r = h.http("PUT", "/api/config/nalar", json_body=_settings_body({"tinyfish": TINYFISH, "brave": BRAVE}), expect=200).json()
+    r = h.http("PUT", "/api/config/pabrik", json_body=_settings_body({"tinyfish": TINYFISH, "brave": BRAVE}), expect=200).json()
     assert r.get("success") in (True, None) or "error" not in r or not r.get("error"), f"PUT failed: {r!r}"
 
-    got = h.http("GET", "/api/config/nalar", expect=200).json()
+    got = h.http("GET", "/api/config/pabrik", expect=200).json()
     ws = got.get("web_search")
     assert isinstance(ws, dict), f"web_search missing or not an object: {got!r}"
     assert set(ws) == {"tinyfish", "brave"}, f"provider names did not round-trip: {ws!r}"
@@ -102,7 +102,7 @@ def test_get_masks_the_api_key(preboot) -> None:
     must not appear anywhere in the GET response body."""
     h = preboot(_base_config(web_search={"tinyfish": TINYFISH, "brave": BRAVE}))
 
-    r = h.http("GET", "/api/config/nalar", expect=200)
+    r = h.http("GET", "/api/config/pabrik", expect=200)
     raw = r.body.decode("utf-8", "replace")
     assert TINYFISH["key"] not in raw, "the real TinyFish key leaked through GET"
     assert BRAVE["key"] not in raw, "the real Brave key leaked through GET"
@@ -124,7 +124,7 @@ def test_get_masks_a_short_key_without_leaking_it_entirely(preboot) -> None:
     }
     h = preboot(_base_config(web_search={"short": short}))
 
-    r = h.http("GET", "/api/config/nalar", expect=200)
+    r = h.http("GET", "/api/config/pabrik", expect=200)
     assert "sk1234" not in r.body.decode("utf-8", "replace"), (
         "a short key leaked in full through the mask"
     )
@@ -143,7 +143,7 @@ def test_settings_save_without_web_search_does_not_erase_it(preboot) -> None:
     h = preboot(_base_config(web_search={"tinyfish": TINYFISH}))
 
     # Save from "another tab": no web_search key in the body.
-    h.http("PUT", "/api/config/nalar", json_body=_settings_body(), expect=200)
+    h.http("PUT", "/api/config/pabrik", json_body=_settings_body(), expect=200)
 
     disk = _on_disk(h)
     assert "web_search" in disk, "web_search was erased from disk by an unrelated save"
@@ -156,12 +156,12 @@ def test_masked_key_round_trips_back_as_unchanged(preboot) -> None:
     they changed an unrelated setting."""
     h = preboot(_base_config(web_search={"tinyfish": TINYFISH}))
 
-    masked = h.http("GET", "/api/config/nalar", expect=200).json()["web_search"]["tinyfish"]["key"]
+    masked = h.http("GET", "/api/config/pabrik", expect=200).json()["web_search"]["tinyfish"]["key"]
     assert masked != TINYFISH["key"]
 
     echoed = dict(TINYFISH)
     echoed["key"] = masked
-    h.http("PUT", "/api/config/nalar", json_body=_settings_body({"tinyfish": echoed}), expect=200)
+    h.http("PUT", "/api/config/pabrik", json_body=_settings_body({"tinyfish": echoed}), expect=200)
 
     assert _on_disk(h)["web_search"]["tinyfish"]["key"] == TINYFISH["key"], (
         "PUT stored the mask over the real credential"
@@ -192,7 +192,7 @@ def test_masked_key_round_trips_back_as_unchanged(preboot) -> None:
 def test_malformed_provider_is_rejected_with_a_useful_message(preboot, bad, expect_in_message) -> None:
     h = preboot(_base_config())
 
-    r = h.http("PUT", "/api/config/nalar", json_body=_settings_body({"broken": bad}), expect=400).json()
+    r = h.http("PUT", "/api/config/pabrik", json_body=_settings_body({"broken": bad}), expect=400).json()
     message = r.get("error") or ""
     assert "broken" in message, f"the 400 does not name the offending provider: {message!r}"
     assert expect_in_message in message, f"the 400 does not say what is wrong: {message!r}"
@@ -212,7 +212,7 @@ def test_empty_key_is_omitted_not_stored_as_empty_string(preboot) -> None:
         "key": "",
         "curl": "https://search.example.net/search?q=PLACEHOLDER",
     }
-    h.http("PUT", "/api/config/nalar", json_body=_settings_body({"searxng": no_auth}), expect=200)
+    h.http("PUT", "/api/config/pabrik", json_body=_settings_body({"searxng": no_auth}), expect=200)
 
     stored = _on_disk(h)["web_search"]["searxng"]
     assert "key" not in stored, f'an empty credential was stored: {stored!r}'
@@ -224,6 +224,6 @@ def test_empty_key_is_omitted_not_stored_as_empty_string(preboot) -> None:
 def test_get_reports_web_search_null_when_absent(preboot) -> None:
     h = preboot(_base_config())
 
-    r = h.http("GET", "/api/config/nalar", expect=200).json()
+    r = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert "web_search" in r, "the key must be PRESENT so the frontend can tell 'not configured' from 'field never shipped'"
     assert r["web_search"] is None, f"expected null, got {r['web_search']!r}"

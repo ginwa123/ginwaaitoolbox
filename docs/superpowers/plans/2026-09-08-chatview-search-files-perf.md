@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - DONT KILL the port 8081 server; functional tests use harness-picked ports (8080..8199 excl. 8081).
-- Never spin a live `nalar` binary + `curl` for verification; use `tests/functional/*.py` harness + `zig build test`.
+- Never spin a live `pabrik` binary + `curl` for verification; use `tests/functional/*.py` harness + `zig build test`.
 - No new npm deps; no DB migration; no config schema change.
 - Backend allocator in handlers is per-request arena — do NOT `defer free` arena memory (keep `rows.deinit()` / file-handle closes).
 - `KanbanDescriptionEditor.vue` is an exact duplicate of the FileInput `@` picker — every frontend fix lands in BOTH files.
@@ -81,14 +81,14 @@
 
 ## Task 4 — Functional wire test + perf assertion (verification)
 
-- [ ] Create `tests/functional/system_folder_search_test.py` using `harness.py` (fresh tmpdir HOME, free port, `$NALAR_BIN`):
+- [ ] Create `tests/functional/system_folder_search_test.py` using `harness.py` (fresh tmpdir HOME, free port, `$PABRIK_BIN`):
   - Fixture cwd with `node_modules/big/`, `zig-out/`, `src/components/` + 300 generated files.
   - Test 1: `GET /api/system/folder?action=search&path=<cwd>&q=comp&limit=50` returns ≤50, contains `components`, excludes `node_modules` paths.
   - Test 2: empty `q` returns ≤50 (not whole tree).
   - Test 3: `limit=5000` clamps (response ≤200).
   - Test 4: old `action=list` single-level contract unchanged (regression guard).
   - Test 5 (perf): time-to-first-byte for search < 1s on the 300-file fixture; old behavior reference (N list calls) would be >> 1s — assert search completes and document timing in test output (not a flaky hard bound: assert <5s, log actual).
-- [ ] Run `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/system_folder_search_test.py -v`. Must be green.
+- [ ] Run `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/system_folder_search_test.py -v`. Must be green.
 - [ ] Run `zig build test --summary all` + relevant `pnpm test:unit`. Record counts in plan PR description.
 - [ ] Commit test.
 

@@ -1,9 +1,9 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
-const pr_provider = nalar_core.pr_provider;
-const pr_cli = nalar_core.pr_cli;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
+const pr_provider = pabrik_core.pr_provider;
+const pr_cli = pabrik_core.pr_cli;
 const run_captured = @import("helpers").run_captured;
 
 /// Fields requested from `gh pr view --json`. The list itself now lives
@@ -65,7 +65,9 @@ const MAX_FETCH_DETAIL: usize = 500;
 /// Store a trimmed + capped copy of `msg` into `slot` (best-effort;
 /// leaves `slot` null on empty input or alloc failure so callers can
 /// fall back to the generic hint). Allocs from the request arena.
-fn setFetchDetail(allocator: std.mem.Allocator, slot: *?[]u8, msg: []const u8) void {
+/// `pub` so `git_pr_checks.zig` reuses it rather than growing a second,
+/// subtly different error-detail formatter.
+pub fn setFetchDetail(allocator: std.mem.Allocator, slot: *?[]u8, msg: []const u8) void {
     const trimmed = std.mem.trim(u8, msg, " \n\r\t");
     if (trimmed.len == 0) return;
     const take = @min(trimmed.len, MAX_FETCH_DETAIL);
@@ -312,7 +314,7 @@ fn useCaseWithPrograms(
     //     /repo/.git
     //     0
     //
-    // git exports both to the hooks it runs, so a nalar started from
+    // git exports both to the hooks it runs, so a pabrik started from
     // inside a git hook (or any wrapper that exports them) would skip
     // this gate and try to run the forge CLI in a non-repository.
     // `spawn` also hands the child the `Io.Threaded` CACHED environ, so
@@ -369,7 +371,11 @@ fn useCaseWithPrograms(
 /// pointed at. Falling back to the remote is what makes
 /// `GET /api/git/pr/status?path=<gitlab-repo>` answer with a `glab`
 /// lookup instead of a `gh` failure.
-fn resolveProvider(
+///
+/// `pub` so `git_pr_checks.zig` asks the same three questions in the
+/// same order — two endpoints that disagree about which forge a repo
+/// belongs to would show a GitHub user GitLab error text.
+pub fn resolveProvider(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
@@ -884,7 +890,7 @@ fn makeNonRepoDir(allocator: std.mem.Allocator) ![]u8 {
     var name_buf: [48]u8 = undefined;
     var seed: [4]u8 = undefined;
     std.Io.random(std.testing.io, &seed);
-    const name = try std.fmt.bufPrint(&name_buf, "nalar-nonrepo-{x}-{x}{x}{x}", .{
+    const name = try std.fmt.bufPrint(&name_buf, "pabrik-nonrepo-{x}-{x}{x}{x}", .{
         seed[0], seed[1], seed[2], seed[3],
     });
     const path = try std.fmt.allocPrint(allocator, "/tmp/{s}", .{name});
@@ -922,9 +928,9 @@ fn gitProbeIsEnvHijacked(allocator: std.mem.Allocator, empty_dir: []const u8) bo
 /// `testing.allocator`, so they have to give the copies back.
 fn freeResponse(a: std.mem.Allocator, res: http_response.GitPrStatusResponse) void {
     inline for (.{
-        res.provider,  res.pr_url,       res.title,       res.state,
-        res.status,    res.mergeable,   res.merge_state, res.head_ref,
-        res.base_ref,  res.author,      res.created_at,   res.updated_at,
+        res.provider,  res.pr_url,    res.title,       res.state,
+        res.status,    res.mergeable, res.merge_state, res.head_ref,
+        res.base_ref,  res.author,    res.created_at,  res.updated_at,
         res.merged_at, res.closed_at,
     }) |s| a.free(s);
 }
@@ -1164,7 +1170,7 @@ test "runGhPrView: a missing gh binary maps to CliMissing" {
     try testing.expectError(error.CliMissing, runGhPrView(
         a,
         testing.io,
-        "/nalar/definitely/not/gh",
+        "/pabrik/definitely/not/gh",
         fx.root,
         "",
         10_000,
@@ -1336,7 +1342,7 @@ test "useCase: a missing path is NotARepository" {
     defer if (detail) |d| a.free(d);
     try testing.expectError(
         error.NotARepository,
-        useCaseWith(a, testing.io, "/bin/sh", "/nalar/no/such/repo", "", null, &detail),
+        useCaseWith(a, testing.io, "/bin/sh", "/pabrik/no/such/repo", "", null, &detail),
     );
 }
 
@@ -1438,7 +1444,7 @@ test "useCase: the origin remote decides the forge when no provider is given" {
 
     var detail: ?[]u8 = null;
     defer if (detail) |d| a.free(d);
-    const res = try useCaseWithPrograms(a, testing.io, .{ .gh = "/nalar/no/such/gh", .glab = glab }, repo, "", null, &detail);
+    const res = try useCaseWithPrograms(a, testing.io, .{ .gh = "/pabrik/no/such/gh", .glab = glab }, repo, "", null, &detail);
     defer freeResponse(a, res);
     try testing.expectEqualStrings("gitlab", res.provider);
 }
@@ -1462,7 +1468,7 @@ test "useCase: a GitHub repo with a gh origin still routes to gh" {
 
     var detail: ?[]u8 = null;
     defer if (detail) |d| a.free(d);
-    const res = try useCaseWithPrograms(a, testing.io, .{ .gh = gh, .glab = "/nalar/no/such/glab" }, repo, "", null, &detail);
+    const res = try useCaseWithPrograms(a, testing.io, .{ .gh = gh, .glab = "/pabrik/no/such/glab" }, repo, "", null, &detail);
     defer freeResponse(a, res);
     try testing.expectEqualStrings("github", res.provider);
 }
@@ -1564,7 +1570,7 @@ test "useCase: a missing gh binary surfaces as CliMissing" {
     defer if (detail) |d| a.free(d);
     try testing.expectError(
         error.CliMissing,
-        useCaseWith(a, testing.io, "/nalar/definitely/not/gh", repo, "", null, &detail),
+        useCaseWith(a, testing.io, "/pabrik/definitely/not/gh", repo, "", null, &detail),
     );
 }
 

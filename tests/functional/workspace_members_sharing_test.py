@@ -72,8 +72,8 @@ def _login(port: int, email: str, password: str) -> str:
     status, headers, body = _raw("POST", port, "/api/auth/login", body={"email": email, "password": password})
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
 def _create_workspace(port: int, name: str, cookie: str) -> str:
@@ -102,7 +102,7 @@ def _two_users(bin_path: Path):
 
 
 def _db_path(h: FunctionalHarness) -> Path:
-    return Path(h.temp_dir) / ".config" / "nalar" / "agent.db"
+    return Path(h.temp_dir) / ".config" / "pabrik" / "agent.db"
 
 
 def _db_connect(h: FunctionalHarness, *, read_only: bool) -> sqlite3.Connection:
@@ -157,7 +157,7 @@ def _add_member(h: FunctionalHarness, workspace_id: str, user_id: str, role: str
 # --------------------------------------------------------------------------
 
 
-def test_create_writes_a_membership_row_for_the_real_user(default_nalar_bin: Path):
+def test_create_writes_a_membership_row_for_the_real_user(default_pabrik_bin: Path):
     """The create tx must commit the membership row too, or nobody sees it.
 
     This is the single most load-bearing assertion in the file: the whole
@@ -165,21 +165,21 @@ def test_create_writes_a_membership_row_for_the_real_user(default_nalar_bin: Pat
     is invisible to EVERYONE including its creator. A unit test of the SQL
     cannot catch a handler that only inserts the workspace row.
     """
-    h, tok_a, _ = _two_users(default_nalar_bin)
+    h, tok_a, _ = _two_users(default_pabrik_bin)
     try:
-        ws = _create_workspace(h.port, "A private", f"nalar_session={tok_a}")
+        ws = _create_workspace(h.port, "A private", f"pabrik_session={tok_a}")
         uid_a = _user_id(h, "a@example.com")
 
         members = _members_of(h, ws)
         assert members == [(uid_a, "owner")], f"expected exactly one owner membership, got {members}"
 
         # And the wire agrees: the creator still sees it.
-        assert ws in _list_workspace_ids(h.port, f"nalar_session={tok_a}")
+        assert ws in _list_workspace_ids(h.port, f"pabrik_session={tok_a}")
     finally:
         h.teardown()
 
 
-def test_auth_off_create_stores_the_sentinel_membership(default_nalar_bin: Path):
+def test_auth_off_create_stores_the_sentinel_membership(default_pabrik_bin: Path):
     """Auth off -> owner resolves to the sentinel, and the row must land anyway.
 
     This is where `normaliseOwnerId` earns its keep: `SqliteBackend.exec`
@@ -187,7 +187,7 @@ def test_auth_off_create_stores_the_sentinel_membership(default_nalar_bin: Path)
     NULL, so without normalisation the auth-off create would fail outright
     with a constraint violation instead of writing the shared marker.
     """
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         ws = _create_workspace(h.port, "No-auth workspace", "")
         assert ws in _list_workspace_ids(h.port, "")
@@ -200,51 +200,51 @@ def test_auth_off_create_stores_the_sentinel_membership(default_nalar_bin: Path)
         h.teardown()
 
 
-def test_shared_workspace_becomes_visible_to_the_second_user(default_nalar_bin: Path):
+def test_shared_workspace_becomes_visible_to_the_second_user(default_pabrik_bin: Path):
     """The feature: one membership row is the entire difference.
 
     A's workspace is private, so B gets a 404 and never sees it in the list.
     Add one membership row and B sees it in BOTH the list and the direct GET,
     across every path that consults visibility.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        ws = _create_workspace(h.port, "A shares this", f"nalar_session={tok_a}")
+        ws = _create_workspace(h.port, "A shares this", f"pabrik_session={tok_a}")
         uid_b = _user_id(h, "b@example.com")
 
         # Before: private.
-        assert ws not in _list_workspace_ids(h.port, f"nalar_session={tok_b}")
-        status, _, _ = _raw("GET", h.port, f"/api/workspaces/{ws}", cookie=f"nalar_session={tok_b}")
+        assert ws not in _list_workspace_ids(h.port, f"pabrik_session={tok_b}")
+        status, _, _ = _raw("GET", h.port, f"/api/workspaces/{ws}", cookie=f"pabrik_session={tok_b}")
         assert status == 404, f"expected 404 before sharing, got {status}"
 
         _add_member(h, ws, uid_b, role="editor")
 
         # After: visible, on every read path.
-        assert ws in _list_workspace_ids(h.port, f"nalar_session={tok_b}")
-        status, _, body = _raw("GET", h.port, f"/api/workspaces/{ws}", cookie=f"nalar_session={tok_b}")
+        assert ws in _list_workspace_ids(h.port, f"pabrik_session={tok_b}")
+        status, _, body = _raw("GET", h.port, f"/api/workspaces/{ws}", cookie=f"pabrik_session={tok_b}")
         assert status == 200, f"expected 200 after sharing, got {status}: {body[:300]}"
         assert json.loads(body.decode())["name"] == "A shares this"
 
         # The child routes are gated by the middleware choke point, so they
         # must open up too — otherwise sharing half-works.
-        status, _, body = _raw("GET", h.port, f"/api/workspaces/{ws}/items", cookie=f"nalar_session={tok_b}")
+        status, _, body = _raw("GET", h.port, f"/api/workspaces/{ws}/items", cookie=f"pabrik_session={tok_b}")
         assert status == 200, f"a member must reach the workspace's items, got {status}: {body[:300]}"
 
         # And the owner is unaffected by B being added.
-        assert ws in _list_workspace_ids(h.port, f"nalar_session={tok_a}")
+        assert ws in _list_workspace_ids(h.port, f"pabrik_session={tok_a}")
     finally:
         h.teardown()
 
 
-def test_removing_a_membership_revokes_access(default_nalar_bin: Path):
+def test_removing_a_membership_revokes_access(default_pabrik_bin: Path):
     """Sharing is not a one-way door."""
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        ws = _create_workspace(h.port, "Temporary share", f"nalar_session={tok_a}")
+        ws = _create_workspace(h.port, "Temporary share", f"pabrik_session={tok_a}")
         uid_b = _user_id(h, "b@example.com")
 
         _add_member(h, ws, uid_b, role="viewer")
-        assert ws in _list_workspace_ids(h.port, f"nalar_session={tok_b}")
+        assert ws in _list_workspace_ids(h.port, f"pabrik_session={tok_b}")
 
         conn = _db_connect(h, read_only=False)
         try:
@@ -255,18 +255,18 @@ def test_removing_a_membership_revokes_access(default_nalar_bin: Path):
         finally:
             conn.close()
 
-        assert ws not in _list_workspace_ids(h.port, f"nalar_session={tok_b}")
-        status, _, _ = _raw("GET", h.port, f"/api/workspaces/{ws}", cookie=f"nalar_session={tok_b}")
+        assert ws not in _list_workspace_ids(h.port, f"pabrik_session={tok_b}")
+        status, _, _ = _raw("GET", h.port, f"/api/workspaces/{ws}", cookie=f"pabrik_session={tok_b}")
         assert status == 404, f"expected 404 after revocation, got {status}"
 
         # The workspace itself is untouched — nothing was left behind on the
         # workspaces row that would keep re-granting access.
-        assert ws in _list_workspace_ids(h.port, f"nalar_session={tok_a}")
+        assert ws in _list_workspace_ids(h.port, f"pabrik_session={tok_a}")
     finally:
         h.teardown()
 
 
-def test_the_sentinel_membership_keeps_a_legacy_workspace_visible_to_everyone(default_nalar_bin: Path):
+def test_the_sentinel_membership_keeps_a_legacy_workspace_visible_to_everyone(default_pabrik_bin: Path):
     """The upgrade regression: an operator must not lose their sidebar.
 
     A workspace created before `--auth` was switched on carries no real owner.
@@ -276,9 +276,9 @@ def test_the_sentinel_membership_keeps_a_legacy_workspace_visible_to_everyone(de
     authenticated user's list — the single worst outcome of this migration.
     This test reproduces the backfilled state and asserts the wire result.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        ws = _create_workspace(h.port, "Pre-auth legacy", f"nalar_session={tok_a}")
+        ws = _create_workspace(h.port, "Pre-auth legacy", f"pabrik_session={tok_a}")
         uid_a = _user_id(h, "a@example.com")
 
         # Rewrite A's membership to exactly what the backfill emits for a
@@ -296,32 +296,32 @@ def test_the_sentinel_membership_keeps_a_legacy_workspace_visible_to_everyone(de
         assert _members_of(h, ws) == [("user_system", "owner")], "fixture did not reach backfilled state"
 
         # A real, unrelated user now sees it.
-        assert ws in _list_workspace_ids(h.port, f"nalar_session={tok_b}")
-        status, _, _ = _raw("GET", h.port, f"/api/workspaces/{ws}", cookie=f"nalar_session={tok_b}")
+        assert ws in _list_workspace_ids(h.port, f"pabrik_session={tok_b}")
+        status, _, _ = _raw("GET", h.port, f"/api/workspaces/{ws}", cookie=f"pabrik_session={tok_b}")
         assert status == 200, f"a backfilled workspace must be readable by any user, got {status}"
 
         # The original owner keeps access too.
-        assert ws in _list_workspace_ids(h.port, f"nalar_session={tok_a}")
+        assert ws in _list_workspace_ids(h.port, f"pabrik_session={tok_a}")
         assert uid_a  # keeps the variable meaningful; see _user_id above
     finally:
         h.teardown()
 
 
-def test_delete_removes_the_membership_rows(default_nalar_bin: Path):
+def test_delete_removes_the_membership_rows(default_pabrik_bin: Path):
     """No orphans: `PRAGMA foreign_keys` is OFF, so delete must clean up.
 
     Nothing in SQLite will drop the member rows for us, so if this regresses
     the table grows without bound and — worse — a re-created workspace that
     reused the id would inherit stale members.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        ws = _create_workspace(h.port, "Doomed", f"nalar_session={tok_a}")
+        ws = _create_workspace(h.port, "Doomed", f"pabrik_session={tok_a}")
         uid_b = _user_id(h, "b@example.com")
         _add_member(h, ws, uid_b, role="viewer")
         assert len(_members_of(h, ws)) == 2
 
-        status, _, _ = _raw("DELETE", h.port, f"/api/workspaces/{ws}", cookie=f"nalar_session={tok_a}")
+        status, _, _ = _raw("DELETE", h.port, f"/api/workspaces/{ws}", cookie=f"pabrik_session={tok_a}")
         assert status == 200, f"owner must be able to delete, got {status}"
 
         assert _members_of(h, ws) == [], f"member rows survived the delete: {_members_of(h, ws)}"
@@ -329,7 +329,7 @@ def test_delete_removes_the_membership_rows(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_migration_100_actually_runs_on_a_real_boot(default_nalar_bin: Path):
+def test_migration_100_actually_runs_on_a_real_boot(default_pabrik_bin: Path):
     """Prove Migration 100 is WIRED, not merely callable.
 
     The migration.zig unit tests call `Migration100AddWorkspaceMembers.up`
@@ -338,7 +338,7 @@ def test_migration_100_actually_runs_on_a_real_boot(default_nalar_bin: Path):
     workspace query failing with "no such table: workspace_members". Only a
     real boot proves the chain ran it.
     """
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         conn = _db_connect(h, read_only=True)
         try:
