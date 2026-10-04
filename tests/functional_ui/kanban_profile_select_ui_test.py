@@ -22,8 +22,8 @@ Post-fix: the unattended flag is forwarded into useCase ONLY for legacy
 full INSERT (profile + flag) is authoritative.
 
 These tests drive the actual UI via Playwright + a seeded stub config
-at the OS-correct path (`$HOME/.config/nalar/config.json` on Linux,
-`$HOME/Library/Application Support/nalar/config.json` on macOS — see
+at the OS-correct path (`$HOME/.config/pabrik/config.json` on Linux,
+`$HOME/Library/Application Support/pabrik/config.json` on macOS — see
 `_seed_profiles` and `src/modules/config/Config.zig:1550` for the
 backend's per-OS lookup):
 
@@ -83,8 +83,8 @@ def _seed_profiles(h: UIHarness) -> None:
     DIFFERENT profile ('alpha') instead of the empty state.
 
     The backend reads config.json fresh per request (see
-    nalar_config_get.zig:33 — no caching), so post-boot writes are
-    picked up by GET /api/config/nalar without a restart.
+    pabrik_config_get.zig:33 — no caching), so post-boot writes are
+    picked up by GET /api/config/pabrik without a restart.
 
     Profile names match the user's bug report: the bug used "900ribu"
     as the pick and "alpha model" as the visible fallback. We seed
@@ -94,19 +94,19 @@ def _seed_profiles(h: UIHarness) -> None:
     """
     # The backend reads config.json from `getDefaultConfigDir`
     # (src/modules/config/Config.zig:1538), which is OS-dependent:
-    #   Linux   → $HOME/.config/nalar
-    #   macOS   → $HOME/Library/Application Support/nalar
-    #   Windows → %APPDATA%/nalar
+    #   Linux   → $HOME/.config/pabrik
+    #   macOS   → $HOME/Library/Application Support/pabrik
+    #   Windows → %APPDATA%/pabrik
     # Mirror the backend's lookup — otherwise the seeded profiles
     # never load and the dialog's profile picker is empty (the bug
     # we hit on the macOS CI runner: 0 rows for ":has-text('900ribu')").
     # Same pattern as tests/functional/model_thinking_test.py:43-44.
     if sys.platform == "darwin":
-        config_dir = h.temp_dir / "Library" / "Application Support" / "nalar"
+        config_dir = h.temp_dir / "Library" / "Application Support" / "pabrik"
     elif sys.platform == "win32":
-        config_dir = h.temp_dir / "AppData" / "Roaming" / "nalar"
+        config_dir = h.temp_dir / "AppData" / "Roaming" / "pabrik"
     else:
-        config_dir = h.temp_dir / ".config" / "nalar"
+        config_dir = h.temp_dir / ".config" / "pabrik"
     config_dir.mkdir(parents=True, exist_ok=True)
     profile = {
         "api_endpoint": "",
@@ -173,12 +173,12 @@ def _task_id_for_name(
 def _get_session_via_db(h: UIHarness, session_id: str) -> dict[str, Any] | None:
     """Read sessions row by id straight from sqlite3.
 
-    The DB lives at `h.temp_dir / ".config" / "nalar" / "agent.db"`.
+    The DB lives at `h.temp_dir / ".config" / "pabrik" / "agent.db"`.
     Use the harness's path validator (already validated the tempdir)
     to be safe — defense in depth matches the chatview pattern in
     tests/functional_ui/db_seed.py.
     """
-    db_path = h.temp_dir / ".config" / "nalar" / "agent.db"
+    db_path = h.temp_dir / ".config" / "pabrik" / "agent.db"
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
@@ -216,7 +216,7 @@ def test_dialog_create_task_persists_picked_profile_in_db(
     h = ui_harness
 
     # Seed profiles BEFORE the dialog opens — the picker loads them
-    # on dialog open via api.getNalarConfig (KanbanTaskDetailDialog.vue:861).
+    # on dialog open via api.getPabrikConfig (KanbanTaskDetailDialog.vue:861).
     _seed_profiles(h)
 
     ws_id = _create_workspace(h)
@@ -286,7 +286,7 @@ def test_dialog_create_task_persists_picked_profile_in_db(
     assert target_profile_row.count() > 0, (
         "'900ribu' profile row not present in dropdown. The seeded "
         "config.json may not have loaded — check _seed_profiles "
-        "and the GET /api/config/nalar response."
+        "and the GET /api/config/pabrik response."
     )
     target_profile_row.click()
     page.wait_for_timeout(100)

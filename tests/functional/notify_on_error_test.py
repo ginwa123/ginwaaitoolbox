@@ -1,8 +1,8 @@
-"""Functional tests for the Nalar General settings
+"""Functional tests for the Pabrik General settings
 (plan 2026-08-25-notify-on-error-and-retry-ms-in-settings, task_1787671269086_0).
 
 These tests exercise the wire shape of three operational settings that
-the new "General" tab in Nalar Settings writes through:
+the new "General" tab in Pabrik Settings writes through:
 
   1. `notify_on_complete` (existing config.json field, but previously
      hidden from the UI) — opt-in OS notification on `finish_reason = "stop"`.
@@ -10,17 +10,17 @@ the new "General" tab in Nalar Settings writes through:
      notification on transport failure / TooManyRetries / outer catch.
   3. `retry_delay_ms` (existing field, hidden from the UI) — workflow
      backoff between failed LLM retries. Range 0–60 000; values > 60 000
-     clamp to 60 000 at the PUT layer (see nalar_config_put.zig:133-135).
+     clamp to 60 000 at the PUT layer (see pabrik_config_put.zig:133-135).
 
-The functional harness boots a real nalar binary against an isolated
-tmpdir HOME (boilerplate from `nalar_config_test.py`). Each test asserts
+The functional harness boots a real pabrik binary against an isolated
+tmpdir HOME (boilerplate from `pabrik_config_test.py`). Each test asserts
 on the EXACT wire payload the frontend sends (or would send) + the
 on-disk `config.json` to lock in the user-visible behavior.
 
 Why this matters (recap of the 3 bugs the wire-rationalization skill
 calls out):
 
-  * **Route-order shadowing** — N/A here; /api/config/nalar is the only
+  * **Route-order shadowing** — N/A here; /api/config/pabrik is the only
     handler that touches these three fields.
   * **Empty-slice-as-NULL binding** — the PUT body's `notify_on_error`
     is typed `?bool = null`; an absent key MUST be treated as "don't
@@ -57,48 +57,48 @@ from harness import FunctionalHarness
 
 # ─── Cross-platform config path helper ──────────────────────────────────────
 #
-# nalar's `getDefaultConfigDir` is platform-specific; the harness writes
-# the stub config to <HOME>/.config/nalar/ (Linux-style), so on macOS the
+# pabrik's `getDefaultConfigDir` is platform-specific; the harness writes
+# the stub config to <HOME>/.config/pabrik/ (Linux-style), so on macOS the
 # stub installer writes to the WRONG path and we copy the file to the
-# macOS-style location. To find the file the running nalar instance
+# macOS-style location. To find the file the running pabrik instance
 # ACTUALLY reads, we mirror `getDefaultConfigDir` here.
 
 
 def _platform_config_dir(temp_dir: Path) -> Path:
-    """Mirror `nalar_config_get.zig::getDefaultConfigDir` per-OS layout:
-      - macOS   → <HOME>/Library/Application Support/nalar/
-      - Windows → <APPDATA>/nalar/
-      - else    → <XDG_CONFIG_HOME or HOME/.config>/nalar/
+    """Mirror `pabrik_config_get.zig::getDefaultConfigDir` per-OS layout:
+      - macOS   → <HOME>/Library/Application Support/pabrik/
+      - Windows → <APPDATA>/pabrik/
+      - else    → <XDG_CONFIG_HOME or HOME/.config>/pabrik/
     """
     system = platform.system()
     if system == "Darwin":
-        return temp_dir / "Library" / "Application Support" / "nalar"
+        return temp_dir / "Library" / "Application Support" / "pabrik"
     if system == "Windows":
         appdata = os.environ.get("APPDATA") or str(temp_dir / "AppData" / "Roaming")
         if appdata.startswith(str(temp_dir)):
-            return Path(appdata) / "nalar"
-        return temp_dir / "AppData" / "Roaming" / "nalar"
-    return temp_dir / ".config" / "nalar"
+            return Path(appdata) / "pabrik"
+        return temp_dir / "AppData" / "Roaming" / "pabrik"
+    return temp_dir / ".config" / "pabrik"
 
 
 # ─── Custom harness fixture ────────────────────────────────────────────────
 
 
 @pytest.fixture
-def config_harness(default_nalar_bin) -> FunctionalHarness:
-    """Boot nalar with `stub_llm_profile=True` so the harness
+def config_harness(default_pabrik_bin) -> FunctionalHarness:
+    """Boot pabrik with `stub_llm_profile=True` so the harness
     pre-installs a `stub` profile (see harness.py::_write_stub_llm_profile).
     Cross-platform path shim: the harness writes the stub to the
-    Linux-style `<HOME>/.config/nalar/config.json`, so on macOS we
-    copy the file to the macOS path before nalar boots and reads it.
+    Linux-style `<HOME>/.config/pabrik/config.json`, so on macOS we
+    copy the file to the macOS path before pabrik boots and reads it.
     """
     h = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
     )
     if platform.system() == "Darwin":
-        linux_cfg = h.temp_dir / ".config" / "nalar" / "config.json"
-        mac_cfg = h.temp_dir / "Library" / "Application Support" / "nalar" / "config.json"
+        linux_cfg = h.temp_dir / ".config" / "pabrik" / "config.json"
+        mac_cfg = h.temp_dir / "Library" / "Application Support" / "pabrik" / "config.json"
         if linux_cfg.exists():
             mac_cfg.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(linux_cfg, mac_cfg)
@@ -115,8 +115,8 @@ def config_harness(default_nalar_bin) -> FunctionalHarness:
 
 
 def _on_disk_config(h: FunctionalHarness) -> dict:
-    """Read the on-disk config.json the running nalar loaded at boot.
-    Mirrors _platform_config_dir above so the test reads what nalar reads.
+    """Read the on-disk config.json the running pabrik loaded at boot.
+    Mirrors _platform_config_dir above so the test reads what pabrik reads.
     """
     path = _platform_config_dir(h.temp_dir) / "config.json"
     return json.loads(path.read_text())
@@ -132,7 +132,7 @@ def _put_general_settings(
     retry_delay_ms: int | None = None,
     extra: dict | None = None,
 ) -> None:
-    """PUT `/api/config/nalar` with the General settings fields plus
+    """PUT `/api/config/pabrik` with the General settings fields plus
     the bare-minimum profile / active_profile scaffolding the backend
     expects (the live-reload validator refuses an empty profiles map).
 
@@ -152,7 +152,7 @@ def _put_general_settings(
         body["retry_delay_ms"] = retry_delay_ms
     if extra:
         body.update(extra)
-    h.http("PUT", "/api/config/nalar", json_body=body, expect=200)
+    h.http("PUT", "/api/config/pabrik", json_body=body, expect=200)
 
 
 def _stub_profile() -> dict:
@@ -177,7 +177,7 @@ def test_get_returns_default_values_for_new_install(
 ) -> None:
     """A fresh harness has the on-disk config seeded by the stub
     installer (only `profiles_models` + `selected_profile_model`).
-    GET /api/config/nalar MUST default the new fields to safe
+    GET /api/config/pabrik MUST default the new fields to safe
     zero values:
 
       - `notify_on_complete: false`
@@ -187,7 +187,7 @@ def test_get_returns_default_values_for_new_install(
     The frontend uses these as the initial UI state via
     `syncFromConfig(... ?? false)` / `?? 0`.
     """
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("notify_on_complete") is False, (
         f"expected notify_on_complete=false on a fresh install; got {r.get('notify_on_complete')!r}"
     )
@@ -220,7 +220,7 @@ def test_put_notify_on_error_true_round_trips_through_get_and_disk(
     )
 
     # GET → field is true.
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("notify_on_error") is True, (
         f"notify_on_error should be true after PUT; got {r.get('notify_on_error')!r}"
     )
@@ -253,7 +253,7 @@ def test_put_notify_on_error_false_flips_an_existing_true(
         notify_on_error=True,
     )
     # Sanity: GET shows true.
-    r1 = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r1 = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r1.get("notify_on_error") is True
 
     # Now toggle OFF.
@@ -264,7 +264,7 @@ def test_put_notify_on_error_false_flips_an_existing_true(
         notify_on_error=False,
     )
     # GET shows false; on-disk shows false.
-    r2 = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r2 = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r2.get("notify_on_error") is False, (
         f"notify_on_error should be false after explicit-false PUT; got {r2.get('notify_on_error')!r}"
     )
@@ -283,7 +283,7 @@ def test_omitting_notify_on_error_does_not_reset_it(
     """The wire contract: a PUT body that omits `notify_on_error`
     leaves the on-disk value untouched. The TypeScript frontend uses
     `?bool = null` semantics — every save round-trip sends ALL three
-    keys explicitly because NalarSettings.syncToConfig writes them
+    keys explicitly because PabrikSettings.syncToConfig writes them
     through unconditionally, but the backend's apply block MUST be
     tolerant of omit (a curl script or a future refactor shouldn't
     accidentally wipe the toggle on save).
@@ -314,7 +314,7 @@ def test_omitting_notify_on_error_does_not_reset_it(
     )
 
     # GET shows the field is STILL true (untouched).
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("notify_on_error") is True, (
         f"omitting notify_on_error on PUT must preserve on-disk value; got {r.get('notify_on_error')!r}"
     )
@@ -349,7 +349,7 @@ def test_notify_on_error_and_notify_on_complete_are_independent(
         notify_on_error=False,
     )
 
-    r1 = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r1 = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r1.get("notify_on_complete") is True
     assert r1.get("notify_on_error") is False
 
@@ -363,7 +363,7 @@ def test_notify_on_error_and_notify_on_complete_are_independent(
         notify_on_error=True,
     )
 
-    r2 = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r2 = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r2.get("notify_on_complete") is True, (
         f"notify_on_complete should be unchanged; got {r2.get('notify_on_complete')!r}"
     )
@@ -404,7 +404,7 @@ def test_retry_delay_ms_clamps_to_60_000_on_put(
         active_profile="stub",
         retry_delay_ms=30_000,
     )
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("retry_delay_ms") == 30_000, (
         f"retry_delay_ms=30000 should round-trip; got {r.get('retry_delay_ms')!r}"
     )
@@ -416,7 +416,7 @@ def test_retry_delay_ms_clamps_to_60_000_on_put(
         active_profile="stub",
         retry_delay_ms=60_000,
     )
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("retry_delay_ms") == 60_000, (
         f"retry_delay_ms=60000 should round-trip at the boundary; got {r.get('retry_delay_ms')!r}"
     )
@@ -428,7 +428,7 @@ def test_retry_delay_ms_clamps_to_60_000_on_put(
         active_profile="stub",
         retry_delay_ms=60_001,
     )
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("retry_delay_ms") == 60_000, (
         f"retry_delay_ms=60001 should clamp to 60000; got {r.get('retry_delay_ms')!r}"
     )
@@ -440,7 +440,7 @@ def test_retry_delay_ms_clamps_to_60_000_on_put(
         active_profile="stub",
         retry_delay_ms=999_999,
     )
-    r = config_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = config_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("retry_delay_ms") == 60_000, (
         f"retry_delay_ms=999999 should clamp to 60000; got {r.get('retry_delay_ms')!r}"
     )

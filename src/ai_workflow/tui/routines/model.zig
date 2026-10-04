@@ -8,7 +8,7 @@
 //! representation is the empty string in the Row API; we translate
 //! empty → null on read).
 //!
-//! The DB helpers take `*nalarcore.sqlite.SqliteBackend` (NOT a connection
+//! The DB helpers take `*pabrikcore.sqlite.SqliteBackend` (NOT a connection
 //! pool, NOT a transaction wrapper) and use the public
 //! `query`/`exec`/`Rows`/`Row` API. There is no prepare/step/columnText
 //! public surface on SqliteBackend; column reads go through
@@ -18,8 +18,8 @@
 //! Task: task_1789032258828_0.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const SqliteBackend = nalarcore.sqlite.SqliteBackend;
+const pabrikcore = @import("pabrikcore");
+const SqliteBackend = pabrikcore.sqlite.SqliteBackend;
 const Scheduler = @import("Scheduler.zig");
 
 /// Canonical status values written to the `workspace_routines.last_status`
@@ -259,7 +259,7 @@ pub fn recomputeAllNextRunAt(
 ) !void {
     _ = compute_fn;
     _ = now_unix_nanos;
-    const di = nalarcore.getSingleton() catch return;
+    const di = pabrikcore.getSingleton() catch return;
     try Scheduler.recomputeDueNextRunAt(allocator, db, di.io);
 }
 
@@ -301,9 +301,9 @@ fn nullIfEmptyConst(v: []const u8) ?[]const u8 {
 
 const testing = std.testing;
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 
-const migration = nalarcore.migrations_mod.migration;
+const migration = pabrikcore.migrations_mod.migration;
 const Migration084ReplaceRoutinesWithWorkspaceRoutines = migration.Migration084ReplaceRoutinesWithWorkspaceRoutines;
 
 // ─── Test helpers ─────────────────────────────────────────────────────────

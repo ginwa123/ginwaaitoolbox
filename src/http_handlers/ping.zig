@@ -12,9 +12,9 @@
 //! handler that maps the outcome + errors to status codes / JSON.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const http_response = nalarcore.http_response;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const http_response = pabrikcore.http_response;
 
 pub const PingError = error{
     ServerNotInitialized,
@@ -48,7 +48,7 @@ pub fn pingHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    // Per `nalar-http-handler-thin-wrapper-pattern`, use
+    // Per `pabrik-http-handler-thin-wrapper-pattern`, use
     // `req.params.get` rather than the (non-existent) `path_param`.
     const session_id = req.params.get("session_id") orelse {
         return res.jsonResponse(allocator, .{

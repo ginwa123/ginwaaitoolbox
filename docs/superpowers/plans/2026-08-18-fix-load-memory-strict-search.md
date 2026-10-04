@@ -11,7 +11,7 @@
 
 `escapeFtsQuery` in `src/ai_workflow/tui/agentic_loop/llm_history.zig:1780` wraps the entire user query in FTS5 phrase syntax (`"..."`), then replaces FTS5 operators (`-`, `+`, `:`, etc.) with spaces inside the phrase. This was added to fix the `handle_tool.zig` syntax error (task_1785658329168), but it over-rotated: phrase syntax requires all tokens to be **adjacent** in the indexed text.
 
-Direct evidence (live SQL against `/home/ginwa/.config/nalar/agent.db`, 64 memories):
+Direct evidence (live SQL against `/home/ginwa/.config/pabrik/agent.db`, 64 memories):
 
 | Query | Current behavior (phrase) | Should be (OR) |
 |---|---|---|
@@ -86,7 +86,7 @@ Add inline tests for `escapeFtsQuery` directly (none exist today):
 1. `zig build test --summary all` — all 2366 tests pass, 0 fail.
 2. Direct SQL sanity check against the live DB:
    ```sh
-   sqlite3 ~/.config/nalar/agent.db "SELECT COUNT(*) FROM agent_memories_fts WHERE agent_memories_fts MATCH 'preferred OR model';"
+   sqlite3 ~/.config/pabrik/agent.db "SELECT COUNT(*) FROM agent_memories_fts WHERE agent_memories_fts MATCH 'preferred OR model';"
    # → 13 (was 0 with phrase wrap)
    ```
 3. PR opened for human review.

@@ -100,8 +100,8 @@ def _start_stub() -> ThreadingHTTPServer:
 
 
 @pytest.fixture
-def chat_harness(default_nalar_bin: Any) -> Any:
-    h = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+def chat_harness(default_pabrik_bin: Any) -> Any:
+    h = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         yield h
     finally:
@@ -131,11 +131,11 @@ def test_anthropic_chat_turn_sends_x_api_key_not_bearer(
         stub_url = f"http://127.0.0.1:{stub_port}/v1/messages"
 
         # 1. Install an anthropic profile pointing at the stub (mirrors
-        # the nalar_config PUT shape; url_style is what selects the
+        # the pabrik_config PUT shape; url_style is what selects the
         # Anthropic body + header path in Agent.callStreaming).
         chat_harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 "api_endpoint": stub_url,
                 "api_key": "sk-ant-test",

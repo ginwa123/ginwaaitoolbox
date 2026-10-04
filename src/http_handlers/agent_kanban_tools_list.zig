@@ -11,8 +11,8 @@
 //! Task: task_1787597624259_2
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// Domain-level error set for `useCase`. The handler maps each variant
@@ -45,7 +45,7 @@ pub const ToolListOutput = struct {
 /// an owned slice ordered by tool_name ASC. Transport-agnostic.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: ToolListInput,
 ) ToolListError!ToolListOutput {
     if (input.kanban_id.len == 0) return error.KanbanIdRequired;
@@ -76,7 +76,7 @@ pub fn agentKanbanToolsListHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const kanban_id = req.params.get("kanban_id") orelse "";
@@ -110,7 +110,7 @@ pub fn agentKanbanToolsListHandler(
 //   2. Empty result: board exists but has no tools → empty slice
 //   3. Filter by enabled + ordering ASC
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
 

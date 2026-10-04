@@ -54,6 +54,6 @@ Zig 0.16 `std.process.spawn` for the `cmd_available` probe; `shell.zig` shared c
 ## Verification
 
 - `zig build test --summary all`: 3078/3084 pass (6 skip, 0 fail; pre-nit baseline 3076/3082).
-- `zig build nalar-desktop --summary all`: 21/21 steps OK.
+- `zig build pabrik-desktop --summary all`: 21/21 steps OK.
 - Functional `tests/functional/command_tool_test.py`: 5/5 pass (POSIX path untouched).
 - Independent review: APPROVED with 3 optional nits (2 code nits applied, 3rd was this plan doc).

@@ -10,7 +10,7 @@ hook and an isolated tmpdir HOME, so nothing here touches a developer's config.
 
 Run:
     zig build install:linux
-    NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
         python3 -m pytest tests/functional/http2_test.py -v
 """
 
@@ -62,17 +62,17 @@ def _curl_http_version(url: str, extra: list[str] | None = None) -> tuple[str, s
     return version.strip(), body
 
 
-def _h2_harness(default_nalar_bin) -> FunctionalHarness:
+def _h2_harness(default_pabrik_bin) -> FunctionalHarness:
     return FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         extra_args=("--http2", "h2c"),
         ready_timeout_s=45.0,
     )
 
 
 @pytest.fixture
-def h2_harness(default_nalar_bin):
-    h = _h2_harness(default_nalar_bin)
+def h2_harness(default_pabrik_bin):
+    h = _h2_harness(default_pabrik_bin)
     try:
         yield h
     finally:
@@ -103,10 +103,10 @@ def test_h2_and_h1_share_the_same_port(h2_harness: FunctionalHarness) -> None:
     assert "ok" in h2_body.lower()
 
 
-def test_h1_only_when_flag_absent(default_nalar_bin) -> None:
+def test_h1_only_when_flag_absent(default_pabrik_bin) -> None:
     """With no --http2 flag the server must not accept h2 at all (default off)."""
     _curl_version_args()
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         version, _ = _curl_http_version(f"http://127.0.0.1:{h.port}/health")
         assert version == "1.1"

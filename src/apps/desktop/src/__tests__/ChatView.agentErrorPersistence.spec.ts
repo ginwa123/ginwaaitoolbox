@@ -96,7 +96,7 @@ function makeStubClient(initial: SseState): SseClient {
 
 // ─── default mocks ─────────────────────────────────────────────────────────
 // Wire up the api.* calls ChatView makes in onMounted (getChatHistory,
-// getQueuedMessages, getSession, getGitStatus, getNalarConfig). The
+// getQueuedMessages, getSession, getGitStatus, getPabrikConfig). The
 // fields don't matter for these tests — only the SSE handler branches
 // we're exercising — but the calls themselves must resolve so onMounted's
 // async chain doesn't hang the mount loop.
@@ -126,7 +126,7 @@ function installChatViewMocks() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({ is_git_repo: false } as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  vi.spyOn(api, 'getNalarConfig').mockResolvedValue({ profiles: {} } as any)
+  vi.spyOn(api, 'getPabrikConfig').mockResolvedValue({ profiles: {} } as any)
 }
 
 // ─── mount helper ──────────────────────────────────────────────────────────

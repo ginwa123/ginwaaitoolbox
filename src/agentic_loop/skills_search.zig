@@ -6,7 +6,7 @@
 //! / `total` / `next_offset` / `hint` contract the model already reads from
 //! `search_tool`. It lives HERE rather than in
 //! `src/modules/agent/tools/skill_tools.zig` because a `modules → agentic_loop`
-//! import would close a cycle through the `nalarcore` root — the same reason
+//! import would close a cycle through the `pabrikcore` root — the same reason
 //! `progressive_tools.zig` keeps its AgentTool literals pure.
 //!
 //! The tool schema + `SearchSkillsInput` live in `skill_tools.zig`; the raw
@@ -15,15 +15,15 @@
 //! answers "everything installed", which is a different question from this
 //! tool's "what matches my query".
 //!
-//! Tiers: `global` (`~/.config/nalar/skills/`) and `local` (`<cwd>/.nalar/skills/`).
+//! Tiers: `global` (`~/.config/pabrik/skills/`) and `local` (`<cwd>/.pabrik/skills/`).
 //! `workspace` (SQLite) is deliberately NOT in `parseScope` yet — see the note
 //! on `Scope`: an accepted-but-empty tier is worse than a rejected one.
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const progressive_regex = @import("progressive_regex.zig");
-const skill_tools = nalarcore.skill_tools;
+const skill_tools = pabrikcore.skill_tools;
 
 /// Default page size and the hard ceiling. The result rides in the context
 /// window, so a single call may never return the whole library.
@@ -316,7 +316,7 @@ pub fn renderSearchResult(
 
 // ───────────────────────── tests ─────────────────────────
 
-const testing_skill_tools = nalarcore.skill_tools;
+const testing_skill_tools = pabrikcore.skill_tools;
 
 /// Parsed shape of `renderSearchResult` output.
 const RenderedSearch = struct {
@@ -542,7 +542,7 @@ test "renderSearchResult surfaces a pattern_warning verbatim" {
 const fsio = testing.io;
 
 fn writeSkill(alloc: std.mem.Allocator, dir: []const u8, name: []const u8, desc: []const u8) !void {
-    const skill_dir = try std.fs.path.join(alloc, &[_][]const u8{ dir, ".nalar", "skills", name });
+    const skill_dir = try std.fs.path.join(alloc, &[_][]const u8{ dir, ".pabrik", "skills", name });
     defer alloc.free(skill_dir);
     try std.Io.Dir.cwd().createDirPath(fsio, skill_dir);
 
@@ -564,8 +564,8 @@ fn writeSkill(alloc: std.mem.Allocator, dir: []const u8, name: []const u8, desc:
 test "collectRows + matchQuery: local tier resolves from the passed cwd and is scope-tagged" {
     const alloc = testing.allocator;
 
-    const tmp = "/tmp/nalar-search-skills-test";
-    const other = "/tmp/nalar-search-skills-other-cwd";
+    const tmp = "/tmp/pabrik-search-skills-test";
+    const other = "/tmp/pabrik-search-skills-other-cwd";
     std.Io.Dir.cwd().deleteTree(fsio, tmp) catch {};
     std.Io.Dir.cwd().deleteTree(fsio, other) catch {};
     defer {
@@ -578,7 +578,7 @@ test "collectRows + matchQuery: local tier resolves from the passed cwd and is s
 
     var env = std.process.Environ.Map.init(alloc);
     defer env.deinit();
-    try env.put("HOME", "/tmp/nalar-nonexistent-home-for-search-test");
+    try env.put("HOME", "/tmp/pabrik-nonexistent-home-for-search-test");
 
     const data = try testing_skill_tools.listAllSkills(alloc, fsio, tmp, &env);
     defer testing_skill_tools.freeSkillsListData(alloc, data);

@@ -1,6 +1,6 @@
 """Functional tests for per-user terminal isolation (plan 2026-09-25, W2.5).
 
-Boots a REAL nalar binary via the harness (never a live dev server, never
+Boots a REAL pabrik binary via the harness (never a live dev server, never
 port 8081). Two authenticated admins share ONE server process, so this is
 the wire-level proof that user A cannot attach to, read, type into, resize,
 or kill user B's PTY session.
@@ -76,8 +76,8 @@ def _login(port: int, email: str, password: str) -> str:
     )
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
 def _create_terminal(port: int, cookie: str) -> str:
@@ -98,83 +98,83 @@ def _two_users(bin_path: Path):
     return h, tok_a, tok_b
 
 
-def test_foreign_terminal_attach_is_refused(default_nalar_bin: Path):
+def test_foreign_terminal_attach_is_refused(default_pabrik_bin: Path):
     """B must not be able to drive A's PTY by guessing its id.
 
     Every terminal route is keyed by a raw in-memory session id, so before
     the owner check B could read A's shell output, type into it, resize it,
     or kill it. All four are 404 for a foreign id.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        term_a = _create_terminal(h.port, f"nalar_session={tok_a}")
+        term_a = _create_terminal(h.port, f"pabrik_session={tok_a}")
 
         # A can drive its own terminal — proves the gate is not a blanket 404.
         status, _, body = _raw(
-            "GET", h.port, f"/api/terminal/sessions/{term_a}/output", cookie=f"nalar_session={tok_a}"
+            "GET", h.port, f"/api/terminal/sessions/{term_a}/output", cookie=f"pabrik_session={tok_a}"
         )
         assert status == 200, body[:300]
 
         # B cannot read A's output.
         status, _, _ = _raw(
-            "GET", h.port, f"/api/terminal/sessions/{term_a}/output", cookie=f"nalar_session={tok_b}"
+            "GET", h.port, f"/api/terminal/sessions/{term_a}/output", cookie=f"pabrik_session={tok_b}"
         )
         assert status == 404, f"expected 404 reading a foreign terminal, got {status}"
 
         # B cannot type into A's shell.
         status, _, _ = _raw(
             "POST", h.port, f"/api/terminal/sessions/{term_a}/input",
-            body={"data": "echo pwned\n"}, cookie=f"nalar_session={tok_b}",
+            body={"data": "echo pwned\n"}, cookie=f"pabrik_session={tok_b}",
         )
         assert status == 404, f"expected 404 writing to a foreign terminal, got {status}"
 
         # B cannot resize A's PTY.
         status, _, _ = _raw(
             "POST", h.port, f"/api/terminal/sessions/{term_a}/resize",
-            body={"cols": 100, "rows": 40}, cookie=f"nalar_session={tok_b}",
+            body={"cols": 100, "rows": 40}, cookie=f"pabrik_session={tok_b}",
         )
         assert status == 404, f"expected 404 resizing a foreign terminal, got {status}"
 
         # B cannot kill A's shell.
         status, _, _ = _raw(
-            "DELETE", h.port, f"/api/terminal/sessions/{term_a}", cookie=f"nalar_session={tok_b}"
+            "DELETE", h.port, f"/api/terminal/sessions/{term_a}", cookie=f"pabrik_session={tok_b}"
         )
         assert status == 404, f"expected 404 deleting a foreign terminal, got {status}"
 
         # A's terminal survived every attempt and is still usable.
         status, _, body = _raw(
-            "GET", h.port, f"/api/terminal/sessions/{term_a}/output", cookie=f"nalar_session={tok_a}"
+            "GET", h.port, f"/api/terminal/sessions/{term_a}/output", cookie=f"pabrik_session={tok_a}"
         )
         assert status == 200, body[:300]
     finally:
         h.teardown()
 
 
-def test_own_terminal_still_works_for_each_user(default_nalar_bin: Path):
+def test_own_terminal_still_works_for_each_user(default_pabrik_bin: Path):
     """Both users can drive their OWN terminals — no over-filtering."""
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     try:
-        term_a = _create_terminal(h.port, f"nalar_session={tok_a}")
-        term_b = _create_terminal(h.port, f"nalar_session={tok_b}")
+        term_a = _create_terminal(h.port, f"pabrik_session={tok_a}")
+        term_b = _create_terminal(h.port, f"pabrik_session={tok_b}")
 
         for who, tok, term in (("A", tok_a, term_a), ("B", tok_b, term_b)):
             status, _, body = _raw(
                 "GET", h.port, f"/api/terminal/sessions/{term}/output",
-                cookie=f"nalar_session={tok}",
+                cookie=f"pabrik_session={tok}",
             )
             assert status == 200, f"{who} must read its own terminal: {body[:300]}"
             status, _, body = _raw(
                 "POST", h.port, f"/api/terminal/sessions/{term}/input",
-                body={"data": "echo ok\n"}, cookie=f"nalar_session={tok}",
+                body={"data": "echo ok\n"}, cookie=f"pabrik_session={tok}",
             )
             assert status == 200, f"{who} must write to its own terminal: {body[:300]}"
     finally:
         h.teardown()
 
 
-def test_terminal_auth_off_is_unchanged(default_nalar_bin: Path):
+def test_terminal_auth_off_is_unchanged(default_pabrik_bin: Path):
     """Regression: without `--auth` the create + output round-trip still works."""
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         term = _create_terminal(h.port, "")
         status, _, body = _raw("GET", h.port, f"/api/terminal/sessions/{term}/output")

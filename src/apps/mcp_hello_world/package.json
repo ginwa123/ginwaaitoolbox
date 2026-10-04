@@ -1,7 +1,7 @@
 {
   "name": "mcp-hello-world",
   "version": "0.0.1",
-  "description": "Tiny MCP server used as the self-test target for the nalar MCP stdio transport. Registers 3 tools: print_hello, print_name, print_exit.",
+  "description": "Tiny MCP server used as the self-test target for the pabrik MCP stdio transport. Registers 3 tools: print_hello, print_name, print_exit.",
   "type": "module",
   "bin": {
     "mcp-hello-world": "./dist/index.js"

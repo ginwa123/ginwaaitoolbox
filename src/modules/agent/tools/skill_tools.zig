@@ -63,7 +63,7 @@ pub const search_skills_tool_system_prompt =
     \\- Set `literal: true` when the query is literal text (e.g. `*.zig`, `fn(`) — otherwise its metacharacters are interpreted.
     \\- Results are PAGED: `limit` (default 40, max 200) caps how many rows you get back, `total` is the real match count, and `offset` skips matches. The `hint` names the exact next offset instead of dumping the whole library into your context.
     \\- An invalid pattern is not a failure: it is matched as a literal substring and the result carries `pattern_warning` listing the supported syntax. Read it instead of retrying blindly.
-    \\- `scope` narrows to ONE tier (`global` = `~/.config/nalar/skills/`, `local` = `<cwd>/.nalar/skills/`). Omit it to search both. Every row carries its own `scope`.
+    \\- `scope` narrows to ONE tier (`global` = `~/.config/pabrik/skills/`, `local` = `<cwd>/.pabrik/skills/`). Omit it to search both. Every row carries its own `scope`.
     \\- Omitting `query` is a valid discovery call — it returns the first page of everything installed.
     \\- Match on the `name`/`description`, then call `use_skill` with that row's EXACT `path`.
     \\
@@ -92,7 +92,7 @@ pub const search_skills_tool = AgentTool{
                 .{
                     .name = "scope",
                     .type = "string",
-                    .description = "Optional tier filter: 'global' (~/.config/nalar/skills/) or 'local' (<cwd>/.nalar/skills/). Omit to search BOTH tiers. Every result row carries its own `scope`.",
+                    .description = "Optional tier filter: 'global' (~/.config/pabrik/skills/) or 'local' (<cwd>/.pabrik/skills/). Omit to search BOTH tiers. Every result row carries its own `scope`.",
                 },
                 .{
                     .name = "limit",
@@ -339,8 +339,8 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8)
 pub const RemoveSkillInput = struct {
     skill_name: []const u8,
     session_id: []const u8 = "",
-    /// If true, remove from global skills directory (~/.config/nalar/skills/)
-    /// If false, remove from local skills directory (.nalar/skills/)
+    /// If true, remove from global skills directory (~/.config/pabrik/skills/)
+    /// If false, remove from local skills directory (.pabrik/skills/)
     is_global: bool = false,
 };
 
@@ -410,7 +410,7 @@ pub const remove_skill_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "remove_skill",
-        .description = "Remove a skill from the current session AND delete the skill file from .nalar/skills/. Use this to permanently delete a skill.",
+        .description = "Remove a skill from the current session AND delete the skill file from .pabrik/skills/. Use this to permanently delete a skill.",
         .parameters = .{
             .type = "object",
             .properties = &.{
@@ -427,7 +427,7 @@ pub const remove_skill_tool = AgentTool{
                 .{
                     .name = "is_global",
                     .type = "boolean",
-                    .description = "If true, remove from global skills directory (~/.config/nalar/skills/). If false, remove from local directory (.nalar/skills/). Default: false",
+                    .description = "If true, remove from global skills directory (~/.config/pabrik/skills/). If false, remove from local directory (.pabrik/skills/). Default: false",
                 },
             },
             .required = &.{ "skill_name", "session_id" },
@@ -437,7 +437,7 @@ pub const remove_skill_tool = AgentTool{
 };
 
 /// Execute the remove_skill tool - removes from session AND deletes file
-/// Deletes skill file at .nalar/skills/<skill_name>/ or global ~/.config/nalar/skills/<skill_name>/
+/// Deletes skill file at .pabrik/skills/<skill_name>/ or global ~/.config/pabrik/skills/<skill_name>/
 /// Returns a JSON string with the result
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn execute_remove_skill_to_string(
@@ -477,7 +477,7 @@ pub fn execute_remove_skill_to_string(
         } else {
             return removeSkillJsonError(allocator, input.skill_name, "Environment not available for global skills");
         }
-    } else try std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".nalar", "skills" });
+    } else try std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".pabrik", "skills" });
 
     // Build path to skill directory
     // Duplicate skill_name to ensure no aliasing with path.join's internal buffer allocation
@@ -686,8 +686,8 @@ pub const AddSkillInput = struct {
     content: []const u8 = "",
     /// Auto-create skills directory if needed (default: true)
     create_with_dir: bool = true,
-    /// If true, save to global skills directory (~/.config/nalar/skills/)
-    /// If false, save to local skills directory (.nalar/skills/)
+    /// If true, save to global skills directory (~/.config/pabrik/skills/)
+    /// If false, save to local skills directory (.pabrik/skills/)
     is_global: bool = false,
 };
 
@@ -716,7 +716,7 @@ pub const add_skill_tool = AgentTool{
         \\
         \\`name` and `description` are SEPARATE ARGUMENTS; `content` is the markdown BODY only. The `---` YAML frontmatter is generated from `name` + `description` — never paste one into `content`. (If you do, it is stripped and its fields lifted, so nothing breaks, but you lose the chance to be explicit about either field.)
         \\
-        \\`description` decides whether any future session finds the skill at all: `search_skills` returns that one sentence and nothing else. Prefer local (`.nalar/skills/`); pass `is_global: true` only when the procedure holds outside this repo.
+        \\`description` decides whether any future session finds the skill at all: `search_skills` returns that one sentence and nothing else. Prefer local (`.pabrik/skills/`); pass `is_global: true` only when the procedure holds outside this repo.
         ,
         .parameters = .{
             .type = "object",
@@ -739,7 +739,7 @@ pub const add_skill_tool = AgentTool{
                 .{
                     .name = "is_global",
                     .type = "boolean",
-                    .description = "true writes the shared ~/.config/nalar/skills/ (every project); false (default) writes this project's <cwd>/.nalar/skills/.",
+                    .description = "true writes the shared ~/.config/pabrik/skills/ (every project); false (default) writes this project's <cwd>/.pabrik/skills/.",
                 },
             },
             .required = &.{ "name", "description", "content" },
@@ -784,7 +784,7 @@ pub const AddSkillOutput = struct {
 };
 
 /// Execute the add_skill tool
-/// Creates a new skill file at .nalar/skills/<name>/SKILL.MD or global ~/.config/nalar/skills/<name>/SKILL.MD
+/// Creates a new skill file at .pabrik/skills/<name>/SKILL.MD or global ~/.config/pabrik/skills/<name>/SKILL.MD
 /// Returns a JSON string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, environment: ?*const std.process.Environ.Map, input: AddSkillInput) []const u8 {
@@ -854,7 +854,7 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
         } else {
             return addSkillJsonError(allocator, resolved_name, "Environment not available for global skills");
         }
-    } else std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".nalar", "skills" }) catch {
+    } else std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".pabrik", "skills" }) catch {
         return addSkillJsonError(allocator, resolved_name, "Failed to build skills directory path");
     };
     // skills_dir is heap-allocated in both branches (global via get_global_skills_path_from_env,
@@ -1024,8 +1024,8 @@ pub const EditSkillInput = struct {
     /// New skill content (optional - omit to keep existing). A leading
     /// `---` frontmatter block is stripped and its `description:` lifted.
     content: ?[]const u8 = null,
-    /// If true, edit in global skills directory (~/.config/nalar/skills/)
-    /// If false, edit in local skills directory (.nalar/skills/)
+    /// If true, edit in global skills directory (~/.config/pabrik/skills/)
+    /// If false, edit in local skills directory (.pabrik/skills/)
     is_global: bool = false,
 };
 
@@ -1071,7 +1071,7 @@ pub const edit_skill_tool = AgentTool{
                 .{
                     .name = "is_global",
                     .type = "boolean",
-                    .description = "Must match the tier the skill lives in. false (default) = this project's <cwd>/.nalar/skills/<name>/SKILL.MD; true = the shared ~/.config/nalar/skills/<name>/SKILL.MD.",
+                    .description = "Must match the tier the skill lives in. false (default) = this project's <cwd>/.pabrik/skills/<name>/SKILL.MD; true = the shared ~/.config/pabrik/skills/<name>/SKILL.MD.",
                 },
             },
             .required = &.{"skill_name"},
@@ -1113,7 +1113,7 @@ pub const EditSkillOutput = struct {
 };
 
 /// Execute the edit_skill tool
-/// Updates an existing skill file at .nalar/skills/<skill_name>/SKILL.MD or global ~/.config/nalar/skills/<skill_name>/SKILL.MD
+/// Updates an existing skill file at .pabrik/skills/<skill_name>/SKILL.MD or global ~/.config/pabrik/skills/<skill_name>/SKILL.MD
 /// Returns a JSON string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, environment: ?*const std.process.Environ.Map, input: EditSkillInput) ![]const u8 {
@@ -1158,7 +1158,7 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
         } else {
             return editSkillJsonError(allocator, input.skill_name, "Environment not available for global skills");
         }
-    } else try std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".nalar", "skills" });
+    } else try std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".pabrik", "skills" });
     // skills_dir is heap-allocated in both branches (global via get_global_skills_path_from_env,
     // local via path.join). Free it once at the end of the function via a single defer.
     defer allocator.free(skills_dir);
@@ -1252,7 +1252,7 @@ fn editSkillNotFoundHint(
     var other_dir: ?[]u8 = null;
     defer if (other_dir) |d| allocator.free(d);
     if (input.is_global) {
-        other_dir = try std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".nalar", "skills" });
+        other_dir = try std.fs.path.join(allocator, &[_][]const u8{ abs_cwd, ".pabrik", "skills" });
     } else if (environment) |env| {
         // `@constCast` is safe here: the callee allocated this buffer and
         // hands over ownership, and the defer above frees it.
@@ -1581,8 +1581,8 @@ test "execute_use_skill_to_string - loaded skill output preserves skill name" {
 
     const unique_skill_name = "_regression_uaf_use_skill_loaded_test";
     const unique_marker = "REGRESSION_MARKER_12345";
-    const tmp_home = "/tmp/nalar-uaf-test-home-loaded";
-    const global_skills_dir = "/tmp/nalar-uaf-test-home-loaded/.config/nalar/skills";
+    const tmp_home = "/tmp/pabrik-uaf-test-home-loaded";
+    const global_skills_dir = "/tmp/pabrik-uaf-test-home-loaded/.config/pabrik/skills";
 
     const skill_dir_path = try std.fs.path.join(alloc, &[_][]const u8{ global_skills_dir, unique_skill_name });
     defer alloc.free(skill_dir_path);
@@ -1652,8 +1652,8 @@ test "execute_use_skill_to_string - absolute path loads skill file (loadSkillFro
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_dir = "/tmp/nalar-get-skill-abs-path-test";
-    const skill_file = "/tmp/nalar-get-skill-abs-path-test/SKILL.MD";
+    const tmp_dir = "/tmp/pabrik-get-skill-abs-path-test";
+    const skill_file = "/tmp/pabrik-get-skill-abs-path-test/SKILL.MD";
     std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
 
@@ -1974,7 +1974,7 @@ test "add_skill - re-running with same name OVERWRITES (truncates, no append)" {
     const io = std.testing.io;
 
     const skill_name = "test-overwrite-skill";
-    const tmp_path = "/tmp/nalar-add-skill-overwrite-test";
+    const tmp_path = "/tmp/pabrik-add-skill-overwrite-test";
 
     // Clean up any leftover from previous failed runs
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -1983,7 +1983,7 @@ test "add_skill - re-running with same name OVERWRITES (truncates, no append)" {
     try std.Io.Dir.cwd().createDirPath(io, tmp_path);
 
     const skill_file_path = try std.fs.path.join(alloc, &[_][]const u8{
-        tmp_path, ".nalar", "skills", skill_name, "SKILL.MD",
+        tmp_path, ".pabrik", "skills", skill_name, "SKILL.MD",
     });
     defer alloc.free(skill_file_path);
 
@@ -2033,7 +2033,7 @@ test "add_skill - re-running with same name OVERWRITES (truncates, no append)" {
     try std.testing.expect(std.mem.indexOf(u8, second_read, "should be completely replaced") == null);
 }
 
-test "add_skill - local creation (is_global=false) writes to .nalar/skills/<name>/SKILL.MD" {
+test "add_skill - local creation (is_global=false) writes to .pabrik/skills/<name>/SKILL.MD" {
     // Regression test for use-after-free bug: when is_global=false, skills_dir
     // was being freed too early (defer was scoped to the else block), causing
     // path.join to use a dangling pointer. The file would either not be
@@ -2042,7 +2042,7 @@ test "add_skill - local creation (is_global=false) writes to .nalar/skills/<name
     const io = std.testing.io;
 
     const skill_name = "test-local-skill";
-    const tmp_path = "/tmp/nalar-add-skill-test";
+    const tmp_path = "/tmp/pabrik-add-skill-test";
 
     // Clean up any leftover from previous failed runs
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -2068,10 +2068,10 @@ test "add_skill - local creation (is_global=false) writes to .nalar/skills/<name
     try std.testing.expectEqualStrings(skill_name, parsed.value.skill_name);
 
     // Verify the file was actually created at the correct path:
-    // <tmp_path>/.nalar/skills/<skill_name>/SKILL.MD
+    // <tmp_path>/.pabrik/skills/<skill_name>/SKILL.MD
     // Check that the directory structure exists (this would fail with the old bug
     // because createDirPath was called with a freed-and-reused pointer)
-    const dir_check = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", skill_name });
+    const dir_check = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".pabrik", "skills", skill_name });
     defer alloc.free(dir_check);
     const dir_exists = blk: {
         std.Io.Dir.cwd().access(io, dir_check, .{}) catch break :blk false;
@@ -2080,7 +2080,7 @@ test "add_skill - local creation (is_global=false) writes to .nalar/skills/<name
     try std.testing.expect(dir_exists);
 
     // Check that the SKILL.MD file exists
-    const file_check = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", skill_name, "SKILL.MD" });
+    const file_check = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".pabrik", "skills", skill_name, "SKILL.MD" });
     defer alloc.free(file_check);
     const file_exists = blk: {
         std.Io.Dir.cwd().access(io, file_check, .{}) catch break :blk false;
@@ -2172,7 +2172,7 @@ test "edit_skill - is_global defaults to false" {
     try std.testing.expect(input.is_global == false);
 }
 
-test "edit_skill - local edit (is_global=false) updates .nalar/skills/<name>/SKILL.MD" {
+test "edit_skill - local edit (is_global=false) updates .pabrik/skills/<name>/SKILL.MD" {
     // Regression test for use-after-free bug: when is_global=false, skills_dir
     // was being freed too early (defer was scoped to the else block), causing
     // path.join to use a dangling pointer. The file would either not be
@@ -2181,7 +2181,7 @@ test "edit_skill - local edit (is_global=false) updates .nalar/skills/<name>/SKI
     const io = std.testing.io;
 
     const skill_name = "test-local-edit-skill";
-    const tmp_path = "/tmp/nalar-edit-skill-test";
+    const tmp_path = "/tmp/pabrik-edit-skill-test";
 
     // Clean up any leftover from previous failed runs
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -2190,7 +2190,7 @@ test "edit_skill - local edit (is_global=false) updates .nalar/skills/<name>/SKI
     try std.Io.Dir.cwd().createDirPath(io, tmp_path);
 
     // Pre-create a local skill file in the expected format
-    const skill_dir_path = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", skill_name });
+    const skill_dir_path = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".pabrik", "skills", skill_name });
     defer alloc.free(skill_dir_path);
     try std.Io.Dir.cwd().createDirPath(io, skill_dir_path);
 
@@ -2261,19 +2261,19 @@ test "edit_skill - edit truncates existing skill file (no append-mode corruption
     const io = std.testing.io;
 
     const skill_name = "edit-overwrite-skill";
-    const tmp_path = "/tmp/nalar-edit-skill-overwrite-test";
+    const tmp_path = "/tmp/pabrik-edit-skill-overwrite-test";
 
     // Clean up any leftover from previous failed runs
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
 
     try std.Io.Dir.cwd().createDirPath(io, tmp_path);
-    const skill_dir_path = try std.fs.path.join(alloc, &.{ tmp_path, ".nalar", "skills", skill_name });
+    const skill_dir_path = try std.fs.path.join(alloc, &.{ tmp_path, ".pabrik", "skills", skill_name });
     defer alloc.free(skill_dir_path);
     try std.Io.Dir.cwd().createDirPath(io, skill_dir_path);
 
     const skill_file_path = try std.fs.path.join(alloc, &[_][]const u8{
-        tmp_path, ".nalar", "skills", skill_name, "SKILL.MD",
+        tmp_path, ".pabrik", "skills", skill_name, "SKILL.MD",
     });
     defer alloc.free(skill_file_path);
 
@@ -2372,7 +2372,7 @@ test "isValidSkillName - rejects traversal and separator characters" {
 test "add_skill - content carrying frontmatter does NOT double the block (the live corruption)" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const tmp_path = "/tmp/nalar-add-skill-fm-test";
+    const tmp_path = "/tmp/pabrik-add-skill-fm-test";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -2393,7 +2393,7 @@ test "add_skill - content carrying frontmatter does NOT double the block (the li
     defer parsed.deinit();
     try std.testing.expect(parsed.value.created);
 
-    const file = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", "fm-lifted", "SKILL.MD" });
+    const file = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".pabrik", "skills", "fm-lifted", "SKILL.MD" });
     defer alloc.free(file);
     const body = try std.Io.Dir.cwd().readFileAlloc(io, file, alloc, std.Io.Limit.limited(64 * 1024));
     defer alloc.free(body);
@@ -2433,7 +2433,7 @@ test "add_skill - a RELATIVE cwd resolves instead of refusing (was: must be an a
 test "add_skill - a path-like name is refused with a message naming the rule" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const tmp_path = "/tmp/nalar-add-skill-badname";
+    const tmp_path = "/tmp/pabrik-add-skill-badname";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -2455,7 +2455,7 @@ test "add_skill - a path-like name is refused with a message naming the rule" {
     try std.testing.expect(std.mem.indexOf(u8, err, "../escaped") != null);
 
     // Nothing escaped the skills directory.
-    try std.testing.expect(!helpers.fileExists("/tmp/nalar-add-skill-badname/escaped/SKILL.MD"));
+    try std.testing.expect(!helpers.fileExists("/tmp/pabrik-add-skill-badname/escaped/SKILL.MD"));
 }
 
 test "add_skill / edit_skill - every field defaults, so a missing one parses" {
@@ -2512,7 +2512,7 @@ test "add_skill / edit_skill - every field defaults, so a missing one parses" {
 test "edit_skill - frontmatter in content lifts the description and is not re-duplicated" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const tmp_path = "/tmp/nalar-edit-skill-fm";
+    const tmp_path = "/tmp/pabrik-edit-skill-fm";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -2538,7 +2538,7 @@ test "edit_skill - frontmatter in content lifts the description and is not re-du
     defer parsed.deinit();
     try std.testing.expect(parsed.value.updated);
 
-    const file = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", "edit-fm", "SKILL.MD" });
+    const file = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".pabrik", "skills", "edit-fm", "SKILL.MD" });
     defer alloc.free(file);
     const body = try std.Io.Dir.cwd().readFileAlloc(io, file, alloc, std.Io.Limit.limited(64 * 1024));
     defer alloc.free(body);
@@ -2554,7 +2554,7 @@ test "edit_skill - frontmatter in content lifts the description and is not re-du
 test "edit_skill - a path-like skill_name is refused before touching the disk" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const tmp_path = "/tmp/nalar-edit-skill-badname";
+    const tmp_path = "/tmp/pabrik-edit-skill-badname";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -2583,7 +2583,7 @@ test "edit_skill - a path-like skill_name is refused before touching the disk" {
 test "edit_skill - not-found names the tier that actually holds the skill" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const tmp_path = "/tmp/nalar-edit-skill-tierhint";
+    const tmp_path = "/tmp/pabrik-edit-skill-tierhint";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -2624,7 +2624,7 @@ test "edit_skill - not-found names the tier that actually holds the skill" {
 test "remove_skill - a path-like skill_name is refused" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const tmp_path = "/tmp/nalar-remove-skill-badname";
+    const tmp_path = "/tmp/pabrik-remove-skill-badname";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -2659,13 +2659,13 @@ test "skill tool descriptions carry the rules the failure modes needed" {
 test "parseSkillFile - heals the doubled frontmatter already on disk" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const tmp_path = "/tmp/nalar-parse-heal";
+    const tmp_path = "/tmp/pabrik-parse-heal";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     try std.Io.Dir.cwd().createDirPath(io, tmp_path);
 
-    const dir = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", "legacy-doubled" });
+    const dir = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".pabrik", "skills", "legacy-doubled" });
     defer alloc.free(dir);
     try std.Io.Dir.cwd().createDirPath(io, dir);
 
@@ -2707,7 +2707,7 @@ test "parseSkillFile - heals the doubled frontmatter already on disk" {
 test "edit_skill - a content-only edit KEEPS the description (it used to be wiped)" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const tmp_path = "/tmp/nalar-edit-skill-keep-desc";
+    const tmp_path = "/tmp/pabrik-edit-skill-keep-desc";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
@@ -2727,7 +2727,7 @@ test "edit_skill - a content-only edit KEEPS the description (it used to be wipe
     });
     defer alloc.free(out);
 
-    const file = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".nalar", "skills", "keep-desc", "SKILL.MD" });
+    const file = try std.fs.path.join(alloc, &[_][]const u8{ tmp_path, ".pabrik", "skills", "keep-desc", "SKILL.MD" });
     defer alloc.free(file);
     const after = try std.Io.Dir.cwd().readFileAlloc(io, file, alloc, std.Io.Limit.limited(64 * 1024));
     defer alloc.free(after);

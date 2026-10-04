@@ -1100,7 +1100,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
   it('renders a row for each recent entry (pinned first)', async () => {
     // Seed the store via the persistence key.
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/a', lastUsedAt: Date.now() - 1000, pinned: false },
         { path: '/home/me/b', lastUsedAt: Date.now() - 60_000, pinned: true },
@@ -1120,7 +1120,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
 
   it('clicking a recent row emits select and closes (closeOnSelect: true)', async () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/picked', lastUsedAt: Date.now() - 1000, pinned: false },
       ]),
@@ -1141,7 +1141,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
 
   it('clicking a recent row records the path in the store (debounced write)', async () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/picked', lastUsedAt: Date.now() - 1000, pinned: false },
       ]),
@@ -1157,7 +1157,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
     await flushPromises()
     // The store should have the path with a fresh lastUsedAt.
     await new Promise((r) => setTimeout(r, 250)) // wait for the 200ms debounce
-    const raw = localStorage.getItem('nalar-folder-picker-recent:v1')
+    const raw = localStorage.getItem('pabrik-folder-picker-recent:v1')
     expect(raw).not.toBeNull()
     const entries = JSON.parse(raw!)
     const entry = entries.find((e: { path: string }) => e.path === '/home/me/picked')
@@ -1168,7 +1168,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
 
   it('clicking the star toggles the pin (no select emitted)', async () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/foo', lastUsedAt: Date.now() - 1000, pinned: false },
       ]),
@@ -1184,7 +1184,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
     await flushPromises()
     expect(wrapper.emitted('select')).toBeFalsy()
     await new Promise((r) => setTimeout(r, 250))
-    const raw = localStorage.getItem('nalar-folder-picker-recent:v1')
+    const raw = localStorage.getItem('pabrik-folder-picker-recent:v1')
     const entries = JSON.parse(raw!)
     expect(entries[0]!.pinned).toBe(true)
   })
@@ -1206,7 +1206,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
 
   it('the tab count badge shows the number of recent entries', async () => {
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/a', lastUsedAt: Date.now() - 1000, pinned: false },
         { path: '/home/me/b', lastUsedAt: Date.now() - 2000, pinned: false },
@@ -1233,7 +1233,7 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
   it('relative-time chip shows now / 2h / 1d / 3d via formatRelativeTime', async () => {
     const now = Date.now()
     localStorage.setItem(
-      'nalar-folder-picker-recent:v1',
+      'pabrik-folder-picker-recent:v1',
       JSON.stringify([
         { path: '/home/me/now', lastUsedAt: now - 30_000, pinned: false },
         { path: '/home/me/2h', lastUsedAt: now - 2 * 60 * 60_000, pinned: false },

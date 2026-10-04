@@ -1,6 +1,6 @@
 // src/service/signal_handlers.zig
 //
-// Signal handlers for the nalar service daemon.
+// Signal handlers for the pabrik service daemon.
 //
 // ## POSIX (Linux/macOS)
 //

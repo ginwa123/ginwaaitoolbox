@@ -290,7 +290,7 @@ test "remove_file execute returns error XML on invalid path without touching FS"
         const io = threaded.io();
         var buf2: [1024]u8 = undefined;
         var fba2 = std.heap.FixedBufferAllocator.init(&buf2);
-        const out2 = try executeRemoveFileToString(fba2.allocator(), io, .{ .path = "C:\\definitely\\missing\\nalar-test-file.txt" });
+        const out2 = try executeRemoveFileToString(fba2.allocator(), io, .{ .path = "C:\\definitely\\missing\\pabrik-test-file.txt" });
         try std.testing.expect(std.mem.indexOf(u8, out2, "<deleted>false</deleted>") != null);
         try std.testing.expect(std.mem.indexOf(u8, out2, "Path not found") != null);
     }

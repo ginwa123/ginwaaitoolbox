@@ -25,7 +25,7 @@ Non-goals (v1): no backend/schema changes; CHATS list stays **global** (not scop
 - `src/apps/desktop/src/components/shell/Sidebar.vue` (1624 lines): header block L1385–1447 renders a **hard-coded** `AnakMagang` word (L1409; collapsed monogram L1413–1418) + Settings (L1422) / Logout (L1435). Nav L1450–1513 composes `<ChatsList>` (L1452) + `<WorkspaceList>` (L1455–1481, 20+ forwarded events) plus a collapsed fallback of per-workspace monogram tiles + `+` (L1489–1512, `workspaceMonogram()` at L104–131).
 - `components/views/ChatsList.vue`: CHATS collapsible section (header L600–647: chevron, title, sort toggle, `+` new chat). Loads **all** sessions globally (`loadChats` L270 → `GET /api/llm/session`, no workspace filter).
 - `components/workspace/WorkspaceList.vue` (822 lines): WORKSPACES section — header L506–536 (title + `workspaces-add-workspace-button`), workspace rows L557–645 (HTML5 DnD `application/x-workspace-id`, expand ▶, name, count badge, rename ✎, delete ×), nested `<WorkspaceItem>` rows L649–684, per-workspace `+ Add Item` menu L685–765 (Add Project [disabled "Coming soon"], Kanban, Design, Agent, Routine).
-- Collapse state lives in `stores/sidebar.ts`: `navExpanded`, `workspacesExpanded` (localStorage `nalar-sidebar-workspaces-expanded`), `chatsHeight`.
+- Collapse state lives in `stores/sidebar.ts`: `navExpanded`, `workspacesExpanded` (localStorage `pabrik-sidebar-workspaces-expanded`), `chatsHeight`.
 
 ### State model — there is no "active workspace" today
 - `stores/workspaces.ts`: `Workspace { id, name, icon, items, expanded }` (L81–86). Selection bottoms out at `activeWorkspaceItemId` (L510); the `activeWorkspace` getter (L946) is *derived* — the workspace containing the active item, `undefined` when no item is open.
@@ -81,7 +81,7 @@ Behaviors:
 6. Collapsed sidebar: **one** monogram for the active workspace (replaces the per-workspace tiles + `+`); clicking it opens the same panel, Teleported to `body`.
 
 ### State & URL
-- New `activeWorkspaceId: ref<string | null>` + `setActiveWorkspace(id)` in `stores/workspaces.ts`: validates the id, clears `activeWorkspaceItemId`/`activeTaskId` when they fall outside the target workspace, expands the target, persists `localStorage['nalar-active-workspace']`.
+- New `activeWorkspaceId: ref<string | null>` + `setActiveWorkspace(id)` in `stores/workspaces.ts`: validates the id, clears `activeWorkspaceItemId`/`activeTaskId` when they fall outside the target workspace, expands the target, persists `localStorage['pabrik-active-workspace']`.
 - Resolution precedence for what the dropdown + Projects show:
   1. URL `workspaceId` (via `pendingUrlRestore` on mount),
   2. `activeWorkspaceId` from localStorage,
@@ -89,7 +89,7 @@ Behaviors:
   4. first workspace in list.
 - Re-point the `activeWorkspace` getter to id-first with item-derived fallback so existing consumers (e.g. `AppLayout.vue:2735 :project-name="activeWorkspace?.name"`) keep working — and get better behavior.
 - Deleting the active workspace → fall back down the precedence chain and `router.replace` the stale id out of the URL.
-- `stores/sidebar.ts`: rename `workspacesExpanded` → `projectsExpanded` under key `nalar-sidebar-projects-expanded`, seeding once from the old key so users don't get a silently re-collapsed section.
+- `stores/sidebar.ts`: rename `workspacesExpanded` → `projectsExpanded` under key `pabrik-sidebar-projects-expanded`, seeding once from the old key so users don't get a silently re-collapsed section.
 - **History:** workspace switches use `router.push` (user decision — Back/Forward must cross switches); other tab/selector switches keep `replace`. Cleanup of a stale id after workspace *deletion* still uses `router.replace` (that's not a navigation).
 
 ### Component-by-component changes
@@ -123,6 +123,6 @@ Resolved by user 2026-09-22: (1) "Projects" = ALL workspace items; (2) no worksp
 
 Remaining risks:
 1. **CHATS stay global** — switching workspace does NOT change the chat list (`sessions.workspace_id` is still always NULL; scoping already specced in `docs/plans/2026-09-15-workspace-scoped-chat-history.md`). Confirmed "for now"; when revisited, that follow-up ships with a python functional harness test, not vitest.
-2. **`workspace.expanded` / `nalar-workspace-expanded` become vestigial** (no per-workspace tree rows anymore). v1 keeps the wire field but stops reading it for the sidebar; full removal is a cleanup PR.
+2. **`workspace.expanded` / `pabrik-workspace-expanded` become vestigial** (no per-workspace tree rows anymore). v1 keeps the wire field but stops reading it for the sidebar; full removal is a cleanup PR.
 3. **No workspace SSE** — create/delete/rename from another tab won't live-update the dropdown (pre-existing gap, unchanged by this work).
 4. **Spec blast radius** — ~10 sidebar/workspace specs need repointing or deletion (steps 2–4); budget test time accordingly.

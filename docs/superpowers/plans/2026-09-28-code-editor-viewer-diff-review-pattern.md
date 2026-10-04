@@ -31,7 +31,7 @@ The dead save path is removed end-to-end (`CodeEditor.vue` save button/readonly 
 
 ## Verification
 
-- [x] **New production-mode UI test (3 tests) — the bug's own level.** `tests/functional_ui/code_editor_viewer_ui_test.py` builds the real bundle once (`pnpm run build-only`, ~2s) and boots nalar with `--static-dir dist`, so the production bundle and `/api` share one origin. Asserted:
+- [x] **New production-mode UI test (3 tests) — the bug's own level.** `tests/functional_ui/code_editor_viewer_ui_test.py` builds the real bundle once (`pnpm run build-only`, ~2s) and boots pabrik with `--static-dir dist`, so the production bundle and `/api` share one origin. Asserted:
   - deep link → the file's text is on screen, one numbered row per line, `tok-*` spans present, URL carries `view=code-editor`;
   - reload → same content again (no silent blank);
   - `?line=3` → exactly the target row marked.

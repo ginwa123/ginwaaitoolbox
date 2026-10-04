@@ -12,10 +12,10 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
-const pr_provider = nalar_core.pr_provider;
-const pr_cli = nalar_core.pr_cli;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
+const pr_provider = pabrik_core.pr_provider;
+const pr_cli = pabrik_core.pr_cli;
 const run_captured = @import("helpers").run_captured;
 // Provider resolution + the error-detail helper are shared with the status
 // endpoint: two endpoints that disagree about which forge a repo is on would

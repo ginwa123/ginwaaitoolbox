@@ -24,7 +24,7 @@ Why this exists: the probe is the whole point of the kanban task
 request auth headers per style, and the 200-always envelope.
 
 Run:
-    NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
     pytest tests/functional/llm_test_test.py -v
 """
 

@@ -2,12 +2,12 @@
 
 Five fixtures carry the weight:
 
-* ``default_nalar_bin`` (session) — resolves a built ``nalar`` binary.
+* ``default_pabrik_bin`` (session) — resolves a built ``pabrik`` binary.
 * ``android_emulator`` (session) — the serial of a **running emulator**, or a
   skip that says why the suite needs one.
 * ``gradle_env`` (session) — ``JAVA_HOME``/``ANDROID_HOME``, or a skip naming
   what is missing.
-* ``android_harness`` (module) — one real ``nalar``, one isolated tmpdir HOME,
+* ``android_harness`` (module) — one real ``pabrik``, one isolated tmpdir HOME,
   every scenario seeded into that instance's own ``agent.db``.
 * ``instrumented_results`` (module) — one Gradle run, parsed.
 
@@ -48,11 +48,11 @@ from seed_scenarios import seed_all
 _ANDROID_PROJECT = Path("src") / "apps" / "android_mobile"
 
 #: The emulator's alias for the host machine's loopback interface. A server
-#: bound to 127.0.0.1 (nalar has no `--host` flag) is reachable on it.
+#: bound to 127.0.0.1 (pabrik has no `--host` flag) is reachable on it.
 EMULATOR_HOST_ALIAS = "10.0.2.2"
 
 
-# ─── Session-scoped: resolve the nalar binary once ─────────────────────────
+# ─── Session-scoped: resolve the pabrik binary once ─────────────────────────
 
 
 def _repo_root() -> Path:
@@ -68,8 +68,8 @@ def _repo_root() -> Path:
     raise AssertionError(f"no Android project above {here}")
 
 
-def _resolve_nalar_bin() -> Path:
-    """Find the nalar binary in standard locations.
+def _resolve_pabrik_bin() -> Path:
+    """Find the pabrik binary in standard locations.
 
     Same resolution order as ``tests/functional/conftest.py`` and
     ``tests/functional_ui/conftest.py`` — duplicated rather than imported
@@ -77,32 +77,41 @@ def _resolve_nalar_bin() -> Path:
     and this suite is a sibling of both rather than a child of either.
     """
     candidates: list[Path] = []
-    env_bin = os.environ.get("NALAR_BIN")
+    env_bin = os.environ.get("PABRIK_BIN") or os.environ.get("PABRIK_BIN")
     if env_bin:
         candidates.append(Path(env_bin))
     candidates.extend([
-        Path("./zig-out/bin/nalar"),
-        Path("./zig-out/bin/nalar.exe"),
-        Path("./zig-out/bin/nalarcore-linux-x86_64"),
-        Path("./zig-out/bin/nalarcore-macos-aarch64"),
-        Path("./zig-out/bin/nalarcore-macos-x86_64"),
-        Path("./zig-out/bin/nalarcore-windows-x86_64"),
-        Path("./zig-out/bin/nalarcore-windows-x86_64.exe"),
+        Path("./zig-out/bin/pabrik"),
+        Path("./zig-out/bin/pabrik.exe"),
+        Path("./zig-out/bin/pabrikcore-linux-x86_64"),
+        Path("./zig-out/bin/pabrikcore-macos-aarch64"),
+        Path("./zig-out/bin/pabrikcore-macos-x86_64"),
+        Path("./zig-out/bin/pabrikcore-windows-x86_64"),
+        Path("./zig-out/bin/pabrikcore-windows-x86_64.exe"),
+        # Pre-rebrand artifact names, probed after the current ones so a
+        # developer who has not rebuilt since the rename still gets a binary.
+        Path("./zig-out/bin/pabrik"),
+        Path("./zig-out/bin/pabrik.exe"),
+        Path("./zig-out/bin/pabrikcore-linux-x86_64"),
+        Path("./zig-out/bin/pabrikcore-macos-aarch64"),
+        Path("./zig-out/bin/pabrikcore-macos-x86_64"),
+        Path("./zig-out/bin/pabrikcore-windows-x86_64"),
+        Path("./zig-out/bin/pabrikcore-windows-x86_64.exe"),
     ])
     for c in candidates:
         if c.exists() and os.access(c, os.X_OK):
             return c.resolve()
     raise FileNotFoundError(
-        "No nalar binary found. Set NALAR_BIN or run "
+        "No pabrik binary found. Set PABRIK_BIN or run "
         "`zig build install:linux:system` first."
     )
 
 
 @pytest.fixture(scope="session")
-def default_nalar_bin() -> Path:
-    """Session-scoped: the nalar binary path. Skips the test if missing."""
+def default_pabrik_bin() -> Path:
+    """Session-scoped: the pabrik binary path. Skips the test if missing."""
     try:
-        return _resolve_nalar_bin()
+        return _resolve_pabrik_bin()
     except FileNotFoundError as e:
         pytest.skip(str(e))
 
@@ -182,22 +191,22 @@ def gradle_env(android_emulator: str) -> dict[str, str]:
     return env
 
 
-# ─── Module-scoped: one real nalar, every scenario seeded into it ──────────
+# ─── Module-scoped: one real pabrik, every scenario seeded into it ──────────
 
 
 @pytest.fixture(scope="module")
-def android_harness(default_nalar_bin: Path) -> Iterator[FunctionalHarness]:
-    """One isolated nalar for the module, on a free port (never 8081).
+def android_harness(default_pabrik_bin: Path) -> Iterator[FunctionalHarness]:
+    """One isolated pabrik for the module, on a free port (never 8081).
 
     ``stub_llm_profile=True`` writes a config with a single profile whose
-    ``base_url`` points at a dead port. It is what makes ``GET /api/config/nalar``
+    ``base_url`` points at a dead port. It is what makes ``GET /api/config/pabrik``
     return a profile for the composer's model picker; no scenario here needs a
     turn to complete, because every row is seeded into the DB directly.
 
     ``boot()`` picks a random port in 20000..32000 and refuses 8081, so this
     never collides with the always-running dev backend.
     """
-    h = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    h = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         yield h
     finally:
@@ -211,11 +220,11 @@ def android_harness(default_nalar_bin: Path) -> Iterator[FunctionalHarness]:
 def seed_db(android_harness: FunctionalHarness) -> Path:
     """Path to the harness instance's own ``agent.db``.
 
-    ``nalar`` derives it from ``HOME``, which the harness shadowed to its
-    tmpdir, so this is always inside ``nalar-func-*``. ``DbSeed`` re-validates
+    ``pabrik`` derives it from ``HOME``, which the harness shadowed to its
+    tmpdir, so this is always inside ``pabrik-func-*``. ``DbSeed`` re-validates
     that with ``is_safe_tmp`` before it opens the file.
     """
-    return android_harness.temp_dir / ".config" / "nalar" / "agent.db"
+    return android_harness.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 @pytest.fixture(scope="module")

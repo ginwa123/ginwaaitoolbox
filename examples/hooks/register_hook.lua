@@ -1,11 +1,11 @@
--- nalar Lua hook example.
+-- pabrik Lua hook example.
 --
 -- Copy this file to <config_dir>/hooks/register_hook.lua:
---   Linux:   ~/.config/nalar/hooks/register_hook.lua
---   macOS:   ~/Library/Application Support/nalar/hooks/register_hook.lua
---   Windows: %APPDATA%/nalar/hooks/register_hook.lua
+--   Linux:   ~/.config/pabrik/hooks/register_hook.lua
+--   macOS:   ~/Library/Application Support/pabrik/hooks/register_hook.lua
+--   Windows: %APPDATA%/pabrik/hooks/register_hook.lua
 --
--- nalar calls init(event, data) around EVERY tool call with exactly one
+-- pabrik calls init(event, data) around EVERY tool call with exactly one
 -- of these events:
 --   "pre_tool_use"  — before the tool runs.
 --     data = { tool_name, arguments, session_id, cwd, model }
@@ -20,7 +20,7 @@
 --   post: { deny = "reason" }                — replace output with an error envelope
 --
 -- Anything else (missing file, missing init, Lua error, bad return shape)
--- fails open: nalar logs a line and runs the tool normally.
+-- fails open: pabrik logs a line and runs the tool normally.
 
 function init(event, data)
   if event == "pre_tool_use" then

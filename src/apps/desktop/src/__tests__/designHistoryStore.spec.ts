@@ -9,7 +9,7 @@
  *   - schema version mismatch is silently discarded
  *
  * 6 behavioural tests. The project convention is behavioural only —
- * see ~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md.
+ * see ~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md.
  *
  * Note: vitest's experimental jsdom does not auto-provide a working
  * `localStorage` (the `--localstorage-file` flag is not enabled in

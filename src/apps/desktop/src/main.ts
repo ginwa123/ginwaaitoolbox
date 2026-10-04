@@ -26,7 +26,7 @@ const logCtx: FrontendLogContext = {
   getRoutePath: () => null,
   getSessionId: () => null,
 }
-;(window as unknown as { __nalarLogCtx: FrontendLogContext }).__nalarLogCtx = logCtx
+;(window as unknown as { __pabrikLogCtx: FrontendLogContext }).__pabrikLogCtx = logCtx
 installFrontendLogClient({
   endpoint: `${API_BASE}/logs`,
   getContext: () => logCtx,

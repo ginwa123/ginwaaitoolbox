@@ -26,7 +26,7 @@
 //! `freeDocumentRows`.
 
 const std = @import("std");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const helpers = @import("helpers");
 
 /// The only document format MVP writes. The column exists so the table is

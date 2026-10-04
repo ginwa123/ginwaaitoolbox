@@ -1,7 +1,7 @@
 //! LLM tool: `add_element` — creates a new element on a design page.
 //!
 //! Writes the element's HTML body to disk atomically (under
-//! `<workspace_item.path>/.nalar/design/<page>/<element>.html`) and
+//! `<workspace_item.path>/.pabrik/design/<page>/<element>.html`) and
 //! inserts the metadata row in `design_page_elements` with the 11 v6
 //! properties from Migration 057.
 //!
@@ -11,9 +11,9 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const design_model = nalarcore.ai_mod.design_model;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const design_model = pabrikcore.ai_mod.design_model;
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 
@@ -39,7 +39,7 @@ pub const AddElementInput = struct {
     /// Wire format is the lowercase string; we parse to `ElementType`.
     type: []const u8 = "rectangle",
     /// HTML body. Written to
-    /// `<workspace_item.path>/.nalar/design/<page>/<element>.html`.
+    /// `<workspace_item.path>/.pabrik/design/<page>/<element>.html`.
     /// Required (non-empty) — an empty html would create an
     /// on-disk file with zero bytes that the LLM has to populate
     /// via `update_element` later, so requiring it here forces the
@@ -97,7 +97,7 @@ pub const add_design_element_tool = AgentTool{
     .function = .{
         .name = "add_element",
         .description =
-        \\Add a new element to a design page. This creates a positioned visual element with a writable HTML body stored on disk under `<workspace_item.path>/.nalar/design/<page>/<element>.html`.
+        \\Add a new element to a design page. This creates a positioned visual element with a writable HTML body stored on disk under `<workspace_item.path>/.pabrik/design/<page>/<element>.html`.
         \\
         \\The 6 valid element types are: `rectangle` (solid fill box), `ellipse` (circle/ellipse), `text` (HTML text node — set `text_content`), `image` (raster image — set `image_url`), `frame` (container that clips children), `group` (container that does not clip).
         \\
@@ -130,7 +130,7 @@ pub const add_design_element_tool = AgentTool{
                 .{
                     .name = "html",
                     .type = "string",
-                    .description = "HTML body for the element. Required (non-empty). Written to disk under `<workspace_item.path>/.nalar/design/<page>/<element>.html`.",
+                    .description = "HTML body for the element. Required (non-empty). Written to disk under `<workspace_item.path>/.pabrik/design/<page>/<element>.html`.",
                 },
                 .{
                     .name = "x",
@@ -322,7 +322,7 @@ fn validatePageIdShape(allocator: std.mem.Allocator, page_id: []const u8) !?[]u8
 
 /// Validate `name` is non-empty and contains no illegal characters.
 /// The v6 file-backed model stores the HTML at
-/// `<item_path>/.nalar/design/<page>/<sanitized_name>.html`, so `/`
+/// `<item_path>/.pabrik/design/<page>/<sanitized_name>.html`, so `/`
 /// would escape the page directory.
 fn validateNameShape(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
     if (name.len == 0) {
@@ -596,8 +596,8 @@ test "tools_equipped.zig imports add_design_element module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "const add_design_element_mod = nalarcore.add_design_element;")) {
-        std.debug.print("!! tools_equipped.zig does not bind add_design_element_mod = nalarcore.add_design_element !!\n", .{});
+    if (!contains(source, "const add_design_element_mod = pabrikcore.add_design_element;")) {
+        std.debug.print("!! tools_equipped.zig does not bind add_design_element_mod = pabrikcore.add_design_element !!\n", .{});
         return error.AddElementModBindingMissing;
     }
 }
@@ -654,7 +654,7 @@ test "root.zig exposes add_design_element module" {
     defer allocator.free(source);
     if (!contains(source, "pub const add_design_element = @import(\"modules/agent/tools/add_design_element.zig\");")) {
         std.debug.print("!! root.zig does not expose add_design_element as a top-level module !!\n", .{});
-        return error.NalarcoreExportMissing;
+        return error.PabrikcoreExportMissing;
     }
 }
 
@@ -685,7 +685,7 @@ test "elementToJSON renders element with all v6 fields" {
         .id = try alloc.dupe(u8, "elem_xyz"),
         .page_id = try alloc.dupe(u8, "page_abc"),
         .name = try alloc.dupe(u8, "login-card"),
-        .file_path = try alloc.dupe(u8, "/tmp/.nalar/design/Login/login-card.html"),
+        .file_path = try alloc.dupe(u8, "/tmp/.pabrik/design/Login/login-card.html"),
         .x = 100,
         .y = 200,
         .width = 400,
@@ -726,7 +726,7 @@ test "elementToJSON renders element with all v6 fields" {
     try expectJSONFloat(obj.get("rotation").?, 15.0);
     try expectJSONFloat(obj.get("opacity").?, 0.85);
     try testing.expectEqual(@as(i64, 8), obj.get("corner_radius").?.integer);
-    try testing.expectEqualStrings("/tmp/.nalar/design/Login/login-card.html", obj.get("file_path").?.string);
+    try testing.expectEqualStrings("/tmp/.pabrik/design/Login/login-card.html", obj.get("file_path").?.string);
     try testing.expectEqualStrings("2026-07-08 10:00:00", obj.get("created_at").?.string);
     try testing.expectEqualStrings("2026-07-08 10:00:00", obj.get("updated_at").?.string);
     // Empty-string inputs become explicit nulls.

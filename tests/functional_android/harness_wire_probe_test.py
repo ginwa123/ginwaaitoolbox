@@ -58,7 +58,7 @@ def _seed_probe_session(seed_db_path, session_id: str) -> tuple[str, str]:
 
 
 def test_auth_off_boot_reports_anonymous(android_harness: FunctionalHarness) -> None:
-    """A harness-booted nalar must run open, or the app shows a login screen.
+    """A harness-booted pabrik must run open, or the app shows a login screen.
 
     The app maps this exact envelope to ``SessionPhase.Authenticated`` with a
     null ``userId`` (``auth/AuthViewModel.kt`` -> ``AuthResult.AuthDisabled``),

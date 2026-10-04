@@ -21,7 +21,7 @@
 # The alternative to sharding was folding build + backend tests +
 # functional tests into one job per platform, which saves a checkout and
 # a compile but cannot be split any further. Sharding wins because the
-# per-test cost is boot-a-nalar, not compile: the expensive input is
+# per-test cost is boot-a-pabrik, not compile: the expensive input is
 # wall clock, and only separate jobs attack wall clock.
 #
 # NO `concurrency:` BLOCK — see the identical note in ci-backend.yml.
@@ -83,7 +83,7 @@ on:
       shard_index:
         description: >-
           ZERO-based shard number, forwarded verbatim as
-          NALAR_FUNC_SHARD_INDEX. Zero-based because that is what the
+          PABRIK_FUNC_SHARD_INDEX. Zero-based because that is what the
           selector indexes with; the job name shows the same number so
           the two are never confused.
         required: true
@@ -91,7 +91,7 @@ on:
       shard_total:
         description: >-
           Total shards for this platform, forwarded as
-          NALAR_FUNC_SHARD_TOTAL. Every shard of one platform must pass
+          PABRIK_FUNC_SHARD_TOTAL. Every shard of one platform must pass
           the SAME value — a mismatch between two shards of the same
           platform means the union is not the suite.
         required: true
@@ -119,7 +119,7 @@ jobs:
     # checkout, venv, a zig build and 1/3 of BOTH suites — finishes in about
     # 9 minutes. Windows is roughly an order of magnitude slower at
     # everything this job does: `vcpkg install` alone is 11 minutes before
-    # a single test can link, and every test boots a real nalar and (in the
+    # a single test can link, and every test boots a real pabrik and (in the
     # UI suite) a Vite dev server.
     #
     # Measured, from run 37046311981 `functional Windows X64 · shard 1/3`:
@@ -188,12 +188,12 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       # ── Per-platform system dependencies ────────────────────────────
-      # The nalar service binary links libcurl / openssl / libpq / sqlite3
+      # The pabrik service binary links libcurl / openssl / libpq / sqlite3
       # on every platform, and the UI suite additionally needs a browser.
       # Each cell therefore needs roughly what the backend cell for
       # the same image needs — minus the desktop webview, because this job
       # only builds the SERVICE binary (`zig build functional-test-all`
-      # depends on the default install step, not on `nalar-desktop`). That
+      # depends on the default install step, not on `pabrik-desktop`). That
       # is why there is no WebView2 NuGet staging here.
 
       - name: Install system dependencies (Ubuntu)
@@ -324,8 +324,8 @@ jobs:
         # Two things are worth persisting, both OUTSIDE the workspace
         # because the workspace is a fresh checkout on every GitHub-hosted
         # job:
-        #   - the pytest/playwright venv, at ${{ runner.temp }}/nalar-ci-venv
-        #     (build.zig reads NALAR_FUNC_VENV_DIR at config time)
+        #   - the pytest/playwright venv, at ${{ runner.temp }}/pabrik-ci-venv
+        #     (build.zig reads PABRIK_FUNC_VENV_DIR at config time)
         #   - Playwright's Chromium download, at ~/.cache/ms-playwright
         #
         # Key scoped by RUNNER IMAGE (`inputs.os`) plus the interpreter,
@@ -339,7 +339,7 @@ jobs:
         with:
           path: |
             ~/.cache/ms-playwright
-            ${{ runner.temp }}/nalar-ci-venv
+            ${{ runner.temp }}/pabrik-ci-venv
           key: v3-py-${{ inputs.os }}-py312-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
           restore-keys: |
             v3-py-${{ inputs.os }}-py312-
@@ -451,14 +451,14 @@ jobs:
           echo "ok webapp deps ready"
 
       - name: "Functional suites: API + Playwright UI (one pytest run)"
-        # ~730 tests across both suites. Each boots its own nalar against an
+        # ~730 tests across both suites. Each boots its own pabrik against an
         # isolated tmpdir HOME and rmtree's it on teardown; the Python
         # harness enforces the "never delete real $HOME" invariant via
         # is_safe_tmp() — see tests/functional/harness.py.
         #
         # NO `-n auto` (pytest-xdist), on purpose. xdist is the obvious way
         # to make this faster and it is wrong here: the port picker binds a
-        # probe socket, closes it, and hands the number to the nalar child,
+        # probe socket, closes it, and hands the number to the pabrik child,
         # which binds tens of milliseconds later. That gap is documented in
         # harness.py's RANDOM_PORT_* comment as the reason the range moved
         # to 20k-32k in the first place — and widening the range does not
@@ -475,7 +475,7 @@ jobs:
           # persist it. build.zig reads this at config time, and it is also
           # what normalises Windows' mixed separators to the `Scripts/`
           # layout.
-          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
+          PABRIK_FUNC_VENV_DIR: ${{ runner.temp }}/pabrik-ci-venv
           # ── THE SHARD ─────────────────────────────────────────────
           # These two variables are the entire sharding contract; they
           # are read by tests/conftest.py, which slices the collected
@@ -487,17 +487,17 @@ jobs:
           #
           # They are set on THIS STEP rather than at job level because
           # job-level `env:` is also visible to the cache steps, where a
-          # stray NALAR_FUNC_SHARD_* would make a cache key look shard-
+          # stray PABRIK_FUNC_SHARD_* would make a cache key look shard-
           # specific for no reason.
-          NALAR_FUNC_SHARD_TOTAL: ${{ inputs.shard_total }}
-          NALAR_FUNC_SHARD_INDEX: ${{ inputs.shard_index }}
+          PABRIK_FUNC_SHARD_TOTAL: ${{ inputs.shard_total }}
+          PABRIK_FUNC_SHARD_INDEX: ${{ inputs.shard_index }}
         run: |
           set -u
-          echo "→ functional-test: starting on $RUNNER_OS, shard $NALAR_FUNC_SHARD_INDEX/$NALAR_FUNC_SHARD_TOTAL"
+          echo "→ functional-test: starting on $RUNNER_OS, shard $PABRIK_FUNC_SHARD_INDEX/$PABRIK_FUNC_SHARD_TOTAL"
           # Two Windows-only PATH edits, both about the SERVICE binary
           # starting at all rather than about any test:
           #
-          #   1. vcpkg's bin dir — nalar.exe's DLL imports (libcurl.dll,
+          #   1. vcpkg's bin dir — pabrik.exe's DLL imports (libcurl.dll,
           #      sqlite3.dll, libssl-3-x64.dll, ...) must resolve at
           #      process-load time.
           #   2. C:\Windows\System32\downlevel — Windows 11 ships the

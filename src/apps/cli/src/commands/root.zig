@@ -36,12 +36,12 @@ pub const Command = struct {
     args: []const []const u8,
 };
 
-/// Help text shown for `nalarcli help` (or any unknown verb).
+/// Help text shown for `pabrikcli help` (or any unknown verb).
 pub const help_text =
-    \\nalarcli — wraps the nalar backend HTTP API.
+    \\pabrikcli — wraps the pabrik backend HTTP API.
     \\
     \\Usage:
-    \\  nalarcli <command> [args...]
+    \\  pabrikcli <command> [args...]
     \\
     \\Commands:
     \\  send <message> [--session <id>] [--profile <name>]    Send a message to an LLM session
@@ -55,7 +55,7 @@ pub const help_text =
     \\  --server <url>     Server URL (default http://localhost:8081)
     \\  --session <id>     Default session id
     \\  --profile <name>   LLM profile
-    \\  env NALARCLI_SERVER, NALARCLI_SESSION_ID, NALARCLI_PROFILE
+    \\  env PABRIKCLI_SERVER, PABRIKCLI_SESSION_ID, PABRIKCLI_PROFILE
     \\
 ;
 

@@ -1,6 +1,6 @@
 """Functional wire verification for the unified `command` tool.
 
-Branch: worktree/nalar-unify-command (commit `unify: add command tool
+Branch: worktree/pabrik-unify-command (commit `unify: add command tool
 merged from bash+pwsh`).
 
 What this covers
@@ -26,7 +26,7 @@ the same strategy as `agent_add_mcp_server_test.py`:
     no longer equipped).
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/command_tool_test.py -v
 """
 

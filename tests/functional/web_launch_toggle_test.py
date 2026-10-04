@@ -16,7 +16,7 @@ default (random when on, 8081 when off). Covered here:
            reflects the flag (false → true across a PUT).
   Test 6 — Status URL is reachable (same origin serves the SPA).
 
-The harness boots nalar on a random free port (never 8081), so Test 5
+The harness boots pabrik on a random free port (never 8081), so Test 5
 locks in that the status endpoint reports the LIVE port, not a
 hardcoded default.
 """
@@ -37,26 +37,26 @@ from harness import FunctionalHarness
 def _platform_config_dir(temp_dir: Path) -> Path:
     system = platform.system()
     if system == "Darwin":
-        return temp_dir / "Library" / "Application Support" / "nalar"
+        return temp_dir / "Library" / "Application Support" / "pabrik"
     if system == "Windows":
         import os
 
         appdata = os.environ.get("APPDATA") or str(temp_dir / "AppData" / "Roaming")
         if appdata.startswith(str(temp_dir)):
-            return Path(appdata) / "nalar"
-        return temp_dir / "AppData" / "Roaming" / "nalar"
-    return temp_dir / ".config" / "nalar"
+            return Path(appdata) / "pabrik"
+        return temp_dir / "AppData" / "Roaming" / "pabrik"
+    return temp_dir / ".config" / "pabrik"
 
 
 @pytest.fixture
-def web_harness(default_nalar_bin) -> FunctionalHarness:
+def web_harness(default_pabrik_bin) -> FunctionalHarness:
     h = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
     )
     if platform.system() == "Darwin":
-        linux_cfg = h.temp_dir / ".config" / "nalar" / "config.json"
-        mac_cfg = h.temp_dir / "Library" / "Application Support" / "nalar" / "config.json"
+        linux_cfg = h.temp_dir / ".config" / "pabrik" / "config.json"
+        mac_cfg = h.temp_dir / "Library" / "Application Support" / "pabrik" / "config.json"
         if linux_cfg.exists():
             mac_cfg.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(linux_cfg, mac_cfg)
@@ -80,7 +80,7 @@ def _put_web_launch(
     web_launch_enabled: bool | None = None,
     extra: dict | None = None,
 ) -> None:
-    """PUT /api/config/nalar with the profiles scaffolding the backend
+    """PUT /api/config/pabrik with the profiles scaffolding the backend
     expects. None omits the key (locks in the null sentinel)."""
     body: dict = {
         "profiles": {
@@ -96,13 +96,13 @@ def _put_web_launch(
         body["web_launch_enabled"] = web_launch_enabled
     if extra:
         body.update(extra)
-    h.http("PUT", "/api/config/nalar", json_body=body, expect=200)
+    h.http("PUT", "/api/config/pabrik", json_body=body, expect=200)
 
 
 def test_get_returns_web_launch_disabled_on_fresh_install(
     web_harness: FunctionalHarness,
 ) -> None:
-    r = web_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = web_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("web_launch_enabled") is False, (
         f"expected web_launch_enabled=false on fresh install; got {r.get('web_launch_enabled')!r}"
     )
@@ -113,7 +113,7 @@ def test_put_web_launch_true_round_trips_through_get_and_disk(
 ) -> None:
     _put_web_launch(web_harness, web_launch_enabled=True)
 
-    r = web_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = web_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("web_launch_enabled") is True
 
     on_disk = _on_disk_config(web_harness)
@@ -124,11 +124,11 @@ def test_put_web_launch_false_flips_an_existing_true(
     web_harness: FunctionalHarness,
 ) -> None:
     _put_web_launch(web_harness, web_launch_enabled=True)
-    r1 = web_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r1 = web_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r1.get("web_launch_enabled") is True
 
     _put_web_launch(web_harness, web_launch_enabled=False)
-    r2 = web_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r2 = web_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r2.get("web_launch_enabled") is False
     assert _on_disk_config(web_harness).get("web_launch_enabled") is False
 
@@ -140,7 +140,7 @@ def test_omitting_web_launch_does_not_reset_it(
     assert _on_disk_config(web_harness).get("web_launch_enabled") is True
 
     _put_web_launch(web_harness)
-    r = web_harness.http("GET", "/api/config/nalar", expect=200).json()
+    r = web_harness.http("GET", "/api/config/pabrik", expect=200).json()
     assert r.get("web_launch_enabled") is True, (
         "omitting web_launch_enabled on PUT must preserve the on-disk value"
     )

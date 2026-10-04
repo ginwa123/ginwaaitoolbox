@@ -84,7 +84,7 @@ env:
   # Only the two android jobs read this (the backend and functional cells
   # carry their own copy inside their reusable workflows, where it is the
   # only way to reach them). Keep the three copies in step: the emulator
-  # suite boots a nalar binary, and a build against an unpinned toolchain
+  # suite boots a pabrik binary, and a build against an unpinned toolchain
   # is the one cell that stops reproducing what every other cell verifies.
   # pnpm migration (2026-08-28): npm (and the prior bun) are gone from CI
   # and build.zig. pnpm/action-setup pins pnpm 11; Node 24 + pnpm are the
@@ -516,7 +516,7 @@ jobs:
         # difference. So the apk is debug-signed, the ASSET NAME says
         # `-debug`, and the release body says it in words.
         #
-        # No `-PnalarBaseUrl`, on purpose: with the property absent the debug
+        # No `-PpabrikBaseUrl`, on purpose: with the property absent the debug
         # variant falls back to the production host (app/build.gradle.kts), so
         # this apk talks to the same https://agent.ginwa.site a release build
         # would -- which is what makes it worth publishing to anyone. Passing
@@ -544,7 +544,7 @@ jobs:
           python-version: '3.12'
 
       - name: Check the navigation audit page is current
-        # The committed `navgraph.html` is derived from `NalarNavGraph.kt`, so an
+        # The committed `navgraph.html` is derived from `PabrikNavGraph.kt`, so an
         # edit to the NavHost without a `tools/navgraph/build.py` run leaves a
         # page that is confidently wrong. `--check` compares the committed
         # artifacts against a fresh render, masking the git sha so an unrelated
@@ -576,9 +576,9 @@ jobs:
         #
         # Renamed on the way in, because the asset name is the only place the
         # debug-vs-release distinction survives once `app-debug.apk` is on
-        # someone's phone. `Nalar-` (capital) because this is the installable
-        # app bundle, the same role `Nalar-aarch64-macos.zip` plays for
-        # Nalar.app; the lowercase `nalar-*` names all describe binaries you
+        # someone's phone. `Pabrik-` (capital) because this is the installable
+        # app bundle, the same role `Pabrik-aarch64-macos.zip` plays for
+        # Pabrik.app; the lowercase `pabrik-*` names all describe binaries you
         # run in a terminal, which is not what an apk is.
         shell: bash
         run: |
@@ -590,7 +590,7 @@ jobs:
           fi
           stage="bin-stage-android"
           mkdir -p "$stage"
-          cp "$src" "$stage/Nalar-android-debug.apk"
+          cp "$src" "$stage/Pabrik-android-debug.apk"
           ls -l "$stage"
 
       - name: Render the shared ci-latest release body
@@ -649,7 +649,7 @@ jobs:
           files: bin-stage-android/*
 
   android-test:
-    # The Android client's functional UI suite: a real `nalar` binary against an
+    # The Android client's functional UI suite: a real `pabrik` binary against an
     # isolated tmpdir HOME, ten scenarios seeded into that instance's own
     # `agent.db`, and the **real MainActivity** driven on an emulator with
     # assertions on the rendered Compose tree.
@@ -664,7 +664,7 @@ jobs:
     # This is the gate that keeps the suite from rotting. It was written as a
     # local-only suite first, and an emulator-only test that nobody runs is the
     # failure this job exists to prevent: the module already learned that lesson
-    # once, when `NalarNavGraphLaunchGateTest` sat unrun on an emulator while
+    # once, when `PabrikNavGraphLaunchGateTest` sat unrun on an emulator while
     # two bugs survived a green build.
     #
     # The unit tests are a *different* job (the `android-unit-test` job in
@@ -672,7 +672,7 @@ jobs:
     name: android-test (ubuntu-24.04)
     # Chained after android-apk, and after NOTHING else. It used to
     # `needs: backend` too, for the same reason android-apk did: it
-    # consumes no backend artifact — it builds its own nalar with
+    # consumes no backend artifact — it builds its own pabrik with
     # `zig build install:linux` two steps below.
     #
     # The emulator suite is the more valuable of the two android signals,
@@ -738,7 +738,7 @@ jobs:
         # the rest simply get "Cache already exists".
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/nalar-ci-venv
+          path: ${{ runner.temp }}/pabrik-ci-venv
           # Scoped by IMAGE (`ubuntu-24.04`), not by `runner.os`. The
           # comment above claimed this job shared a key prefix with the
           # functional suites and therefore restored their venv instead of
@@ -761,37 +761,37 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Build the nalar binary the harness boots
-        # `install:linux` produces `zig-out/bin/nalarcore-linux-x86_64`, which
-        # is the target-triple-named artifact — NOT the unqualified `nalar`
+      - name: Build the pabrik binary the harness boots
+        # `install:linux` produces `zig-out/bin/pabrikcore-linux-x86_64`, which
+        # is the target-triple-named artifact — NOT the unqualified `pabrik`
         # that the default `install` step writes. Same command the other
         # functional jobs' build path uses.
         run: zig build install:linux
 
       - name: Install the suite's python dependencies
         env:
-          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
+          PABRIK_FUNC_VENV_DIR: ${{ runner.temp }}/pabrik-ci-venv
         run: |
           set -euo pipefail
-          if [ ! -x "$NALAR_FUNC_VENV_DIR/bin/python" ]; then
-            python3 -m venv "$NALAR_FUNC_VENV_DIR"
+          if [ ! -x "$PABRIK_FUNC_VENV_DIR/bin/python" ]; then
+            python3 -m venv "$PABRIK_FUNC_VENV_DIR"
           fi
-          "$NALAR_FUNC_VENV_DIR/bin/pip" install -q -r tests/functional/requirements.txt
-          "$NALAR_FUNC_VENV_DIR/bin/pip" install -q -r tests/functional_android/requirements.txt
+          "$PABRIK_FUNC_VENV_DIR/bin/pip" install -q -r tests/functional/requirements.txt
+          "$PABRIK_FUNC_VENV_DIR/bin/pip" install -q -r tests/functional_android/requirements.txt
 
       - name: Run the functional UI suite on an emulator
         uses: reactivecircus/android-emulator-runner@v2
         env:
           # The exact artifact `zig build install:linux` installs. Note the
-          # name: `install:linux` produces `nalarcore-linux-x86_64`, NOT
-          # `nalar` — `nalar` comes from the default `install` step that
+          # name: `install:linux` produces `pabrikcore-linux-x86_64`, NOT
+          # `pabrik` — `pabrik` comes from the default `install` step that
           # `install:linux:system` and the functional-test job use. Pinning the
           # wrong one here would still pass, because the suite's resolver falls
           # through to the other candidates, which is exactly why it is worth
           # naming the right file: a silent fallback hides a broken pin.
-          NALAR_BIN: ${{ github.workspace }}/zig-out/bin/nalarcore-linux-x86_64
+          PABRIK_BIN: ${{ github.workspace }}/zig-out/bin/pabrikcore-linux-x86_64
           PYTHONPATH: tests/functional:tests/functional_ui:tests/functional_android
-          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
+          PABRIK_FUNC_VENV_DIR: ${{ runner.temp }}/pabrik-ci-venv
         with:
           # Matches compileSdk. A mismatch between the emulator's API level and
           # the one the app was built against is a device-only failure that
@@ -833,7 +833,7 @@ jobs:
           # These `#` lines are stripped by `parseScript`, so they cost
           # nothing.
           script: |
-            "$NALAR_FUNC_VENV_DIR/bin/python" -m pytest tests/functional_android/ -q -rs > /tmp/android-functional-test.log 2>&1; status=$?; cat /tmp/android-functional-test.log; exit $status
+            "$PABRIK_FUNC_VENV_DIR/bin/python" -m pytest tests/functional_android/ -q -rs > /tmp/android-functional-test.log 2>&1; status=$?; cat /tmp/android-functional-test.log; exit $status
 
       - name: Upload the reports
         # `if: always()` so a failing run still publishes the instrumented JUnit

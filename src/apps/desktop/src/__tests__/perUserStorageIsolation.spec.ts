@@ -76,7 +76,7 @@ describe('per-user storage isolation', () => {
     // Simulate a cold boot where a previous user left data behind: the key is
     // written unscoped (as it would be with no identity), then the identity
     // resolves to B.
-    localStorage.setItem('nalar-workspaces:v1', JSON.stringify([{ id: 'ws_stale', name: 'Stale' }]))
+    localStorage.setItem('pabrik-workspaces:v1', JSON.stringify([{ id: 'ws_stale', name: 'Stale' }]))
     expect(isIdentityResolved()).toBe(false)
 
     // The store's gate is `isIdentityResolved() ? readWorkspacesCache() : null`
@@ -99,16 +99,16 @@ describe('per-user storage isolation', () => {
 
     clearWorkspacesCache()
 
-    expect(localStorage.getItem(userScopedKey('nalar-workspaces:v1'))).toBeNull()
+    expect(localStorage.getItem(userScopedKey('pabrik-workspaces:v1'))).toBeNull()
     // A's slot is untouched by B's clear.
-    expect(localStorage.getItem('nalar-workspaces:v1::u:user_a')).not.toBeNull()
+    expect(localStorage.getItem('pabrik-workspaces:v1::u:user_a')).not.toBeNull()
   })
 
   it('auth-off (no identity) keeps the legacy unscoped key', () => {
     // No identity: the key is the legacy one, so an auth-off install needs no
     // migration and sees exactly what it saw before.
     writeWorkspacesCache([ws('ws_legacy', 'Legacy')])
-    expect(localStorage.getItem('nalar-workspaces:v1')).not.toBeNull()
+    expect(localStorage.getItem('pabrik-workspaces:v1')).not.toBeNull()
     expect(readWorkspacesCache()?.map((w) => w.id)).toEqual(['ws_legacy'])
   })
 })

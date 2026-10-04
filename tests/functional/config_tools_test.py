@@ -2,7 +2,7 @@
 2026-09-22-tools-menu-config-default-tools, decisions D2/D4).
 
 Verifies the wire round-trip of the top-level `tools` array through
-GET/PUT /api/config/nalar with the EXACT frontend wire shapes:
+GET/PUT /api/config/pabrik with the EXACT frontend wire shapes:
 
   1. GET returns `tools: null` when the on-disk key is absent.
   2. PUT of the whole config WITHOUT a `tools` key (a Settings save from
@@ -16,7 +16,7 @@ GET/PUT /api/config/nalar with the EXACT frontend wire shapes:
   6. PUT `"tools": null` preserves the existing value (the collapse of
      absent ≡ null on the wire).
 
-Each test boots a fresh nalar against an isolated tmpdir HOME via the
+Each test boots a fresh pabrik against an isolated tmpdir HOME via the
 shared preboot fixture pattern (config_simplify_test.py). Ports come
 from the harness's random picker (never 8081).
 """
@@ -34,7 +34,7 @@ import pytest
 
 from harness import (
     FunctionalHarness,
-    _default_nalar_bin,
+    _default_pabrik_bin,
     _find_free_port,
     _reap_orphan_test_pids,
     _wait_ready,
@@ -46,24 +46,24 @@ from harness import (
 
 
 def _platform_config_dir(temp_dir: Path) -> Path:
-    """Mirror nalar's `getDefaultConfigDir` (Config.zig) per-OS layout:
-      - macOS   → <HOME>/Library/Application Support/nalar/
-      - Windows → <APPDATA>/nalar/ (fixture sets the child's APPDATA)
-      - else    → <XDG_CONFIG_HOME or HOME/.config>/nalar/
+    """Mirror pabrik's `getDefaultConfigDir` (Config.zig) per-OS layout:
+      - macOS   → <HOME>/Library/Application Support/pabrik/
+      - Windows → <APPDATA>/pabrik/ (fixture sets the child's APPDATA)
+      - else    → <XDG_CONFIG_HOME or HOME/.config>/pabrik/
     """
     import platform as _platform
     system = _platform.system()
     if system == "Darwin":
-        return temp_dir / "Library" / "Application Support" / "nalar"
+        return temp_dir / "Library" / "Application Support" / "pabrik"
     if system == "Windows":
-        return temp_dir / "AppData" / "Roaming" / "nalar"
-    return temp_dir / ".config" / "nalar"
+        return temp_dir / "AppData" / "Roaming" / "pabrik"
+    return temp_dir / ".config" / "pabrik"
 
 
 @pytest.fixture
-def preboot(default_nalar_bin):
+def preboot(default_pabrik_bin):
     """`h = preboot(cfg_dict)` — writes config.json into a fresh tempdir
-    layout (at the PLATFORM-CORRECT path), THEN boots nalar against it.
+    layout (at the PLATFORM-CORRECT path), THEN boots pabrik against it.
     Yields the booted harness.
     """
     booted: list[FunctionalHarness] = []
@@ -85,7 +85,7 @@ def preboot(default_nalar_bin):
             print(f"warning: orphan reap failed: {e}", file=sys.stderr)
 
         chosen_port = _find_free_port()
-        temp_dir = Path(tempfile.mkdtemp(prefix="nalar-func-"))
+        temp_dir = Path(tempfile.mkdtemp(prefix="pabrik-func-"))
         if not is_safe_tmp(str(temp_dir), orig_home):
             raise RuntimeError(f"unsafe tmp path: {temp_dir}")
 
@@ -93,8 +93,8 @@ def preboot(default_nalar_bin):
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "config.json").write_text(json.dumps(cfg, indent=2))
 
-        bin_path = default_nalar_bin
-        log_path = temp_dir / "nalar.log"
+        bin_path = default_pabrik_bin
+        log_path = temp_dir / "pabrik.log"
         log_file = log_path.open("wb")
         # Snapshot parent Windows/XDG vars so teardown() restores them.
         orig_userprofile = os.environ.get("USERPROFILE", "")
@@ -107,8 +107,8 @@ def preboot(default_nalar_bin):
         env = os.environ.copy()
         env["HOME"] = str(temp_dir)
         # XDG isolation applies on every platform, not just Windows: on Linux
-        # getDefaultConfigDir resolves $XDG_CONFIG_HOME/nalar before
-        # $HOME/.config/nalar, so a child that inherits the parent's
+        # getDefaultConfigDir resolves $XDG_CONFIG_HOME/pabrik before
+        # $HOME/.config/pabrik, so a child that inherits the parent's
         # XDG_CONFIG_HOME (set to /home/runner/.config on the GH ubuntu
         # runner) writes config.json outside temp_dir and the assertions
         # below read a file this server never wrote. Mirrors
@@ -128,7 +128,7 @@ def preboot(default_nalar_bin):
         if os.name == "nt":
             appdata_roaming = temp_dir / "AppData" / "Roaming"
             appdata_local = temp_dir / "AppData" / "Local"
-            (appdata_roaming / "nalar").mkdir(parents=True, exist_ok=True)
+            (appdata_roaming / "pabrik").mkdir(parents=True, exist_ok=True)
             appdata_local.mkdir(parents=True, exist_ok=True)
             env["USERPROFILE"] = str(temp_dir)
             env["APPDATA"] = str(appdata_roaming)
@@ -158,7 +158,7 @@ def preboot(default_nalar_bin):
 
         h = FunctionalHarness(
             port=chosen_port,
-            nalar_bin=bin_path,
+            pabrik_bin=bin_path,
             temp_dir=temp_dir,
             orig_home=orig_home,
             log_path=log_path,
@@ -206,7 +206,7 @@ def _base_config(**extra) -> dict:
 
 
 def _settings_body(tools_marker=...):
-    """The EXACT whole-config shape NalarSettings.vue sends on Save from
+    """The EXACT whole-config shape PabrikSettings.vue sends on Save from
     any tab: profiles + operational settings, no top-level LLM defaults.
     `tools_marker=...` (Ellipsis) OMITS the key (another tab's save);
     otherwise the value is included verbatim.
@@ -241,7 +241,7 @@ def test_get_returns_tools_null_when_key_absent(preboot) -> None:
     from a backend that never shipped the field."""
     h = preboot(_base_config())
 
-    r = h.http("GET", "/api/config/nalar", expect=200).json()
+    r = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert "tools" in r, f"tools key missing from GET wire: {r!r}"
     assert r["tools"] is None, f"expected tools: null, got {r['tools']!r}"
 
@@ -257,13 +257,13 @@ def test_put_without_tools_key_preserves_on_disk_value(preboot) -> None:
     h = preboot(_base_config(tools=seeded))
 
     # Sanity: the seed is visible before the save.
-    r = h.http("GET", "/api/config/nalar", expect=200).json()
+    r = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert r["tools"] == seeded, f"seed not visible on GET: {r['tools']!r}"
 
     # Another tab's Settings save — whole config, NO tools key.
-    h.http("PUT", "/api/config/nalar", json_body=_settings_body(), expect=200)
+    h.http("PUT", "/api/config/pabrik", json_body=_settings_body(), expect=200)
 
-    r2 = h.http("GET", "/api/config/nalar", expect=200).json()
+    r2 = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert r2["tools"] == seeded, (
         f"PUT without a tools key erased the list: {r2['tools']!r}"
     )
@@ -280,12 +280,12 @@ def test_put_with_tools_array_persists(preboot) -> None:
 
     new_list = ["command", "write_file", "kanban_list"]
     h.http(
-        "PUT", "/api/config/nalar",
+        "PUT", "/api/config/pabrik",
         json_body=_settings_body(tools_marker=new_list),
         expect=200,
     )
 
-    r = h.http("GET", "/api/config/nalar", expect=200).json()
+    r = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert r["tools"] == new_list, f"GET did not reflect PUT: {r['tools']!r}"
     assert _on_disk(h).get("tools") == new_list, (
         f"tools did not land on disk: {_on_disk(h)!r}"
@@ -301,10 +301,10 @@ def test_put_empty_tools_array_persists(preboot) -> None:
     legacy defaults."""
     h = preboot(_base_config(tools=["command"]))
 
-    h.http("PUT", "/api/config/nalar", json_body=_settings_body(tools_marker=[]),
+    h.http("PUT", "/api/config/pabrik", json_body=_settings_body(tools_marker=[]),
            expect=200)
 
-    r = h.http("GET", "/api/config/nalar", expect=200).json()
+    r = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert "tools" in r, f"tools key missing from GET wire: {r!r}"
     assert r["tools"] == [], f"expected explicit [], got {r['tools']!r}"
     assert r["tools"] is not None, "[] collapsed to null on the wire"
@@ -321,7 +321,7 @@ def test_put_unknown_tool_name_returns_400(preboot) -> None:
     h = preboot(_base_config(tools=seeded))
 
     r = h.http(
-        "PUT", "/api/config/nalar",
+        "PUT", "/api/config/pabrik",
         json_body=_settings_body(tools_marker=["command", "definitely_not_a_tool"]),
         expect=400,
     ).json()
@@ -347,10 +347,10 @@ def test_put_explicit_null_preserves_existing_value(preboot) -> None:
     seeded = ["command", "glob"]
     h = preboot(_base_config(tools=seeded))
 
-    h.http("PUT", "/api/config/nalar", json_body=_settings_body(tools_marker=None),
+    h.http("PUT", "/api/config/pabrik", json_body=_settings_body(tools_marker=None),
            expect=200)
 
-    r = h.http("GET", "/api/config/nalar", expect=200).json()
+    r = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert r["tools"] == seeded, f"explicit null erased the list: {r['tools']!r}"
     assert _on_disk(h).get("tools") == seeded, (
         f"explicit null erased tools from disk: {_on_disk(h)!r}"

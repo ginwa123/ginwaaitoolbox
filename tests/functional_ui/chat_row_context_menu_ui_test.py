@@ -19,7 +19,7 @@ Covers the three actions added to the sidebar RECENT chat-row menu
    the chat's model profile on every toggle.
 
 Run:
-    NALAR_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/nalar \\
+    PABRIK_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/pabrik \\
       /home/ginwa/ginwaaitoolbox/.venv-func/bin/python -m pytest \\
       tests/functional_ui/chat_row_context_menu_ui_test.py -v -s
 
@@ -82,7 +82,7 @@ def _seed_matching_session(h: UIHarness, session_id: str, name: str) -> None:
     Uses the suite's own ``DbSeed`` helper, which validates the DB path with
     ``is_safe_tmp`` before touching it.
     """
-    seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+    seed = DbSeed(h.temp_dir / ".config" / "pabrik" / "agent.db")
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, name)
 
@@ -101,7 +101,7 @@ def _create_chat(h: UIHarness, ws_name: str, agent_name: str, chat_name: str) ->
 
 
 def _db(h: UIHarness) -> sqlite3.Connection:
-    return sqlite3.connect(str(h.temp_dir / ".config" / "nalar" / "agent.db"))
+    return sqlite3.connect(str(h.temp_dir / ".config" / "pabrik" / "agent.db"))
 
 
 def _task_name(h: UIHarness, task_id: str) -> str:

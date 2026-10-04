@@ -19,8 +19,8 @@
 //! (Chunk 9 deferred item, now landing)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../agentic_loop/design_model.zig");
 
@@ -34,7 +34,7 @@ pub fn designElementsUngroupHandler(
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const page_id = req.params.get("page_id") orelse "";
@@ -118,7 +118,7 @@ pub fn designElementsUngroupHandler(
 // Plan: docs/superpowers/specs/2026-07-29-design-right-click-group-menu.md
 
 const testing = std.testing;
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 
 fn setupDb() !struct {
     db: sqlite.SqliteBackend,

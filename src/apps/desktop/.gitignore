@@ -59,9 +59,9 @@ Thumbs.db
 # Vite
 *.timestamp-*-*.mjs
 
-# Nalar agent files
-.nalar/sessions/
-.nalar/cache/
+# Pabrik agent files
+.pabrik/sessions/
+.pabrik/cache/
 
 # Misc
 *.bak

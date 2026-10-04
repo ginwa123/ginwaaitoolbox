@@ -1,8 +1,8 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const sqlite = pabrikcore.sqlite;
 const auth_common = @import("auth_common.zig");
 const provisioning = @import("workspace_provisioning.zig");
 
@@ -18,10 +18,10 @@ pub const WorkspacesCreateError = error{
 /// POST /api/workspaces
 pub fn workspacesCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
-    // The owner is derived server-side from the `nalar_session` cookie —
+    // The owner is derived server-side from the `pabrik_session` cookie —
     // never from the request body, which a client controls (a body-supplied
     // owner id would be a spoofing vector). Auth off / no cookie resolves to
     // the shared `user_system` sentinel, so auth-off behaviour is unchanged.
@@ -74,7 +74,7 @@ fn useCase(
 ) WorkspacesCreateError!provisioning.ProvisionedWorkspace {
     if (body.len == 0) return error.MissingBody;
 
-    // Per nalar-http-handler-thin-wrapper-pattern.md: parseFromSliceLeaky
+    // Per pabrik-http-handler-thin-wrapper-pattern.md: parseFromSliceLeaky
     // is the correct API for per-request arena allocators.
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch {
         return error.InvalidJson;

@@ -22,7 +22,7 @@ directly, getting `KeyError: 'id'` / `'item_type'`.
 review feedback) — `deleteFileIfExists` for every tracked HTML file, no
 recursive rmdir. That's correct, but the test
 `test_delete_page_removes_entire_directory` expected the page FOLDER to
-disappear too. Per-file unlink leaves an empty `<item>/.nalar/design/<page>/`
+disappear too. Per-file unlink leaves an empty `<item>/.pabrik/design/<page>/`
 directory. The test was written against the pre-#197 behavior.
 
 **Affected test:** `tests/functional/design_lifecycle_test.py::test_delete_page_removes_entire_directory`.
@@ -30,7 +30,7 @@ directory. The test was written against the pre-#197 behavior.
 ### Root cause #3: test fixture isolation required
 The user added an explicit reminder: "make sure it's isolated, and don't
 touch the real HOME". The harness ALREADY isolates `$HOME` via the
-`/tmp/nalar-func-*` tempdir contract (see `tests/functional/harness.py`
+`/tmp/pabrik-func-*` tempdir contract (see `tests/functional/harness.py`
 `is_safe_tmp()` + `ALLOWED_TMP_PREFIXES` + the five `harness_safety_test.py`
 regression guards). All 12 harness_safety tests passed before AND after
 this PR — the isolation was correct; the failure was purely in the

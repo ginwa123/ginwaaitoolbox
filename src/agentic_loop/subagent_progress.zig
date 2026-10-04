@@ -41,10 +41,10 @@
 //!     (the live `progress` prop + displayRows computed)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const tree1_mod = nalarcore;
+const pabrikcore = @import("pabrikcore");
+const tree1_mod = pabrikcore;
 const on_event_sent = @import("on_event_sent.zig");
-const loggermod = nalarcore.loggermod;
+const loggermod = pabrikcore.loggermod;
 const helpers = @import("helpers");
 
 /// Lifecycle stage of one sub-agent within a spawn batch.

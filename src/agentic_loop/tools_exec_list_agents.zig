@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const list_agents_mod = nalarcore.list_agents;
+const agent = pabrikcore.agent;
+const list_agents_mod = pabrikcore.list_agents;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execListAgents(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

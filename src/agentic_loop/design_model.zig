@@ -3,7 +3,7 @@
 //! Each design workspace item has N pages (e.g. "Home", "Login",
 //! "Dashboard"), and each page has 0..N positioned elements (e.g.
 //! "login-card", "hero-image") with their HTML bodies stored on disk
-//! under `<workspace_item.path>/.nalar/design/<page_name>/<element_name>.html`.
+//! under `<workspace_item.path>/.pabrik/design/<page_name>/<element_name>.html`.
 //!
 //! Schema:
 //! - `design_pages` — created by Migration 055, upgraded by 056
@@ -29,8 +29,8 @@
 //! Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md (Chunk 1)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 const helpers = @import("helpers");
 const design_io = @import("design_io.zig");
 const on_event_sent_design = @import("on_event_sent_design.zig");
@@ -567,7 +567,7 @@ pub const AddElementError = error{
 ///      JOIN. Returns `PageNotFound` if the page is missing or
 ///      `ItemPathMissing` if the workspace_item has no `path`.
 ///   2. Sanitize page name and element name.
-///   3. Build file path: `<item_path>/.nalar/design/<page>/<element>.html`
+///   3. Build file path: `<item_path>/.pabrik/design/<page>/<element>.html`
 ///   4. Make the page directory (mkdir-p via Io).
 ///   5. Atomic-write the HTML body to disk.
 ///   6. INSERT the metadata row with all 11 v6 columns.
@@ -639,7 +639,7 @@ pub fn addElement(
     defer allocator.free(sanitized_elem);
 
     // 3. Build the file path.
-    const page_dir = try std.fmt.allocPrint(allocator, "{s}/.nalar/design/{s}", .{ lookup.item_path, sanitized_page });
+    const page_dir = try std.fmt.allocPrint(allocator, "{s}/.pabrik/design/{s}", .{ lookup.item_path, sanitized_page });
     defer allocator.free(page_dir);
     const file_path = try std.fmt.allocPrint(allocator, "{s}/{s}.html", .{ page_dir, sanitized_elem });
     defer allocator.free(file_path);
@@ -982,7 +982,7 @@ pub fn updateElement(
             // for some reason; use the row's `name` field).
             const elem_name = try allocator.dupe(u8, "element");
             defer allocator.free(elem_name);
-            const new_path = try std.fmt.allocPrint(allocator, "{s}/.nalar/design/{s}/{s}.html", .{
+            const new_path = try std.fmt.allocPrint(allocator, "{s}/.pabrik/design/{s}/{s}.html", .{
                 prow.values[2], sanitized_page, elem_name,
             });
             new_file_path_owned = new_path;
@@ -1996,7 +1996,7 @@ pub const GroupElementsError = error{
 ///   6. Emit `design_element_created` SSE for the parent + one
 ///      `design_element_updated` SSE per child.
 ///   7. Atomically write an empty `<div>` to
-///      `<item_path>/.nalar/design/<page>/<group_name>.html`.
+///      `<item_path>/.pabrik/design/<page>/<group_name>.html`.
 ///
 /// Returns the new parent's element_id (heap-owned; caller frees).
 ///
@@ -2134,7 +2134,7 @@ pub fn groupElements(
     defer allocator.free(sanitized_page);
     const sanitized_elem = try design_io.sanitizeFilename(allocator, input.parent_name);
     defer allocator.free(sanitized_elem);
-    const page_dir = try std.fmt.allocPrint(allocator, "{s}/.nalar/design/{s}", .{ lookup.item_path, sanitized_page });
+    const page_dir = try std.fmt.allocPrint(allocator, "{s}/.pabrik/design/{s}", .{ lookup.item_path, sanitized_page });
     defer allocator.free(page_dir);
     const file_path = try std.fmt.allocPrint(allocator, "{s}/{s}.html", .{ page_dir, sanitized_elem });
     defer allocator.free(file_path);
@@ -3485,7 +3485,7 @@ pub fn deletePage(
     // Collect every `file_path` from this page's elements BEFORE
     // the SQL DELETE so we have an authoritative list of files to
     // unlink. `file_path` is an absolute path written by `addElement`
-    // (`<item_path>/.nalar/design/<page_name>/<elem>.html`), so each
+    // (`<item_path>/.pabrik/design/<page_name>/<elem>.html`), so each
     // entry points at exactly one on-disk file — no
     // `path.dirname` derivation needed, no JOIN to `workspace_items`.
     //
@@ -3544,7 +3544,7 @@ pub fn deletePage(
     }
 
     // After unlinking every tracked HTML file, attempt to remove the
-    // now-empty page directory itself (`<item_path>/.nalar/design/<page>/`).
+    // now-empty page directory itself (`<item_path>/.pabrik/design/<page>/`).
     //
     // Why this step
     // ──────────────
@@ -4828,7 +4828,7 @@ test "reparentElements returns BadElementId when an id does not exist" {
 // ─── Behavioural tests for `moveElementsWithDescendantsBatch` (Chunk 1) ──
 //
 // Inline tests per the project rule (see
-// `nalar-agentic-loop-inline-tests-required.md`). Tests below follow
+// `pabrik-agentic-loop-inline-tests-required.md`). Tests below follow
 // the existing inline pattern in this file (e.g. `updateElementsBatch`
 // at line 2794+).
 
@@ -5435,7 +5435,7 @@ test "moveElementsWithDescendantsBatch handles deeply nested subtree (depth 3+)"
 // Plan: docs/superpowers/plans/2026-08-06-move-element-to-page.md (Chunk 1)
 //
 // Inline tests per the project rule (see
-// `nalar-agentic-loop-inline-tests-required.md`). Mirrors the
+// `pabrik-agentic-loop-inline-tests-required.md`). Mirrors the
 // `moveElementsWithDescendantsBatch` inline-test pattern above (lines
 // 4327-4929).
 
@@ -6622,7 +6622,7 @@ test "deletePage removes the design_pages row + cascade-deletes elements" {
 
     // Insert an element via setDesignPage's pairing — but we don't
     // need the workspace_item_task_id here. Just need the row.
-    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Home" });
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".pabrik/design/Home" });
     defer alloc.free(page_dir);
     const elem_path = try deletePageInsertElementWithDiskFile(
         alloc, &ctx.db, ctx.threaded.io(),
@@ -6655,8 +6655,8 @@ test "deletePage unlinks each element's HTML file individually (per-file, NOT re
     });
     defer alloc.free(page_id);
 
-    // Sanitized dir = "<item_path>/.nalar/design/Login".
-    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Login" });
+    // Sanitized dir = "<item_path>/.pabrik/design/Login".
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".pabrik/design/Login" });
     defer alloc.free(page_dir);
     const login_btn_path = try deletePageInsertElementWithDiskFile(
         alloc, &ctx.db, ctx.threaded.io(),
@@ -6787,7 +6787,7 @@ test "deletePage rmdirs the empty page directory (cleans up after per-file unlin
     });
     defer alloc.free(page_id);
 
-    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Clean" });
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".pabrik/design/Clean" });
     defer alloc.free(page_dir);
     const elem_path = try deletePageInsertElementWithDiskFile(
         alloc, &ctx.db, ctx.threaded.io(),
@@ -6826,7 +6826,7 @@ test "deletePage preserves a user-dropped file inside the page directory" {
     });
     defer alloc.free(page_id);
 
-    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Mixed" });
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".pabrik/design/Mixed" });
     defer alloc.free(page_dir);
     const elem_path = try deletePageInsertElementWithDiskFile(
         alloc, &ctx.db, ctx.threaded.io(),
@@ -8991,7 +8991,7 @@ test "addElement creates a row + writes the HTML file" {
     // Verify the HTML file was written to disk.
     const file_path = try std.fs.path.join(alloc, &.{
         ctx.item_path,
-        ".nalar/design/Login/login-card.html",
+        ".pabrik/design/Login/login-card.html",
     });
     defer alloc.free(file_path);
 
@@ -9150,7 +9150,7 @@ test "deleteElement removes the row and unlinks the file" {
 
     const file_path = try std.fs.path.join(alloc, &.{
         ctx.item_path,
-        ".nalar/design/Home/card.html",
+        ".pabrik/design/Home/card.html",
     });
     defer alloc.free(file_path);
 

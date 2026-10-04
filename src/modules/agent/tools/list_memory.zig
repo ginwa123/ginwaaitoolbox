@@ -21,7 +21,7 @@ pub const list_memory_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "list_memory",
-        .description = "List all available memory files. Memories are markdown " ++ "files stored in the global nalar config folder (" ++ "~/.config/nalar/memories/ on Linux, %APPDATA%/nalar/memories/ on " ++ "Windows). The listing returns each memory's filename, title " ++ "(from the first H1 line, or the filename stem if no H1 is " ++ "present), absolute path, and size in bytes. Use read_file " ++ "with the returned path to read a specific memory's contents. " ++ "This tool only lists memories — it does not create, modify, " ++ "or delete them.",
+        .description = "List all available memory files. Memories are markdown " ++ "files stored in the global pabrik config folder (" ++ "~/.config/pabrik/memories/ on Linux, %APPDATA%/pabrik/memories/ on " ++ "Windows). The listing returns each memory's filename, title " ++ "(from the first H1 line, or the filename stem if no H1 is " ++ "present), absolute path, and size in bytes. Use read_file " ++ "with the returned path to read a specific memory's contents. " ++ "This tool only lists memories — it does not create, modify, " ++ "or delete them.",
         .parameters = .{
             .type = "object",
             .properties = &.{},
@@ -123,7 +123,7 @@ test "toJson includes all four fields per memory" {
         .{
             .name = "user-prefs.md",
             .title = "User Preferences",
-            .path = "/home/u/.config/nalar/memories/user-prefs.md",
+            .path = "/home/u/.config/pabrik/memories/user-prefs.md",
             .size = 1024,
         },
     };
@@ -136,7 +136,7 @@ test "toJson includes all four fields per memory" {
     try std.testing.expectEqual(@as(usize, 1), parsed.value.memories.len);
     try std.testing.expectEqualStrings("user-prefs.md", parsed.value.memories[0].name);
     try std.testing.expectEqualStrings("User Preferences", parsed.value.memories[0].title);
-    try std.testing.expectEqualStrings("/home/u/.config/nalar/memories/user-prefs.md", parsed.value.memories[0].path);
+    try std.testing.expectEqualStrings("/home/u/.config/pabrik/memories/user-prefs.md", parsed.value.memories[0].path);
     try std.testing.expectEqual(@as(u64, 1024), parsed.value.memories[0].size);
 }
 
@@ -161,7 +161,7 @@ test "execute_list_memory returns missing-dir empty XML, no crash" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-list-memory-missing-home";
+    const tmp_home = "/tmp/pabrik-list-memory-missing-home";
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
 
@@ -180,14 +180,14 @@ test "execute_list_memory returns missing-dir empty XML, no crash" {
     try std.testing.expect(parsed.value.@"error" == null);
 }
 
-test "execute_list_memory lists .md files in HOME/.config/nalar/memories" {
+test "execute_list_memory lists .md files in HOME/.config/pabrik/memories" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-list-memory-with-files";
-    const memories_dir = "/tmp/nalar-list-memory-with-files/.config/nalar/memories";
-    const file1_path = "/tmp/nalar-list-memory-with-files/.config/nalar/memories/user-prefs.md";
-    const file2_path = "/tmp/nalar-list-memory-with-files/.config/nalar/memories/project-notes.md";
+    const tmp_home = "/tmp/pabrik-list-memory-with-files";
+    const memories_dir = "/tmp/pabrik-list-memory-with-files/.config/pabrik/memories";
+    const file1_path = "/tmp/pabrik-list-memory-with-files/.config/pabrik/memories/user-prefs.md";
+    const file2_path = "/tmp/pabrik-list-memory-with-files/.config/pabrik/memories/project-notes.md";
 
     // Clean up any leftovers from prior runs
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
@@ -216,7 +216,7 @@ test "execute_list_memory lists .md files in HOME/.config/nalar/memories" {
     }
 
     // Also create a .txt file that should be SKIPPED
-    const txt_path = "/tmp/nalar-list-memory-with-files/.config/nalar/memories/notes.txt";
+    const txt_path = "/tmp/pabrik-list-memory-with-files/.config/pabrik/memories/notes.txt";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, txt_path, .{});
         defer std.Io.File.close(f, io);
@@ -225,9 +225,9 @@ test "execute_list_memory lists .md files in HOME/.config/nalar/memories" {
 
     var env = std.process.Environ.Map.init(alloc);
     defer env.deinit();
-    // Set HOME only so get_global_memories_path falls back to HOME/.config/nalar/memories,
+    // Set HOME only so get_global_memories_path falls back to HOME/.config/pabrik/memories,
     // which matches where the test created the files. Setting XDG_CONFIG_HOME would
-    // make the tool look at ${XDG_CONFIG_HOME}/nalar/memories (XDG spec) instead.
+    // make the tool look at ${XDG_CONFIG_HOME}/pabrik/memories (XDG spec) instead.
     try env.put("HOME", tmp_home);
 
     const output = try list_memory.execute_list_memory(alloc, io, &env);
@@ -259,9 +259,9 @@ test "execute_list_memory falls back to filename stem when no H1 present" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-list-memory-no-h1";
-    const memories_dir = "/tmp/nalar-list-memory-no-h1/.config/nalar/memories";
-    const file_path = "/tmp/nalar-list-memory-no-h1/.config/nalar/memories/random-name.md";
+    const tmp_home = "/tmp/pabrik-list-memory-no-h1";
+    const memories_dir = "/tmp/pabrik-list-memory-no-h1/.config/pabrik/memories";
+    const file_path = "/tmp/pabrik-list-memory-no-h1/.config/pabrik/memories/random-name.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};

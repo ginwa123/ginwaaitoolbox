@@ -40,7 +40,7 @@ Goal: every Windows-only step uses `shell: pwsh`. Linux/macOS stay on `shell: ba
 
 2. **PowerShell 5.1 parser bug with long scripts** (PR #244 history, runs 31841182154 / 31859864874 / 31860741395 / 31861962678 / 31864244047). The big scripts were split into ~50-line chunks. **pwsh doesn't have this bug**, so once we switch to pwsh we can leave the existing splits (don't introduce risk on this PR) — but we CAN remove the comment block that explains the split was for 5.1.
 
-3. **The self-hosted runner has Git for Windows installed** (proven by the existing `bash`/`timeout`/`grep` smoke test step). We don't have to keep bash on the path for nalar's build — but **Zig's `addSystemCommand` invokes `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh`** inside `zig build test`. That happens at *runtime* of the test step, not at step setup. Our existing pwsh wrapper already handles this with `$env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH` — keep it.
+3. **The self-hosted runner has Git for Windows installed** (proven by the existing `bash`/`timeout`/`grep` smoke test step). We don't have to keep bash on the path for pabrik's build — but **Zig's `addSystemCommand` invokes `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh`** inside `zig build test`. That happens at *runtime* of the test step, not at step setup. Our existing pwsh wrapper already handles this with `$env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH` — keep it.
 
 4. **winget is available** — proven by the existing `Install ripgrep via winget` block (lines 583–591) and the MSVC installer block (line 345). Use it as the canonical install path when possible.
 
@@ -81,7 +81,7 @@ Place the step **immediately after the existing `Install Zig` step**, gated on `
 
 These two were already on pwsh and stay that way:
 - Line 812 — `Run main test suite (Windows)` (no change)
-- Line 837 — `Build nalar + nalar-desktop binaries (Windows)` (no change)
+- Line 837 — `Build pabrik + pabrik-desktop binaries (Windows)` (no change)
 
 ### Change 3: Rewrite the Windows desktop smoke test in PowerShell
 
@@ -120,11 +120,11 @@ After pushing this branch and opening a PR, the user can monitor the CI:
 
 2. **`Run main test suite (Windows)` step** — should now execute `zig build test --summary all` from inside the pwsh wrapper (already wired) instead of failing with `pwsh: command not found`. Expect ~5-10 min once vendor caches are warm.
 
-3. **`Build nalar + nalar-desktop binaries (Windows)` step** — should produce `zig-out/bin/nalar.exe` + `zig-out/bin/nalar-desktop.exe`.
+3. **`Build pabrik + pabrik-desktop binaries (Windows)` step** — should produce `zig-out/bin/pabrik.exe` + `zig-out/bin/pabrik-desktop.exe`.
 
 4. **`Smoke test: desktop binary (Windows)` step** — should now run via PowerShell's `Start-Process` + `WaitForExit(10000)` instead of Git-bash, with the same 10-second watchdog + `smoke:` log grep.
 
-5. **`Upload nalar + nalar-desktop binaries` step** — should upload 3 artifacts (`nalar-x86_64-linux-gnu-<sha>`, `nalar-aarch64-macos-<sha>`, `nalar-x86_64-windows-gnu-<sha>`).
+5. **`Upload pabrik + pabrik-desktop binaries` step** — should upload 3 artifacts (`pabrik-x86_64-linux-gnu-<sha>`, `pabrik-aarch64-macos-<sha>`, `pabrik-x86_64-windows-gnu-<sha>`).
 
 6. **Frontend Linux + macOS jobs** — unchanged from baseline, should stay green.
 

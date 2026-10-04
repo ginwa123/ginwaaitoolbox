@@ -1,9 +1,9 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const design_io = @import("../agentic_loop/design_io.zig");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
 
 pub const WorkspaceItemsDeleteError = error{
     OutOfMemory,
@@ -15,7 +15,7 @@ pub const WorkspaceItemsDeleteError = error{
 pub fn workspaceItemsDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
     const io = di.io;
 
@@ -50,7 +50,7 @@ const WorkspaceItemsDeleteResult = struct {
 fn useCase(
     allocator: std.mem.Allocator,
     io: std.Io,
-    sqlite_db: *nalarcore.sqlite.SqliteBackend,
+    sqlite_db: *pabrikcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) WorkspaceItemsDeleteError!WorkspaceItemsDeleteResult {
     // Check if item exists first
@@ -61,11 +61,11 @@ fn useCase(
     if (existing == null) return error.WorkspaceItemNotFound;
     defer existing.?.deinit(allocator);
 
-    // For design items, rmdir the .nalar/design/ folder from disk
+    // For design items, rmdir the .pabrik/design/ folder from disk
     // BEFORE the SQL DELETE. The DB row's FK ON DELETE CASCADE on
     // design_pages takes care of the row cleanup, but the on-disk
     // HTML files would otherwise be orphaned (the DB has no
-    // awareness of them). The path is `<workspace_item.path>/.nalar/design/`
+    // awareness of them). The path is `<workspace_item.path>/.pabrik/design/`
     // per design_io.atomicWriteFile's convention.
     //
     // Best-effort: a failure to rmdir the folder is logged but does
@@ -81,7 +81,7 @@ fn useCase(
                 var folder_path_buf: [std.fs.max_path_bytes]u8 = undefined;
                 const folder_path = std.fmt.bufPrint(
                     &folder_path_buf,
-                    "{s}/.nalar/design",
+                    "{s}/.pabrik/design",
                     .{p},
                 ) catch null;
                 if (folder_path) |fp| {

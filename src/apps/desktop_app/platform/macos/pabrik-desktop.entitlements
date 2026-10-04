@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Minimal entitlements for pabrik-desktop (ad-hoc signed, dev workflow).
+
+      com.apple.security.cs.allow-jit
+        REQUIRED for JavaScriptCore (used by WKWebView) to JIT-compile
+        JavaScript. Without this, macOS kills the process with SIGSYS
+        ("Bad system call") the moment WKWebView tries to allocate an
+        executable JIT page. This is the symptom that prompted adding
+        this file.
+
+      com.apple.security.cs.allow-unsigned-executable-memory
+        Lets the process map rwx pages without JIT codesigning. WKWebView
+        uses this for some internal scratch buffers that aren't strictly
+        JIT. Optional but recommended to avoid second-SIGSYS symptoms
+        later in the lifecycle.
+
+      com.apple.security.cs.disable-library-validation
+        Permits loading libraries (Frameworks, dylibs) that don't match
+        the team's signature. Needed for ad-hoc signed binaries that
+        link system frameworks at runtime (WebKit, Cocoa). Safe to grant
+        in dev — the libraries in question are first-party Apple
+        frameworks shipped with macOS.
+
+      com.apple.security.network.client + com.apple.security.network.server
+        WKWebView's underlying network stack needs outbound socket
+        access to fetch remote resources (CDN assets, webfonts) and
+        inbound socket access if you serve anything from the app. Both
+        are harmless for a webview wrapper.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

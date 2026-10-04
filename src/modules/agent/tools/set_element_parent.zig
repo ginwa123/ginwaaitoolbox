@@ -8,9 +8,9 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const design_model = nalarcore.ai_mod.design_model;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const design_model = pabrikcore.ai_mod.design_model;
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 
@@ -146,7 +146,7 @@ pub fn executeSetElementParentToString(
     // 3. Render the response JSON, re-using the element renderer from
     //    add_design_element.zig (parsed back into a value so the response
     //    is built via serialization, never string-concat).
-    const elem_json = try nalarcore.add_design_element.elementToJSON(allocator, elem);
+    const elem_json = try pabrikcore.add_design_element.elementToJSON(allocator, elem);
     defer allocator.free(elem_json);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, elem_json, .{});
     defer parsed.deinit();

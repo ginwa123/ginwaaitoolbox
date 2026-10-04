@@ -1,9 +1,9 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const auth_common = @import("auth_common.zig");
-const gserverz = nalarcore.gserverz;
-const sqlite = nalarcore.sqlite;
+const gserverz = pabrikcore.gserverz;
+const sqlite = pabrikcore.sqlite;
 
 // ─── Pattern: thin handler + use case in one file ─────────────────────────
 //
@@ -83,7 +83,7 @@ pub fn workspacesReorderHandler(
     }
 
     // Step 3: call the use case.
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     // Used to be `catch ""`. An unresolved owner is `isSharedOwner("")`, which
     // the visibility clause treats as "see everything" — so a single
     // allocation failure here silently widened the caller to every workspace
@@ -140,7 +140,7 @@ const ReorderError = error{
 // UX this is acceptable: concurrent reorders from different
 // clients are last-write-wins, and the final state is always a
 // valid permutation of the existing rows.
-fn reorderWorkspaces(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend, ordered_ids: []const []const u8, owner: []const u8) ReorderError!ReorderResult {
+fn reorderWorkspaces(allocator: std.mem.Allocator, db: *pabrikcore.sqlite.SqliteBackend, ordered_ids: []const []const u8, owner: []const u8) ReorderError!ReorderResult {
     if (ordered_ids.len > MAX_REORDER_IDS) return error.TooManyIds;
 
     const count: i64 = @intCast(ordered_ids.len);

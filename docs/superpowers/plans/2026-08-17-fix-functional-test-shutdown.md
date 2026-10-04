@@ -40,7 +40,7 @@ Three bugs compounding, in order of fix:
 
 ### `src/ai_workflow/tui/http_handlers/shutdown.zig`
 
-The `/test/shutdown` endpoint is **test-only** (production uses the `nalar
+The `/test/shutdown` endpoint is **test-only** (production uses the `pabrik
 service` daemon + SIGTERM). Make it actually exit the process by spawning a
 detached thread that calls `std.process.exit(0)` after a 50ms sleep (so the
 HTTP response has time to flush over the wire).
@@ -104,14 +104,14 @@ future regressions.
 ### `tests/functional/smoke_boot_test.py`
 
 Add `test_teardown_completes_within_3s` regression test that boots a fresh
-nalar, drives `health()`, and asserts `teardown()` finishes in < 3s. The
+pabrik, drives `health()`, and asserts `teardown()` finishes in < 3s. The
 budget is 15× the measured post-fix teardown (~0.2s) — generous for slow CI
 runners, but 3× tighter than the old failing 10s behavior. If it regresses,
 the suite will go from ~3 min back to ~10 min.
 
 ## Verification
 
-Local measurements (single-core, Linux x86_64, nalar-core Debug build):
+Local measurements (single-core, Linux x86_64, pabrik-core Debug build):
 
 | | Before | After |
 |---|---|---|
@@ -133,6 +133,6 @@ thread). The harness changes are pure Python and the new `waitpid` logic
 falls back to `os.kill(pid, 0)` on Windows.
 
 prod paths unaffected:
-- `nalar service start/stop` uses SIGTERM, not the `/test/shutdown` endpoint
+- `pabrik service start/stop` uses SIGTERM, not the `/test/shutdown` endpoint
 - The desktop app uses Tauri IPC, not HTTP shutdown
 - The Vue frontend doesn't call `/test/shutdown`

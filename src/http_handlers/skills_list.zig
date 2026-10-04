@@ -1,15 +1,15 @@
 //! `GET /api/skills` — list all skills from global and local dirs.
 //!
-//! Global skills come from `~/.config/nalar/skills/` (or
-//! `XDG_CONFIG_HOME`); local skills come from `{cwd}/.nalar/skills/`.
+//! Global skills come from `~/.config/pabrik/skills/` (or
+//! `XDG_CONFIG_HOME`); local skills come from `{cwd}/.pabrik/skills/`.
 //!
 //! Layered as `useCase` (resolve singleton + read skills + serialize
 //! to JSON) and a thin handler that maps errors to status codes.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const list_skills_mod = nalarcore.skill_tools;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const list_skills_mod = pabrikcore.skill_tools;
 
 /// Domain-level error set for `useCase`. The `listAllSkills` +
 /// `toJson` pipeline can fail with various Io / allocation errors
@@ -29,7 +29,7 @@ fn useCase(
     io: std.Io,
     cwd_param: ?[]const u8,
 ) SkillsListError![]const u8 {
-    const di = nalarcore.getSingleton() catch return error.Internal;
+    const di = pabrikcore.getSingleton() catch return error.Internal;
     const environment = di.environment;
 
     // List all skills. Catch the broader set of Io/alloc errors and
@@ -64,7 +64,7 @@ pub fn skillsListHandler(
         };
         return res.jsonResponse(.{
             .status_code = status,
-            .data = try nalarcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+            .data = try pabrikcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
 

@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const set_design_page_mod = nalarcore.set_design_page;
+const agent = pabrikcore.agent;
+const set_design_page_mod = pabrikcore.set_design_page;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execSetDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

@@ -14,8 +14,8 @@
 //! Task: task_1789505553300_1
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 
@@ -78,7 +78,7 @@ pub const SystemPromptCreateOutput = struct {
 /// `position = MAX(position) + 1` (COALESCE so the first row gets 0).
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: SystemPromptCreateInput,
 ) SystemPromptCreateError!SystemPromptCreateOutput {
     if (input.routine_id.len == 0) return error.RoutineIdRequired;
@@ -139,7 +139,7 @@ pub fn agentRoutineSystemPromptCreateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const routine_id = req.params.get("routine_id") orelse "";
@@ -203,7 +203,7 @@ pub fn agentRoutineSystemPromptCreateHandler(
 //   4. Happy path: first row gets position 0; second gets 1
 //   5. Empty title tolerated (COALESCE → '')
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration087CreateAgentRoutines = @import("../migrations/migration.zig").Migration087CreateAgentRoutines;
 

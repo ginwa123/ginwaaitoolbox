@@ -15,8 +15,8 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const terminal_session = @import("terminal_session.zig");
 const auth_common = @import("auth_common.zig");
 
@@ -68,7 +68,7 @@ pub fn terminalCreateHandler(
     const shell: ?[]const u8 = if (parsed.shell) |s| (if (s.len == 0) null else s) else null;
 
     // Owner for the new PTY session (plan 2026-09-25, W2.5). Server-derived
-    // from the `nalar_session` cookie only — never a body/query/header field.
+    // from the `pabrik_session` cookie only — never a body/query/header field.
     // Auth off (or no singleton) yields the shared sentinel, which
     // `mayAccess` treats as "no identity" so every caller may attach.
     var owner_buf: [128]u8 = undefined;

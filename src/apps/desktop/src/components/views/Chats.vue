@@ -1,7 +1,7 @@
 <!-- eslint-disable vue/multi-word-component-names -->
 <script setup lang="ts">
 /**
- * The app's landing page: what Nalar is, and how to start.
+ * The app's landing page: what Pabrik is, and how to start.
  *
  * The ONE control is the Create-workspace form — `/app` is the entry
  * point and a workspace is the prerequisite for everything else;
@@ -55,7 +55,7 @@ async function handleCreateWorkspace() {
       class="mt-4 text-display-lg font-semibold tracking-tight"
       style="color: var(--semantic-text)"
     >
-      nalar
+      pabrik
     </h1>
 
     <p
@@ -71,7 +71,7 @@ async function handleCreateWorkspace() {
       class="mt-6 max-w-[520px] text-body leading-relaxed"
       style="color: var(--semantic-text-muted)"
     >
-      Nalar is an AI agent workspace. It runs your own model against real files: chat with it, break
+      Pabrik is an AI agent workspace. It runs your own model against real files: chat with it, break
       the work into kanban tasks, or design in a canvas — with the tools you attach.
     </p>
 

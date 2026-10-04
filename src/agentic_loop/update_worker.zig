@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
-const logger_mod = nalarcore.loggermod;
+const sqlite = pabrikcore.sqlite;
+const logger_mod = pabrikcore.loggermod;
 const helpers = @import("helpers");
 const onEventSendWorkers = @import("sse_send_event_worker.zig").onEventSendWorkers;
-const event_bus_mod = nalarcore.event_bus;
+const event_bus_mod = pabrikcore.event_bus;
 const testing = std.testing;
 
 pub const UpsertWorkerInput = struct {

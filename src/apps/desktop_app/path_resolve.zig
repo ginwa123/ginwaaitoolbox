@@ -1,16 +1,16 @@
 // src/apps/desktop_app/path_resolve.zig
 //
-// Resolves the path to the `nalar` binary at runtime.
+// Resolves the path to the `pabrik` binary at runtime.
 //
 // Resolution order (first match wins):
-//   1. explicit_path (from --nalar-path) — handed through unchanged; the
+//   1. explicit_path (from --pabrik-path) — handed through unchanged; the
 //      spawn() call will produce a clear error if the file is missing.
-//   2. <dir_of_self_exe>/nalar — for bundled distributions where nalar
-//      sits next to nalar-desktop.
-//   3. Each directory in $PATH, joined with `/nalar`.
+//   2. <dir_of_self_exe>/pabrik — for bundled distributions where pabrik
+//      sits next to pabrik-desktop.
+//   3. Each directory in $PATH, joined with `/pabrik`.
 //
 // Returns null if nothing was found. The caller (main.zig in Chunk 8)
-// decides how to handle a missing nalar — usually a clear error and exit.
+// decides how to handle a missing pabrik — usually a clear error and exit.
 //
 // Zig 0.16 API notes:
 //   * `std.fs.accessAbsolute(path, .{})` is the in-fs helper for "does
@@ -32,7 +32,7 @@ const SelfExeError = error{
     OutOfMemory,
 };
 
-/// Resolve the path to the nalar binary. See module doc for the resolution
+/// Resolve the path to the pabrik binary. See module doc for the resolution
 /// order. Caller owns the returned slice and must `allocator.free` it.
 pub fn resolve(
     allocator: std.mem.Allocator,
@@ -40,24 +40,24 @@ pub fn resolve(
     self_exe_path: []const u8,
     path_env: []const u8,
 ) ?[]u8 {
-    // 1. Explicit path from --nalar-path: pass through unchanged. The user
+    // 1. Explicit path from --pabrik-path: pass through unchanged. The user
     //    asked for a specific path; if it doesn't exist, the spawn() call
     //    will surface a "file not found" error which is more useful than
     //    silently falling back to PATH lookup. This also lets users point
     //    at a path that doesn't exist yet but will (e.g. a build script
-    //    that produces nalar before desktop launches).
+    //    that produces pabrik before desktop launches).
     if (explicit_path) |p| {
         return allocator.dupe(u8, p) catch null;
     }
 
     // 2. Next to self. `self_exe_path` may be an absolute path or a bare
-    //    name (e.g. "nalar-desktop" when called with PATH lookup); only
+    //    name (e.g. "pabrik-desktop" when called with PATH lookup); only
     //    the absolute case is useful.
     if (std.fs.path.isAbsolute(self_exe_path)) {
         const self_dir = std.fs.path.dirname(self_exe_path) orelse ".";
         // On Windows, the actual on-disk name has the `.exe` suffix
-        // — `std.c.access("...\nalar", F_OK)` returns ENOENT even
-        // though `...\nalar.exe` exists, because the UCRT `access`
+        // — `std.c.access("...\pabrik", F_OK)` returns ENOENT even
+        // though `...\pabrik.exe` exists, because the UCRT `access`
         // call does NOT auto-append `.exe` the way CreateProcessW
         // does. Linux/macOS have no extension to worry about, so we
         // hardcode the suffix per-platform rather than probing both.
@@ -67,18 +67,18 @@ pub fn resolve(
         // `std.fs.path.join` uses `/` as the separator on every
         // platform (including Windows — see Zig issue #16589), which
         // would split the joined segments into
-        // `dir/nalar/.exe` → `dir\nalar\.exe` after the OS rewrites
-        // the slashes, which is interpreted as a subdirectory `nalar`
+        // `dir/pabrik/.exe` → `dir\pabrik\.exe` after the OS rewrites
+        // the slashes, which is interpreted as a subdirectory `pabrik`
         // containing a file named `.exe`. That file doesn't exist, so
         // the fileExists probe returns false even though
-        // `dir\nalar.exe` is sitting right there. Concatenating
-        // `nalar` + `.exe` ourselves and passing the single
-        // `dir\nalar.exe` to `path.join` sidesteps the bug.
+        // `dir\pabrik.exe` is sitting right there. Concatenating
+        // `pabrik` + `.exe` ourselves and passing the single
+        // `dir\pabrik.exe` to `path.join` sidesteps the bug.
         const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
         const base_name = if (exe_suffix.len > 0)
-            std.fmt.allocPrint(allocator, "nalar{s}", .{exe_suffix}) catch return null
+            std.fmt.allocPrint(allocator, "pabrik{s}", .{exe_suffix}) catch return null
         else
-            allocator.dupe(u8, "nalar") catch return null;
+            allocator.dupe(u8, "pabrik") catch return null;
         defer allocator.free(base_name);
         const candidate = std.fs.path.join(allocator, &.{ self_dir, base_name }) catch return null;
         if (fileExists(candidate)) {
@@ -90,28 +90,28 @@ pub fn resolve(
     // 3. $PATH lookup. PATH separator is OS-specific: `:` on
     //    Linux/macOS, `;` on Windows. We pick the separator by
     //    `builtin.os.tag` so this works on every platform that
-    //    nalar-desktop can run on (was: hardcoded `:` which broke
+    //    pabrik-desktop can run on (was: hardcoded `:` which broke
     //    Windows — PATH on Windows is `;`-separated, so tokenizing
     //    by `:` treated the whole PATH as ONE giant directory and
-    //    `fileExists(<giant-path>/nalar)` always returned false,
-    //    surfacing as `error.NalarNotFound` in attach.zig).
+    //    `fileExists(<giant-path>/pabrik)` always returned false,
+    //    surfacing as `error.PabrikNotFound` in attach.zig).
     //
     // Same `.exe` caveat as the next-to-self branch above: on
     // Windows the binary on disk has the suffix, but `std.c.access`
     // doesn't auto-append it. Without this, even a correctly
     // tokenized PATH like `C:\vcpkg\installed\x64-windows\bin` fails
-    // its fileExists probe for `nalar` when the real file is
-    // `nalar.exe`.
+    // its fileExists probe for `pabrik` when the real file is
+    // `pabrik.exe`.
     //
-    // Same single-segment caveat as above: concatenate `nalar` +
+    // Same single-segment caveat as above: concatenate `pabrik` +
     // `.exe` ourselves before passing to `path.join`, otherwise
-    // `path.join` splits on `/` and produces `dir/nalar/.exe`.
+    // `path.join` splits on `/` and produces `dir/pabrik/.exe`.
     const path_separator: u8 = if (builtin.os.tag == .windows) ';' else ':';
     const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
     const base_name = if (exe_suffix.len > 0)
-        std.fmt.allocPrint(allocator, "nalar{s}", .{exe_suffix}) catch return null
+        std.fmt.allocPrint(allocator, "pabrik{s}", .{exe_suffix}) catch return null
     else
-        allocator.dupe(u8, "nalar") catch return null;
+        allocator.dupe(u8, "pabrik") catch return null;
     defer allocator.free(base_name);
     var it = std.mem.tokenizeScalar(u8, path_env, path_separator);
     while (it.next()) |dir| {
@@ -198,7 +198,7 @@ fn macosSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
     // the returned path may contain symbolic links and ".." components —
     // we hand it back as-is and let the "next to self" check in `resolve`
     // (`std.fs.path.isAbsolute`) handle that. For a freshly-built binary
-    // in e.g. `./zig-out/bin/nalar-desktop`, the returned path is already
+    // in e.g. `./zig-out/bin/pabrik-desktop`, the returned path is already
     // absolute (the kernel knows where it was exec'd from), so the check
     // works without further resolution.
     //
@@ -232,13 +232,13 @@ fn macosSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
 /// installed copy, not a per-run temp extraction).
 ///
 /// Order (first hit wins):
-///   1. %LOCALAPPDATA%\nalar\html\index.html (Install-Nalar.ps1 layout)
+///   1. %LOCALAPPDATA%\pabrik\html\index.html (Install-Pabrik.ps1 layout)
 ///   2. <dir_of_self_exe>\html\index.html (portable / repo-checkout layout:
-///      html/ sitting next to nalar-desktop.exe, e.g. zig-out/bin/html)
+///      html/ sitting next to pabrik-desktop.exe, e.g. zig-out/bin/html)
 ///   3. Legacy `webapp/` fallbacks (pre-rename installs): same two probes
 ///      with `webapp` instead of `html`, so existing
-///      %LOCALAPPDATA%\nalar\webapp installs keep working until the user
-///      re-runs Install-Nalar.ps1 (which migrates webapp/ -> html/).
+///      %LOCALAPPDATA%\pabrik\webapp installs keep working until the user
+///      re-runs Install-Pabrik.ps1 (which migrates webapp/ -> html/).
 ///
 /// Non-Windows returns null immediately -- Linux/macOS keep the embedded
 /// + temp-extraction flow unchanged (Windows-only feature per request).
@@ -248,14 +248,14 @@ pub fn findInstalledWebapp(
 ) ?[]u8 {
     if (builtin.os.tag != .windows) return null;
 
-    // 1. %LOCALAPPDATA%\nalar\html\index.html
+    // 1. %LOCALAPPDATA%\pabrik\html\index.html
     if (std.c.getenv("LOCALAPPDATA")) |appdata_z| {
         const appdata = std.mem.sliceTo(appdata_z, 0);
-        const probe = std.fs.path.join(allocator, &.{ appdata, "nalar", "html", "index.html" }) catch null;
+        const probe = std.fs.path.join(allocator, &.{ appdata, "pabrik", "html", "index.html" }) catch null;
         if (probe) |p| {
             defer allocator.free(p);
             if (fileExists(p)) {
-                return std.fs.path.join(allocator, &.{ appdata, "nalar", "html" }) catch null;
+                return std.fs.path.join(allocator, &.{ appdata, "pabrik", "html" }) catch null;
             }
         }
     }
@@ -275,11 +275,11 @@ pub fn findInstalledWebapp(
     // 3. Legacy webapp/ fallbacks (pre-rename). Removed once all installs migrate.
     if (std.c.getenv("LOCALAPPDATA")) |appdata_z| {
         const appdata = std.mem.sliceTo(appdata_z, 0);
-        const probe = std.fs.path.join(allocator, &.{ appdata, "nalar", "webapp", "index.html" }) catch null;
+        const probe = std.fs.path.join(allocator, &.{ appdata, "pabrik", "webapp", "index.html" }) catch null;
         if (probe) |p| {
             defer allocator.free(p);
             if (fileExists(p)) {
-                return std.fs.path.join(allocator, &.{ appdata, "nalar", "webapp" }) catch null;
+                return std.fs.path.join(allocator, &.{ appdata, "pabrik", "webapp" }) catch null;
             }
         }
     }
@@ -329,34 +329,34 @@ fn fileExists(path: []const u8) bool {
 }
 
 // ===== Tests merged from path_resolve_test.zig (2026-09-29 flatten) =====
-// Tests for the nalar-binary path resolver.
+// Tests for the pabrik-binary path resolver.
 //
 // The three test cases match the plan's resolution order:
-//   1. explicit_path (from `--nalar-path`) wins
+//   1. explicit_path (from `--pabrik-path`) wins
 //   2. next-to-self lookup (relative to the running executable)
 //   3. $PATH fallback
 //
 // The "next to self" test is intentionally weak — it does not assert on the
 // returned path because that depends on whether the test runner's $PATH has
-// a `nalar` binary. The point of that test is to exercise the function
+// a `pabrik` binary. The point of that test is to exercise the function
 // shape, not the file system. The strong assertion lives in the Chunk 9
 // integration test that runs the full binary.
 
 const testing = std.testing;
 
-test "resolveNalarPath: returns --nalar-path if provided" {
+test "resolvePabrikPath: returns --pabrik-path if provided" {
     const allocator = testing.allocator;
     // We pass a path that almost certainly does not exist. Per the design
-    // contract: --nalar-path is a USER SUPPLIED OVERRIDE — if the file
+    // contract: --pabrik-path is a USER SUPPLIED OVERRIDE — if the file
     // is missing, the spawn() call will produce a clear error. resolve()
     // should not pre-validate; it just hands the path through.
-    const result = resolve(allocator, "/custom/nalar", "nalar-desktop", "/usr/bin");
+    const result = resolve(allocator, "/custom/pabrik", "pabrik-desktop", "/usr/bin");
     try testing.expect(result != null);
-    try testing.expectEqualStrings("/custom/nalar", result.?);
+    try testing.expectEqualStrings("/custom/pabrik", result.?);
     allocator.free(result.?);
 }
 
-test "resolveNalarPath: handles next-to-self + PATH lookup without crashing" {
+test "resolvePabrikPath: handles next-to-self + PATH lookup without crashing" {
     const allocator = testing.allocator;
     // Use a "next to self" path that does not exist; PATH also probably lacks
     // the binary in CI. We just want to confirm the function doesn't panic,
@@ -364,23 +364,23 @@ test "resolveNalarPath: handles next-to-self + PATH lookup without crashing" {
     const result = resolve(
         allocator,
         null,
-        "/nonexistent/dir/nalar-desktop",
+        "/nonexistent/dir/pabrik-desktop",
         "/usr/bin:/bin",
     );
     // The function should not crash. It may return null (if neither path
-    // has a nalar binary) or a real path (if the test env has nalar
+    // has a pabrik binary) or a real path (if the test env has pabrik
     // installed in /usr/bin or /bin) — both outcomes are valid.
     if (result) |r| allocator.free(r);
 }
 
-test "resolveNalarPath: returns null when nalar is not found anywhere" {
+test "resolvePabrikPath: returns null when pabrik is not found anywhere" {
     const allocator = testing.allocator;
     // Use a path_env that definitely doesn't exist and a self path that
     // definitely doesn't exist.
     const result = resolve(
         allocator,
         null,
-        "/nonexistent/dir/nalar-desktop",
+        "/nonexistent/dir/pabrik-desktop",
         "/nonexistent/path/with/no/binaries",
     );
     try testing.expect(result == null);
@@ -390,10 +390,10 @@ test "findInstalledWebapp: returns null for nonexistent exe dir without crashing
     const allocator = testing.allocator;
     const result = findInstalledWebapp(
         allocator,
-        "/nonexistent/dir/nalar-desktop",
+        "/nonexistent/dir/pabrik-desktop",
     );
     // On non-Windows this is unconditionally null; on Windows CI neither
-    // %LOCALAPPDATA%\nalar\html\index.html nor the nonexistent exe-dir
+    // %LOCALAPPDATA%\pabrik\html\index.html nor the nonexistent exe-dir
     // candidate exists, so null as well. Either way: no panic, no leak.
     if (result) |r| allocator.free(r);
 }
@@ -404,22 +404,22 @@ test "findInstalledWebapp: bare relative exe path skips next-to-self probe" {
     if (result) |r| allocator.free(r);
 }
 
-test "resolveNalarPath: handles Windows-style PATH (;-separated)" {
-    // The fix for `error.NalarNotFound` on Windows: `resolve()` used
+test "resolvePabrikPath: handles Windows-style PATH (;-separated)" {
+    // The fix for `error.PabrikNotFound` on Windows: `resolve()` used
     // to tokenize by `:` (Unix convention) on every platform. On
     // Windows, $PATH is `;`-separated, so the old tokenizeScalar(':')
     // treated the entire PATH as ONE giant directory entry, joined
-    // it with `nalar`, and `fileExists(<giant-path>/nalar)` always
+    // it with `pabrik`, and `fileExists(<giant-path>/pabrik)` always
     // returned false. This test locks in the fix: a Windows-style
     // PATH with multiple `;`-separated entries must be tokenized
     // entry-by-entry (the function still returns null when neither
-    // entry has a real `nalar`, but the LOOP runs the right number
+    // entry has a real `pabrik`, but the LOOP runs the right number
     // of times — observable indirectly via the no-panic contract).
     const allocator = testing.allocator;
     const result = resolve(
         allocator,
         null,
-        "C:\\nonexistent\\dir\\nalar-desktop.exe",
+        "C:\\nonexistent\\dir\\pabrik-desktop.exe",
         "C:\\Windows\\System32;C:\\Windows;C:\\nonexistent\\bin",
     );
     if (result) |r| allocator.free(r);

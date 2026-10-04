@@ -6,7 +6,7 @@ stack: ChatView -> ChatRightSidebar -> TerminalTab (xterm) ->
 POST /api/terminal/sessions -> PTY -> WS frames -> canvas.
 
 xterm renders to <canvas> (no DOM text), so output assertions read
-the live buffer through the dev-only ``window.__nalarTerm`` hook
+the live buffer through the dev-only ``window.__pabrikTerm`` hook
 (see TerminalTab.vue). The hook exists only under Vite dev
 (``import.meta.env.DEV``), which is what the UI harness serves.
 
@@ -18,7 +18,7 @@ the live buffer through the dev-only ``window.__nalarTerm`` hook
    again (attach-flush scrollback restore, no cross-talk).
 
 Run:
-    NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=./zig-out/bin/pabrikcore-linux-x86_64 \
       /tmp/term_venv/bin/python -m pytest \
       tests/functional_ui/terminal_sidebar_ui_test.py -v -s
 """
@@ -39,7 +39,7 @@ from ui_harness import UIHarness
 #: JS predicate for page.wait_for_function: true once the xterm buffer
 #: (last 300 lines) contains the marker passed as arg.
 BUFFER_HAS_MARKER_JS = """(marker) => {
-  const t = window.__nalarTerm;
+  const t = window.__pabrikTerm;
   if (!t) return false;
   const b = t.buffer.active;
   let out = '';
@@ -67,7 +67,7 @@ def _create_session(h: UIHarness, name: str, cwd: str) -> tuple[str, str]:
         expect=201,
     )
     session_id = r.json()["id"]
-    seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+    seed = DbSeed(h.temp_dir / ".config" / "pabrik" / "agent.db")
     with seed.connect() as conn:
         bind_session_workspace(conn, workspace_id, session_id)
     return session_id, workspace_id

@@ -10,12 +10,12 @@
 //! nothing secret in what is emitted. See D14.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
-const agent = nalarcore.agent;
-const web_search_mod = nalarcore.web_search;
+const agent = pabrikcore.agent;
+const web_search_mod = pabrikcore.web_search;
 const web_search_config = @import("web_search_config.zig");
-const config_mod = nalarcore.config;
+const config_mod = pabrikcore.config;
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;

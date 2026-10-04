@@ -2,7 +2,7 @@
 
 Why this MUST be functional and not a zig unit test:
 
-The bug this pins is a PUT-strip round-trip. `PUT /api/config/nalar`
+The bug this pins is a PUT-strip round-trip. `PUT /api/config/pabrik`
 re-serializes the WHOLE config.json from its own write struct, so any field
 absent from that struct is silently deleted on every Settings save. A unit
 test on the parse struct cannot see this — it never performs the
@@ -34,8 +34,8 @@ from harness import FunctionalHarness, harness_path
 
 
 @pytest.fixture
-def cfg_harness(default_nalar_bin: Any) -> Any:
-    h = FunctionalHarness.boot(default_nalar_bin)
+def cfg_harness(default_pabrik_bin: Any) -> Any:
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         yield h
     finally:
@@ -49,13 +49,13 @@ def _config_path(h: FunctionalHarness) -> Path:
     """The config.json the running binary reads and writes.
 
     The harness points HOME at an isolated tmpdir, so this is under
-    that tmpdir — never the developer's real ~/.config/nalar/config.json.
+    that tmpdir — never the developer's real ~/.config/pabrik/config.json.
     """
     home = Path(h.temp_dir)
     candidates = [
-        home / ".config" / "nalar" / "config.json",
-        home / "Library" / "Application Support" / "nalar" / "config.json",
-        home / "AppData" / "Roaming" / "nalar" / "config.json",
+        home / ".config" / "pabrik" / "config.json",
+        home / "Library" / "Application Support" / "pabrik" / "config.json",
+        home / "AppData" / "Roaming" / "pabrik" / "config.json",
     ]
     for c in candidates:
         if c.exists():
@@ -70,11 +70,11 @@ def _read_config(h: FunctionalHarness) -> dict:
 
 
 def _get(h: FunctionalHarness) -> dict:
-    return h.http("GET", "/api/config/nalar").json()
+    return h.http("GET", "/api/config/pabrik").json()
 
 
 def _put(h: FunctionalHarness, body: dict) -> dict:
-    return h.http("PUT", "/api/config/nalar", json_body=body).json()
+    return h.http("PUT", "/api/config/pabrik", json_body=body).json()
 
 
 # ─── tests ──────────────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ def test_get_exposes_skill_evals_so_the_toggle_can_render(cfg_harness):
     runtime applies — never as a phantom ON.
     """
     got = _get(cfg_harness)
-    assert "skill_evals" in got, "GET /api/config/nalar omits skill_evals entirely"
+    assert "skill_evals" in got, "GET /api/config/pabrik omits skill_evals entirely"
     block = got["skill_evals"]
     assert block["enabled"] is False, f"expected OFF for a fresh config, got {block}"
 

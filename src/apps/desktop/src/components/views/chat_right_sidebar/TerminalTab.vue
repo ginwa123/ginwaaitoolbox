@@ -57,7 +57,7 @@ const mountedAt = Date.now()
 // ("always a new term" with worktrees).
 
 const hasSessionKey = () => (props.sessionKey ?? '').length > 0
-const storageKey = () => `nalar-terminal-sessions:${props.sessionKey}`
+const storageKey = () => `pabrik-terminal-sessions:${props.sessionKey}`
 
 interface StoredSession {
   id: string
@@ -496,7 +496,7 @@ onMounted(() => {
   // DOM text to query). Exposes the live Terminal for buffer reads;
   // never set in production builds.
   if (import.meta.env.DEV) {
-    ;(window as unknown as { __nalarTerm?: Terminal }).__nalarTerm = term
+    ;(window as unknown as { __pabrikTerm?: Terminal }).__pabrikTerm = term
   }
   if (container.value) {
     term.open(container.value)
@@ -562,7 +562,7 @@ onUnmounted(() => {
   sessions.value = []
   activeId.value = null
   if (import.meta.env.DEV) {
-    ;(window as unknown as { __nalarTerm?: Terminal }).__nalarTerm = undefined
+    ;(window as unknown as { __pabrikTerm?: Terminal }).__pabrikTerm = undefined
   }
   term?.dispose()
   term = null

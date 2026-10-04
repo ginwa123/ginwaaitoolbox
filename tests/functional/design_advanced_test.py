@@ -17,7 +17,7 @@ Exercises the design-mode HTTP surface that's NOT covered by
   - PATCH /elements/:eid/html (atomic rewrite)
   - POST /elements with image_url data-URI (round-trip)
 
-Each test boots a fresh nalar (function-scoped fixture).
+Each test boots a fresh pabrik (function-scoped fixture).
 """
 
 from __future__ import annotations

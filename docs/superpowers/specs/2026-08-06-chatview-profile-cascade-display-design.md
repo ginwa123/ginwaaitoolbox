@@ -16,12 +16,12 @@ This label was misleading: the backend's `resolveProfileField` cascade
 
 1. `params.selected_profile_model` (per-session, when non-empty AND profile
    exists)
-2. `config.active_profile` (NalarSettings "Set active" default, when
+2. `config.active_profile` (PabrikSettings "Set active" default, when
    non-null AND non-empty AND profile exists)
 3. `config.model` / `api_key` / `base_url` / `url_style` (top-level fallback)
 
 The chip only showed step 1. When the user had set "300 ribu" as the active
-profile in NalarSettings but never picked one per-session, the chatview said
+profile in PabrikSettings but never picked one per-session, the chatview said
 "Default" — making the user believe the top-level config was in use, when
 "300 ribu" was actually being applied. This was a UX failure, not a backend
 failure.
@@ -86,7 +86,7 @@ in `resolveProfileField:217`.
 Now also reads `config.active_profile` (was: profiles only). The active
 profile is stored in a new `activeProfile` ref. Empty string from the
 wire is coerced to `null` (matches the backend's PUT coercion in
-`nalar_config_put.zig:246-252`).
+`pabrik_config_put.zig:246-252`).
 
 ### `ChatView.vue::effectiveProfile` (new computed)
 

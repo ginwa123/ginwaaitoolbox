@@ -11,7 +11,7 @@
 //! SQL convention: every SELECT aliases its tables (`kc` for
 //! `kanban_columns`, `t` for `workspace_item_tasks`) and qualifies
 //! every column reference with the alias. See the project memory
-//! `nalar-sql-alias-tables.md`.
+//! `pabrik-sql-alias-tables.md`.
 //!
 //! Row ownership: each `db.query()` row's `values[i]` slices are
 //! owned by the `Row` and freed by `row.deinit(allocator)`. To keep
@@ -23,8 +23,8 @@
 //! Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 2)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 
 /// One kanban column row, fully duplicated into heap memory.
 /// Free with `freeColumns(allocator, slice)`.
@@ -153,7 +153,7 @@ fn nextColumnIdCounter() u64 {
 /// Caller owns the returned slice.
 pub fn addColumn(
     allocator: std.mem.Allocator,
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     workspace_item_id: []const u8,
     name: []const u8,
     description: []const u8,
@@ -206,7 +206,7 @@ pub fn addColumn(
 /// Settings dialog (Chunk 3).
 pub fn seedDefaultColumns(
     allocator: std.mem.Allocator,
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     workspace_item_id: []const u8,
 ) !void {
     // Each `addColumn` returns an owned id slice that the caller MUST
@@ -345,7 +345,7 @@ pub fn deleteColumn(
 /// `workspace_items` table.
 ///
 /// SQL convention: every inner-table reference is aliased (`kc`) per
-/// the project memory `nalar-sql-alias-tables.md`.
+/// the project memory `pabrik-sql-alias-tables.md`.
 pub fn replaceColumnsWith(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -424,7 +424,7 @@ pub fn replaceColumnsWith(
 /// target, which the user can manually delete.
 ///
 /// SQL convention: every inner-table reference is aliased (`kc`) per
-/// the project memory `nalar-sql-alias-tables.md`.
+/// the project memory `pabrik-sql-alias-tables.md`.
 pub fn appendColumnsFrom(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -479,7 +479,7 @@ pub fn appendColumnsFrom(
 /// "no tasks" from "no such column" for the delete-gate purpose).
 ///
 /// SQL convention: every inner-table reference is aliased (`t`) per
-/// the project memory `nalar-sql-alias-tables.md`.
+/// the project memory `pabrik-sql-alias-tables.md`.
 pub fn countTasksInColumn(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -537,7 +537,7 @@ pub fn countTasksInColumn(
 /// a handful; typical N ≤ 10).
 ///
 /// SQL convention: every inner-table reference is aliased (`kc2`)
-/// per the project memory `nalar-sql-alias-tables.md`. The outer
+/// per the project memory `pabrik-sql-alias-tables.md`. The outer
 /// UPDATE target is NOT aliased — SQLite disallows aliases on the
 /// UPDATE target.
 pub fn reorderColumn(
@@ -1158,7 +1158,7 @@ fn setupDbDescription() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Thr
     try db.exec(alloc,
         "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT)",
         &.{});
-    const migration = nalarcore.migrations_mod.migration;
+    const migration = pabrikcore.migrations_mod.migration;
     try migration.Migration051AddKanban.up(&db, alloc);
     try migration.Migration053AddKanbanColumnDescription.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };
@@ -1377,7 +1377,7 @@ fn setupDbCopy() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded }
     try db.exec(alloc,
         "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT)",
         &.{});
-    const migration = @import("nalarcore").migrations_mod.migration;
+    const migration = @import("pabrikcore").migrations_mod.migration;
     try migration.Migration051AddKanban.up(&db, alloc);
     try migration.Migration053AddKanbanColumnDescription.up(&db, alloc);
     try migration.Migration072ExtractKanbanTable.up(&db, alloc);

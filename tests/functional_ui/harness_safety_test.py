@@ -1,6 +1,6 @@
 """Safety tests for the UIHarness.
 
-These tests run WITHOUT a nalar binary or a Vite dev server. They
+These tests run WITHOUT a pabrik binary or a Vite dev server. They
 assert the safety invariants in ``ui_harness.py`` — the guards that
 prevent the harness from ever deleting the developer's real $HOME,
 on macOS, Linux, AND Windows.

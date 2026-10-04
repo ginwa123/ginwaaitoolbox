@@ -123,7 +123,7 @@ pub const TaskCreateRequest = struct {
     ///     `RoutineTasksRemoved`. Create a routine workspace item instead.
     ///   - 'memory':   a local memory file scoped to the parent
     ///                 workspace_item's directory. The .md file is
-    ///                 created at <workspace_item.path>/.nalar/memories/
+    ///                 created at <workspace_item.path>/.pabrik/memories/
     ///                 so `loadLocalKnowledge` picks it up on the
     ///                 next chat. Requires `memory_name` and
     ///                 `memory_content` in the body.
@@ -353,7 +353,7 @@ pub fn makeErrorResponse(allocator: std.mem.Allocator, response: ErrorResponse) 
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
-pub const NalarConfigResponse = struct {
+pub const PabrikConfigResponse = struct {
     // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
     // defaults (api_endpoint/api_key/model/url_style/temperature/
     // max_tokens/system_prompt) were REMOVED from the wire. The backend
@@ -448,7 +448,7 @@ pub const SkillEvalsResponse = struct {
     apply_mode: ?[]const u8 = null,
 };
 
-pub fn makeNalarConfigResponse(allocator: std.mem.Allocator, response: NalarConfigResponse) ![]u8 {
+pub fn makePabrikConfigResponse(allocator: std.mem.Allocator, response: PabrikConfigResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 

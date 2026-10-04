@@ -1,20 +1,20 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-const STORAGE_KEY_CHATS_HEIGHT = 'nalar-sidebar-chats-height'
-const STORAGE_KEY_NAV_EXPANDED = 'nalar-sidebar-nav-expanded'
+const STORAGE_KEY_CHATS_HEIGHT = 'pabrik-sidebar-chats-height'
+const STORAGE_KEY_NAV_EXPANDED = 'pabrik-sidebar-nav-expanded'
 // Legacy key kept ONLY to seed the renamed projects key once, so
 // existing users don't get a silently re-collapsed section (revamp
 // plan: docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
-const STORAGE_KEY_LEGACY_WORKSPACES_EXPANDED = 'nalar-sidebar-workspaces-expanded'
-const STORAGE_KEY_PROJECTS_EXPANDED = 'nalar-sidebar-projects-expanded'
+const STORAGE_KEY_LEGACY_WORKSPACES_EXPANDED = 'pabrik-sidebar-workspaces-expanded'
+const STORAGE_KEY_PROJECTS_EXPANDED = 'pabrik-sidebar-projects-expanded'
 // Documents section (Migration 095). Separate key from the projects one
 // so collapsing Projects does not collapse Documents — they are
 // independent lists and the user collapses them independently.
-const STORAGE_KEY_DOCUMENTS_EXPANDED = 'nalar-sidebar-documents-expanded'
-const STORAGE_KEY_RIGHT_SIDEBAR_WIDTH = 'nalar-right-sidebar-width'
-const STORAGE_KEY_SKILLS_GLOBAL = 'nalar-sidebar-skills-global-expanded'
-const STORAGE_KEY_SKILLS_LOCAL = 'nalar-sidebar-skills-local-expanded'
+const STORAGE_KEY_DOCUMENTS_EXPANDED = 'pabrik-sidebar-documents-expanded'
+const STORAGE_KEY_RIGHT_SIDEBAR_WIDTH = 'pabrik-right-sidebar-width'
+const STORAGE_KEY_SKILLS_GLOBAL = 'pabrik-sidebar-skills-global-expanded'
+const STORAGE_KEY_SKILLS_LOCAL = 'pabrik-sidebar-skills-local-expanded'
 const DEFAULT_CHATS_HEIGHT = 40
 const MIN_CHATS_HEIGHT = 10
 const MAX_CHATS_HEIGHT = 80

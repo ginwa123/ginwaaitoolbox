@@ -165,9 +165,9 @@ visible for the moment before the data arrives.
 ## Storage
 
 ```
-sessionStorage['nalar-window-id']        = 'w_7c1a9e02'
-localStorage['nalar-tabs-enabled']       = 'true' | 'false'
-localStorage['nalar-tabs:v1:<windowId>'] = { v, active, tabs[], closed[] }
+sessionStorage['pabrik-window-id']        = 'w_7c1a9e02'
+localStorage['pabrik-tabs-enabled']       = 'true' | 'false'
+localStorage['pabrik-tabs:v1:<windowId>'] = { v, active, tabs[], closed[] }
 ```
 
 * **Per window.** `sessionStorage` is per browser tab / webview window, so
@@ -188,7 +188,7 @@ localStorage['nalar-tabs:v1:<windowId>'] = { v, active, tabs[], closed[] }
 Close the tabs you do not want, or clear the storage key:
 
 ```js
-localStorage.removeItem('nalar-tabs:v1:' + sessionStorage.getItem('nalar-window-id'))
+localStorage.removeItem('pabrik-tabs:v1:' + sessionStorage.getItem('pabrik-window-id'))
 ```
 
 ## Turning it off

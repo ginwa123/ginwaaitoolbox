@@ -91,7 +91,7 @@ Driving the same URL the tests use and logging every network event:
 ### BODY TEXT ###
   Select workspace / Settings / New Chat / RECENT / Probe Chat / now
   PROJECTS / No workspace selected.
-  ✦ nalar — AI AGENT WORKSPACE — Create a workspace …
+  ✦ pabrik — AI AGENT WORKSPACE — Create a workspace …
 ```
 
 347 responses, one API call, and the rendered body is `Chats.vue`'s landing
@@ -176,7 +176,7 @@ freshly created session with `cwd_session` set:
 
 ```
 POST /api/llm/session                        -> id sess_1790710671_…
-GET  /api/llm/session/{id}                   -> "cwd": "/tmp/nalar-func-…/term-cwd"   ✅
+GET  /api/llm/session/{id}                   -> "cwd": "/tmp/pabrik-func-…/term-cwd"   ✅
 GET  /api/llm/session/{id}/messages?limit=1  -> "cwd": null                              ❌
 ```
 

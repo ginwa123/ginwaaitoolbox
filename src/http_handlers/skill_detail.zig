@@ -1,8 +1,8 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const skill_mod = nalarcore.skill_mod;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const skill_mod = pabrikcore.skill_mod;
 
 /// Response structure for skill detail endpoint
 pub const SkillDetailResponse = struct {
@@ -20,7 +20,7 @@ pub const SkillDetail = struct {
 };
 
 /// GET /api/skills/:name - Get detailed skill information including full content
-/// Searches both global (~/.config/nalar/skills/) and local (.nalar/skills/) directories
+/// Searches both global (~/.config/pabrik/skills/) and local (.pabrik/skills/) directories
 pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
@@ -29,7 +29,7 @@ pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = "Skill name is required" }, .{}) });
     };
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const environment = di.environment;
 
     // Get global and local skills paths
@@ -37,7 +37,7 @@ pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
 
     // Resolve local skills path: prefer explicit cwd from query, fall back to io's cwd.
     // This lets the frontend (which knows the active session's cwd) find local skills
-    // regardless of the nalar server's own working directory.
+    // regardless of the pabrik server's own working directory.
     var local_path_alloc: ?[]const u8 = null;
 
     if (req.query.get("cwd")) |cwd| {

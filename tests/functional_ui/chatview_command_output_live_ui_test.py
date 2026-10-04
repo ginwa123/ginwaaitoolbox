@@ -104,7 +104,7 @@ def _wait_for_cached_stdout(page, *, timeout_ms: int = 10000) -> None:
         content = page.evaluate(
             """async ({ id }) => {
                 const db = await new Promise((resolve, reject) => {
-                    const request = indexedDB.open('nalar-sync')
+                    const request = indexedDB.open('pabrik-sync')
                     request.onsuccess = () => resolve(request.result)
                     request.onerror = () => reject(request.error)
                 })
@@ -126,7 +126,7 @@ def _wait_for_cached_stdout(page, *, timeout_ms: int = 10000) -> None:
 
 @pytest.fixture(autouse=True)
 def _arm_sse_emit_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NALAR_TEST_SSE_EMIT", "1")
+    monkeypatch.setenv("PABRIK_TEST_SSE_EMIT", "1")
 
 
 def test_command_stdout_updates_live_and_survives_reload(
@@ -141,7 +141,7 @@ def test_command_stdout_updates_live_and_survives_reload(
     # names no directory at all on windows-2022.
     item_path = harness_path(h, "command-output-ui")
     workdir = harness_path(h)
-    seed = DbSeed(Path(h.temp_dir) / ".config" / "nalar" / "agent.db")
+    seed = DbSeed(Path(h.temp_dir) / ".config" / "pabrik" / "agent.db")
     with seed.connect() as conn:
         seed.seed_session(conn, SESSION_ID, "Command output live test")
         workspace_id = "ws_command_output_ui"

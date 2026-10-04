@@ -14,7 +14,7 @@
 //! Task: task_1789505553300_1
 
 const std = @import("std");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 
 /// Resolve the workspace_item_id for a session. Two paths (in order):
 ///   1. Normal chats: the session is a workspace_item_tasks row (covers
@@ -159,7 +159,7 @@ pub fn makeAgentRoutineSystemPrompt(
 const testing = std.testing;
 // Use a fresh alias for the test section to avoid duplicate-struct-
 // member shadowing (file-level `const sqlite` already exists).
-const test_sqlite = @import("nalarcore").sqlite;
+const test_sqlite = @import("pabrikcore").sqlite;
 const Migration087CreateAgentRoutines = @import("../migrations/migration.zig").Migration087CreateAgentRoutines;
 
 const TestCtx = struct {

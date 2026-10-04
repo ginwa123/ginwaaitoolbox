@@ -31,16 +31,16 @@
 //! via `parsed.deinit()`.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const documents_search = @import("documents_search.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const document_mod = nalarcore.document_tool;
-const documents_store = nalarcore.documents_store;
-const workspace_scope = nalarcore.workspace_scope;
+const agent = pabrikcore.agent;
+const document_mod = pabrikcore.document_tool;
+const documents_store = pabrikcore.documents_store;
+const workspace_scope = pabrikcore.workspace_scope;
 const wrapToolOutput = tools.wrapToolOutput;
 
 /// Probe an inner JSON payload for a top-level `"error"` key. The returned
@@ -303,7 +303,7 @@ pub fn execSearchDocuments(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRe
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const testing = std.testing;
 const migration = @import("../migrations/migration.zig");
 
@@ -1330,7 +1330,7 @@ test "static contract: document exec wrappers are re-exported from tools.zig" {
     try testing.expect(std.mem.indexOf(u8, tools_src, "tools_exec_document.zig") != null);
 }
 
-test "static contract: the document tool module is aliased on the nalarcore root" {
+test "static contract: the document tool module is aliased on the pabrikcore root" {
     try testing.expect(std.mem.indexOf(u8, root_src, "document_tool") != null);
     try testing.expect(std.mem.indexOf(u8, root_src, "modules/agent/tools/document.zig") != null);
     // The store must be reachable from the same root, or the tool module

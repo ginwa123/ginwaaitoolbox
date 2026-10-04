@@ -157,7 +157,7 @@ RUN_JOBS = {
 
 
 def test_failed_job_carries_its_steps(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """The whole point of the endpoint: which PROCESS failed, not just
     which job. A wire test asserting only the job rows would pass even
@@ -175,7 +175,7 @@ def test_failed_job_carries_its_steps(
     _write_fake_gh(bindir, script)
     monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h2.http(
             "GET",
@@ -210,7 +210,7 @@ def test_failed_job_carries_its_steps(
 
 
 def test_no_checks_reported_is_200_with_an_empty_list(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """`gh pr checks` exits 1 with "no checks reported" on stderr for a
     PR that never ran CI. That is an answer, not a failure — a 502 here
@@ -224,7 +224,7 @@ def test_no_checks_reported_is_200_with_an_empty_list(
     _write_fake_gh(bindir, script)
     monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h2.http(
             "GET",
@@ -241,7 +241,7 @@ def test_no_checks_reported_is_200_with_an_empty_list(
 
 
 def test_pending_checks_exit_code_8_is_still_200(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """`gh pr checks` exits 8 ("checks pending") WITH a valid payload on
     stdout. Branching on the exit code would 502 the panel for every
@@ -264,7 +264,7 @@ def test_pending_checks_exit_code_8_is_still_200(
     _write_fake_gh(bindir, script)
     monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h2.http(
             "GET",

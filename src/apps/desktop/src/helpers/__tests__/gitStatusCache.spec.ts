@@ -66,12 +66,12 @@ describe('gitStatusCache', () => {
   })
 
   it('returns null (not a crash) for corrupt JSON', () => {
-    localStorage.setItem('nalar-git-status:v1:/repo/corrupt', '{not json')
+    localStorage.setItem('pabrik-git-status:v1:/repo/corrupt', '{not json')
     expect(readGitStatusCache('/repo/corrupt')).toBeNull()
   })
 
   it('returns null for a payload without is_git_repo', () => {
-    localStorage.setItem('nalar-git-status:v1:/repo/foreign', JSON.stringify({ foo: 'bar' }))
+    localStorage.setItem('pabrik-git-status:v1:/repo/foreign', JSON.stringify({ foo: 'bar' }))
     expect(readGitStatusCache('/repo/foreign')).toBeNull()
   })
 
@@ -80,7 +80,7 @@ describe('gitStatusCache', () => {
     // — a detached non-repo payload may carry nulls. ChatView renders
     // `branch || 'detached'`, so empty string is equivalent and typed.
     localStorage.setItem(
-      'nalar-git-status:v1:/repo/nulls',
+      'pabrik-git-status:v1:/repo/nulls',
       JSON.stringify({ is_git_repo: false, branch: null, status: null, has_changes: false }),
     )
     expect(readGitStatusCache('/repo/nulls')).toEqual({

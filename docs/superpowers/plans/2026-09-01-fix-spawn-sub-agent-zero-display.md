@@ -146,13 +146,13 @@
 - [ ] New test `ChatView.spawn-sub-agent-live.spec.ts`: mock SSE bus, emit placeholder + progress events, assert `SpawnSubAgent` renders "N sub-agents" with running/done/failed counts.
 
 **Functional (harness, NOT live 8081):**
-- [ ] Write `tests/functional/spawn_sub_agent_live_test.py` that boots nalar on isolated HOME + free port, creates a session, mocks LLM to return `spawn_sub_agent` with 2 sub-agents, asserts:
+- [ ] Write `tests/functional/spawn_sub_agent_live_test.py` that boots pabrik on isolated HOME + free port, creates a session, mocks LLM to return `spawn_sub_agent` with 2 sub-agents, asserts:
   1. Placeholder tool message appears via SSE with `tool_call_id` == original id.
   2. `role="subagent_progress"` events arrive with `status=launched` and `total_agents=2`.
   3. Final `<results>` envelope arrives and `subAgentProgressMap` is cleared.
 
 **Manual smoke:**
-- [ ] Run `zig build nalar-desktop`, open chat, trigger `spawn_sub_agent` with 3 trivial agents, verify card shows "3 sub-agents, 3 running" immediately, then transitions to "✓ 3" on completion.
+- [ ] Run `zig build pabrik-desktop`, open chat, trigger `spawn_sub_agent` with 3 trivial agents, verify card shows "3 sub-agents, 3 running" immediately, then transitions to "✓ 3" on completion.
 
 ---
 

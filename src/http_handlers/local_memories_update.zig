@@ -23,15 +23,15 @@
 //!   - `500` + `no cwd available` substring checks
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const memories_mod = nalarcore.memories;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const memories_mod = pabrikcore.memories;
 const http_response = @import("http_response.zig");
 
 /// JSON request body for `PUT /api/local-memories/:name`.
 ///
 /// `content` is the new file body (required). `cwd` is optional —
-/// when omitted, the handler falls back to the nalar server's CWD.
+/// when omitted, the handler falls back to the pabrik server's CWD.
 const UpdateLocalMemoryBody = struct {
     content: []const u8,
     cwd: ?[]const u8 = null,

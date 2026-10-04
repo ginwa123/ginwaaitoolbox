@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import LlmConfigForm from '../components/nalar/LlmConfigForm.vue'
+import LlmConfigForm from '../components/pabrik/LlmConfigForm.vue'
 
 const baseValue = {
   model: '',

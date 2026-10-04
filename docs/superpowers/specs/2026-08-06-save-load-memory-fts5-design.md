@@ -10,7 +10,7 @@ The agent has two existing memory surfaces, neither of which fits the
 "short, structured note with full-text search" use case:
 
 1. **File-based memories** (`src/modules/agent/tools/memories.zig`) —
-   markdown files in `~/.config/nalar/memories/` and `<cwd>/.nalar/memories/`.
+   markdown files in `~/.config/pabrik/memories/` and `<cwd>/.pabrik/memories/`.
    `list_memory` enumerates them by H1 title. Already large, no
    search — `read_file` is the only way to look at content.
 2. **LLM history** (`llm_history` + `messages_fts`) — every chat
@@ -43,7 +43,7 @@ the existing file-based memories. The two are complementary:
 | `list_memory` / `read_file` (file-based) | Long-form markdown knowledge: project docs, system prompts, how-tos |
 | `save_memory` / `load_memory` (SQLite FTS5) | Short, structured notes: facts, preferences, decisions, lookup keys |
 
-The new tools live in the same `nalar` SQLite database the rest of
+The new tools live in the same `pabrik` SQLite database the rest of
 the agent uses (so they survive project resets via the existing
 backup mechanism), keyed by a unique `id` the agent picks or that
 the tool auto-generates as `mem_<unix_ms>`.
@@ -182,7 +182,7 @@ Pattern mirrors `tools_exec_kanban_list.zig` (parse → exec → wrap → detect
 
 - `tools.zig` — add `pub const save_memory = @import("save_memory.zig");` + `pub const load_memory = ...;`
 - `tools_equipped.zig` — add to `all_agent_tools` and to the `tool_dispatch` `.exec` table
-- `nalarcore` re-export via `src/root.zig`
+- `pabrikcore` re-export via `src/root.zig`
 
 ### Frontend
 
@@ -311,7 +311,7 @@ only (same UX as the legacy history search, `bash`, etc.).
 | `src/ai_workflow/tui/agentic_loop/tools_exec_load_memory.zig` | NEW |
 | `src/ai_workflow/tui/agentic_loop/tools.zig` | + `execSaveMemory` / `execLoadMemory` declarations |
 | `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` | + entries in `all_agent_tools` + `.exec` table |
-| `src/root.zig` | + `nalarcore.save_memory` / `nalarcore.load_memory` re-exports |
+| `src/root.zig` | + `pabrikcore.save_memory` / `pabrikcore.load_memory` re-exports |
 | `docs/SPEC.md` | + changelog row |
 | `AGENTS.md` | + changelog block |
 

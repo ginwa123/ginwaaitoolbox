@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-pub const nalarcore = @import("nalarcore");
+pub const pabrikcore = @import("pabrikcore");
 
 const llm_history = @import("llm_history.zig");
 const build_msg_prompt = @import("prompts_build_messages_for_agent_prompt.zig");
@@ -13,22 +13,22 @@ const skill_evals_config = @import("skill_evals_config.zig");
 const ask_user_pending = @import("ask_user_pending.zig");
 // `MAIN_AGENT_ONLY_NAMES` (spawn_sub_agent, ask_user) — the tools a sub-agent
 // must not re-equip via `use_tool`.
-const ask_user_mod = nalarcore.ask_user;
-const notifications = nalarcore.notifications_mod;
+const ask_user_mod = pabrikcore.ask_user;
+const notifications = pabrikcore.notifications_mod;
 
-const sqlite = nalarcore.sqlite;
-const migration_mod = nalarcore.migrations_mod.migration;
+const sqlite = pabrikcore.sqlite;
+const migration_mod = pabrikcore.migrations_mod.migration;
 const migration = migration_mod;
-const config_mod = nalarcore.config;
-const logger_mod = nalarcore.loggermod;
-const agent = nalarcore.agent;
-const prompt = nalarcore.agent.prompt;
+const config_mod = pabrikcore.config;
+const logger_mod = pabrikcore.loggermod;
+const agent = pabrikcore.agent;
+const prompt = pabrikcore.agent.prompt;
 const helpers = @import("helpers");
 
 const json = std.json;
 
-const event_bus_mod = nalarcore.event_bus;
-const SqliteBackend = nalarcore.sqlite.SqliteBackend;
+const event_bus_mod = pabrikcore.event_bus;
+const SqliteBackend = pabrikcore.sqlite.SqliteBackend;
 
 const compact_message_mod = @import("workflow_compact_message.zig");
 const delete_queue_worker_mod = @import("delete_queue_worker.zig");
@@ -46,7 +46,7 @@ const retry_delay_ms_mod = @import("retry_delay_ms.zig");
 const session_skills_mod = @import("session_skills.zig");
 const tool_eligibility = @import("tool_eligibility.zig");
 const progressive_catalog = @import("progressive_catalog.zig");
-const progressive_tools_mod = nalarcore.progressive_tools;
+const progressive_tools_mod = pabrikcore.progressive_tools;
 const sse_mod = @import("sse.zig");
 const stream_snapshot = @import("stream_snapshot.zig");
 const sse_on_event_send_session_mod = @import("sse_on_event_send_session.zig");
@@ -119,7 +119,7 @@ pub const StreamingContext = struct {
 pub const CallbackAiWorkerFlow = struct {
     pub fn callback(data: RunParamsNew) void {
         const keyword = "CALLBACK_AI_WORKER_FLOW";
-        const di = nalarcore.getSingleton() catch return;
+        const di = pabrikcore.getSingleton() catch return;
         const logger = di.logger;
 
         var arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
@@ -177,7 +177,7 @@ pub const CallbackAiWorkerFlow = struct {
             };
             const initial_agent = initial_agent_state.agent;
 
-            const error_message = std.fmt.allocPrint(allocator, "Agent Nalar System error, the actual error is ->>>> {s}\n", .{@errorName(err)}) catch |err_fmt| {
+            const error_message = std.fmt.allocPrint(allocator, "Agent Pabrik System error, the actual error is ->>>> {s}\n", .{@errorName(err)}) catch |err_fmt| {
                 logger.errFmt("[{s}] Failed to format error message: {s}\n", .{ keyword, @errorName(err_fmt) });
                 return;
             };
@@ -188,7 +188,7 @@ pub const CallbackAiWorkerFlow = struct {
             const created_at = std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}) catch return;
             defer allocator.free(created_at);
 
-            _ = insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = nalarcore.getLlmConfig(di).model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
+            _ = insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = pabrikcore.getLlmConfig(di).model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
         };
     }
 };
@@ -200,7 +200,7 @@ pub const RunAgenticMultiStepInput = struct {
     logger: *logger_mod.Logger,
     event_bus: *event_bus_mod.EventBus,
     active_loops: *models.ActiveLoops,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.ContextIPCTui,
     environment: ?*const std.process.Environ.Map,
 };
 
@@ -381,7 +381,7 @@ fn fetchMcpToolsFresh(
     copy_session_id: []const u8,
     initial_config: *config_mod.LlmConfig,
     logger: *logger_mod.Logger,
-) ?[]nalarcore.tool_models.AgentTool {
+) ?[]pabrikcore.tool_models.AgentTool {
     return (blk: {
         const McpCancelCtx = struct {
             db: *sqlite.SqliteBackend,
@@ -585,7 +585,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         .{ params.session_id, params.parent_session_id, params.is_sub_agent, params.message.len, params.allowed_tools.len, params.cwd },
     );
 
-    var config = nalarcore.getLlmConfig(di.di);
+    var config = pabrikcore.getLlmConfig(di.di);
     var eff = config.resolveEffectiveProfile(params.selected_profile_model);
 
     logger.infoFmt(
@@ -773,7 +773,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // read timeout) to every tool-call iteration of every turn.
 
 
-    const initial_config = nalarcore.getLlmConfig(di.di);
+    const initial_config = pabrikcore.getLlmConfig(di.di);
 
     touchCheckpointWorkers(.{
         .allocator = parent_allocator,
@@ -793,10 +793,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     //
     // `var` (not `const`): the in-loop "Live MCP tools refresh" block
     // below re-points this after a mid-run config mutation (e.g. MCP
-    // server toggle via NalarSettings). The abandoned slice stays owned
+    // server toggle via PabrikSettings). The abandoned slice stays owned
     // by the parent arena (freed at run end) — toggles are rare, so the
     // transient waste is negligible and there is no leak.
-    var mcp_tools: ?[]nalarcore.tool_models.AgentTool = if (di.di.isMcpToolsInit())
+    var mcp_tools: ?[]pabrikcore.tool_models.AgentTool = if (di.di.isMcpToolsInit())
         di.di.getMcpToolsCached(parent_allocator)
     else blk: {
         const fresh = fetchMcpToolsFresh(parent_allocator, db, copy_session_id, initial_config, logger);
@@ -842,15 +842,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // ─── Live config re-read (plan 2026-08-06-live-config-reload) ───
         // Re-fetch the LlmConfig pointer from the holder once per
         // iteration so user-initiated changes (model switch, profile
-        // change, API-key rotation via NalarSettings) take effect on
+        // change, API-key rotation via PabrikSettings) take effect on
         // the next LLM call without waiting for the workflow run to
         // end. `getLlmConfig` is a lock-free single-word pointer load;
         // memory safety is preserved by `LlmConfigHolder.previous`
         // keeping the swapped-out config alive until this run finishes.
-        config = nalarcore.getLlmConfig(di.di);
+        config = pabrikcore.getLlmConfig(di.di);
 
         // ─── Live MCP tools refresh on config invalidation ───
-        // PUT /api/config/nalar and add_mcp_server call
+        // PUT /api/config/pabrik and add_mcp_server call
         // `clearMcpToolsCache()` after their `setLlmConfig` swap. If the
         // user toggled an MCP server mid-run, the cache is uninitialized
         // here → refetch once from the LIVE `config` above and
@@ -903,7 +903,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // ~50 lines of hand-rolled thinking/budget/effort blocks + the
         // iter_profile lookup. Same live-re-read pattern as the
         // effective_* fields above: user-initiated profile changes via
-        // NalarSettings take effect on the NEXT LLM call without
+        // PabrikSettings take effect on the NEXT LLM call without
         // waiting for the workflow run to end.
         eff = config.resolveEffectiveProfile(live_selected_profile_model);
         const iter_profile: ?config_mod.LlmConfig.LlmProfile =
@@ -1145,7 +1145,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .{ retry_count, reason_error, reason_source },
                 );
                 const soft_diagnostic = std.fmt.allocPrint(allocator,
-                    \\[Agent Nalar System info] unattended-mode soft-bail after {} consecutive retries.
+                    \\[Agent Pabrik System info] unattended-mode soft-bail after {} consecutive retries.
                     \\Reason for last retry: {s} (source: {s}).
                     \\Server said: {s}
                     \\The session keeps running.
@@ -1192,7 +1192,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
             // Existing hard-bail (preserved verbatim).
             const diagnostic = std.fmt.allocPrint(allocator,
-                \\[Agent Nalar System error] workflow halted after {} consecutive retries.
+                \\[Agent Pabrik System error] workflow halted after {} consecutive retries.
                 \\Reason for last retry: {s} (source: {s}).
                 \\Server said: {s}
             , .{ retry_count, reason_error, reason_source, clampDetail(last_retry_server_detail orelse "(no server detail)", 500) }) catch "workflow halted after too many retries";
@@ -1588,7 +1588,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // logged and ignored so the LLM workflow never blocks.
                 if (config.notify_on_complete and copy_is_sub_agent == false) {
                     const preview = if (res_dynamic_agent.content) |c| c else "(empty response)";
-                    try notifications.notify(io, allocator, "Agent Nalar", preview);
+                    try notifications.notify(io, allocator, "Agent Pabrik", preview);
                 }
 
                 // try llm_history.markSessionIdle(allocator, db, copy_session_id);
@@ -2337,7 +2337,7 @@ fn countNamesIn(list: []const agent.AgentTool, names: []const []const u8) usize 
 }
 
 pub const RunParams = struct {
-    ctxTui: *nalarcore.ContextIPCTui,
+    ctxTui: *pabrikcore.ContextIPCTui,
 
     parent_allocator: std.mem.Allocator,
     parent_session_id: []const u8,
@@ -3816,7 +3816,7 @@ test "static contract: fetch failure stays retryable (mark_init=false)" {
 }
 
 test "static contract: in-loop refresh re-checks the cache after while(true)" {
-    // A mid-run MCP toggle (PUT /api/config/nalar → clearMcpToolsCache)
+    // A mid-run MCP toggle (PUT /api/config/pabrik → clearMcpToolsCache)
     // must apply on the next loop iteration, not next run. The loop body
     // therefore re-checks `isMcpToolsInit()` and refetches via the single
     // `fetchMcpToolsFresh` helper (NOT a second `buildMCPToolsRun` call

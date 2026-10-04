@@ -9,7 +9,7 @@ pub const CronjobConfig = struct {
     /// Check interval in milliseconds (default: 30 seconds)
     check_interval_ms: u64 = 30_000,
     /// Database path for storing process status
-    db_path: []const u8 = ".nalar/nalarcore.db",
+    db_path: []const u8 = ".pabrik/pabrikcore.db",
 };
 
 /// Background process record from database

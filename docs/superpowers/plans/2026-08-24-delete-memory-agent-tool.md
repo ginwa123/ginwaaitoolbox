@@ -6,7 +6,7 @@
 
 **Architecture:** Mirror the existing `save_memory` / `load_memory` pattern exactly. A pure function `deleteMemory(allocator, db, id) !bool` in `agent_memories.zig` issues `DELETE FROM agent_memories WHERE id = ?` — the `agent_memories_ad` AFTER DELETE trigger (already installed by Migration 070) keeps the FTS5 index in sync automatically. A new `delete_memory.zig` tool module defines the input struct + `AgentTool` schema + XML envelope builders; a 48-line exec wrapper parses JSON and delegates; the registry entry makes it discoverable by `dispatchTool` with zero dispatch-code changes. Frontend gets a small presentational Vue component following `SaveMemory.vue`.
 
-**Tech Stack:** Zig 0.16 (std.json, nalarcore sqlite backend), SQLite + FTS5 (Migration 070 schema), Vue 3 `<script setup>` + vitest.
+**Tech Stack:** Zig 0.16 (std.json, pabrikcore sqlite backend), SQLite + FTS5 (Migration 070 schema), Vue 3 `<script setup>` + vitest.
 
 ## Global Constraints
 
@@ -34,7 +34,7 @@
 | 9 | `src/modules/agent/prompts/core.zig` (lines 76–83) | EDIT | Update `MemoryToolRule`: THREE tools now; drop "no delete_memory" claim |
 | 10 | `src/apps/desktop/src/components/tool_outputs/DeleteMemory.vue` | NEW | Presentational tool-output card |
 | 11 | `src/apps/desktop/src/components/views/ChatView.vue` (lines 52–53, 3069–3078) | EDIT | Import + dispatcher branch |
-| 12 | `src/apps/desktop/src/components/nalar/SubAgentPeekPanel.vue` (lines 353–360) | EDIT | Dispatcher branch |
+| 12 | `src/apps/desktop/src/components/pabrik/SubAgentPeekPanel.vue` (lines 353–360) | EDIT | Dispatcher branch |
 | 13 | `src/apps/desktop/src/components/tool_outputs/__tests__/DeleteMemory.spec.ts` | NEW | Vitest spec |
 
 Out of scope (deliberate): `src/migrations/migration.zig:3464` comment says "no delete_memory tool by user decision" — historical migration comments are immutable records of past state; leave as-is. `prompts/special.zig` cross-session handoff block stays save/load-only (compaction agents must never delete user data).
@@ -187,11 +187,11 @@ test "execDeleteMemory: happy path wraps success=true"
 
 - [ ] Register in `src/ai_workflow/tui/agentic_loop/test_runner.zig` (add near line 42): `_ = @import("tools_exec_delete_memory.zig");`
 - [ ] Run `zig build test --summary all 2>&1 | rg "execDeleteMemory"` — confirm failures.
-- [ ] Implement the wrapper — byte-for-byte mirror of `tools_exec_save_memory.zig` (48 lines) with these substitutions: `save_memory_mod` → `nalarcore.delete_memory`, `SaveMemoryInput` → `DeleteMemoryInput`, `executeSaveMemory` → `executeDeleteMemory`, tool-name strings `"save_memory"` → `"delete_memory"`. Keep the three branches identical: JSON parse failure → wrapToolOutput(false), inner `<error>` detection → wrapToolOutput(false, err_msg, inner), success → wrapToolOutput(true, null, inner).
+- [ ] Implement the wrapper — byte-for-byte mirror of `tools_exec_save_memory.zig` (48 lines) with these substitutions: `save_memory_mod` → `pabrikcore.delete_memory`, `SaveMemoryInput` → `DeleteMemoryInput`, `executeSaveMemory` → `executeDeleteMemory`, tool-name strings `"save_memory"` → `"delete_memory"`. Keep the three branches identical: JSON parse failure → wrapToolOutput(false), inner `<error>` detection → wrapToolOutput(false, err_msg, inner), success → wrapToolOutput(true, null, inner).
 - [ ] Re-export: in `src/ai_workflow/tui/agentic_loop/tools.zig` next to line 19 add:
   `pub const execDeleteMemory = @import("tools_exec_delete_memory.zig").execDeleteMemory;`
 - [ ] Registry — `src/ai_workflow/tui/agentic_loop/tools_equipped.zig`, three edits:
-  1. Line ~18 (after `load_memory_mod`): `const delete_memory_mod = nalarcore.delete_memory;`
+  1. Line ~18 (after `load_memory_mod`): `const delete_memory_mod = pabrikcore.delete_memory;`
   2. Line ~81 (after `load_memory_mod.load_memory_tool` in `equips()`): `delete_memory_mod.delete_memory_tool,`
   3. Line ~164 (in `UNIFIED_TOOL_REGISTRY()` under `// === MEMORY TOOLS ===`):
      `.{ .name = "delete_memory", .exec = tools.execDeleteMemory, .tool_def = delete_memory_mod.delete_memory_tool },`

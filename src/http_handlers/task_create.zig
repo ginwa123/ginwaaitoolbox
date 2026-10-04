@@ -19,7 +19,7 @@
 //!
 //!   - **memory**: a local memory file scoped to the parent
 //!     workspace_item's directory. The .md file is created at
-//!     `<workspace_item.path>/.nalar/memories/<memory_name>` (the
+//!     `<workspace_item.path>/.pabrik/memories/<memory_name>` (the
 //!     directory is created if missing) so `loadLocalKnowledge` picks
 //!     it up on the next chat. The task row has `task_type='memory'`
 //!     and no `session_id` — the file is the content. Requires
@@ -38,10 +38,10 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
-const memories_mod = nalarcore.memories;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
+const memories_mod = pabrikcore.memories;
 const tags_validation = @import("tags_validation.zig");
 const image_urls_validation = @import("image_urls_validation.zig");
 const video_urls_validation = @import("video_urls_validation.zig");
@@ -57,7 +57,7 @@ const video_urls_validation = @import("video_urls_validation.zig");
 /// is sufficient for uniqueness), but it's two instructions either
 /// way on aarch64 and removes the need to argue about ordering.
 var task_id_counter: std.atomic.Value(u64) = .init(0);
-const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
+const on_event_sent_kanban = pabrikcore.ai_mod.on_event_sent_kanban;
 
 /// Domain-level error set for `useCase`. Each variant maps to a
 /// distinct HTTP status code in the handler (see the handler's
@@ -236,7 +236,7 @@ const StandardResponse = struct {
 /// `test_add_twelve_tasks_across_four_columns` and friends).
 ///
 /// The counter resets to 0 at process start. A single-process
-/// nalar can never have two threads call this with the same fetch
+/// pabrik can never have two threads call this with the same fetch
 /// result, so uniqueness is trivial. Restart = pid change, but
 /// new IDs start from 0 again which never collides with the
 /// previously-emitted ms (a long-lived workspace has many ms prefixes).
@@ -250,7 +250,7 @@ fn generateTaskId(allocator: std.mem.Allocator, io: std.Io) TaskCreateError![]u8
 /// Memory branch. Writes the .md file + inserts the task row.
 fn createMemoryTask(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: TaskCreateInput,
     task_id: []const u8,
 ) TaskCreateError!MemoryResult {
@@ -259,13 +259,13 @@ fn createMemoryTask(
     const memory_content = input.body.memory_content orelse return error.MemoryContentRequired;
 
     // Look up the parent workspace_item to get its `path` (the project
-    // root — the .md file is scoped to `<path>/.nalar/memories/<name>.md`).
+    // root — the .md file is scoped to `<path>/.pabrik/memories/<name>.md`).
     const item_opt = ai_mod.workspace_item_tasks.getWorkspaceItem(allocator, db, input.item_id) catch return error.WorkspaceItemNotFound;
     const item = item_opt orelse return error.WorkspaceItemNotFound;
     defer item.deinit(allocator);
 
     // Refuse non-folder items — `loadLocalKnowledge` reads from
-    // `<cwd>/.nalar/memories/`, so the cwd must be a real directory
+    // `<cwd>/.pabrik/memories/`, so the cwd must be a real directory
     // (which is what a 'folder' item's path is).
     if (!std.mem.eql(u8, item.item_type, "folder")) return error.NotAFolderItem;
     const cwd = item.path orelse return error.NoPathForMemory;
@@ -330,7 +330,7 @@ fn createMemoryTask(
 /// MAX(kanban_position) + 1.
 fn createStandardTask(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: TaskCreateInput,
     task_id: []const u8,
 ) TaskCreateError!StandardResult {
@@ -594,7 +594,7 @@ fn createStandardTask(
 
 pub fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: TaskCreateInput,
 ) TaskCreateError!TaskCreateResult {
     if (input.item_id.len == 0) return error.ItemIdRequired;
@@ -632,7 +632,7 @@ pub fn tasksCreateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const item_id = req.params.get("item_id") orelse "";
@@ -1100,13 +1100,13 @@ test "task_create handler builds the local memories dir path" {
     defer allocator.free(source);
 
     // The handler must call `get_local_memories_path_for_dir` to build
-    // `<cwd>/.nalar/memories/`. Without this, the .md file would be
-    // written to the wrong dir (the raw cwd, not <cwd>/.nalar/memories/).
+    // `<cwd>/.pabrik/memories/`. Without this, the .md file would be
+    // written to the wrong dir (the raw cwd, not <cwd>/.pabrik/memories/).
     if (std.mem.indexOf(u8, source, "get_local_memories_path_for_dir") == null) {
         std.debug.print(
             "\n!! {s} does not call get_local_memories_path_for_dir !!\n" ++
                 "   The memory-dir-path contract is broken: the .md file would be\n" ++
-                "   written to the raw cwd, not to <cwd>/.nalar/memories/ where the\n" ++
+                "   written to the raw cwd, not to <cwd>/.pabrik/memories/ where the\n" ++
                 "   agent's loadLocalKnowledge scans.\n" ++
                 "   See docs/plans/2026-06-20-add-markdown-memory.md.\n",
             .{CREATE_HANDLER_PATH},
@@ -1200,13 +1200,13 @@ test "task_delete handler cleans up the .md file for memory tasks" {
     // The delete handler must call `deleteLocalMemoryFile` for tasks
     // with `task_type='memory'`, so the file system and the task list
     // stay in sync. Without this, deleted memory tasks would leave
-    // orphan .md files in <cwd>/.nalar/memories/ that the agent would
+    // orphan .md files in <cwd>/.pabrik/memories/ that the agent would
     // still load on the next chat.
     if (std.mem.indexOf(u8, source, "deleteLocalMemoryFile") == null) {
         std.debug.print(
             "\n!! {s} does not call deleteLocalMemoryFile for memory tasks !!\n" ++
                 "   The delete-cleanup contract is broken: deleting a memory task\n" ++
-                "   would leave the .md file in <cwd>/.nalar/memories/ as an orphan\n" ++
+                "   would leave the .md file in <cwd>/.pabrik/memories/ as an orphan\n" ++
                 "   that the agent would still load on the next chat.\n" ++
                 "   See docs/plans/2026-06-20-add-markdown-memory.md.\n",
             .{DELETE_HANDLER_PATH},
@@ -1248,7 +1248,7 @@ test "task_delete handler branches on task_type='memory'" {
 // `name = task.name` (the user-facing title).
 // 
 // The handler's `createStandardTask` requires `io: std.Io` and the
-// full nalarcore singleton context, which is impractical to stand up
+// full pabrikcore singleton context, which is impractical to stand up
 // in a unit test. We verify the contract with a focused static check
 // on the bind-values list shape: it must read `task.id, task.name, flag`,
 // NOT `task.id, task.id, flag`.
@@ -1425,7 +1425,7 @@ test "StandardResult carries is_have_image from createStandardTask" {
 // CI runners the same code happens to spread across milliseconds
 // and slips through.
 // 
-// The handler itself takes `io: std.Io` + the full nalarcore
+// The handler itself takes `io: std.Io` + the full pabrikcore
 // singleton — impractical to stand up in a unit test. We verify the
 // generator's contract with a behavioural call into the function
 // directly: 100 IDs minted back-to-back MUST be unique. Pre-fix
@@ -1673,7 +1673,7 @@ test "tasks_create 201 response includes kanban_column_id and kanban_position" {
 //         at /usr/local/lib/zig/std/Io/Writer.zig:535
 // 
 // This is a user-reported crash (2026-07-01, see the long-running
-// nalar on port 8081). The fix is to drop the hand-rolled JSON and
+// pabrik on port 8081). The fix is to drop the hand-rolled JSON and
 // use `std.json.Stringify.valueAlloc` with a typed struct, which
 // (a) never nests `allocPrint` calls and (b) handles JSON escaping
 // for user-provided strings like `r.name`.

@@ -8,7 +8,7 @@
 
 **Spec:** this document IS the spec (approved on kanban card `rightsidebar inside chatview component` in `in_review_planning`; scope narrowed to git-diff-only per human comment).
 
-**Worktree:** `/home/ginwa/.config/nalar/.worktrees/rightsidebar-inside-chatview-component-1789413707849` on branch `worktree/rightsidebar-inside-chatview-component-1789413707849`.
+**Worktree:** `/home/ginwa/.config/pabrik/.worktrees/rightsidebar-inside-chatview-component-1789413707849` on branch `worktree/rightsidebar-inside-chatview-component-1789413707849`.
 
 **Base:** `origin/main` at `4f1f345c` (2026-09-14).
 
@@ -24,7 +24,7 @@
 | `GitFileViewer.vue` | `src/apps/desktop/src/components/git/GitFileViewer.vue` (602 lines) | LIVE but fullscreen overlay, not inline pane. Mounts `AppLayout.vue:2404-2413` on `currentView==='gitfile'`. `parseUnifiedDiff()` L115-220, `openMiniChat()` L52-89 → `emit('submitReview')` → `AppLayout:868-882` sends review text into active chat via `api.sendChatMessage`. |
 | `DiffView.vue` | `src/apps/desktop/src/components/tool_outputs/_shared/DiffView.vue` (509 lines) | NOT git — renders `before/after` strings for `TextReplace` tool outputs. Out of scope for this plan. |
 | Backend git | `src/http_handlers/git_*.zig` + routes `src/main.zig:555-560` | REST only. `GET /api/git/changes?path=`, `GET /api/git/file/diff?path=&file=&staged=`, `GET /api/git/file/read`, `POST /api/git/stage|unstage`. No SSE, no store. |
-| State | `src/apps/desktop/src/stores/sidebar.ts` | Only width persistence (`nalar-right-sidebar-width`). No visibility state. |
+| State | `src/apps/desktop/src/stores/sidebar.ts` | Only width persistence (`pabrik-right-sidebar-width`). No visibility state. |
 | Wrappers | `StandardTaskChatView.vue` (73 lines), `AgentChatView.vue` (54 lines) | Thin forwarders to `<ChatView>` — inherit the sidebar for free. |
 
 Key constraint: `ChatView.vue` is already 4344 lines. Do NOT grow it — new sidebar code lives in NEW files under `components/views/chat_right_sidebar/`.
@@ -61,7 +61,7 @@ Key constraint: `ChatView.vue` is already 4344 lines. Do NOT grow it — new sid
   - Groups: `Staged Changes (n)` / `Changes (n)` / `Untracked (n)` with per-file status icon (`M/A/D/R/C/??`), stage/unstage buttons + `Stage All / Unstage All` + right-click menu (port from `GitChanges.vue`, NOT the button-less `RightSidebar` variant).
   - Click file → inline diff below the list (NOT fullscreen route). Keep `Wrap` toggle + `+added/-removed` stats + line-number gutters from `GitFileViewer`. Keep `openMiniChat → submitReview` flow but emit upward to ChatView (which owns `sessionId`, so the `AppLayout:868-882` no-active-chat no-op disappears).
 - **Responsive**: `< 1024px` → overlay drawer (absolute right, shadow, `✕` closes). `>= 1024px` → inline flex column (messages keep `min-w-0`, VirtualScroller unaffected).
-- **Persistence** (localStorage, per chat-type suffix `chat|task` from ChatView `type` prop): `width` (reuse `nalar-right-sidebar-width`), `open` (`nalar-chat-right-sidebar-open:<type>`), selected file NOT persisted.
+- **Persistence** (localStorage, per chat-type suffix `chat|task` from ChatView `type` prop): `width` (reuse `pabrik-right-sidebar-width`), `open` (`pabrik-chat-right-sidebar-open:<type>`), selected file NOT persisted.
 - **Out of scope**: Preview/Detail tabs, approve/reject, hunk-stage/discard, commit/stash/restore, inline threads, syntax highlight, split/unified toggle. Follow-up plans only.
 
 ---

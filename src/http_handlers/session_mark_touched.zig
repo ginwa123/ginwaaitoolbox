@@ -38,9 +38,9 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
 const llm_history = ai_mod.llm_history;
 const on_event_sent = ai_mod.on_event_sent;
 const auth_common = @import("auth_common.zig");
@@ -66,7 +66,7 @@ pub const MarkSessionTouchedResponse = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) MarkSessionTouchedError!MarkSessionTouchedResult {
     if (session_id.len == 0) return error.SessionIdRequired;
@@ -148,7 +148,7 @@ pub fn sessionMarkTouchedHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // The body is intentionally ignored — empty body and `{}` are both

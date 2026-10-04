@@ -17,7 +17,7 @@
 //! Spec: docs/superpowers/specs/2026-08-15-agent-mode-design.md (D5, D6)
 
 const std = @import("std");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 
 /// 100 MiB per-file OOM safety. NOT a content budget — the user
 /// explicitly removed the content cap. This is purely to prevent the
@@ -200,7 +200,7 @@ pub fn makeAgentKnowledge(
 const testing = std.testing;
 // Use a fresh alias for the test section to avoid duplicate-struct-
 // member shadowing (file-level `const sqlite` already exists).
-const test_sqlite = @import("nalarcore").sqlite;
+const test_sqlite = @import("pabrikcore").sqlite;
 const Migration076 = @import("../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 const Migration079 = @import("../migrations/migration.zig").Migration079AddContentToAgentKnowledge;
 

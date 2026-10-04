@@ -43,7 +43,7 @@ describe('api.localMemories', () => {
     it('calls GET on /api/local-memories with cwd query param', async () => {
       mockFetchOnce(200, {
         memories: [
-          { name: 'foo.md', title: 'Foo', path: '/proj/.nalar/memories/foo.md', size: 13 },
+          { name: 'foo.md', title: 'Foo', path: '/proj/.pabrik/memories/foo.md', size: 13 },
         ],
       })
 
@@ -98,7 +98,7 @@ describe('api.localMemories', () => {
         memory: {
           name: 'new.md',
           title: 'New',
-          path: '/proj/.nalar/memories/new.md',
+          path: '/proj/.pabrik/memories/new.md',
           size: 5,
         },
       })

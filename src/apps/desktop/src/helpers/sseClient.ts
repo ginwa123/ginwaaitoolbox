@@ -14,7 +14,7 @@
  *      `EventSource` does auto-retry on network-level failures with
  *      a 3 s default — but only if the server sends the SSE spec's
  *      `retry:` field, and ONLY for some failure modes (4xx/5xx are
- *      not retried by the spec). On a `nalar` server restart, the new
+ *      not retried by the spec). On a `pabrik` server restart, the new
  *      process serves the new connection, but the old `EventSource`
  *      is permanently dead and never reconnects.
  *

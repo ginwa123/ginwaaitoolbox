@@ -36,8 +36,8 @@
 //!   /translate + /resize).
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../agentic_loop/design_model.zig");
 
@@ -87,7 +87,7 @@ pub const UpdateGeometryOutput = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     element_id: []const u8,
     x: ?i64,
     y: ?i64,
@@ -132,7 +132,7 @@ pub fn designElementsGeometryUpdateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Validate path params + body presence + JSON shape.

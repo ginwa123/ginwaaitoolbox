@@ -3,8 +3,8 @@
 A static analyser for `android_mobile`'s `NavHost`, and an interactive HTML page
 it renders. Nothing here is hand-maintained: every destination, route, deep
 link, argument and `navigate(...)` call site is read out of
-`app/src/main/java/com/nalar/mobile/network/NalarNavGraph.kt`, and every
-`nalar://` host is cross-checked against `AndroidManifest.xml`.
+`app/src/main/java/com/pabrik/mobile/network/PabrikNavGraph.kt`, and every
+`pabrik://` host is cross-checked against `AndroidManifest.xml`.
 
 ```bash
 cd src/apps/android_mobile
@@ -44,11 +44,11 @@ precision is bought back in two places:
   `}` inside a string cannot end a block early. Offsets are preserved so a
   match found in the mask can be sliced out of the *original* to recover the
   literal value.
-* **Template identity instead of a name table.** `NalarRoutes` declares each
+* **Template identity instead of a name table.** `PabrikRoutes` declares each
   route twice — once as a `const val`, once as a `fun` builder that
   interpolates it. Both are normalised to the same `{placeholder}` template
   (`chat/${UriEncoding.encode(sessionId)}` → `chat/{sessionId}`) and matched
-  on that, so `navigate(NalarRoutes.chat(id))` lands on the `chat/{sessionId}`
+  on that, so `navigate(PabrikRoutes.chat(id))` lands on the `chat/{sessionId}`
   destination without a hand-written alias table that could itself go stale.
 
 Both properties are asserted in `tests/functional_android/navgraph_contract_test.py`.
@@ -63,7 +63,7 @@ Both properties are asserted in `tests/functional_android/navgraph_contract_test
 | `unreachable_destination` | error | Nothing navigates to it and it declares no deep link. |
 | `route_placeholder_undeclared` | error | A `{segment}` in the route with no matching `navArgument`. |
 | `raw_back_call` | error | `popBackStack()` / `navigateUp()` outside `goBackToPreviousOrShell`. The bare call is inclusive and empties a one-deep stack. |
-| `route_constant_unused` | warn | A `NalarRoutes` const that no `composable(...)` uses. |
+| `route_constant_unused` | warn | A `PabrikRoutes` const that no `composable(...)` uses. |
 | `self_push` | warn | A navigation whose target is the source, popping nothing. |
 | `unresolved_target` | error | A `navigate(...)` the extractor could not map to a route. This is the tool reporting on itself: it means an edge is missing from the picture. |
 | `cyclic_navigation` | info | How many edges lead back to somewhere they came from, and how many of those already replace rather than push. A number to watch, not a defect. |
@@ -79,7 +79,7 @@ worse than none, because it is confidently wrong. Three guards:
 
 1. `build.py --check` compares the committed output against a fresh render. The
    git sha is masked out of the comparison, so an unrelated commit does not
-   fail the build while a changed `NalarNavGraph.kt` does.
+   fail the build while a changed `PabrikNavGraph.kt` does.
 2. `navgraph_contract_test.py` asserts the committed `navgraph.json` and
    `navgraph.html` are current.
 3. The output is byte-stable — sorted keys, no timestamps — so re-running
@@ -97,8 +97,8 @@ treats a *missing* file as stale — so gitignoring them would not remove the
 gate, it would invert it into a permanent red.
 
 That makes a conflict possible whenever two branches both edit
-`NalarNavGraph.kt`. It is not a corrupted page; it is git asking you to
-resolve — and resolve `NalarNavGraph.kt` **before** regenerating. The order is
+`PabrikNavGraph.kt`. It is not a corrupted page; it is git asking you to
+resolve — and resolve `PabrikNavGraph.kt` **before** regenerating. The order is
 not cosmetic. `build.py` is a text matcher, not a compiler, so it renders a
 file that still carries `<<<<<<<` markers without complaint, and `--check`
 then *passes*, because it compares the committed artifacts against a fresh
@@ -145,13 +145,13 @@ dropping it would silence the guard exactly when the graph really did move.
 The audit currently reports two **errors**, both real and both about the
 manifest rather than the graph:
 
-`nalar://chats/{workspaceId}` and `nalar://project/{workspaceId}/{itemId}` are
-declared as `navDeepLink` patterns in `NalarNavGraph.kt`, but
+`pabrik://chats/{workspaceId}` and `pabrik://project/{workspaceId}/{itemId}` are
+declared as `navDeepLink` patterns in `PabrikNavGraph.kt`, but
 `AndroidManifest.xml` only claims hosts `network` and `chat`. Both links
 therefore resolve to no activity:
 
 ```bash
-adb shell am start -a android.intent.action.VIEW -d nalar://chats/ws_1
+adb shell am start -a android.intent.action.VIEW -d pabrik://chats/ws_1
 # Error: Activity not started, unable to resolve Intent
 ```
 

@@ -3,7 +3,7 @@
 # so pushes can't slip past locally with failures CI would catch.
 #
 # CI runs the same steps via .github/workflows/ci.yml:
-#   - "Backend"  (line 935):  zig build test nalar-desktop --summary all
+#   - "Backend"  (line 935):  zig build test pabrik-desktop --summary all
 #   - "Functional tests"   (line 1229): zig build functional-test --summary all
 #   - "UI tests"           (line 1331): zig build functional-test-ui --summary all
 #   - Frontend build: pnpm run build in src/apps/desktop (vite + vue-tsc)
@@ -28,7 +28,7 @@ zig build test
 
 echo "→ navgraph staleness check"
 # navgraph.html / navgraph.json are committed derived artifacts, so any
-# NalarNavGraph.kt edit has to be followed by `build.py`. This went stale
+# PabrikNavGraph.kt edit has to be followed by `build.py`. This went stale
 # twice on main and only the 20-minute android-apk job noticed both times.
 # The check is ~0.04s and stdlib-only, so it is cheap enough to always run
 # rather than diff-gating on which files moved.

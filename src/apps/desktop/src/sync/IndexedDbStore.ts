@@ -3,7 +3,7 @@
  *
  * One service, one database connection, three object stores. The previous
  * shape gave every engine its own `IndexedDbStore` instance, so the same
- * `nalar-sync` file was opened three times (once per engine) with the
+ * `pabrik-sync` file was opened three times (once per engine) with the
  * object-store name baked into the instance. Passing the store name per
  * call removes that duplication.
  *
@@ -20,7 +20,7 @@ import { SyncStore, type SyncStoreShape, sortNewestFirst } from './SyncStore'
 import type { Syncable } from './SyncTypes'
 import { getCurrentUserId } from '../helpers/userScope'
 
-const DB_NAME = 'nalar-sync'
+const DB_NAME = 'pabrik-sync'
 
 /**
  * Per-user database name.
@@ -32,7 +32,7 @@ const DB_NAME = 'nalar-sync'
  * a different database.
  *
  * No identity (auth off, or `/api/auth/me` unresolved) keeps the legacy
- * `nalar-sync` name, so the auth-off path is unchanged.
+ * `pabrik-sync` name, so the auth-off path is unchanged.
  */
 function dbName(): string {
   const userId = getCurrentUserId()

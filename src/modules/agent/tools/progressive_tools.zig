@@ -12,7 +12,7 @@
 //! The catalog is defined in `src/agentic_loop/progressive_catalog.zig`.
 //! The RENDERERS for these three live there too, not here: this module sits
 //! under `src/modules/` and must not import from `src/agentic_loop/`
-//! (that would close an import cycle through the `nalarcore` root). Keep
+//! (that would close an import cycle through the `pabrikcore` root). Keep
 //! this file pure data — AgentTool literals, prompts and input structs —
 //! exactly like the other `src/modules/agent/tools/*.zig` definitions.
 //!

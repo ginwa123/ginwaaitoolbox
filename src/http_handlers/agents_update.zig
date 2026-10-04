@@ -14,8 +14,8 @@
 //! end, so neither layer needs explicit `free`s.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// HTTP request body for agent-update. Decoupled from the
@@ -86,7 +86,7 @@ pub const AgentUpdateOutput = struct {
 /// below) — all allocations go through the passed-in allocator.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: AgentUpdateInput,
 ) AgentUpdateError!AgentUpdateOutput {
     if (input.workspace_id.len == 0 or input.item_id.len == 0) {
@@ -158,7 +158,7 @@ pub fn agentsUpdateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
@@ -223,7 +223,7 @@ pub fn agentsUpdateHandler(
 //   3. NotAnAgent: workspace_item exists but item_type != 'agent'
 //   4. Happy path: description is updated and the response reflects it
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 

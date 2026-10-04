@@ -226,7 +226,7 @@ def test_a_chat_in_the_default_project_resolves_its_cwd_to_home(
     # complain. `createSandbox` builds
     # <dataDir>/apps/<sanitized session id>, so THAT shape is the marker —
     # not "/tmp", which the harness's own HOME legitimately sits under.
-    sandbox_suffix = f".local/share/nalar/data/apps/{task['id']}"
+    sandbox_suffix = f".local/share/pabrik/data/apps/{task['id']}"
     assert not cwd.endswith(sandbox_suffix), (
         f"the agent fell back to a per-session sandbox instead of HOME: {cwd!r}"
     )

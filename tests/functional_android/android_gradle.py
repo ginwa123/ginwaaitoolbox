@@ -29,7 +29,7 @@ DEFAULT_TIMEOUT_S = 1200
 
 #: The class this suite runs. Everything else in `androidTest` is excluded on
 #: purpose — see the module docstring.
-TEST_CLASS = "com.nalar.mobile.functional.ChatFunctionalTest"
+TEST_CLASS = "com.pabrik.mobile.functional.ChatFunctionalTest"
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,7 @@ def run_instrumented(
         str(gradle),
         ":app:connectedDebugAndroidTest",
         "--console=plain",
-        f"-PnalarBaseUrl={base_url}",
+        f"-PpabrikBaseUrl={base_url}",
         f"-Pandroid.testInstrumentationRunnerArguments.class={test_class}",
     ]
 

@@ -1,8 +1,8 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const LLMHistory = @import("llm_history_row.zig").LLMHistory;
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const testing = std.testing;
 const SqliteBackend = sqlite.SqliteBackend;
 

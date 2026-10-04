@@ -56,7 +56,7 @@ const props = withDefaults(
     cwd: string
     // Required for image upload. The kanban task id is used as the
     // upload bucket — files land in
-    // `<item.path>/.nalar/attachments/<taskId>/<n>.<ext>`.
+    // `<item.path>/.pabrik/attachments/<taskId>/<n>.<ext>`.
     // Empty string disables image upload (the editor still works for
     // text + @path references).
     taskId?: string

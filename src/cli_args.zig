@@ -1,6 +1,6 @@
 // src/cli_args.zig
 //
-// Parses the TOP-LEVEL `nalar` command-line flags: --port, --static-dir,
+// Parses the TOP-LEVEL `pabrik` command-line flags: --port, --static-dir,
 // --http2, --tls, --tls-selfsigned, --auth and -h/--help.
 //
 // Lives here, not inline in `main`, for the reason the comment in main.zig
@@ -16,7 +16,7 @@
 // pure and keeps the negative-path unit tests from tripping Zig's test
 // runner, which fails any test that emits an `std.log.err` line.
 //
-// The `nalar service …` subcommand is parsed by
+// The `pabrik service …` subcommand is parsed by
 // `service/main_service.zig:parseServiceSubcommand`, not here.
 
 const std = @import("std");
@@ -107,7 +107,7 @@ pub fn parse(
         } else if (std.mem.eql(u8, arg, "--http2")) {
             // `--http2` on its own means h2c; an explicit value keeps room for
             // future modes (e.g. `--http2=off`). It consumes the next word
-            // POSITIONALLY, so `nalar --http2 --auth` reads `--auth` as the
+            // POSITIONALLY, so `pabrik --http2 --auth` reads `--auth` as the
             // mode and fails — pre-existing behaviour, pinned by a test.
             i += 1;
             if (i < args.len) {
@@ -138,7 +138,7 @@ pub fn parse(
             out.auth_enabled = true;
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             // Help wins over everything to its right, exactly as it did when
-            // this block was inline in `main`: `nalar --help --port abc`
+            // this block was inline in `main`: `pabrik --help --port abc`
             // prints usage and exits 0 rather than failing on the bad port.
             printUsage();
             out.help_requested = true;
@@ -164,7 +164,7 @@ pub fn reportFailure(f: Failure) void {
 }
 
 pub fn printUsage() void {
-    std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR] [--http2 h2c|off] [--tls CERT KEY | --tls-selfsigned] [--auth]\n", .{});
+    std.debug.print("Usage: pabrik [--port PORT] [--static-dir DIR] [--http2 h2c|off] [--tls CERT KEY | --tls-selfsigned] [--auth]\n", .{});
     std.debug.print("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
     std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
     std.debug.print("  --http2 h2c|off      Also accept HTTP/2 cleartext (h2c) clients on the same port (default: off)\n", .{});

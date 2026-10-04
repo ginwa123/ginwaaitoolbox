@@ -2,10 +2,10 @@
 //!
 //! ## Why the key is masked on the way OUT
 //!
-//! `GET /api/config/nalar` is what populates the Settings form, and the
+//! `GET /api/config/pabrik` is what populates the Settings form, and the
 //! browser is not a trusted place for a credential: it lands in devtools, in
 //! a shared screenshot, in a HAR file someone pastes into a bug report. LLM
-//! profile keys still ride through raw (`nalar_config_get.zig:60`, `:147`),
+//! profile keys still ride through raw (`pabrik_config_get.zig:60`, `:147`),
 //! and this deliberately does NOT extend that to the search key: a new
 //! feature is the right place to start the stronger default, and it is ~20
 //! lines.
@@ -144,7 +144,7 @@ pub fn validateProvider(name: []const u8, entry: json.Value) ValidationError!?[]
 /// The result is allocated from `allocator` and owned by it. Callers pass
 /// the per-request arena (or a testing allocator that will report a leak),
 /// so there is nothing to free by hand — the same convention as
-/// `makeNalarConfigResponse`.
+/// `makePabrikConfigResponse`.
 ///
 /// Building the masked map as text and re-parsing it avoids `std.json`'s
 /// `ObjectMap` being a `StringArrayHashMap` with a different `init` than the

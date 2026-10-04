@@ -28,7 +28,7 @@ EXACT wire the frontend sends:
      and profile bound on the session.
 
 Run:
-    NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/agent_create_kanban_task_session_test.py -v
 """
 

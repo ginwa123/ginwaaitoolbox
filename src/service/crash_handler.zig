@@ -75,7 +75,7 @@
 // ## Setup
 //
 // Call `installCrashHandlers()` once during startup, AFTER
-// `nalarcore.setPanicLogPath()` has been called. The handler reads the
+// `pabrikcore.setPanicLogPath()` has been called. The handler reads the
 // path via `getCrashLogPath()` — a module-level global set by
 // `setCrashLogPath()`. Two globals (the panic handler's and this one)
 // avoid a circular `root.zig` ↔ `crash_handler.zig` import.
@@ -104,7 +104,7 @@
 //
 // So the four codes that account for essentially every real crash never
 // reached `handleWindowsException`. The process still died, so nothing
-// looked broken — it just died without nalar's report, and the only
+// looked broken — it just died without pabrik's report, and the only
 // output was std's stderr write, which a GUI-subsystem or detached
 // process has nowhere to send. Hence "Windows crash, no stack trace".
 //
@@ -660,7 +660,7 @@ fn handleWindowsException(exception_info: *std.os.windows.EXCEPTION_POINTERS) ca
 /// (`std/debug.zig:1633`, overridable precisely so a program can install
 /// its own reporter). Each root source file re-exports this function:
 ///
-///     pub const debug = nalarcore.crash_handler.root_debug;
+///     pub const debug = pabrikcore.crash_handler.root_debug;
 ///
 /// ## Why this is the Windows fix
 ///
@@ -678,7 +678,7 @@ fn handleWindowsException(exception_info: *std.os.windows.EXCEPTION_POINTERS) ca
 /// So `SetUnhandledExceptionFilter(handleWindowsException)` — the entire
 /// Windows half of this file — was dead code for exactly the four codes
 /// that account for almost every real crash. The process still died, so
-/// nothing looked broken; it just died without nalar's report. And what
+/// nothing looked broken; it just died without pabrik's report. And what
 /// std printed went to stderr, which a GUI-subsystem or detached process
 /// has nowhere to send, so the user saw no stack trace at all.
 ///
@@ -933,7 +933,7 @@ test "every root source file declares root.debug so the Windows vectored handler
             .limited(1 << 20),
         );
         defer testing.allocator.free(src);
-        if (std.mem.indexOf(u8, src, "pub const debug = nalarcore.crash_handler.root_debug") == null) {
+        if (std.mem.indexOf(u8, src, "pub const debug = pabrikcore.crash_handler.root_debug") == null) {
             std.debug.print("missing `pub const debug` in {s}\n", .{rel});
             return error.MissingRootDebugOverride;
         }

@@ -63,7 +63,7 @@ The webview must **trust** the cert or it shows an interstitial. Options:
 
 **Recommendation:** generate a self-signed cert (EC P-256, 1-year, SAN
 `DNS:localhost, IP:127.0.0.1`) at first run into
-`$XDG_DATA_HOME/nalar/tls/` (Windows: `%LOCALAPPDATA%\nalar\tls\`), mode 0600,
+`$XDG_DATA_HOME/pabrik/tls/` (Windows: `%LOCALAPPDATA%\pabrik\tls\`), mode 0600,
 plus the webview accept-hook. For plain browsers, print a one-line "trust this
 cert once" hint.
 

@@ -136,7 +136,7 @@ describe('workspaces store lazy per-workspace item loading', () => {
   })
 
   it('init prefers the persisted choice over the first workspace', async () => {
-    localStorageStub.setItem('nalar-active-workspace', 'ws_2')
+    localStorageStub.setItem('pabrik-active-workspace', 'ws_2')
 
     const store = useWorkspacesStore()
     await store.init()
@@ -184,7 +184,7 @@ describe('workspaces store lazy per-workspace item loading', () => {
   })
 
   it('init prefers an explicit activeWorkspaceId over the persisted choice', async () => {
-    localStorageStub.setItem('nalar-active-workspace', 'ws_1')
+    localStorageStub.setItem('pabrik-active-workspace', 'ws_1')
 
     const store = useWorkspacesStore()
     store.activeWorkspaceId = 'ws_2'

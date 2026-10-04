@@ -20,8 +20,8 @@
 //! Task: task_1787597624259_2
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 
@@ -94,7 +94,7 @@ pub const KnowledgeCreateOutput = struct {
 /// (COALESCE so the first row gets position 0).
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: KnowledgeCreateInput,
 ) KnowledgeCreateError!KnowledgeCreateOutput {
     if (input.kanban_id.len == 0) return error.KanbanIdRequired;
@@ -163,7 +163,7 @@ pub fn agentKanbanKnowledgeCreateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const kanban_id = req.params.get("kanban_id") orelse "";
@@ -232,7 +232,7 @@ pub fn agentKanbanKnowledgeCreateHandler(
 //   4. KanbanNotFound: missing item / wrong type / unconfigured board
 //   5. Happy path: first row gets position 0; inline content round-trips
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
 

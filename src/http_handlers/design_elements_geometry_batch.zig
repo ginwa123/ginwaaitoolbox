@@ -39,9 +39,9 @@
 //!   /move-batch).
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const gserverz = pabrikcore.gserverz;
 const design_model = @import("../agentic_loop/design_model.zig");
 
 /// HTTP request body for batch-geometry-update. Each `updates[i]` is a
@@ -102,7 +102,7 @@ pub const UseCaseInput = struct {
 
 pub fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: UseCaseInput,
 ) DesignElementGeometryBatchError!UpdateGeometryBatchOutput {
     if (input.updates.len == 0) return error.EmptyUpdates;
@@ -131,7 +131,7 @@ pub fn designElementsGeometryBatchHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Validate the page_id path param. Empty → 400.

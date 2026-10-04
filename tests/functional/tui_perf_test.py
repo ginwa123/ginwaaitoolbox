@@ -1,6 +1,6 @@
-"""Functional regression gate for nalar-tui's memory leak + input latency.
+"""Functional regression gate for pabrik-tui's memory leak + input latency.
 
-The 2026-09-13 audit (docs/superpowers/plans/2026-09-13-audit-nalar-tui-memory-and-latency.md)
+The 2026-09-13 audit (docs/superpowers/plans/2026-09-13-audit-pabrik-tui-memory-and-latency.md)
 found two runtime symptoms that no unit test could see:
 
   1. the TUI leaked a frame buffer on every redraw (~0.36 MB/keystroke,
@@ -13,9 +13,9 @@ found two runtime symptoms that no unit test could see:
 Both are only reproducible through a real TTY, so these tests drive the binary
 inside a pty and assert on RSS growth and on key-to-echo latency.
 
-Skipped (not failed) when `nalar-tui` has not been built: `zig build
-install:tui` produces zig-out/bin/nalar-tui, and CI's functional-test step only
-installs the main `nalar` binary. Set NALAR_TUI_BIN to point at any build.
+Skipped (not failed) when `pabrik-tui` has not been built: `zig build
+install:tui` produces zig-out/bin/pabrik-tui, and CI's functional-test step only
+installs the main `pabrik` binary. Set PABRIK_TUI_BIN to point at any build.
 
 Run locally:
     zig build install:tui
@@ -43,15 +43,15 @@ from tui_perf_probe import (
 
 def _binary() -> str:
     candidates = [
-        os.environ.get("NALAR_TUI_BIN"),
-        "zig-out/bin/nalar-tui",
-        "zig-out/bin/nalar-tui.exe",
-        shutil.which("nalar-tui"),
+        os.environ.get("PABRIK_TUI_BIN"),
+        "zig-out/bin/pabrik-tui",
+        "zig-out/bin/pabrik-tui.exe",
+        shutil.which("pabrik-tui"),
     ]
     for cand in candidates:
         if cand and os.path.exists(cand):
             return cand
-    pytest.skip("nalar-tui not built — run `zig build install:tui` (or set NALAR_TUI_BIN)")
+    pytest.skip("pabrik-tui not built — run `zig build install:tui` (or set PABRIK_TUI_BIN)")
 
 
 @pytest.fixture
@@ -64,7 +64,7 @@ def test_tui_idle_redraws_do_not_leak(tui):
     """Idle = 10 tick redraws/s with zero input. Pre-fix this leaked 1.76 MB/s."""
     kb_per_s = measure_idle_growth(tui, seconds=4.0)
     assert kb_per_s < MAX_IDLE_KB_PER_S, (
-        "nalar-tui leaked %.0f KB/s while idle (limit %d): the model/program "
+        "pabrik-tui leaked %.0f KB/s while idle (limit %d): the model/program "
         "allocator must not be a process-lifetime arena" % (kb_per_s, MAX_IDLE_KB_PER_S)
     )
 
@@ -73,7 +73,7 @@ def test_tui_typing_does_not_leak(tui):
     """Pre-fix each keystroke retained ~364 KB (two whole frame buffers)."""
     kb_per_key = measure_typing_growth(tui, keys=60)
     assert kb_per_key < MAX_KB_PER_KEY, (
-        "nalar-tui leaked %.1f KB per keystroke (limit %d)" % (kb_per_key, MAX_KB_PER_KEY)
+        "pabrik-tui leaked %.1f KB per keystroke (limit %d)" % (kb_per_key, MAX_KB_PER_KEY)
     )
 
 

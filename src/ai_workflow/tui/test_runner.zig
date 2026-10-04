@@ -15,7 +15,7 @@ test {
     // tests into the test binary. Same discovery workaround as the
     // handlers below.
     _ = @import("../../http_handlers/auth_common.zig");
-_ = @import("../../http_handlers/nalar_config_put.zig");
+_ = @import("../../http_handlers/pabrik_config_put.zig");
 _ = @import("../../http_handlers/design_elements_reorder.zig");
 _ = @import("../../http_handlers/design_elements_ungroup.zig");
     // Static-contract tests for the model-thinking PUT validation
@@ -24,8 +24,8 @@ _ = @import("../../http_handlers/design_elements_ungroup.zig");
     // Static-contract tests for config-simplify (plan
     // 2026-08-24-config-simplify-remove-defaults): PUT handler must not
     // persist top-level LLM defaults.
-_ = @import("../../http_handlers/nalar_config_get.zig");
-_ = @import("../../http_handlers/nalar_config_profile_delete.zig");
+_ = @import("../../http_handlers/pabrik_config_get.zig");
+_ = @import("../../http_handlers/pabrik_config_profile_delete.zig");
 _ = @import("../../http_handlers/unified_events_sse.zig");
 _ = @import("../../http_handlers/task_update.zig");
 _ = @import("../../http_handlers/task_delete.zig");

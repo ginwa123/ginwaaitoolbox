@@ -1,19 +1,19 @@
 // tools/install_tui.zig
 //
-// Cross-platform installer for the `nalar-tui` binary.
+// Cross-platform installer for the `pabrik-tui` binary.
 //
 // Usage (invoked by `zig build install-tui`):
 //
 //     install_tui <source-path>
 //
-// Where <source-path> is the built binary (e.g. zig-out/bin/nalar-tui).
+// Where <source-path> is the built binary (e.g. zig-out/bin/pabrik-tui).
 // The tool copies it to the per-user bin directory:
 //
-//   Linux:   $HOME/.local/bin/nalar-tui
-//   macOS:   $HOME/.local/bin/nalar-tui
-//   Windows: %LOCALAPPDATA%\nalar\bin\nalar-tui.exe
-//            fallback: %APPDATA%\nalar\bin\nalar-tui.exe
-//            fallback: %USERPROFILE%\.local\bin\nalar-tui.exe
+//   Linux:   $HOME/.local/bin/pabrik-tui
+//   macOS:   $HOME/.local/bin/pabrik-tui
+//   Windows: %LOCALAPPDATA%\pabrik\bin\pabrik-tui.exe
+//            fallback: %APPDATA%\pabrik\bin\pabrik-tui.exe
+//            fallback: %USERPROFILE%\.local\bin\pabrik-tui.exe
 //
 // The tool creates parent directories, copies the file, sets 0755 on Unix,
 // and prints a success message with the destination path.
@@ -47,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
         try chmodExecutable(dest_path);
     }
 
-    std.debug.print("Installed nalar-tui → {s}\n", .{dest_path});
+    std.debug.print("Installed pabrik-tui → {s}\n", .{dest_path});
 
     // Hint about PATH if the dest dir is not on PATH.
     if (builtin.os.tag != .windows) {
@@ -82,7 +82,7 @@ fn resolveDestLinux(allocator: std.mem.Allocator, init: std.process.Init) ![]con
         std.debug.print("ERROR: $HOME is not set — cannot determine install destination.\n", .{});
         return error.HomeNotSet;
     };
-    return std.fs.path.join(allocator, &.{ home, ".local", "bin", "nalar-tui" });
+    return std.fs.path.join(allocator, &.{ home, ".local", "bin", "pabrik-tui" });
 }
 
 fn resolveDestMacos(allocator: std.mem.Allocator, init: std.process.Init) ![]const u8 {
@@ -93,26 +93,26 @@ fn resolveDestMacos(allocator: std.mem.Allocator, init: std.process.Init) ![]con
         std.debug.print("ERROR: $HOME is not set — cannot determine install destination.\n", .{});
         return error.HomeNotSet;
     };
-    return std.fs.path.join(allocator, &.{ home, ".local", "bin", "nalar-tui" });
+    return std.fs.path.join(allocator, &.{ home, ".local", "bin", "pabrik-tui" });
 }
 
 fn resolveDestWindows(allocator: std.mem.Allocator, init: std.process.Init) ![]const u8 {
     // Priority:
-    //   1. %LOCALAPPDATA%\nalar\bin\nalar-tui.exe  (e.g. C:\Users\you\AppData\Local)
-    //   2. %APPDATA%\nalar\bin\nalar-tui.exe        (e.g. C:\Users\you\AppData\Roaming)
-    //   3. %USERPROFILE%\.local\bin\nalar-tui.exe  (Git Bash fallback)
-    //   4. $HOME\.local\bin\nalar-tui.exe           (MSYS fallback)
+    //   1. %LOCALAPPDATA%\pabrik\bin\pabrik-tui.exe  (e.g. C:\Users\you\AppData\Local)
+    //   2. %APPDATA%\pabrik\bin\pabrik-tui.exe        (e.g. C:\Users\you\AppData\Roaming)
+    //   3. %USERPROFILE%\.local\bin\pabrik-tui.exe  (Git Bash fallback)
+    //   4. $HOME\.local\bin\pabrik-tui.exe           (MSYS fallback)
     if (getEnv(init, "LOCALAPPDATA")) |local_app_data| {
-        return std.fs.path.join(allocator, &.{ local_app_data, "nalar", "bin", "nalar-tui.exe" });
+        return std.fs.path.join(allocator, &.{ local_app_data, "pabrik", "bin", "pabrik-tui.exe" });
     }
     if (getEnv(init, "APPDATA")) |app_data| {
-        return std.fs.path.join(allocator, &.{ app_data, "nalar", "bin", "nalar-tui.exe" });
+        return std.fs.path.join(allocator, &.{ app_data, "pabrik", "bin", "pabrik-tui.exe" });
     }
     if (getEnv(init, "USERPROFILE")) |user_profile| {
-        return std.fs.path.join(allocator, &.{ user_profile, ".local", "bin", "nalar-tui.exe" });
+        return std.fs.path.join(allocator, &.{ user_profile, ".local", "bin", "pabrik-tui.exe" });
     }
     if (getEnv(init, "HOME")) |home| {
-        return std.fs.path.join(allocator, &.{ home, ".local", "bin", "nalar-tui.exe" });
+        return std.fs.path.join(allocator, &.{ home, ".local", "bin", "pabrik-tui.exe" });
     }
     std.debug.print("ERROR: cannot determine Windows install destination — none of LOCALAPPDATA, APPDATA, USERPROFILE, HOME is set.\n", .{});
     return error.HomeNotSet;

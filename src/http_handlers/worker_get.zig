@@ -4,10 +4,10 @@
 //! handler that maps the outcome + errors to status codes / JSON.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_workflow = nalarcore.ai_workflow;
-const llm_history = nalarcore.llm_history;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_workflow = pabrikcore.ai_workflow;
+const llm_history = pabrikcore.llm_history;
 
 pub const WorkerGetError = error{
     ServerNotInitialized,

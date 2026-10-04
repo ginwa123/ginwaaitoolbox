@@ -23,7 +23,7 @@
 //! This module centralises the platform switch so call sites stay simple:
 //!
 //! ```zig
-//! const ps = nalarcore.helpers.process_status;
+//! const ps = pabrikcore.helpers.process_status;
 //! if (ps.isProcessRunning(1234)) { ... }
 //! const ok = ps.killProcess(1234);  // SIGKILL on POSIX, TerminateProcess on Windows
 //! ```

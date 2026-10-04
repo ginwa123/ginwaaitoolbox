@@ -1,4 +1,4 @@
-# `nalar-tui` — a Claude-Code-style TUI for nalar (design)
+# `pabrik-tui` — a Claude-Code-style TUI for pabrik (design)
 
 **Status:** design (pre-implementation)
 **Branch:** `worktree/cli-tui`
@@ -6,7 +6,7 @@
 
 ## 1. Motivation
 
-The existing `nalarcli` (`src/apps/cli`) is a one-shot JSON-over-HTTP client
+The existing `pabrikcli` (`src/apps/cli`) is a one-shot JSON-over-HTTP client
 suitable for scripting but not for an interactive LLM session:
 
 - `send` blocks once and prints the response (or nothing if you don't poll
@@ -15,7 +15,7 @@ suitable for scripting but not for an interactive LLM session:
   CLI just prints raw SSE frames).
 - No persistent input box, no scrollback, no spinner, no session affinity.
 
-`nalar-tui` is the interactive counterpart:
+`pabrik-tui` is the interactive counterpart:
 
 - A full-screen terminal chat with **streaming** model output.
 - A reusable `tui` module (Bubble Tea-shaped: `Model.update(msg) ->
@@ -31,8 +31,8 @@ changes are required.
 
 - A new `tui` module at `src/apps/cli/src/tui/` that any caller can
   `@import("tui")` against.
-- A new executable `nalar-tui` (wired into the root `build.zig` next to
-  the existing `nalarcli`).
+- A new executable `pabrik-tui` (wired into the root `build.zig` next to
+  the existing `pabrikcli`).
 - Interactive mode: streaming chat with a persistent input box,
   scrollback, spinner, status bar, Ctrl-C to quit.
 - Two transport modes:
@@ -206,7 +206,7 @@ fn update(self: *Self, msg: Msg) !bool   // returns true if redraw needed
 fn handleKey(self: *Self, k: Key) !bool // returns true if consumed
 ```
 
-### 3.7 The chat model (`nalar_tui.App`)
+### 3.7 The chat model (`pabrik_tui.App`)
 
 ```
 App = struct {
@@ -277,31 +277,31 @@ If the user opts out of SSE via `--no-sse`, the program polls
 
 ### 3.9 Config
 
-Same flag surface as `nalarcli`:
+Same flag surface as `pabrikcli`:
 
 | Flag             | Env                  | Default                       |
 |------------------|----------------------|-------------------------------|
-| `--server`       | `NALARCLI_SERVER`    | `http://localhost:8081`       |
-| `--session`      | `NALARCLI_SESSION_ID`| (auto-create)                 |
-| `--profile`      | `NALARCLI_PROFILE`   | (server default)              |
+| `--server`       | `PABRIKCLI_SERVER`    | `http://localhost:8081`       |
+| `--session`      | `PABRIKCLI_SESSION_ID`| (auto-create)                 |
+| `--profile`      | `PABRIKCLI_PROFILE`   | (server default)              |
 | `--no-sse`       | —                    | SSE on                        |
-| `--cwd`          | `NALARCLI_CWD`       | `$HOME`                       |
+| `--cwd`          | `PABRIKCLI_CWD`       | `$HOME`                       |
 
-(Same env names as `nalarcli` for parity; one config struct in the
+(Same env names as `pabrikcli` for parity; one config struct in the
 `cli` module is shared between both binaries.)
 
 ## 4. Build wiring
 
 Three additions to the root `build.zig` (mirroring the existing
-`nalarcli` block):
+`pabrikcli` block):
 
 1. **Module.** A new `b.addModule("tui", ...)` rooted at
    `src/apps/cli/src/tui/root.zig`. The `tui` module re-exports its
    submodules; the `cli` module adds an import for `tui`.
-2. **Executable.** A new `b.addExecutable` named `nalar-tui`, root
+2. **Executable.** A new `b.addExecutable` named `pabrik-tui`, root
    `src/apps/cli/src/tui_main.zig`, imports: `tui`, `cli`,
    `custom_http_client`, `helpers`. Same libc / system libcurl
-   treatment as `nalarcli`.
+   treatment as `pabrikcli`.
 3. **Steps.** `run:tui`, `install:tui`, `test:tui` — each mirrors the
    `run:cli` / `install:cli` / `test:cli` pattern.
 
@@ -352,7 +352,7 @@ fixtures needed.
 
 ## 8. Out-of-band follow-ups
 
-- A `nalar-tui --resume` flag that loads a previous session by id and
+- A `pabrik-tui --resume` flag that loads a previous session by id and
   scrolls back through its message history. Requires a `--limit` flag
   passed to `GET /api/llm/session/:id/messages`.
 - Slash-commands (`/profile alpha`, `/clear`, `/help`).

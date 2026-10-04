@@ -22,9 +22,9 @@
 //!   - `500` + `no cwd available` substring checks
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const memories_mod = nalarcore.memories;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const memories_mod = pabrikcore.memories;
 const http_response = @import("http_response.zig");
 
 /// Response payload for `GET /api/local-memories/:name`.

@@ -90,9 +90,9 @@ PR_URL = "https://github.com/acme/app/pull/4242"
 
 
 def test_conflicting_files_are_named_on_the_wire(
-    conflicting_repo: Path, default_nalar_bin: Path
+    conflicting_repo: Path, default_pabrik_bin: Path
 ) -> None:
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h.http(
             "GET",
@@ -119,7 +119,7 @@ def test_conflicting_files_are_named_on_the_wire(
 
 
 def test_path_with_spaces_survives_url_encoding(
-    tmp_path: Path, default_nalar_bin: Path
+    tmp_path: Path, default_pabrik_bin: Path
 ) -> None:
     """Repo paths carry spaces; `%20` in the query must decode to one path."""
     cwd = tmp_path / "a repo with spaces"
@@ -143,7 +143,7 @@ def test_path_with_spaces_survives_url_encoding(
     _git(cwd, "commit", "--quiet", "-am", "main change")
     _git(cwd, "checkout", "--quiet", "feature")
 
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h.http(
             "GET",
@@ -159,7 +159,7 @@ def test_path_with_spaces_survives_url_encoding(
 
 
 def test_clean_merge_is_an_empty_list_not_an_error(
-    conflicting_repo: Path, default_nalar_bin: Path
+    conflicting_repo: Path, default_pabrik_bin: Path
 ) -> None:
     """A 200 with `conflicting_files: []` is the 'clean' answer.
 
@@ -169,7 +169,7 @@ def test_clean_merge_is_an_empty_list_not_an_error(
     """
     _git(conflicting_repo, "checkout", "--quiet", "--detach", "main~1")
 
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h.http(
             "GET",
@@ -187,9 +187,9 @@ def test_clean_merge_is_an_empty_list_not_an_error(
 
 
 def test_missing_parameters_and_bad_provider_are_rejected(
-    conflicting_repo: Path, default_nalar_bin: Path
+    conflicting_repo: Path, default_pabrik_bin: Path
 ) -> None:
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         missing_path = h.http(
             "GET", "/api/git/pr/conflicts", params={"pr_url": PR_URL}, expect=400, timeout_s=15.0

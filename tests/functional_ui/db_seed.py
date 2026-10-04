@@ -20,7 +20,7 @@ the cost/flakiness of a live agent loop.
 
 2. Inserts go through the harness's SQLite file. We never
    hard-code an absolute path to the developer's real ``$HOME`` —
-   the path is always ``temp_dir / ".config" / "nalar" / "agent.db"``
+   the path is always ``temp_dir / ".config" / "pabrik" / "agent.db"``
    where ``temp_dir`` came from the harness fixture.
 
 3. Connections are opened in read-write mode (we need to INSERT),
@@ -109,7 +109,7 @@ class DbSeed:
 
     Example::
 
-        seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+        seed = DbSeed(h.temp_dir / ".config" / "pabrik" / "agent.db")
         with seed.connect() as conn:
             sid = "sess_test_001"
             seed.seed_session(conn, sid, "Test Chat")
@@ -127,12 +127,12 @@ class DbSeed:
         if not is_safe_tmp(str(db_path.parent), ""):
             raise FunctionalHarnessError(
                 f"REFUSING to seed chatview DB at unsafe path: {db_path}\n"
-                f"This path is NOT inside a nalar-func-* tmpdir. "
+                f"This path is NOT inside a pabrik-func-* tmpdir. "
                 f"The harness is supposed to allocate the tempdir; "
                 f"if you see this error, the harness has a P0 bug. "
                 f"DO NOT bypass this check."
             )
-        # Sanity: the DB path should contain the `nalar-func-` substring
+        # Sanity: the DB path should contain the `pabrik-func-` substring
         # (catches ``str(db_path.parent)`` paths that pass the prefix
         # check but are not actually harness-allocated).
         if REQUIRED_TMP_SUBSTR not in str(db_path):

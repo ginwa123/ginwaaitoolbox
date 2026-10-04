@@ -1,6 +1,6 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 
 /// Process-local monotonic counter for workspace_item id generation.
 /// Nanosecond-precision timestamps used previously COULD theoretically
@@ -46,14 +46,14 @@ const WorkspaceItemsCreateResult = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    sqlite_db: *nalarcore.sqlite.SqliteBackend,
+    sqlite_db: *pabrikcore.sqlite.SqliteBackend,
     io: std.Io,
     workspace_id: []const u8,
     body: []const u8,
 ) WorkspaceItemsCreateError!WorkspaceItemsCreateResult {
     if (body.len == 0) return error.MissingBody;
 
-    // Per nalar-http-handler-thin-wrapper-pattern.md: parseFromSliceLeaky
+    // Per pabrik-http-handler-thin-wrapper-pattern.md: parseFromSliceLeaky
     // is the correct API for per-request arena allocators.
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch {
         return error.InvalidJson;
@@ -111,7 +111,7 @@ fn useCase(
 pub fn workspaceItemsCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const workspace_id = req.params.get("workspace_id") orelse "";

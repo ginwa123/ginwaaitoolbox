@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const get_design_context_mod = nalarcore.get_design_context;
+const agent = pabrikcore.agent;
+const get_design_context_mod = pabrikcore.get_design_context;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execGetDesignContext(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

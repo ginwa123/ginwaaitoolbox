@@ -57,7 +57,7 @@ index already on main; FPS overlay verified dev-only).
 |---|----------|---------|
 | 11 | `Sidebar.vue:251–257` → `AppLayout.vue:132–134` → `navigation.ts:83–86` | Sidebar resize drag: `localStorage.setItem` (sync disk I/O) + store write + full shell relayout **per mousemove** (60–120 Hz). Same layout churn in `RightSidebar.vue:43–53`. |
 | 12 | `PreviewContentRenderer.vue:158–162` | MutationObserver on `document.body {subtree:true}` inside preview iframes → forced reflow (`scrollHeight` read) + postMessage per DOM mutation, zero coalescing. |
-| 13 | `windows/nalar_webview.cpp:236–242` | WebView2 asset serving still linear-scans (`strcmp` loop) per request on the UI thread. Linux got StringHashMap, macOS got NSDictionary — Windows skipped. |
+| 13 | `windows/pabrik_webview.cpp:236–242` | WebView2 asset serving still linear-scans (`strcmp` loop) per request on the UI thread. Linux got StringHashMap, macOS got NSDictionary — Windows skipped. |
 | 14 | `DesignChatDialog.vue:137`, `KanbanChatDialog.vue:134` | `backdrop-filter: blur(8px)` over live-streaming chat content — costliest WebKitGPU op; under software rendering can pin a core while dialog is open. |
 
 ### P3 — Constant idle baseline
@@ -131,7 +131,7 @@ the majority of reported burn.
 10. **Preview MutationObserver**: debounce `report()` (~100 ms trailing);
     observe content root not `document.body`.
 11. **Windows asset index**: port Linux's prebuilt path→index map to
-    `nalar_webview.cpp` WebResourceRequested handler.
+    `pabrik_webview.cpp` WebResourceRequested handler.
 12. **Drop backdrop-filter** on the two chat dialogs → opaque rgba overlay.
 
 ### Phase 4 — Idle baseline & hygiene

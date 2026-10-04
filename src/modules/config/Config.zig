@@ -181,7 +181,7 @@ pub const LlmConfig = struct {
     /// a profile in `profiles_models` that the workflow uses as the
     /// default when neither the session's `selected_profile_model`
     /// nor the POST body's `selected_profile_model` is set. Set by
-    /// the user via NalarSettings → "Set as active profile"; falls
+    /// the user via PabrikSettings → "Set as active profile"; falls
     /// through to top-level config when the named profile is missing
     /// or when the field itself is `null`. Empty string is normalized
     /// to `null` on load (the PUT handler also coerces `""` → null).
@@ -457,12 +457,12 @@ pub const LlmConfig = struct {
         /// Plan 2026-08-06-set-active-profile-default — name of the
         /// profile to use as the default when no other selection is
         /// set. Round-tripped as a top-level config key so the
-        /// NalarSettings "Set as active profile" UI persists across
-        /// reloads. The PUT handler in `nalar_config_put.zig` coerces
+        /// PabrikSettings "Set as active profile" UI persists across
+        /// reloads. The PUT handler in `pabrik_config_put.zig` coerces
         /// empty string → null so a manual JSON edit of `""` is
         /// equivalent to deleting the key.
         active_profile: ?[]const u8 = null,
-        /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
+        /// Configured MCP servers (snake_case, matches PABRIK.md JSON convention).
         mcp_servers: ?std.json.Value = null,
         /// Profiles - parsed as json.Value then converted to map
         profiles_models: ?std.json.Value = null,
@@ -758,9 +758,9 @@ pub const LlmConfig = struct {
 
     /// Initialize an `LlmConfig` from disk. When `path` is null (the
     /// default), uses the platform-specific config path returned by
-    /// `getDefaultConfigPath` (e.g. `~/.config/nalar/config.json` on
-    /// Linux, `~/Library/Application Support/nalar/config.json` on
-    /// macOS, `%APPDATA%/nalar/config.json` on Windows).
+    /// `getDefaultConfigPath` (e.g. `~/.config/pabrik/config.json` on
+    /// Linux, `~/Library/Application Support/pabrik/config.json` on
+    /// macOS, `%APPDATA%/pabrik/config.json` on Windows).
     ///
     /// **Auto-init on first run**: When `path` is null AND the file at
     /// the resolved default path does not exist, this function creates
@@ -864,7 +864,7 @@ pub const LlmConfig = struct {
             // Plan 2026-08-06-set-active-profile-default — load the
             // user-chosen default profile from JSON. Coerce empty
             // string to null so manual `""` edits don't survive the
-            // round-trip (matches `nalar_config_put.zig` PUT coercion).
+            // round-trip (matches `pabrik_config_put.zig` PUT coercion).
             .active_profile = blk: {
                 const raw = config_json.active_profile orelse break :blk null;
                 if (raw.len == 0) break :blk null;
@@ -2000,7 +2000,7 @@ pub const LlmConfig = struct {
     /// entry. We deliberately drop the `headers` field when it's empty
     /// (matches `parseMcpServerConfig`'s "absent = empty" convention) and
     /// `args` / `cwd` when they're null. Mirrors the on-disk shape that
-    /// `nalar_config_put.zig` writes — `parseMcpServerConfig` accepts
+    /// `pabrik_config_put.zig` writes — `parseMcpServerConfig` accepts
     /// either HTTP (`url` + `headers`) or stdio (`command` + `args` + `cwd`)
     /// and rejects entries with neither or both, so we only emit the keys
     /// the new entry actually uses.
@@ -2882,7 +2882,7 @@ fn generateRandomAgentName(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.process.Environ.Map) LlmConfig.LoadError![]const u8 {
-    const app_name = "nalar";
+    const app_name = "pabrik";
 
     switch (builtin.os.tag) {
         .windows => {
@@ -3809,8 +3809,8 @@ test "web_launch_enabled: round-trips independently of notify_on_complete" {
 
 // ---------------------------------------------------------------------------
 // url_style: top-level OpenAI vs Anthropic selector (regression for
-// `NalarSettings.vue` URL Style dropdown — see plan
-// `2026-06-11-nalar-config-url-style.md`).
+// `PabrikSettings.vue` URL Style dropdown — see plan
+// `2026-06-11-pabrik-config-url-style.md`).
 // ---------------------------------------------------------------------------
 
 test "LlmConfig: url_style field round-trips through disk JSON" {
@@ -4800,8 +4800,8 @@ test "init auto-creates config.json when default path does not exist (path=null)
 
     // Call init() with path = null. The default config path resolves
     // via getDefaultConfigPath to a platform-appropriate location
-    // (e.g. `<base>/.config/nalar/config.json` on Linux, `<base>/Library/Application Support/nalar/config.json`
-    // on macOS, `<base>/nalar/config.json` on Windows). The file does
+    // (e.g. `<base>/.config/pabrik/config.json` on Linux, `<base>/Library/Application Support/pabrik/config.json`
+    // on macOS, `<base>/pabrik/config.json` on Windows). The file does
     // not exist yet — auto-init must create it.
     var cfg = try LlmConfig.init(allocator, std.testing.io, null, &env_map);
     defer cfg.deinit();
@@ -5208,7 +5208,7 @@ test "active_profile: missing key → null (back-compat with legacy configs)" {
 
 test "active_profile: empty string normalises to null" {
     // Defends against manual `""` JSON edits (matches the
-    // `nalar_config_put.zig` PUT coercion: empty string → null).
+    // `pabrik_config_put.zig` PUT coercion: empty string → null).
     const allocator = std.testing.allocator;
 
     const json_body =
@@ -5282,7 +5282,7 @@ test "profiles_models: arbitrary name 'alpha' is loaded" {
 }
 
 test "profiles_models: numeric prefix name '900ribu' is loaded" {
-    // The user's actual profile name (per /home/ginwa/.config/nalar/config.json
+    // The user's actual profile name (per /home/ginwa/.config/pabrik/config.json
     // at the time of the bug report). Pre-fix this returned null and
     // the workflow fell back to top-level config silently.
     const allocator = std.testing.allocator;
@@ -5802,9 +5802,7 @@ test "skill_evals is disabled when config.json omits the key entirely" {
 
     // The guarantee that matters for an existing install: a config written
     // before this feature existed must parse to exactly the old behaviour.
-    const parsed = try std.json.parseFromSlice(
-        LlmConfig.LlmConfigJson,
-        allocator,
+    const parsed = try std.json.parseFromSlice(LlmConfig.LlmConfigJson, allocator,
         \\{"model":"m","provider":"p"}
     , .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
@@ -5816,9 +5814,7 @@ test "skill_evals is disabled when config.json omits the key entirely" {
 test "skill_evals defaults to disabled when the block is present but empty" {
     const allocator = std.testing.allocator;
 
-    const parsed = try std.json.parseFromSlice(
-        LlmConfig.LlmConfigJson,
-        allocator,
+    const parsed = try std.json.parseFromSlice(LlmConfig.LlmConfigJson, allocator,
         \\{"skill_evals":{}}
     , .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
@@ -5833,9 +5829,7 @@ test "skill_evals defaults to disabled when the block is present but empty" {
 test "skill_evals honours an explicit opt-in" {
     const allocator = std.testing.allocator;
 
-    const parsed = try std.json.parseFromSlice(
-        LlmConfig.LlmConfigJson,
-        allocator,
+    const parsed = try std.json.parseFromSlice(LlmConfig.LlmConfigJson, allocator,
         \\{"skill_evals":{"enabled":true,"max_skills_per_run":3,"apply_mode":"off"}}
     , .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
@@ -5873,9 +5867,7 @@ test "an unrecognised apply_mode degrades to propose instead of failing the pars
     // `apply_mode` is a nullable string on the JSON side precisely so a typo
     // here cannot make the user's whole config.json unloadable. This test
     // pins both halves of that: the parse succeeds, and the mapping is safe.
-    const parsed = try std.json.parseFromSlice(
-        LlmConfig.LlmConfigJson,
-        allocator,
+    const parsed = try std.json.parseFromSlice(LlmConfig.LlmConfigJson, allocator,
         \\{"skill_evals":{"enabled":true,"apply_mode":"proposal"}}
     , .{ .ignore_unknown_fields = true });
     defer parsed.deinit();

@@ -17,14 +17,14 @@
 //! result: the tools array IS the index of what is enabled.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const agent = nalarcore.agent;
+const pabrikcore = @import("pabrikcore");
+const agent = pabrikcore.agent;
 const AgentTool = agent.AgentTool;
 const tool_eligibility = @import("tool_eligibility.zig");
 const progressive_regex = @import("progressive_regex.zig");
 // `MAIN_AGENT_ONLY_NAMES` — the tools a sub-agent must never discover its
 // way back to (spawn_sub_agent, ask_user). Same list the strip uses.
-const ask_user_mod = nalarcore.ask_user;
+const ask_user_mod = pabrikcore.ask_user;
 
 pub const Kind = enum { builtin, mcp };
 
@@ -91,7 +91,7 @@ fn containsName(names: []const []const u8, name: []const u8) bool {
 /// search_tool. They are always injected by the workflow when the catalog is
 /// non-empty, so they are never candidates.
 fn isProgressiveMetaTool(name: []const u8) bool {
-    return containsName(&nalarcore.progressive_tools.PROGRESSIVE_TOOL_NAMES, name);
+    return containsName(&pabrikcore.progressive_tools.PROGRESSIVE_TOOL_NAMES, name);
 }
 
 /// Build the catalog. `registered` is the full built-in registry
@@ -572,7 +572,7 @@ test "buildCatalog: the browsing meta-tools are never offered as catalog entries
     const catalog = try buildCatalog(a, registered, NONE_ENABLED, false, null, &.{}, "agent");
     try testing.expect(catalog.len > 0);
     for (catalog) |entry| {
-        for (@import("nalarcore").progressive_tools.PROGRESSIVE_TOOL_NAMES) |meta| {
+        for (@import("pabrikcore").progressive_tools.PROGRESSIVE_TOOL_NAMES) |meta| {
             try testing.expect(!std.mem.eql(u8, entry.name, meta));
         }
     }
@@ -813,7 +813,7 @@ test "findByName + didYouMean: fuzzy recovery for a mistyped name" {
 //
 // They live here rather than in `src/modules/agent/tools/progressive_tools.zig`
 // because they operate on `Entry`, and a `modules → agentic_loop` import
-// would close a cycle through the `nalarcore` root.
+// would close a cycle through the `pabrikcore` root.
 // ============================================================================
 
 pub const MAX_SEARCH_ROWS: usize = 40;

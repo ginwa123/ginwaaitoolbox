@@ -8,11 +8,11 @@
 **Spec:** `docs/superpowers/specs/2026-08-21-users-rbac-foundation-design.md` (approved `2026-08-21`).
 **Branch / worktree:** `worktree/users-rbac-foundation` (created from current `in progress` task; per the project rule, do all work in a git worktree and open a PR for review).
 
-**Goal:** Land the schema foundation for multi-user / multi-tenant nalar — `users` table, `user_companies` table, `user_company_members` join table, `user_id` FK columns on `workspaces` and `sessions`, a default `user_system` user, and idempotent backfill of all legacy rows. No auth endpoints, no permission checks, no frontend changes — this is sub-project 1 of 4.
+**Goal:** Land the schema foundation for multi-user / multi-tenant pabrik — `users` table, `user_companies` table, `user_company_members` join table, `user_id` FK columns on `workspaces` and `sessions`, a default `user_system` user, and idempotent backfill of all legacy rows. No auth endpoints, no permission checks, no frontend changes — this is sub-project 1 of 4.
 
 **Architecture:** A single new migration (`Migration077AddUsersAndRbacSchema`) creates the three tables + two `ALTER TABLE`s + six indexes + one `INSERT OR IGNORE` for the default user + two `UPDATE`s for backfill, all wrapped in a `BEGIN..COMMIT` for atomicity. The migration is added to `migration.zig::allMigrations` and registered by `MigrationManager.registerAllMigrations`. The test setup uses `runMigrations` (per project memory `project-test-use-migrations-module`) so the test schema always matches production.
 
-**Tech Stack:** Zig 0.16, `nalarcore.sqlite.SqliteBackend`, existing `MigrationManager` + `addColumnIfMissing` helper from `src/migrations/migration.zig`, SQLite 3.53.3 (bundled). No new dependencies.
+**Tech Stack:** Zig 0.16, `pabrikcore.sqlite.SqliteBackend`, existing `MigrationManager` + `addColumnIfMissing` helper from `src/migrations/migration.zig`, SQLite 3.53.3 (bundled). No new dependencies.
 
 ## Global Constraints
 
@@ -22,14 +22,14 @@
 - **Per project rule**: work in a git worktree (`worktree/users-rbac-foundation`), open a PR for review. Don't commit to `main`.
 - **Per project memory `project-test-use-migrations-module`**: test setup uses `MigrationManager.registerAllMigrations + runMigrations`, NEVER hand-rolled `CREATE TABLE` baselines. The moment a new column or trigger lands in production, the hand-rolled baseline silently tests an outdated schema.
 - **Per project memory `addColumnIfMissing-requires-name-type`**: `addColumnIfMissing` builds `ALTER TABLE {table} ADD COLUMN {definition}`, so the definition MUST include the column name AND the type. Omitting the type would create a column literally named `"TEXT"`.
-- **Build commands**: `zig build test --summary all` for unit tests, `zig build nalar-desktop --summary all` for the desktop binary. Both are the canonical pre-PR smoke checks in this project (per the test patterns in `migration_074_test.zig` / `migration_075_test.zig` / `migration_077_test.zig`).
+- **Build commands**: `zig build test --summary all` for unit tests, `zig build pabrik-desktop --summary all` for the desktop binary. Both are the canonical pre-PR smoke checks in this project (per the test patterns in `migration_074_test.zig` / `migration_075_test.zig` / `migration_077_test.zig`).
 - **Test port**: use `8080` (NOT `8081` — that's the developer's local dev server; the project rule says "DONT KILL THE PORT 8081 SERVER").
 
 ---
 
 ## 1. Context — what this plan delivers
 
-The nalar codebase has no `users` concept. Every `workspace`, `session`, `kanban_task`, `design_page`, and `llm_history` row is implicitly owned by "the one human using this machine". This sub-project lays down the schema foundation for future multi-user / multi-tenant features:
+The pabrik codebase has no `users` concept. Every `workspace`, `session`, `kanban_task`, `design_page`, and `llm_history` row is implicitly owned by "the one human using this machine". This sub-project lays down the schema foundation for future multi-user / multi-tenant features:
 
 - 3 new tables (`users`, `user_companies`, `user_company_members`).
 - 2 additive `user_id` columns (`workspaces.user_id`, `sessions.user_id`).
@@ -273,7 +273,7 @@ src/migrations/migration.zig                — add Migration077AddUsersAndRbacS
 - [ ] **Step 3.2**: Build the desktop app to verify the migration lands in the bundled binary:
 
   ```bash
-  cd /home/ginwa/ginwaaitoolbox && zig build nalar-desktop --summary all 2>&1 | tail -n 20
+  cd /home/ginwa/ginwaaitoolbox && zig build pabrik-desktop --summary all 2>&1 | tail -n 20
   ```
 
   Expected output: `10/10 steps succeeded` (or whatever the canonical pass count is). Zero compile errors.
@@ -283,10 +283,10 @@ src/migrations/migration.zig                — add Migration077AddUsersAndRbacS
 - [ ] **Step 3.3**: Run a smoke check on a fresh-DB file (verifies the migration runs end-to-end on a brand-new empty DB):
 
   ```bash
-  cd /home/ginwa/ginwaaitoolbox && rm -f /tmp/smoke_077.db && timeout 30 ./zig-out/bin/nalar-desktop --db /tmp/smoke_077.db 2>&1 &
+  cd /home/ginwa/ginwaaitoolbox && rm -f /tmp/smoke_077.db && timeout 30 ./zig-out/bin/pabrik-desktop --db /tmp/smoke_077.db 2>&1 &
   ```
 
-  (Adjust the binary path — `zig-out/bin/nalar-desktop` is the canonical Zig build artifact. If your environment uses a different path, find it via `find /home/ginwa/ginwaaitoolbox -name 'nalar-desktop' -type f 2>/dev/null | head -n 3`.)
+  (Adjust the binary path — `zig-out/bin/pabrik-desktop` is the canonical Zig build artifact. If your environment uses a different path, find it via `find /home/ginwa/ginwaaitoolbox -name 'pabrik-desktop' -type f 2>/dev/null | head -n 3`.)
 
   Wait ~5 seconds, then `kill %1` (the background process). Verify the DB file exists and has the new tables:
 
@@ -336,7 +336,7 @@ src/migrations/migration.zig                — add Migration077AddUsersAndRbacS
   git push -u origin worktree/users-rbac-foundation
   gh pr create --base main --head worktree/users-rbac-foundation \
       --title "Migration 077: users + user_companies + user_id FKs (schema foundation)" \
-      --body "Lands the schema foundation for multi-user / multi-tenant nalar. Sub-project 1 of 4 (full RBAC is split across follow-up specs).
+      --body "Lands the schema foundation for multi-user / multi-tenant pabrik. Sub-project 1 of 4 (full RBAC is split across follow-up specs).
 
   **Spec**: docs/superpowers/specs/2026-08-21-users-rbac-foundation-design.md
   **Plan**: docs/superpowers/plans/2026-08-21-users-rbac-foundation.md
@@ -375,7 +375,7 @@ src/migrations/migration.zig                — add Migration077AddUsersAndRbacS
 - [ ] `src/migrations/migration_077_test.zig` exists with 8 `test "..."` blocks (TDD red → green).
 - [ ] `src/migrations/migration.zig` has the `Migration077AddUsersAndRbacSchema` struct + an entry in `allMigrations`.
 - [ ] `zig build test --summary all` reports `2209 pass, 6 skip, 0 fail` (was `2201 pass, 6 skip, 0 fail`).
-- [ ] `zig build nalar-desktop --summary all` reports `10/10 steps succeeded`.
+- [ ] `zig build pabrik-desktop --summary all` reports `10/10 steps succeeded`.
 - [ ] A fresh DB has the 3 new tables + the `user_system` row + zero legacy rows (an empty backfill).
 - [ ] A PR is open at `https://github.com/<owner>/<repo>/pull/<N>`.
 - [ ] The kanban task is moved to `in_review_task`.

@@ -1,6 +1,6 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const helpers = @import("helpers");
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
@@ -20,14 +20,14 @@ pub const remove_agent_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "remove_agent",
-        .description = "Remove and delete an agent from .nalar/agents/. Use this to permanently remove a custom agent persona.",
+        .description = "Remove and delete an agent from .pabrik/agents/. Use this to permanently remove a custom agent persona.",
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{
                     .name = "name",
                     .type = "string",
-                    .description = "The exact name of the agent to delete from .nalar/agents/",
+                    .description = "The exact name of the agent to delete from .pabrik/agents/",
                 },
                 .{
                     .name = "session_id",
@@ -52,7 +52,7 @@ pub const RemoveAgentErrorJSON = struct {
     @"error": []const u8,
 };
 
-/// Execute the remove_agent tool - deletes agent directory from .nalar/agents/
+/// Execute the remove_agent tool - deletes agent directory from .pabrik/agents/
 /// Returns an owned JSON string with the result
 /// Caller owns the returned memory and must free it with allocator.free()
 ///
@@ -80,12 +80,12 @@ pub fn execute_remove_agent_to_json(
         return try jsonError(allocator, input.name, "Failed to get current working directory");
     };
 
-    // Build path to agent directory: .nalar/agents/<name>/
+    // Build path to agent directory: .pabrik/agents/<name>/
     // Duplicate name to ensure no aliasing with path.join's internal buffer allocation
     const name_copy = try allocator.dupe(u8, input.name);
     defer allocator.free(name_copy);
 
-    const agent_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "agents", name_copy });
+    const agent_dir_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".pabrik", "agents", name_copy });
     defer allocator.free(agent_dir_path);
 
     // Check if the agent directory exists. Uses the cross-platform
@@ -95,7 +95,7 @@ pub fn execute_remove_agent_to_json(
 
     if (!dir_exists) {
         // Agent directory doesn't exist
-        return try jsonError(allocator, input.name, "Agent directory not found in .nalar/agents/");
+        return try jsonError(allocator, input.name, "Agent directory not found in .pabrik/agents/");
     }
 
     // Delete the agent directory recursively. `std.fs.deleteTreeAbsolute`
@@ -137,13 +137,13 @@ pub fn jsonErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) ![]co
 
 test "remove_agent jsonError emits JSON error shape" {
     const allocator = std.testing.allocator;
-    const out = try jsonError(allocator, "my-agent", "Agent directory not found in .nalar/agents/");
+    const out = try jsonError(allocator, "my-agent", "Agent directory not found in .pabrik/agents/");
     defer allocator.free(out);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
     try std.testing.expectEqualStrings("my-agent", obj.get("name").?.string);
-    try std.testing.expectEqualStrings("Agent directory not found in .nalar/agents/", obj.get("error").?.string);
+    try std.testing.expectEqualStrings("Agent directory not found in .pabrik/agents/", obj.get("error").?.string);
 }
 
 test "remove_agent jsonErrorEmpty emits empty name with error" {

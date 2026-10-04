@@ -55,10 +55,10 @@ def _select_human_touched(harness: FunctionalHarness, session_id: str) -> str | 
     SELECT-layer conversion). Returns the unix-ms integer string, or
     None when the column is NULL (pre-Migration-082 or never touched).
     """
-    db_path = Path(harness.temp_dir) / ".config" / "nalar" / "agent.db"
+    db_path = Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
     # Migrate to the latest schema first so we know Migration 082 ran.
     # (boot() runs migrations, but a direct sqlite3 connect can race
-    # with nalar's open handle - WAL mode makes that safe.)
+    # with pabrik's open handle - WAL mode makes that safe.)
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         cur = conn.execute(
@@ -79,7 +79,7 @@ def _find_session_in_list(
 ) -> dict[str, Any]:
     """Read the GET /api/llm/session list and return the single matching
     session entry (raises if 0 or >1 match). The list endpoint is the
-    only GET shape nalar exposes (no single-GET /api/llm/session/:id).
+    only GET shape pabrik exposes (no single-GET /api/llm/session/:id).
     """
     r = harness.http("GET", "/api/llm/session?limit=100", expect=200).json()
     sessions = r["sessions"]
@@ -104,7 +104,7 @@ def test_put_session_stamps_last_human_touched_at_nano(
     # Insert a row directly with NULL stamp (bypasses the helper which
     # always triggers a stamp via the PUT path - we need a NULL column
     # as the baseline to assert "PUT bumps it").
-    db_path = Path(harness.temp_dir) / ".config" / "nalar" / "agent.db"
+    db_path = Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
     conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True)
     try:
         conn.execute(
@@ -138,7 +138,7 @@ def test_put_session_stamps_last_human_touched_at_nano(
 def test_get_session_returns_last_human_touched_as_sqlite_datetime(
     harness: FunctionalHarness,
 ) -> None:
-    """GET /api/llm/session (the list endpoint - nalar has no single-GET
+    """GET /api/llm/session (the list endpoint - pabrik has no single-GET
     `/api/llm/session/:id` route) returns last_human_touched_at
     in the SELECT-layer-converted wire shape: SQLite datetime UTC
     ('YYYY-MM-DD HH:MM:SS'), NOT raw unix-ms. The frontend's
@@ -186,7 +186,7 @@ def test_get_session_returns_empty_when_last_human_touched_never_stamped(
     # Insert a row with NULL stamp directly via SQL (bypasses the
     # helper which always triggers a stamp). Note: the bare INSERT
     # gives the column DEFAULT (NULL per Migration 082).
-    db_path = Path(harness.temp_dir) / ".config" / "nalar" / "agent.db"
+    db_path = Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
     conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True)
     try:
         conn.execute(

@@ -35,10 +35,10 @@
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const agent = nalarcore.agent;
-const logger_mod = nalarcore.loggermod;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const agent = pabrikcore.agent;
+const logger_mod = pabrikcore.loggermod;
 const AgentTool = @import("../modules/agent/tools/schemas.zig").AgentTool;
 
 const tools = @import("tools.zig");
@@ -117,7 +117,7 @@ pub const RunArgs = struct {
     fact_lease_seconds: u32 = 300,
     /// The SSE bus, when the caller has one. Null in unit tests and in any
     /// caller with no bus; the emit is then a no-op.
-    event_bus: ?*nalarcore.event_bus.EventBus = null,
+    event_bus: ?*pabrikcore.event_bus.EventBus = null,
     /// Tier 1: fan out one judge sub-agent per skill. Off by default because
     /// it spends tokens — up to `max_skills` sub-agent runs per eval. The
     /// deterministic half is a complete eval on its own, so nothing is lost
@@ -181,7 +181,7 @@ fn runJudgeTier(
     run_id: []const u8,
     candidates: []const JudgeCandidate,
 ) !u32 {
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         // No live context means no workflow, so no sub-agent can run. The
         // deterministic results stay as they are; this is not a failure of
         // the eval, only of the opt-in tier.
@@ -479,8 +479,8 @@ pub fn runEval(
         // unreadable whenever the server was started somewhere else, and the
         // verdict is then recorded as needs_human about a file that was on disk
         // the whole time.
-        const body_opt = nalarcore.skill_mod.parse_skill(allocator, io, use.skill_name, args.cwd, false, args.environment) orelse
-            nalarcore.skill_mod.parse_skill(allocator, io, use.skill_name, args.cwd, true, args.environment);
+        const body_opt = pabrikcore.skill_mod.parse_skill(allocator, io, use.skill_name, args.cwd, false, args.environment) orelse
+            pabrikcore.skill_mod.parse_skill(allocator, io, use.skill_name, args.cwd, true, args.environment);
 
         if (body_opt == null) {
             // The skill is gone from disk, or unreadable. That is a finding in
@@ -683,7 +683,7 @@ pub fn execRunSkillEval(ctx: tools.ToolExecContext, tc: agent.ToolCall) !tools.T
     const enabled = evals_cfg.enabled;
     // The SSE bus, when the singleton is up. Null in tests and in any
     // dispatch with no live context — the emit is then a no-op.
-    const bus: ?*nalarcore.event_bus.EventBus = if (nalarcore.getSingleton()) |di| di.event_bus else |_| null;
+    const bus: ?*pabrikcore.event_bus.EventBus = if (pabrikcore.getSingleton()) |di| di.event_bus else |_| null;
     const outcome = runEval(ctx.allocator, ctx.io, ctx.db, ctx.logger, .{
         .session_id = ctx.session_id,
         .cwd = ctx.cwd,
@@ -929,7 +929,7 @@ test "max_skills = 0 evaluates nothing and does not crash" {
 // changed-body paths below are the rest, and they are where the fact cache
 // lives.
 
-/// Write `<xdg>/nalar/skills/<name>/SKILL.MD` and return the xdg root. The
+/// Write `<xdg>/pabrik/skills/<name>/SKILL.MD` and return the xdg root. The
 /// caller owns the tmpdir and must remove it.
 ///
 /// The GLOBAL path is used rather than the local one because
@@ -937,7 +937,7 @@ test "max_skills = 0 evaluates nothing and does not crash" {
 /// cannot change; the global path is resolved from the environment map the
 /// caller passes in, which a test fully controls.
 fn seedSkillOnDisk(alloc: std.mem.Allocator, io: std.Io, xdg_root: []const u8, name: []const u8, body: []const u8) !void {
-    const dir = try std.fs.path.join(alloc, &.{ xdg_root, "nalar", "skills", name });
+    const dir = try std.fs.path.join(alloc, &.{ xdg_root, "pabrik", "skills", name });
     defer alloc.free(dir);
     try std.Io.Dir.cwd().createDirPath(io, dir);
     const file = try std.fs.path.join(alloc, &.{ dir, "SKILL.MD" });

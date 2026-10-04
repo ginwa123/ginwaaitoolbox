@@ -105,7 +105,7 @@ Row stays `role=user` end to end: `get_llm_histories` → `transformLLMHistoryTo
 
 ## 6. Test plan (no live server — functional harness only)
 
-Per repo rule: never `nohup nalar --port …` + `curl`; boot an isolated binary per test via `tests/functional/harness.py` (free port 8080-8199 excl. 8081, tmpdir HOME, `$NALAR_BIN`).
+Per repo rule: never `nohup pabrik --port …` + `curl`; boot an isolated binary per test via `tests/functional/harness.py` (free port 8080-8199 excl. 8081, tmpdir HOME, `$PABRIK_BIN`).
 
 - **Zig unit (inline, same files):**
   - `background_process.zig`: new `buildCompletionUserXml` tests — happy path has `<background_command pid=…>` + `<command>/<stdout>/<exit_code>`; truncation marker inside `<stdout>`; empty log; FileNotFound marker; `<`/`&`/`]]>` in log escaped; header line preserved.
@@ -114,7 +114,7 @@ Per repo rule: never `nohup nalar --port …` + `curl`; boot an isolated binary 
   1. Run a short background command to completion; fetch session messages; assert the completion row has `role=="user"` AND content parses as `<background_command>` with `<exit_code>0</exit_code>` — and does NOT contain the `"""""` fence.
   2. Legacy compat: an old prose `"""""` row still drains as `role=user` bubble text (no regression).
   3. (Frontend, vitest) new `isBackgroundCommandOutput.spec.ts`: new-XML → parsed fields; old prose → null; user-pasted foreground `<command>` XML → null; `ChatView` user-branch renders `ShellTool` card for parsed rows and bubble otherwise; `FileInput` preview shows pid label, not raw XML.
-- **Full gates:** `zig build test --summary all` (expect 0 fail; baseline ~3155/3163 per 2026-09-09 entry), `pnpm test:unit` touched specs green, `zig build nalar-desktop --summary all` green.
+- **Full gates:** `zig build test --summary all` (expect 0 fail; baseline ~3155/3163 per 2026-09-09 entry), `pnpm test:unit` touched specs green, `zig build pabrik-desktop --summary all` green.
 
 ## 7. Rollout (implementation order for the follow-up task)
 
@@ -123,7 +123,7 @@ Per repo rule: never `nohup nalar --port …` + `curl`; boot an isolated binary 
 3. Frontend helper `isBackgroundCommandOutput.ts` + spec.
 4. `ChatView.vue` user-branch card rendering + bubble-chrome gating + `FileInput.vue` preview label + vitest.
 5. Functional harness tests (assert `role==user` + XML parses + no `"""""`).
-6. Full gates + `NALAR.md` changelog link.
+6. Full gates + `PABRIK.md` changelog link.
 
 ## 8. Risks / open questions
 

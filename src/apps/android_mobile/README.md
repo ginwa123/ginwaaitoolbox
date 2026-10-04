@@ -1,10 +1,10 @@
-# Nalar Android
+# Pabrik Android
 
-A native Android client for Nalar, written in Kotlin with Jetpack Compose. The
+A native Android client for Pabrik, written in Kotlin with Jetpack Compose. The
 current milestone includes real HTTPS sign-in against `agent.ginwa.site`,
 encrypted session restoration, a left drawer with workspace-scoped recent chats,
 and an in-app network inspector that captures every request the app makes. It
-does not embed the web app and does not start or manage a Nalar server.
+does not embed the web app and does not start or manage a Pabrik server.
 
 ## Stack
 
@@ -46,7 +46,7 @@ machine.
 
 The Android app authenticates against the server named in **Server** — below
 the sign-in form, with a **Change** action — through `POST /api/auth/login`. A
-successful sign-in stores the `nalar_session` cookie encrypted with an Android
+successful sign-in stores the `pabrik_session` cookie encrypted with an Android
 Keystore AES-GCM key. On startup the app verifies that cookie with
 `GET /api/auth/me`; a 401 clears it and returns to the login screen. Network and
 credential errors are shown in the login form, and the submit button is disabled
@@ -60,7 +60,7 @@ what lands a reader on it and "Try again" cannot fix a typo.
 
 ## The server address is a setting
 
-A person who deploys their own nalar needs the app to talk to it. The address is
+A person who deploys their own pabrik needs the app to talk to it. The address is
 a **Server** row on both auth screens, a dialog to change it, and a preference
 that survives process death — not a constant compiled into the APK.
 
@@ -97,7 +97,7 @@ reach, with no way to get to the screen that fixes it.
 `normalizeBaseUrl` is the single implementation, used by both the settings
 dialog and the transport, so the sentence under the field and the exception out
 of the socket never disagree. It accepts a scheme-less host (a self-hoster
-typing `nalar.example.com` has done nothing wrong) and resolves it to `https://`.
+typing `pabrik.example.com` has done nothing wrong) and resolves it to `https://`.
 
 ### Cleartext is a list, not a boolean
 
@@ -170,7 +170,7 @@ What the arrow offered, the system Back button offers instead. The chat
 destination registers a `BackHandler` calling the same
 `goBackToPreviousOrShell` every other way out uses — see
 [Back never dead-ends the app](#back-never-dead-ends-the-app). That matters
-because a chat opened from `nalar://chat/…` is the *only* entry on the back
+because a chat opened from `pabrik://chat/…` is the *only* entry on the back
 stack, and the library keeps its own Back callback disabled at that depth: with
 no in-app route, Back would close the app and the reader would have no way off a
 screen they never navigated into. Registered inside the destination, so the
@@ -260,7 +260,7 @@ the screen with the list it was paging, and is now the same shape as
 ## Chat
 
 Tapping a chat in the drawer opens it as its own destination
-(`chat/{sessionId}`, deep link `nalar://chat/{sessionId}`), so it survives
+(`chat/{sessionId}`, deep link `pabrik://chat/{sessionId}`), so it survives
 process death, works with the system Back button, and can be shared as a link.
 
 The transcript is **live**: it reads `GET /api/llm/session/{id}/messages`,
@@ -290,7 +290,7 @@ a reconnect — is the same lie told twice, and a reader who has learned to
 distrust the composer stops trusting the send button too.
 
 The footer's facts are not all equal. The **model is a dropdown**, because a
-profile is picked from a list the server hands us (`GET /api/config/nalar`) and
+profile is picked from a list the server hands us (`GET /api/config/pabrik`) and
 the per-session choice is persisted with `PUT /api/llm/session/{id}` — the same
 two calls the web's `ChatView.vue` profile picker makes. The **working
 directory stays text**: there is nothing to change it to. A dropdown that opens
@@ -358,7 +358,7 @@ feature could do.
 
 ### Why the composer could not be typed into
 
-`NalarNavGraph` took `chatState: () -> ChatUiState` and called it in the chat
+`PabrikNavGraph` took `chatState: () -> ChatUiState` and called it in the chat
 destination. That looks like a lazy read and behaves like a value: a
 `StateFlow.value` read during composition subscribes to **nothing**, because
 `StateFlow.value` is a plain field read rather than a Compose snapshot read.
@@ -376,7 +376,7 @@ The graph now takes the `StateFlow` and the chat destination
 other, so the promise the old parameter's comment always made — only the
 transcript moves, not the drawer and not the `NavHost` — is finally true.
 
-`NalarNavGraphChatStateTest` pins it by rendering the graph, pushing a value
+`PabrikNavGraphChatStateTest` pins it by rendering the graph, pushing a value
 into a `MutableStateFlow` and asserting the tree changed. A `ChatScreen` test
 cannot catch this: rendering the screen with a draft and typing into it passes
 whether or not the graph hands it a live flow. Re-introducing the old
@@ -424,7 +424,7 @@ scheduled can take the token its own replacement is about to be given, and the
 replacement then exits before it has opened a socket.
 
 `android_chat_sse_contract_test.py` (in `tests/functional/`) is the other half:
-it boots a real `nalar` and asserts the frames the decoder branches on, so a
+it boots a real `pabrik` and asserts the frames the decoder branches on, so a
 rename on the server reaches the phone as a test failure rather than as a chat
 that quietly stops updating.
 
@@ -695,7 +695,7 @@ the same Room database; the storage rules are in "The offline caches" below.
 
 Three things are cached so a cold boot or an offline launch paints real content
 instead of a spinner, and all three live in **one Room database**
-(`nalar_cache.db`) as five tables:
+(`pabrik_cache.db`) as five tables:
 
 | Table                  | Holds                                       | Namespaced by          |
 | ---------------------- | ------------------------------------------- | ---------------------- |
@@ -768,7 +768,7 @@ painting half a sidebar. A broken cache is never the reason the app fails.
 
 ### Why the queries run on the main thread
 
-`NalarCacheDatabase` is built with `allowMainThreadQueries()`, which is a
+`PabrikCacheDatabase` is built with `allowMainThreadQueries()`, which is a
 deliberate exception to Room's default and worth being explicit about. The
 cache-priming reads are synchronous because the first frame has to carry real
 rows: `HomeViewModel` primes the sidebar and `ChatViewModel` the transcript
@@ -889,7 +889,7 @@ developer tools show the network tab. Open it from the chart icon in the home
 top bar, from the icon in the top-right of the sign-in screen, or by deep link:
 
 ```bash
-adb shell am start -a android.intent.action.VIEW -d "nalar://network"
+adb shell am start -a android.intent.action.VIEW -d "pabrik://network"
 ```
 
 The list shows the method, path, status, duration, and transferred size for each
@@ -899,7 +899,7 @@ headers and body, and the equivalent `curl` command.
 
 ### How it is wired
 
-`com.nalar.mobile.http.HttpsHttpExchange` is the only place the app opens a
+`com.pabrik.mobile.http.HttpsHttpExchange` is the only place the app opens a
 socket. `HttpsAuthTransport` delegates to it and `RecordingAuthTransport` wraps
 that transport, so the captured record is exactly what the auth flow sent rather
 than a parallel reimplementation. A new API-backed feature only needs to go
@@ -943,7 +943,7 @@ So the rule is stated rather than assumed: pop only when a real destination sits
 underneath, and otherwise go to the shell. On top of that the graph renders a
 recovery screen whenever `visibleEntries` is empty, so any future way into that
 state costs one tap instead of a dead window. `NavControllerBackStackTest` drives
-a real `NavController` through both paths on a device; `NalarNavGraphBackTest`
+a real `NavController` through both paths on a device; `PabrikNavGraphBackTest`
 keeps the rule and the shape of the fix honest on the JVM, where CI runs it.
 
 The chat route reaches the same rule with no back arrow and no "All chats" row
@@ -953,22 +953,22 @@ to pop either — and the library's own callback is *disabled* at that depth, so
 without this handler the reader's only way out of a chat they were linked into
 is leaving the app. The handler lives after the `ModalNavigationDrawer`'s, so
 an open drawer still consumes Back before the route does.
-`NalarNavGraphBackInstrumentedTest` drives that with a real `pressBack()` from a
+`PabrikNavGraphBackInstrumentedTest` drives that with a real `pressBack()` from a
 single-destination stack; `ChatDrawerTest` keeps the wiring honest on the JVM.
 
 ### Deep links
 
 The inspector, its record detail and each chat are navigation routes, so they
-survive process death and system Back. `nalar://network` opens the list,
-`nalar://network/record/{id}` opens one captured record, and
-`nalar://chat/{sessionId}` opens a chat directly.
+survive process death and system Back. `pabrik://network` opens the list,
+`pabrik://network/record/{id}` opens one captured record, and
+`pabrik://chat/{sessionId}` opens a chat directly.
 
 `chats/{workspaceId}` and `project/{workspaceId}/{itemId}` declare
 `navDeepLink` patterns too, but **`AndroidManifest.xml` claims only the `chat`
 and `network` hosts**, so those two links currently resolve to no activity:
 
 ```bash
-adb shell am start -a android.intent.action.VIEW -d nalar://chats/ws_1
+adb shell am start -a android.intent.action.VIEW -d pabrik://chats/ws_1
 # Error: Activity not started, unable to resolve Intent
 ```
 
@@ -980,7 +980,7 @@ it. See **Navigation, audited** below for the check that catches this.
 
 The `NavHost` is small enough to read and large enough to stop being read
 accurately: routes get renamed, a `popUpTo` gets dropped, a destination loses
-its back arrow. So `tools/navgraph` reads `NalarNavGraph.kt` and
+its back arrow. So `tools/navgraph` reads `PabrikNavGraph.kt` and
 `AndroidManifest.xml` as text, checks the graph, and renders
 [`navgraph.html`](navgraph.html) — every destination and every `navigate()`
 call site, plus the ten findings below.
@@ -999,7 +999,7 @@ and the committed page is compared against a fresh render so it cannot quietly
 fall behind the source. `tools/navgraph/README.md` documents each check.
 
 Two **errors** stand today, and both are the deep-link gap above:
-`nalar://chats/{workspaceId}` and `nalar://project/{workspaceId}/{itemId}` are
+`pabrik://chats/{workspaceId}` and `pabrik://project/{workspaceId}/{itemId}` are
 unreachable from outside the app. The fix is two `<intent-filter>` blocks in the
 manifest; it is a behaviour change, so it is left for a decision rather than
 bundled into a read-only tool.
@@ -1008,7 +1008,7 @@ bundled into a read-only tool.
 
 Close the app on workspace B with session C open, open it again, and it is back
 on workspace B with session C. The desktop has always done this
-(`nalar-active-workspace` and `active-chat-id` in `localStorage`); the phone
+(`pabrik-active-workspace` and `active-chat-id` in `localStorage`); the phone
 needed somewhere to keep the same two ids.
 
 **Why it is not the back stack.** `rememberNavController` does restore a saved
@@ -1023,11 +1023,11 @@ is drawer state, so `HomeViewModel` reads the saved id while it is still choosin
 which list to paint — before its first fetch. That costs nothing: the drawer
 opens on the right workspace, the recents request goes to the right workspace,
 and nothing jumps once the live list lands. A chat is a route, and a route needs
-a destination to navigate to, so `NalarNavGraph` navigates to it once the list
+a destination to navigate to, so `PabrikNavGraph` navigates to it once the list
 has settled.
 
 **The precedence is the desktop's**: what the user just chose beats what was
-saved, and what was saved beats the first item. A `nalar://` deep link or a back
+saved, and what was saved beats the first item. A `pabrik://` deep link or a back
 stack restored from saved instance state is a choice made a moment ago, so the
 resume only runs while the shell is the current destination. A saved id that
 the server no longer has falls back instead of dead-ending — the chat is not
@@ -1038,7 +1038,7 @@ would have opened anyway, is the truthful answer.
 `ResumePlan` — with the composable left holding no rules of its own, the same
 split `goBackToPreviousOrShell` makes for Back. `SessionToResumeTest` and
 `ResumePlanTest` assert the rule on the JVM; `HomeViewModelPositionTest`
-asserts the workspace seed and the writes; `NalarNavGraphResumeInstrumentedTest`
+asserts the workspace seed and the writes; `PabrikNavGraphResumeInstrumentedTest`
 drives the real `NavHost`, which is the only way to prove the `navigate()`
 happens once and leaves the shell underneath it.
 
@@ -1081,7 +1081,7 @@ frame the reader finally sees is a frame the transcript is already at the end
 of — and it swallows touches, because a tap landing on a chat row behind it
 would be a position the user chose while the app was still restoring the
 previous one. `LaunchGateTest` walks the whole sequence on the JVM, and
-`NalarNavGraphLaunchGateTest` asserts the rendered outcome against a real
+`PabrikNavGraphLaunchGateTest` asserts the rendered outcome against a real
 `NavHost`: the chat stays behind the gate while its first page is in flight, and
 the gate is gone once it lands.
 
@@ -1107,7 +1107,7 @@ to ask it from.
 
 ### The gate is tested on the JVM, not on an emulator
 
-`NalarNavGraphLaunchGateTest` runs the real graph under `RobolectricTestRunner`
+`PabrikNavGraphLaunchGateTest` runs the real graph under `RobolectricTestRunner`
 with `createComposeRule`, so it is part of `testDebugUnitTest` — the task CI
 runs, on a machine with no device attached. It used to be an instrumented test,
 which meant the only assertions covering the gate had never been run on any

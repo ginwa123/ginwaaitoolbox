@@ -90,7 +90,7 @@ And one indirect gate that covers ~55 child routes:
 
 ### 2.4 The identity source
 
-`resolveRequestUserId` (`auth_common.zig:236`) resolves `nalar_session` cookie →
+`resolveRequestUserId` (`auth_common.zig:236`) resolves `pabrik_session` cookie →
 sha256 → `auth_sessions` row → `users.id`. It **never returns null** — every
 failure path returns the sentinel `"user_system"` (`auth_common.zig:242-244`).
 

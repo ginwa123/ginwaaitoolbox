@@ -12,7 +12,7 @@
 //! It lives HERE rather than in `src/modules/agent/tools/document.zig`
 //! because `progressive_regex` sits under `src/agentic_loop/` and a
 //! `modules → agentic_loop` import would close a cycle through the
-//! `nalarcore` root. The tool schema + `SearchDocumentsInput` stay in
+//! `pabrikcore` root. The tool schema + `SearchDocumentsInput` stay in
 //! `document.zig`; `tools_exec_document.zig` wires the two together.
 //!
 //! What is DIFFERENT from skills, and why

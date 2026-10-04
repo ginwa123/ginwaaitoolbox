@@ -22,7 +22,7 @@ SIBLING_COUNT = 25
 
 
 def _db_path(harness: FunctionalHarness) -> Path:
-    return Path(harness.temp_dir) / ".config" / "nalar" / "agent.db"
+    return Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
 
 
 def _seed_bound_session_and_siblings(

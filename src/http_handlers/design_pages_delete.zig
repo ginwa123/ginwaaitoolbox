@@ -1,6 +1,6 @@
 //! `DELETE /api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id`.
 //!
-//! Delete a design page. The on-disk `<item_path>/.nalar/design/<page>/`
+//! Delete a design page. The on-disk `<item_path>/.pabrik/design/<page>/`
 //! folder is recursively unlinked AFTER the SQL DELETE succeeds
 //! (defer-pattern) via `design_model.deletePage`. The DB FK
 //! `ON DELETE CASCADE` on `design_page_elements.page_id` cleans up
@@ -22,8 +22,8 @@
 //!   (Chunk 1)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../agentic_loop/design_model.zig");
 
@@ -46,7 +46,7 @@ pub const DesignPageDeleteError = error{
 fn useCase(
     allocator: std.mem.Allocator,
     io: std.Io,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     page_id: []const u8,
 ) DesignPageDeleteError!void {
     if (page_id.len == 0) return error.PageIdRequired;
@@ -67,7 +67,7 @@ pub fn designPagesDeleteHandler(
     const allocator = ctx.allocator;
     const io = ctx.io;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const page_id = req.params.get("page_id") orelse "";
@@ -108,7 +108,7 @@ pub fn designPagesDeleteHandler(
 // Why this file exists
 // ────────────────────
 // The page-delete endpoint removes a design page's metadata row AND
-// unlinks its on-disk `<item_path>/.nalar/design/<sanitized_page>/`
+// unlinks its on-disk `<item_path>/.pabrik/design/<sanitized_page>/`
 // folder. The handler is a thin wrapper:
 //   1. Reads `page_id` from the path params.
 //   2. Calls `design_model.deletePage(...)` (which does the SQL

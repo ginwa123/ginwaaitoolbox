@@ -2,7 +2,7 @@
 
 Exercises the cron `cleanup_stale_background_process`
 (src/schedulers/cleanup_stale_background_process.zig — commits 7e39524c,
-30ab8253) against a REAL nalar binary + REAL SQLite:
+30ab8253) against a REAL pabrik binary + REAL SQLite:
 
   * A `session_background_process` row whose PID is dead gets notified
     into `session_queue_messages` with the JSON envelope from
@@ -20,7 +20,7 @@ auto-creates via ensureSessionExists — same helper as
 session_human_touched_at_test.py::_create_session_via_update, no LLM
 profile needed). The bg row is inserted via direct sqlite3 into the
 isolated HOME's agent.db
-(Path(harness.temp_dir)/.config/nalar/agent.db — WAL mode makes the
+(Path(harness.temp_dir)/.config/pabrik/agent.db — WAL mode makes the
 concurrent open safe; same precedent as session_human_touched_at_test.py).
 The dead PID (999999999) can never be alive: it exceeds Linux's max PID
 so kill(pid, 0) returns ESRCH -> isProcessRunning == false.
@@ -59,7 +59,7 @@ POLL_ATTEMPTS = 18
 
 def _db_path(harness: FunctionalHarness) -> Path:
     """Agent DB inside the isolated tmpdir HOME (Linux layout)."""
-    return Path(harness.temp_dir) / ".config" / "nalar" / "agent.db"
+    return Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
 
 
 def _create_session(harness: FunctionalHarness, session_id: str) -> dict[str, Any]:

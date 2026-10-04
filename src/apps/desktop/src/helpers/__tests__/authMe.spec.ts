@@ -89,11 +89,11 @@ describe('authMe', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     // Age the entry past the 30s TTL.
-    const raw = localStorage.getItem('nalar-auth-me:v1')
+    const raw = localStorage.getItem('pabrik-auth-me:v1')
     expect(raw).not.toBeNull()
     const entry = JSON.parse(raw as string) as { at: number }
     entry.at = Date.now() - 60_000
-    localStorage.setItem('nalar-auth-me:v1', JSON.stringify(entry))
+    localStorage.setItem('pabrik-auth-me:v1', JSON.stringify(entry))
 
     fetchMock.mockImplementation(async () =>
       okResponse({ authenticated: false, auth_enabled: true }),
@@ -104,7 +104,7 @@ describe('authMe', () => {
 
     // Background revalidate writes the fresh body.
     await vi.waitFor(() => {
-      const next = JSON.parse(localStorage.getItem('nalar-auth-me:v1') as string) as {
+      const next = JSON.parse(localStorage.getItem('pabrik-auth-me:v1') as string) as {
         data: { authenticated: boolean }
       }
       expect(next.data.authenticated).toBe(false)
@@ -147,7 +147,7 @@ describe('authMe', () => {
   })
 
   it('rejects corrupt cached entries instead of serving them', async () => {
-    localStorage.setItem('nalar-auth-me:v1', '{not json')
+    localStorage.setItem('pabrik-auth-me:v1', '{not json')
     const fetchMock = vi.fn(async () => okResponse({ authenticated: false, auth_enabled: false }))
     vi.stubGlobal('fetch', fetchMock)
     const r = await getAuthMeCached()

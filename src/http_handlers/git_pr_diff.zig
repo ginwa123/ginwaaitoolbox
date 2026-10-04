@@ -1,8 +1,8 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
-const pr_provider = nalar_core.pr_provider;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
+const pr_provider = pabrik_core.pr_provider;
 
 /// Cap for the returned unified diff (1MB). Larger PRs truncate with
 /// `truncated=true` — the panel renders what fits and notes the cut.
@@ -166,14 +166,14 @@ fn useCase(
         },
         .git_fetch_pr_ref, .git_fetch_mr_ref => {
             const refspec = if (strategy == .git_fetch_pr_ref)
-                try std.fmt.allocPrint(allocator, "pull/{s}/head:refs/nalar-pr/{s}", .{ number, number })
+                try std.fmt.allocPrint(allocator, "pull/{s}/head:refs/pabrik-pr/{s}", .{ number, number })
             else
-                try std.fmt.allocPrint(allocator, "merge-requests/{s}/head:refs/nalar-mr/{s}", .{ number, number });
+                try std.fmt.allocPrint(allocator, "merge-requests/{s}/head:refs/pabrik-mr/{s}", .{ number, number });
             defer allocator.free(refspec);
             const local_ref = if (strategy == .git_fetch_pr_ref)
-                try std.fmt.allocPrint(allocator, "refs/nalar-pr/{s}", .{number})
+                try std.fmt.allocPrint(allocator, "refs/pabrik-pr/{s}", .{number})
             else
-                try std.fmt.allocPrint(allocator, "refs/nalar-mr/{s}", .{number});
+                try std.fmt.allocPrint(allocator, "refs/pabrik-mr/{s}", .{number});
             defer allocator.free(local_ref);
             const fetch_argv: [6][]const u8 = .{ "git", "-C", path, "fetch", "origin", refspec };
             const fetch = std.process.run(allocator, io, .{ .argv = &fetch_argv }) catch return error.FetchFailed;

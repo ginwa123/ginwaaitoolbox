@@ -50,12 +50,12 @@ The trade-off (acknowledged): a few SQL queries change shape. None of those quer
 ## Global Constraints
 
 - **Cross-platform**: every change MUST work on Linux, macOS, AND Windows. The migration uses portable SQLite (`ALTER TABLE … DROP COLUMN` requires SQLite ≥3.35 — bundled sqlite is recent).
-- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` patterns. See `~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md`.
+- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` patterns. See `~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md`.
 - **TDD discipline**: every implementation step starts with a failing test, then minimal code to make it pass, then a commit.
 - **`bun run build` IS the type-check**: every frontend commit must pass `bun run build`; `bunx vitest run` alone does NOT catch type errors.
 - **Behavioural Zig tests** use the `db:test_pattern` established by Migration 062/071/069/067 test files (see `src/migrations/migration_062_test.zig`).
 - **No port 8081**: smoke tests use port 8080.
-- **NO new comments above `logger.infoFmt(...)` calls** (see `~/.config/nalar/memories/no-comments-on-logger-calls.md`).
+- **NO new comments above `logger.infoFmt(...)` calls** (see `~/.config/pabrik/memories/no-comments-on-logger-calls.md`).
 - **Migration registration** — the new migration struct MUST be added to the `allMigrations` slice in `src/migrations/migration.zig` or it becomes a silent-skip bug (see project memory `migration-registration-trap`).
 - **Idempotency** — `addColumnIfMissing` is used for fresh-DB canonical schema that already declares the column (matches Migration 062/067/069/071 pattern). For DROP operations use raw `ALTER TABLE … DROP COLUMN` since the migration only drops columns it itself added.
 
@@ -803,7 +803,7 @@ cd src/apps/desktop && bunx vitest run 2>&1 | tail -n 20 && bun run build 2>&1 |
 ```
 
 ### Step 8.3 — Manual smoke (port 8080)
-1. Start the backend: `./zig-out/bin/nalar --port 8080`
+1. Start the backend: `./zig-out/bin/pabrik --port 8080`
 2. Start the frontend: `cd src/apps/desktop && bun run dev` (opens its own port)
 3. Open a kanban board, verify tasks render in correct columns
 4. Drag a task between columns — verify position updates and persists on refresh

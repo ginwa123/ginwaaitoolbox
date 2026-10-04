@@ -1,7 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
 
 /// Domain error set for the branch-list use case. The handler maps
 /// `NotARepository` to HTTP 404; the use case only propagates the

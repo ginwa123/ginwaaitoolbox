@@ -7,10 +7,10 @@
 //! the outcome + errors to status codes / JSON.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const http_response = @import("http_response.zig");
-const gserverz = nalarcore.gserverz;
-const llm_history = nalarcore.llm_history;
+const gserverz = pabrikcore.gserverz;
+const llm_history = pabrikcore.llm_history;
 
 pub const SessionStopError = error{
     MissingSessionId,
@@ -24,7 +24,7 @@ pub const SessionStopError = error{
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) SessionStopError!void {
     llm_history.cancelSession(allocator, db, session_id) catch return error.CancelFailed;
@@ -41,7 +41,7 @@ pub fn sessionStopHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
 
     const session_id = req.params.get("session") orelse {
         return res.jsonResponse(.{

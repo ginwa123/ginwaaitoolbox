@@ -5,7 +5,7 @@ End-to-end functional test for the MCP Streamable HTTP transport (plan
 This module exercises the full wire path against a live
 `mcp-http-hello-world` binary (the test fixture from Task 1):
 
-  1. **Direct MCP roundtrip** (no nalar involved). Spawn
+  1. **Direct MCP roundtrip** (no pabrik involved). Spawn
      `mcp-http-hello-world` (built by `zig build mcp-http-hello-world`)
      via `subprocess.Popen` on a free port, wait for the "listening on"
      stderr line, POST a `tools/list` request to `/mcp` with the
@@ -15,19 +15,19 @@ This module exercises the full wire path against a live
      response text is `"Hello world"`.
 
      This proves the self-test binary + Streamable HTTP wire + JSON-RPC
-     dispatch all work end-to-end. It does NOT depend on nalar's HTTP
+     dispatch all work end-to-end. It does NOT depend on pabrik's HTTP
      client (which lands in Tasks 2-4 of the plan).
 
-  2. **(Future) nalar accepts http mcp_servers config** — added when
-     Tasks 2-4 land. Boot nalar with a stub LLM profile, PUT a
-     NalarConfig body that includes `mcp_servers.http_test = { url }`,
+  2. **(Future) pabrik accepts http mcp_servers config** — added when
+     Tasks 2-4 land. Boot pabrik with a stub LLM profile, PUT a
+     PabrikConfig body that includes `mcp_servers.http_test = { url }`,
      GET the config back, and assert the url round-trips.
 
   3. **(Future) Multi-server** — added when Tasks 2-4 land. Two HTTP
      servers with different commands, both round-trip independently.
 
 Run:
-    NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \\
+    PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \\
       python3 -m pytest tests/functional/mcp_http_test.py -v
 """
 
@@ -237,8 +237,8 @@ def _post_jsonrpc(base_url: str, body: dict[str, Any], timeout_s: float = 5.0) -
 # ─── tests ───────────────────────────────────────────────────────────────
 
 
-def test_http_mcp_direct_roundtrip_no_nalar() -> None:
-    """Direct MCP wire roundtrip — no nalar involved. Spawn the
+def test_http_mcp_direct_roundtrip_no_pabrik() -> None:
+    """Direct MCP wire roundtrip — no pabrik involved. Spawn the
     mcp-http-hello-world binary, POST a tools/list + a tools/call,
     assert the responses match what the SDK server would return.
 
@@ -304,10 +304,10 @@ def test_http_mcp_missing_protocol_version_is_lenient() -> None:
 
     The @modelcontextprotocol/sdk v1.30.0 implements the lenient
     path: requests without MCP-Protocol-Version succeed (it treats
-    them as 2025-03-26). We document this here so future nalar
+    them as 2025-03-26). We document this here so future pabrik
     client code knows the wire behavior.
 
-    IMPORTANT for our nalar HTTP client: while the server is LENIENT,
+    IMPORTANT for our pabrik HTTP client: while the server is LENIENT,
     we should still ALWAYS send the header (it's spec-required for
     protocol versions >= 2025-06-18). Sending the header is the
     correct client behavior; not sending it is a legacy fallback
@@ -400,18 +400,18 @@ def test_http_mcp_unsupported_protocol_version_returns_400() -> None:
             proc.wait(timeout=2.0)
 
 
-# ─── Test 4: nalar accepts http mcp_servers config + tools/list ────────────
+# ─── Test 4: pabrik accepts http mcp_servers config + tools/list ────────────
 
 
-def test_nalar_config_round_trips_http_mcp_server() -> None:
-    """Boot nalar, configure mcp_servers with a real url pointing at a
+def test_pabrik_config_round_trips_http_mcp_server() -> None:
+    """Boot pabrik, configure mcp_servers with a real url pointing at a
     live mcp-http-hello-world server, fetch the config back, assert
     the url round-trips.
 
     This proves the backend's parseMcpServerConfig accepts the http
     shape (url + headers) AND the wire round-trips through PUT →
     on-disk JSON → GET without losing fields. The server is live
-    but nalar never connects to it during this test — we just verify
+    but pabrik never connects to it during this test — we just verify
     the config layer.
     """
     port = _find_free_port()
@@ -420,7 +420,7 @@ def test_nalar_config_round_trips_http_mcp_server() -> None:
         from harness import FunctionalHarness
         harness = FunctionalHarness.boot(stub_llm_profile=True)
         try:
-            initial = harness.http("GET", "/api/config/nalar", expect=200).json()
+            initial = harness.http("GET", "/api/config/pabrik", expect=200).json()
             url = f"http://127.0.0.1:{port}/mcp"
             put_body = {
                 **initial,
@@ -432,9 +432,9 @@ def test_nalar_config_round_trips_http_mcp_server() -> None:
                 },
             }
             harness.http(
-                "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+                "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
             )
-            got = harness.http("GET", "/api/config/nalar", expect=200).json()
+            got = harness.http("GET", "/api/config/pabrik", expect=200).json()
             servers = got.get("mcp_servers") or {}
             assert "http_test" in servers, (
                 f"http MCP server missing from GET: {list(servers.keys())}"
@@ -458,14 +458,14 @@ def test_nalar_config_round_trips_http_mcp_server() -> None:
             proc.wait(timeout=2.0)
 
 
-def test_nalar_http_client_calls_real_mcp_server() -> None:
-    """End-to-end: nalar's MCP HTTP client successfully POSTs to a
+def test_pabrik_http_client_calls_real_mcp_server() -> None:
+    """End-to-end: pabrik's MCP HTTP client successfully POSTs to a
     live mcp-http-hello-world server and gets the expected text back.
 
     This is the spec-compliance smoke test — it exercises the WHOLE
     chain:
 
-        nalar agent loop
+        pabrik agent loop
           → handle_mcp_tool.zig
           → mcp_http.HttpRegistry.getOrConnect()
           → mcp_http.HttpClient.callTool()
@@ -492,7 +492,7 @@ def test_nalar_http_client_calls_real_mcp_server() -> None:
         from harness import FunctionalHarness
         harness = FunctionalHarness.boot(stub_llm_profile=True)
         try:
-            initial = harness.http("GET", "/api/config/nalar", expect=200).json()
+            initial = harness.http("GET", "/api/config/pabrik", expect=200).json()
             url = f"http://127.0.0.1:{port}/mcp"
             put_body = {
                 **initial,
@@ -501,7 +501,7 @@ def test_nalar_http_client_calls_real_mcp_server() -> None:
                 },
             }
             harness.http(
-                "PUT", "/api/config/nalar", json_body=put_body, expect=200,
+                "PUT", "/api/config/pabrik", json_body=put_body, expect=200,
             )
             # Now invoke a chat message that calls the MCP tool. We use
             # a marker prompt that the stub LLM recognizes + the
@@ -512,7 +512,7 @@ def test_nalar_http_client_calls_real_mcp_server() -> None:
             # stub-llm behavior; for now this test only proves the
             # config layer is wired correctly — the wire itself is
             # covered by the direct-MCP tests above + the manual
-            # zig-out/bin/nalarcore run.)
+            # zig-out/bin/pabrikcore run.)
         finally:
             harness.teardown()
     finally:

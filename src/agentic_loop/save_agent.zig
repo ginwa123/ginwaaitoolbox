@@ -1,5 +1,5 @@
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
+const tree1_mod = @import("pabrikcore");
 const sqlite = tree1_mod.sqlite;
 const logger_mod = tree1_mod.loggermod;
 

@@ -15,28 +15,28 @@
 //! recomputed it independently, the tools it offered could drift from the
 //! tools the LLM actually receives.
 //!
-//! This module is a leaf: it imports only `nalarcore` + its std deps, so
+//! This module is a leaf: it imports only `pabrikcore` + its std deps, so
 //! both `workflow.zig` and the `tools_exec_*` adapters can import it
 //! without an import cycle.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const agent = nalarcore.agent;
+const pabrikcore = @import("pabrikcore");
+const agent = pabrikcore.agent;
 const AgentTool = agent.AgentTool;
 
-const kanban_list_mod = nalarcore.kanban_list;
-const kanban_move_task_mod = nalarcore.kanban_move_task;
-const kanban_create_task_tool = nalarcore.create_kanban_task;
+const kanban_list_mod = pabrikcore.kanban_list;
+const kanban_move_task_mod = pabrikcore.kanban_move_task;
+const kanban_create_task_tool = pabrikcore.create_kanban_task;
 // `MAIN_AGENT_ONLY_NAMES` lives with the `ask_user` tool definition so this
 // strip and `spawn_sub_agent`'s parse-time rejection share one list.
-const ask_user_mod = nalarcore.ask_user;
-const set_design_page_mod = nalarcore.set_design_page;
-const add_design_element_mod = nalarcore.add_design_element;
-const update_design_element_mod = nalarcore.update_design_element;
-const group_design_elements_mod = nalarcore.group_design_elements;
-const set_element_parent_mod = nalarcore.set_element_parent;
-const move_design_element_mod = nalarcore.move_design_element;
-const move_element_to_page_mod = nalarcore.move_element_to_page;
+const ask_user_mod = pabrikcore.ask_user;
+const set_design_page_mod = pabrikcore.set_design_page;
+const add_design_element_mod = pabrikcore.add_design_element;
+const update_design_element_mod = pabrikcore.update_design_element;
+const group_design_elements_mod = pabrikcore.group_design_elements;
+const set_element_parent_mod = pabrikcore.set_element_parent;
+const move_design_element_mod = pabrikcore.move_design_element;
+const move_element_to_page_mod = pabrikcore.move_element_to_page;
 
 /// Tools that only make sense inside a kanban item. Stripped for `design`
 /// and `folder` items.

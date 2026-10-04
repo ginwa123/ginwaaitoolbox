@@ -17,9 +17,9 @@ credentials (unavailable in this environment). So these tests drive
 the strongest feasible path without creds — the same approach as
 `agent_add_mcp_server_test.py`:
 
-  1. Seed per-profile `sub_agents` via `PUT /api/config/nalar`
+  1. Seed per-profile `sub_agents` via `PUT /api/config/pabrik`
      (object-map shape, the settings-UI path).
-  2. `GET /api/config/nalar` back and assert the round-tripped rows
+  2. `GET /api/config/pabrik` back and assert the round-tripped rows
      carry byte-for-byte the exact fields `executeListSubAgent`
      reads (`name`, `model`, `url_style`, `thinking`, `temperature`,
      optional tuning knobs, `system_prompt`).
@@ -35,14 +35,14 @@ secrets-absence, `]]>` CDATA split, no-truncation). A regression in
 the envelope rendering would fail `zig build test`, not this file.
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/list_sub_agent_test.py -v
 """
 
 from __future__ import annotations
 
 from harness import FunctionalHarness
-from nalar_config_test import config_harness  # noqa: F401  (shared fixture)
+from pabrik_config_test import config_harness  # noqa: F401  (shared fixture)
 
 LONG_PROMPT = (
     "You are a strict code reviewer with deep expertise in systems programming, "
@@ -87,7 +87,7 @@ SPARSE_AGENT = {
 def _put_profile(h: FunctionalHarness, profile: str, sub_agents: list) -> None:
     h.http(
         "PUT",
-        "/api/config/nalar",
+        "/api/config/pabrik",
         json_body={
             "profiles": {
                 profile: {
@@ -104,7 +104,7 @@ def _put_profile(h: FunctionalHarness, profile: str, sub_agents: list) -> None:
 
 
 def _profile_agents(h: FunctionalHarness, profile: str) -> list:
-    body = h.http("GET", "/api/config/nalar", expect=200).json()
+    body = h.http("GET", "/api/config/pabrik", expect=200).json()
     assert body.get("sub_agents") is None, (
         "top-level sub_agents must stay null (per-profile only), "
         f"got: {body.get('sub_agents')!r}"
@@ -197,7 +197,7 @@ def test_secrets_confined_to_their_own_keys(
 ) -> None:
     """Secret VALUES are confined to `api_key`/`base_url` keys only.
 
-    Honesty note: `GET /api/config/nalar` is the settings API and
+    Honesty note: `GET /api/config/pabrik` is the settings API and
     legitimately returns `api_key`/`base_url` (the settings UI needs
     them — cf. `subagents_per_profile_test.py`, whose fixture asserts
     the secrets round-trip). The no-leak contract belongs to the

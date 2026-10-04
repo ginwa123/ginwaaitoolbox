@@ -3,7 +3,7 @@
 Memories are full CRUD via HTTP (POST/GET/PUT/DELETE). Skills are
 file-system-managed — the API has GET (list/detail) and DELETE, but
 no POST/PUT for skill creation. Skills live as .md files in
-`~/.config/nalar/skills/`; the API only reads and deletes them.
+`~/.config/pabrik/skills/`; the API only reads and deletes them.
 
 Plan: docs/superpowers/plans/2026-07-26-functional-tests-with-real-data.md (Chunk 6)
 """
@@ -45,18 +45,18 @@ def _list_skills(harness: FunctionalHarness) -> list[dict[str, Any]]:
 def _get_memory_disk_path(harness: FunctionalHarness, name: str) -> Path:
     """Return the absolute path where a memory file lives on disk.
 
-    Memories live in $XDG_CONFIG_HOME/nalar/memories/<name> or
-    $HOME/.config/nalar/memories/<name> (Windows: %APPDATA%/nalar).
+    Memories live in $XDG_CONFIG_HOME/pabrik/memories/<name> or
+    $HOME/.config/pabrik/memories/<name> (Windows: %APPDATA%/pabrik).
     The harness isolates all three, but the file is at the XDG/.config
     location on Windows (where XDG_CONFIG_HOME is now isolated to
     temp_dir/.config). Use that path for assertions; fallback to
     APPDATA if not found (covers old harness without XDG isolation).
     """
     # Check XDG/.config first (current Windows isolation), then APPDATA.
-    config_base = harness.temp_dir / ".config" / "nalar" / "memories" / name
+    config_base = harness.temp_dir / ".config" / "pabrik" / "memories" / name
     if config_base.exists():
         return config_base
-    appdata_base = harness.temp_dir / "AppData" / "Roaming" / "nalar" / "memories" / name
+    appdata_base = harness.temp_dir / "AppData" / "Roaming" / "pabrik" / "memories" / name
     if appdata_base.exists():
         return appdata_base
     # Default for new writes: use the XDG/.config location (matches
@@ -67,14 +67,14 @@ def _get_memory_disk_path(harness: FunctionalHarness, name: str) -> Path:
 def _get_skill_disk_path(harness: FunctionalHarness, name: str) -> Path:
     """Return the absolute path where a skill file lives on disk.
 
-    Skills are stored as `$XDG_CONFIG_HOME/nalar/skills/<name>/SKILL.MD`
-    or `$HOME/.config/nalar/skills/<name>/SKILL.MD`
-    (Windows: %APPDATA%/nalar/skills). Same fallback as memories.
+    Skills are stored as `$XDG_CONFIG_HOME/pabrik/skills/<name>/SKILL.MD`
+    or `$HOME/.config/pabrik/skills/<name>/SKILL.MD`
+    (Windows: %APPDATA%/pabrik/skills). Same fallback as memories.
     """
-    config_base = harness.temp_dir / ".config" / "nalar" / "skills" / name / "SKILL.MD"
+    config_base = harness.temp_dir / ".config" / "pabrik" / "skills" / name / "SKILL.MD"
     if config_base.exists():
         return config_base
-    appdata_base = harness.temp_dir / "AppData" / "Roaming" / "nalar" / "skills" / name / "SKILL.MD"
+    appdata_base = harness.temp_dir / "AppData" / "Roaming" / "pabrik" / "skills" / name / "SKILL.MD"
     if appdata_base.exists():
         return appdata_base
     return config_base
@@ -86,7 +86,7 @@ def _get_skill_disk_path(harness: FunctionalHarness, name: str) -> Path:
 def test_create_global_memory_writes_to_disk(
     harness: FunctionalHarness,
 ) -> None:
-    """POST /api/memories creates a .md file at $HOME/.config/nalar/memories/<name>."""
+    """POST /api/memories creates a .md file at $HOME/.config/pabrik/memories/<name>."""
     body = harness.http(
         "POST",
         "/api/memories",
@@ -210,7 +210,7 @@ def test_create_local_memory_under_cwd(
     assert "memory" in body
 
     # File on disk under the requested cwd.
-    mem_path = cwd / ".nalar" / "memories" / "local-mem.md"
+    mem_path = cwd / ".pabrik" / "memories" / "local-mem.md"
     assert mem_path.exists(), f"local memory not at {mem_path}"
     assert mem_path.read_text(encoding="utf-8") == "# local\nscoped to cwd"
 

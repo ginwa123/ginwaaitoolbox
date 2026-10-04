@@ -9,9 +9,9 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const auth_common = @import("auth_common.zig");
-const gserverz = nalarcore.gserverz;
+const gserverz = pabrikcore.gserverz;
 
 pub const WorkerListError = error{
     QueryFailed,
@@ -34,7 +34,7 @@ pub const WorkerListResult = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: WorkerListInput,
     owner: []const u8,
 ) WorkerListError!WorkerListResult {
@@ -49,7 +49,7 @@ fn useCase(
     // Build query with optional session_id filter. SQL convention:
     // alias the table (`w`) so the column references stay
     // unambiguous when filters grow (see project memory
-    // nalar-sql-alias-tables.md).
+    // pabrik-sql-alias-tables.md).
     const base_sql = "SELECT w.id, w.session_id, w.working_directory, w.last_activity_nano AS last_activity, w.last_activity_description, w.created_at FROM worker w";
 
     // `cancelled = 0` is the whole reason a client can trust this list.
@@ -140,7 +140,7 @@ pub fn workerListHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const limit_str = req.query.get("limit") orelse "50";
@@ -182,7 +182,7 @@ pub fn workerListHandler(
 // these tests exist but `zig build test` never discovers them.
 
 const testing = std.testing;
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 
 /// Production shape of `worker` after migrations 019/020/075/093 + the
 /// `cancelled` column. `user_id` is read by the owner-visibility clause, so a

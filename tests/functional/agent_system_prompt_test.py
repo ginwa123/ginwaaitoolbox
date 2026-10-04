@@ -1,6 +1,6 @@
 """Functional tests for the agent_system_prompt CRUD wire.
 
-Exercises the 4 new routes (Migration 080) against a real nalar
+Exercises the 4 new routes (Migration 080) against a real pabrik
 binary, replaying the exact JSON bodies the frontend sends:
 
   Plan: docs/superpowers/plans/2026-08-21-agent-system-prompt.md

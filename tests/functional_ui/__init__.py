@@ -1,4 +1,4 @@
-"""Functional UI tests for nalar — boots a real nalar binary AND a Vite
+"""Functional UI tests for pabrik — boots a real pabrik binary AND a Vite
 dev server against isolated tempdirs, then drives the running web app
 with Playwright Python.
 

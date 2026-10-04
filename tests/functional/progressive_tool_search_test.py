@@ -49,7 +49,7 @@ NOT_SEEDED_KANBAN_TOOL = "set_git_worktree"
 
 
 def _db_path(h: FunctionalHarness) -> Path:
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _wait_for_tool_count(h: FunctionalHarness, timeout_s: float = 45.0) -> int:
@@ -75,7 +75,7 @@ def _wait_for_tool_count(h: FunctionalHarness, timeout_s: float = 45.0) -> int:
 
 
 def _queue_plain_message(h: FunctionalHarness, session_id: str, allowed_tools: str) -> None:
-    """A plain (unbound) chat session — the nalar-tui body shape."""
+    """A plain (unbound) chat session — the pabrik-tui body shape."""
     h.http(
         "POST",
         "/api/llm/session",
@@ -198,9 +198,9 @@ def _equip_row(h: FunctionalHarness, session_id: str, tool_name: str, server: st
 
 
 @pytest.fixture
-def stub_harness(default_nalar_bin: Path):
+def stub_harness(default_pabrik_bin: Path):
     """A harness WITH a stub LLM profile, so the workflow reaches its loop."""
-    h = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    h = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         yield h
     finally:

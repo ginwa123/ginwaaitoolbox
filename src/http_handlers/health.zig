@@ -12,8 +12,8 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 
 /// Domain-level error set for `useCase`. Currently empty — the
 /// health probe has no failure modes the caller needs to

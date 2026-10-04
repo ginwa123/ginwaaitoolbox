@@ -350,7 +350,7 @@ The Save button uses a `mousedown` handler to commit any draft tag before click 
 ## 4. Out of scope (deferred)
 
 - **Sending task.name+description as a fallback for no-history tasks** — v1 uses pure trigger. Follow-up if users complain about empty-history behaviour.
-- **Refreshing `processingState` from the backend on dialog open** — `App.vue` already re-syncs on every SSE (re)connect (line 109). For a session open for a long time before the dialog is opened, the map may be stale *only* if the SSE bus had been disconnected long enough for a worker to spawn+finish on a different nalar instance. Acceptable — clicking an enabled button when a remote worker is actually running would fail the backend 409 check (atomic DB lookup), which the host maps to a friendly error. **Defense in depth.**
+- **Refreshing `processingState` from the backend on dialog open** — `App.vue` already re-syncs on every SSE (re)connect (line 109). For a session open for a long time before the dialog is opened, the map may be stale *only* if the SSE bus had been disconnected long enough for a worker to spawn+finish on a different pabrik instance. Acceptable — clicking an enabled button when a remote worker is actually running would fail the backend 409 check (atomic DB lookup), which the host maps to a friendly error. **Defense in depth.**
 - **Visualizing "Running…" text in the disabled button** — see §3.1; deferred until user feedback justifies.
 - **Start-agent affordance on the kanban card itself (not just in the dialog)** — would require passing `processingState` to `KanbanCard` and re-organizing the card's row layout. The dialog is the existing entry point for editing a task; the card's click surface is reserved for opening the chat view. Out of scope.
 - **A "Start unattended" combined button** — the unattended toggle is separate; the user can pre-toggle unattended mode and then click Start agent to combine (Order: 1) toggle unattended → 2) click Start agent). No combined action needed.
@@ -386,7 +386,7 @@ The Save button uses a `mousedown` handler to commit any draft tag before click 
 | Type | Path | Change |
 |------|------|--------|
 | EDIT | `docs/SPEC.md` | Add a §X entry summarising the start-agent affordance (and a pointer to this spec). |
-| EDIT | `NALAR.md` | Append "### 2026-08-18: kanban task detail start agent" changelog entry. |
+| EDIT | `PABRIK.md` | Append "### 2026-08-18: kanban task detail start agent" changelog entry. |
 
 Total: **13 files** (4 NEW, 9 EDIT). Backend: 1 new endpoint, 1 new event field. Frontend: 1 new button + 1 new emit + 1 new store action + 1 new API helper.
 

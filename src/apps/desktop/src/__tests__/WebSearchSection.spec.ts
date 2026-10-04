@@ -1,15 +1,15 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import type { NalarWebSearchProvider } from '../api'
-import WebSearchSection from '../components/nalar/WebSearchSection.vue'
+import type { PabrikWebSearchProvider } from '../api'
+import WebSearchSection from '../components/pabrik/WebSearchSection.vue'
 import {
   parseWebSearchProviders,
   serializeWebSearchProviders,
   validateWebSearchRows,
   webSearchRowErrorsFromMessage,
   type WebSearchProviderRow,
-} from '../components/nalar/webSearchProviders'
+} from '../components/pabrik/webSearchProviders'
 
 /**
  * `key` may arrive from the API as a MASK rather than as the secret.
@@ -19,19 +19,19 @@ import {
  */
 const MASKED = 'sk••••••7f2'
 
-const TINYFISH: NalarWebSearchProvider = {
+const TINYFISH: PabrikWebSearchProvider = {
   url: 'https://api.search.tinyfish.ai',
   key: MASKED,
   curl: 'https://api.search.tinyfish.ai?query=PLACEHOLDER -H "X-API-Key: {key}"',
   description: 'Best for news. Free tier 1000/day.',
 }
 
-const SELFHOSTED: NalarWebSearchProvider = {
+const SELFHOSTED: PabrikWebSearchProvider = {
   url: 'https://search.internal.example',
   curl: 'https://search.internal.example/search?q=PLACEHOLDER',
 }
 
-function rows(raw: Record<string, NalarWebSearchProvider>): WebSearchProviderRow[] {
+function rows(raw: Record<string, PabrikWebSearchProvider>): WebSearchProviderRow[] {
   return parseWebSearchProviders(raw)
 }
 
@@ -55,9 +55,9 @@ function fieldValue(wrapper: ReturnType<typeof mount>, rowId: string, testid: st
 }
 
 function savedProvider(
-  saved: Record<string, NalarWebSearchProvider> | undefined,
+  saved: Record<string, PabrikWebSearchProvider> | undefined,
   name: string,
-): NalarWebSearchProvider {
+): PabrikWebSearchProvider {
   const entry = saved?.[name]
   if (!entry) throw new Error(`expected a saved provider named ${name}`)
   return entry

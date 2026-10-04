@@ -74,7 +74,7 @@ pub const EventBus = struct {
 // `test_runner.zig` (a `test { }` block inside `event.zig` would
 // import itself). They run under:
 //   - `zig build test` at the project root (the main project's
-//     `mod_tests` compiles the `nalarcore` module → `event_bus` →
+//     `mod_tests` compiles the `pabrikcore` module → `event_bus` →
 //     `src/test_runner.zig` → `event.zig`).
 //   - `cd src/modules/event_bus && zig build test` (the event_bus
 //     module's own `mod_tests` step, rooted at `event_bus/src/root.zig`).

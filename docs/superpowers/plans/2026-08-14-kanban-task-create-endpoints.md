@@ -29,13 +29,13 @@ The frontend swaps the 2-step dance (`addTask` + `runAgentOnNewTask`) for a sing
 ## Global Constraints
 
 - **Cross-platform**: works on Linux, macOS, AND Windows. Frontend changes verified with `bun run build` (vue-tsc typecheck) + `bunx vitest run`. Backend changes verified with `zig build test --summary all`.
-- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` patterns. See `~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md`.
+- **No static-contract tests**: ALL tests are behavioural. No `expect(source).toContain(...)` patterns. See `~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md`.
 - **TDD discipline**: every implementation step starts with a failing test, then minimal code to make it pass, then a commit.
 - **Behavioural Zig tests** live as `_test.zig` siblings next to the handler (see `kanban_columns_create_test.zig`). Register in `test_runner.zig`.
 - **Behavioural Vue tests** use `@vue/test-utils` `mount` with `setActivePinia(createPinia())` in `beforeEach`. Mock fetch via `vi.fn()` returning `{ ok, status, json, text }` shape.
 - **Teleport-based components**: `KanbanTaskDetailDialog` uses `<Teleport to="body">`. Use `attachTo: document.body` and `document.querySelector` for assertions.
 - **No port 8081**: smoke tests use port 8080.
-- **NO new comments above `logger.infoFmt(...)` calls** (see `~/.config/nalar/memories/no-comments-on-logger-calls.md`).
+- **NO new comments above `logger.infoFmt(...)` calls** (see `~/.config/pabrik/memories/no-comments-on-logger-calls.md`).
 - **SSE wire-format contract**: any new event type name must be added in **all three** sites (backend emitter + `additionalEventTypes` in `api/index.ts` + the named-event dispatch chain). The existing `kanban_task` and `session_created` events are reused — no new event name — so this rule does not trigger.
 
 ---
@@ -57,7 +57,7 @@ NEW  src/apps/desktop/src/__tests__/workspacesStoreAddKanbanTask.spec.ts (action
 EDIT src/apps/desktop/src/__tests__/KanbanView.createAndRun.spec.ts      (asserts single addKanbanTask call, no addTask+runAgentOnNewTask dance)
 
 EDIT docs/SPEC.md                                                       (+ §10.2.1 PR index entry)
-EDIT NALAR.md                                                           (+ Recent changes entry once shipped)
+EDIT PABRIK.md                                                           (+ Recent changes entry once shipped)
 ```
 
 Total: **12 files** (3 NEW, 9 EDIT).
@@ -269,10 +269,10 @@ In `kanban_tasks_create.zig`:
 //!   - 500 DB failure (insert, fetch, or session-create failure)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
-const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
+const on_event_sent_kanban = pabrikcore.ai_mod.on_event_sent_kanban;
 
 pub const KanbanTaskCreateError = error{
     ItemIdRequired,

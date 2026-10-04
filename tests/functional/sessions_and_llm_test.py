@@ -27,13 +27,13 @@ def _create_workspace(harness: FunctionalHarness, name: str = "session-ws") -> s
 
 
 @pytest.fixture
-def llm_harness(default_nalar_bin: Any) -> FunctionalHarness:
+def llm_harness(default_pabrik_bin: Any) -> FunctionalHarness:
     """A harness booted with the LLM stub profile so session-create
     doesn't try to call a real LLM (the wire works, the LLM fails
     silently — we don't care about LLM outcomes in this suite).
     """
     h = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         stub_llm_profile=True,
     )
     try:
@@ -135,7 +135,7 @@ def test_test_shutdown_stops_server(llm_harness: FunctionalHarness) -> None:
     server is dead and the fixture's teardown would double-call.
     """
     h = FunctionalHarness.boot(
-        llm_harness.nalar_bin,
+        llm_harness.pabrik_bin,
         stub_llm_profile=True,
         port=8090,  # fixed port for shutdown test
     )
@@ -168,11 +168,11 @@ def test_test_shutdown_stops_server(llm_harness: FunctionalHarness) -> None:
 
 def test_no_state_leaked_to_real_home(llm_harness: FunctionalHarness) -> None:
     """Belt-and-suspenders for the safety invariant: assert the
-    real $HOME does not contain a nalar/ dir newly created by the
+    real $HOME does not contain a pabrik/ dir newly created by the
     test.
 
     We can't easily diff directories, but we CAN assert that the
-    real $HOME/.config/nalar/agent.db is the SAME file (or absent)
+    real $HOME/.config/pabrik/agent.db is the SAME file (or absent)
     as it was before the test. If the harness wrote to the real
     HOME, the agent.db mtime would be very recent.
     """
@@ -180,7 +180,7 @@ def test_no_state_leaked_to_real_home(llm_harness: FunctionalHarness) -> None:
     import time as _time
 
     real_home = llm_harness.orig_home
-    real_agent_db = os.path.join(real_home, ".config", "nalar", "agent.db")
+    real_agent_db = os.path.join(real_home, ".config", "pabrik", "agent.db")
 
     if os.path.exists(real_agent_db):
         # File exists in real HOME — its mtime should be well in the
@@ -194,7 +194,7 @@ def test_no_state_leaked_to_real_home(llm_harness: FunctionalHarness) -> None:
         )
 
     # The harness's own tempdir does have an agent.db.
-    temp_agent_db = llm_harness.temp_dir / ".config" / "nalar" / "agent.db"
+    temp_agent_db = llm_harness.temp_dir / ".config" / "pabrik" / "agent.db"
     assert temp_agent_db.exists(), (
         f"harness tempdir should have its own agent.db at {temp_agent_db}"
     )

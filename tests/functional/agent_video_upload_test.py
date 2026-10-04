@@ -1,6 +1,6 @@
 """Functional tests for full video upload to LLM (Migration 090).
 
-Exercises the video_urls wire contract against a REAL nalar binary +
+Exercises the video_urls wire contract against a REAL pabrik binary +
 REAL SQLite, replaying the EXACT JSON bodies the frontend sends:
 
   * TASK CREATE — POST kanban/tasks with video_urls → 201, task echoes
@@ -28,10 +28,10 @@ from harness import FunctionalHarness
 
 
 @pytest.fixture
-def llm_harness(default_nalar_bin: Any) -> Any:
+def llm_harness(default_pabrik_bin: Any) -> Any:
     """Harness with stub LLM profile so the async worker drains the queue
     (user row lands in llm_history BEFORE the LLM call fires)."""
-    h = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    h = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     try:
         yield h
     finally:

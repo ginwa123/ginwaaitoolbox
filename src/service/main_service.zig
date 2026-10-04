@@ -1,6 +1,6 @@
 // src/service/main_service.zig
 //
-// Implements the `nalar service {start,stop,status,restart}` subcommand.
+// Implements the `pabrik service {start,stop,status,restart}` subcommand.
 // The CLI dispatch lives in src/main.zig — when argv[1] == "service",
 // main.zig routes the rest of the args into parseServiceSubcommand and
 // then calls the corresponding function below.
@@ -11,7 +11,7 @@
 //   service status  → read state.json + check pid alive
 //   service restart → service stop + service start
 //
-// The server run-loop is provided by nalar's main() — see `runNalarServer`
+// The server run-loop is provided by pabrik's main() — see `runPabrikServer`
 // in src/main.zig (extracted from the original monolithic main body).
 
 const std = @import("std");
@@ -27,15 +27,15 @@ pub const Subcommand = union(enum) {
         /// 0 = auto-pick a random free loopback port (browser mode,
         /// plan 2026-09-10-web-launch-toggle). Recorded in state.json by
         /// the caller after resolution — the daemon skeleton below only
-        /// persists the value, the real bind happens in runNalarServer.
+        /// persists the value, the real bind happens in runPabrikServer.
         port: u16 = 8081,
         no_static_dir: bool = false,
         /// Absolute path to a static file directory to serve at `/`. When
         /// null, the daemon serves only API endpoints (no webapp). When
         /// set, GET requests that don't match an API route fall back to
         /// serving files from this dir (with index.html as the dir index).
-        /// This is the path the nalar-desktop webview points at when in
-        /// "attach to user-started nalar" mode.
+        /// This is the path the pabrik-desktop webview points at when in
+        /// "attach to user-started pabrik" mode.
         static_dir: ?[]const u8 = null,
         /// Opt-in auth enforcement (mirrors top-level `--auth`).
         auth_enabled: bool = false,
@@ -159,7 +159,7 @@ pub const StartOptions = struct {
     port: u16,
     no_static_dir: bool,
     /// Optional absolute path to a static-dir. Passed through to
-    /// runNalarServer as `--static-dir`. See Subcommand.start.static_dir.
+    /// runPabrikServer as `--static-dir`. See Subcommand.start.static_dir.
     static_dir: ?[]const u8 = null,
     state_path: []const u8,
     log_path: []const u8,
@@ -171,23 +171,23 @@ pub const StartOptions = struct {
     on_shutdown: *const fn () void,
 };
 
-/// Start the nalar service. The actual server run-loop is provided by
+/// Start the pabrik service. The actual server run-loop is provided by
 /// `on_run_server` (called AFTER daemonization + state-file write so the
 /// server PID matches the state file's pid). The caller wires this to
-/// main.zig's `runNalarServer`.
+/// main.zig's `runPabrikServer`.
 ///
 /// POSIX daemonization is permanent — once `serviceStart` returns to the
 /// caller, the daemon is running and the caller (the foreground
-/// `nalar service start` invocation) has exited via daemonize.
+/// `pabrik service start` invocation) has exited via daemonize.
 ///
 /// Windows daemonization is implemented in daemon.zig via CreateProcessW
 /// with DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP. The spawned child
-/// (the daemon) sees `NALAR_DAEMON_CHILD=1` and continues; the parent
+/// (the daemon) sees `PABRIK_DAEMON_CHILD=1` and continues; the parent
 /// (the foreground process) exits with code 0.
 ///
 /// On both platforms the shutdown callback is wired up to the
 /// platform-appropriate shutdown signal (SIGTERM on POSIX, console-ctrl
-/// events on Windows) so `nalar service stop` / Ctrl-C / system logoff
+/// events on Windows) so `pabrik service stop` / Ctrl-C / system logoff
 /// all trigger graceful shutdown.
 pub fn serviceStart(
     allocator: std.mem.Allocator,
@@ -211,7 +211,7 @@ pub fn serviceStart(
 
     // 3. Write our state.json (with the just-allocated PID).
     //    static_dir is persisted so the desktop can confirm the URL it
-    //    attached to is the same nalar that's serving files (and so a
+    //    attached to is the same pabrik that's serving files (and so a
     //    future `service status` can show it).
     const state: state_file.State = .{
         .pid = helpers.process_status.getCurrentProcessIdInt(),
@@ -241,7 +241,7 @@ pub const StopOptions = struct {
     state_path: []const u8,
 };
 
-/// Stop the nalar service. Idempotent: if no state file exists, this
+/// Stop the pabrik service. Idempotent: if no state file exists, this
 /// is a no-op (informational log). If the pid in the state file is
 /// dead, we treat it as stale and remove the file (no error).
 pub fn serviceStop(
@@ -250,7 +250,7 @@ pub fn serviceStop(
     opts: StopOptions,
 ) StopError!void {
     const state = (try state_file.readStateFile(allocator, io, opts.state_path)) orelse {
-        std.log.info("nalar is not running (no state file).", .{});
+        std.log.info("pabrik is not running (no state file).", .{});
         return;
     };
     defer state_file.freeState(allocator, state);
@@ -314,7 +314,7 @@ pub fn serviceStatus(
 
 // ===== Tests merged from main_service_test.zig (2026-09-29 flatten) =====
 
-// Tests for the `nalar service` subcommand parser + idempotent stop.
+// Tests for the `pabrik service` subcommand parser + idempotent stop.
 
 const testing = std.testing;
 

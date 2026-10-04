@@ -27,9 +27,9 @@ Frontend ChatView.vue:1347  ←  GET /api/llm/session/:id/messages
   ← session_messages_get.zig:101  ←  llm_history.getSessionMessagesSorted()
        llm_history.zig:739-755:
          .max_capacity_total_tokens = blk: {
-             const di_opt = nalarcore.getSingleton() catch null;
+             const di_opt = pabrikcore.getSingleton() catch null;
              if (di_opt) |di| {
-                 const cfg = nalarcore.getLlmConfig(di);
+                 const cfg = pabrikcore.getLlmConfig(di);
                  // ← passes null for profile AND sub_agent
                  break :blk cfg.maxCapacityForModel(null, null, cfg, cfg.model);
              }
@@ -75,7 +75,7 @@ So even the backend's own compaction trigger ignores the profile override — a 
 **Files:** `llm_history.zig`, `session_messages_get.zig`, `session_messages_get_test.zig`
 
 - [ ] **1.1 Write failing test** — in `session_messages_get_test.zig`, add a test next to the existing wire-shape test (line 204): seed a session with `selected_profile_model = '900ribu'`, seed a profile named `900ribu` with `max_capacity_tokens = 950000` in the LlmConfig used by the singleton (or construct the config directly if the test harness allows), call `getSessionMessagesSorted`, assert `resp.max_capacity_total_tokens == 950000`. Run it — must FAIL with 500000 (or the built-in default).
-  - Note: `getSessionMessagesSorted` currently pulls the config from `nalarcore.getSingleton()`. For testability, prefer adding an optional `profile: ?*const LlmProfile = null` parameter (defaults null) that, when non-null, is passed straight to `maxCapacityForModel(profile, null, cfg, cfg.model)`. The handler resolves the profile by name and passes it; tests pass it directly without needing the singleton.
+  - Note: `getSessionMessagesSorted` currently pulls the config from `pabrikcore.getSingleton()`. For testability, prefer adding an optional `profile: ?*const LlmProfile = null` parameter (defaults null) that, when non-null, is passed straight to `maxCapacityForModel(profile, null, cfg, cfg.model)`. The handler resolves the profile by name and passes it; tests pass it directly without needing the singleton.
 - [ ] **1.2 Implement** — in `llm_history.zig`:
   - Add param `profile: ?*const config_mod.LlmProfile` to `getSessionMessagesSorted` (after the existing sort param; update all call sites — grep `getSessionMessagesSorted(` — there are few: the HTTP handler + tests).
   - In the `.max_capacity_total_tokens = blk:` block (lines 739-755), replace `cfg.maxCapacityForModel(null, null, cfg, cfg.model)` with `cfg.maxCapacityForModel(profile, null, cfg, cfg.model)`.

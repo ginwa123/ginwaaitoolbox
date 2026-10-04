@@ -73,7 +73,7 @@ def _install_fake_gh(
 
 
 def test_huge_gh_stderr_does_not_hang_the_request(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """1 MiB of `gh` stderr must still produce a prompt 502.
 
@@ -96,7 +96,7 @@ def test_huge_gh_stderr_does_not_hang_the_request(
         monkeypatch,
     )
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
         # 30s is well past the backend's 20s gh deadline, and well
         # under "forever" — a regression fails the test instead of
@@ -118,7 +118,7 @@ def test_huge_gh_stderr_does_not_hang_the_request(
 
 
 def test_gh_that_never_exits_is_killed_not_awaited_forever(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """A `gh` blocked forever must time out, not hold a worker thread.
 
@@ -132,7 +132,7 @@ def test_gh_that_never_exits_is_killed_not_awaited_forever(
         monkeypatch,
     )
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
         h2.http(
             "GET",
@@ -147,7 +147,7 @@ def test_gh_that_never_exits_is_killed_not_awaited_forever(
 
 
 def test_concurrent_pr_status_calls_keep_the_process_alive(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """The reported abort only ever happened under concurrency.
 
@@ -166,7 +166,7 @@ def test_concurrent_pr_status_calls_keep_the_process_alive(
         monkeypatch,
     )
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
 
         def one(i: int):

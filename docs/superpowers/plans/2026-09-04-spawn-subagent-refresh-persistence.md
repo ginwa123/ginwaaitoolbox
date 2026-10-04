@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - DONT KILL the port 8081 server; functional tests use harness free ports 8080..8199 (see `tests/functional/harness.py` + `README.md` ⛔ section).
-- Verification via isolated functional tests booting fresh `nalar` binary against tmpdir HOME — NEVER `nohup ./zig-out/bin/nalar + curl` (leaks process, misses route-order / empty-slice-as-NULL / strict-validator bugs). See `.nalar/skills/replay-frontend-wire-payload-in-functional-tests`.
+- Verification via isolated functional tests booting fresh `pabrik` binary against tmpdir HOME — NEVER `nohup ./zig-out/bin/pabrik + curl` (leaks process, misses route-order / empty-slice-as-NULL / strict-validator bugs). See `.pabrik/skills/replay-frontend-wire-payload-in-functional-tests`.
 - Per-request arena: `ctx.allocator` is arena-backed — do NOT `defer free` arena slices in handlers; KEEP `rows.deinit()` (sqlite finalize) + file/socket closes.
 - SSE wire contract: any new/renamed `event_type` must change all 3 sites (backend `onEventSend*` emitter + `additionalEventTypes` in `api/index.ts` + named-event dispatch chain). This plan deliberately adds NO new event_type (reuses `llm_full` + `role="subagent_progress"`).
 - No migration, no schema change, no config shape change. Progress stays out of `llm_history` (never fed to LLM).
@@ -85,8 +85,8 @@
 ### Task 5 — E2E + regression verification
 
 - [ ] Write `tests/functional/subagent_refresh_test.py` (harness pattern — see `tests/functional/agent_knowledge_edit_test.py` for exact-body replay): (1) launch session with long subagents, (2) mid-run GET messages → assert snapshot non-empty + placeholder present, (3) await completion → GET again → assert `<results>` envelope + snapshot cleared, (4) refresh-equivalent re-GET → assert final renders without live rows.
-- [ ] Run `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/subagent_refresh_test.py -v` green.
-- [ ] Run full gates: `zig build test --summary all` (0 fail), `pnpm test:unit` (0 fail), `zig build nalar-desktop --summary all` (steps OK).
+- [ ] Run `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/subagent_refresh_test.py -v` green.
+- [ ] Run full gates: `zig build test --summary all` (0 fail), `pnpm test:unit` (0 fail), `zig build pabrik-desktop --summary all` (steps OK).
 - [ ] Grep new `subagent_progress` name across backend emitter + `additionalEventTypes` + dispatch chain to prove no wire-contract break (should appear in NONE of the three — no new event_type by design).
 - [ ] Commit + open PR (worktree per repo habit, e.g. `worktree/spawn-subagent-refresh-persist`); leave card in `in_review_task` for human review — DO NOT merge.
 
@@ -104,4 +104,4 @@
 - [ ] Mid-run refresh shows "N running" rows (not "0 sub-agents"); live SSE continues updating them; completion flips to final `<results>` and clears the map entry.
 - [ ] Post-completion refresh shows final envelope (unchanged behavior).
 - [ ] Server-restart mid-run shows honest "interrupted" fallback (not fake "0 sub-agents", not a hang).
-- [ ] `zig build test --summary all`: 0 fail. `pnpm test:unit`: 0 fail. Functional `subagent_refresh_test.py`: green. `zig build nalar-desktop`: steps OK.
+- [ ] `zig build test --summary all`: 0 fail. `pnpm test:unit`: 0 fail. Functional `subagent_refresh_test.py`: green. `zig build pabrik-desktop`: steps OK.

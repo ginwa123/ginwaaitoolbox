@@ -1,6 +1,6 @@
 // src/apps/desktop_app/subprocess.zig
 //
-// Manages the nalar child process: spawning it, polling its health
+// Manages the pabrik child process: spawning it, polling its health
 // endpoint, and cleaning it up.
 //
 // `waitForHealth` connects to 127.0.0.1:<port>/health on a tight
@@ -9,7 +9,7 @@
 // requests before the webview tries to load it (avoids a race where
 // the webview shows a blank page or "connection refused").
 //
-// `spawn` launches nalar with `--port <port>` and returns a handle
+// `spawn` launches pabrik with `--port <port>` and returns a handle
 // the caller uses to `terminate()` on shutdown.
 //
 // Zig 0.16 API notes (relative to the plan's draft code):
@@ -68,7 +68,7 @@ const helpers = @import("helpers");
 //
 // The struct is empty on non-Windows so non-Windows builds never link
 // ws2_32 (build.zig already links ws2_32 + kernel32 into
-// nalar-desktop on Windows).
+// pabrik-desktop on Windows).
 const win_net = if (builtin.os.tag == .windows) struct {
     extern "ws2_32" fn WSAStartup(wVersionRequested: c_ushort, wsaData: *WSADATA) callconv(.c) c_int;
     extern "ws2_32" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) callconv(.c) c_int;
@@ -110,10 +110,10 @@ const win_net = if (builtin.os.tag == .windows) struct {
     }
 } else struct {};
 
-/// Handle to a running nalar subprocess. Caller MUST call `terminate()`
-/// (or `kill` + `wait`) before discarding, otherwise nalar becomes a
+/// Handle to a running pabrik subprocess. Caller MUST call `terminate()`
+/// (or `kill` + `wait`) before discarding, otherwise pabrik becomes a
 /// zombie until the OS reaps it.
-pub const NalarProcess = struct {
+pub const PabrikProcess = struct {
     child: std.process.Child,
     port: u16,
     /// `child.id` is optional in 0.16; we normalize to a concrete `i32`
@@ -131,8 +131,8 @@ pub const NalarProcess = struct {
     ///
     /// In Zig 0.16, both `child.kill(io)` and `child.wait(io)` take an
     /// `io: Io` argument (Zig moved to Io-runtime-based process control).
-    /// The caller passes `io` through the NalarProcess handle.
-    pub fn terminate(self: *NalarProcess, io: std.Io) void {
+    /// The caller passes `io` through the PabrikProcess handle.
+    pub fn terminate(self: *PabrikProcess, io: std.Io) void {
         // In Zig 0.16, `child.kill(io)` is the all-in-one "terminate +
         // wait + cleanup" function: it sends SIGTERM, blocks until the
         // child exits, then sets `child.id = null` to mark the handle
@@ -147,7 +147,7 @@ pub const NalarProcess = struct {
 /// Poll http://127.0.0.1:<port>/health until it returns 200 or
 /// `timeout_ms` elapses. Returns `error.HealthCheckTimeout` on timeout.
 ///
-/// On a busy CI box the nalar process can take a few hundred ms to
+/// On a busy CI box the pabrik process can take a few hundred ms to
 /// start its HTTP server, so a typical call is `waitForHealth(...,
 /// 5000, 50)` — poll every 50ms for up to 5 seconds.
 pub fn waitForHealth(
@@ -391,8 +391,8 @@ fn httpGetPosix(port: u16, path: []const u8) HttpProbe {
     return parseProbeResponse(buf[0..total]);
 }
 
-/// Spawn nalar as a child process with `--port <port>` and, optionally,
-/// `--static-dir <path>` (so nalar serves the embedded webapp at `/`).
+/// Spawn pabrik as a child process with `--port <port>` and, optionally,
+/// `--static-dir <path>` (so pabrik serves the embedded webapp at `/`).
 /// The caller is responsible for calling `terminate()` on the returned
 /// handle before discarding it.
 ///
@@ -400,19 +400,19 @@ fn httpGetPosix(port: u16, path: []const u8) HttpProbe {
 /// `io: Io` as its first arg). `allocator` is used by the Child handle
 /// internally — pass the long-lived app allocator, NOT std.testing.allocator.
 ///
-/// `static_dir`: if non-null, the child nalar is started with
+/// `static_dir`: if non-null, the child pabrik is started with
 /// `--static-dir <path>` so it serves the directory's contents at HTTP
-/// `/`. nalar-desktop's spawn mode passes the path of the temp dir
+/// `/`. pabrik-desktop's spawn mode passes the path of the temp dir
 /// containing the extracted webapp assets; connect mode passes null
-/// (the user is responsible for running their own nalar with the right
+/// (the user is responsible for running their own pabrik with the right
 /// --static-dir).
 pub fn spawn(
     allocator: std.mem.Allocator,
     io: std.Io,
-    nalar_path: []const u8,
+    pabrik_path: []const u8,
     port: u16,
     static_dir: ?[]const u8,
-) !NalarProcess {
+) !PabrikProcess {
     _ = allocator; // argv is a small stack-allocated array
 
     // Build the argv slice. The port number is formatted into a small
@@ -423,7 +423,7 @@ pub fn spawn(
     const port_str = std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch unreachable;
 
     var argv_buf: [5][]const u8 = .{
-        nalar_path, "--port", port_str, "--static-dir", undefined,
+        pabrik_path, "--port", port_str, "--static-dir", undefined,
     };
     var argv_count: usize = 3;
     if (static_dir) |sd| {
@@ -446,7 +446,7 @@ pub fn spawn(
         // Map spawn errors into a single descriptive error so callers
         // can match on `error.SpawnFailed` without enumerating every
         // OS-level variant.
-        std.log.err("spawn nalar at {s} failed: {s}", .{ nalar_path, @errorName(err) });
+        std.log.err("spawn pabrik at {s} failed: {s}", .{ pabrik_path, @errorName(err) });
         return error.SpawnFailed;
     };
 
@@ -479,7 +479,7 @@ comptime {
 // ===== Tests merged from subprocess_test.zig (2026-09-29 flatten) =====
 // src/apps/desktop_app/subprocess_test.zig
 //
-// Tests for the nalar subprocess management module. Two test cases:
+// Tests for the pabrik subprocess management module. Two test cases:
 //
 //   1. waitForHealth timeout: poll a port that nothing is listening on,
 //      expect `error.HealthCheckTimeout` before the deadline elapses.

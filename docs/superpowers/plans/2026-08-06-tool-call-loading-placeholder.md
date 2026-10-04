@@ -9,7 +9,7 @@
 
 ## Symptom (user report)
 
-After a long-running tool execution crashes the agent (or the `nalar`
+After a long-running tool execution crashes the agent (or the `pabrik`
 process itself crashes during `bash` / `spawn_sub_agent` /
 `read_file` over a flaky network, etc.), the next request to the LLM
 is rejected with:
@@ -260,9 +260,9 @@ timeout 360 bash -c 'rm -rf zig-out/bin && zig build'
 
 # Cross-compile
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 ```
 
 The cross-compile smoke is **mandatory** for this fix because the

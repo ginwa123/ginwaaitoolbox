@@ -1,6 +1,6 @@
 """Tests for the functional-suite shard selector.
 
-These run WITHOUT a nalar binary, same as ``harness_safety_test.py``.
+These run WITHOUT a pabrik binary, same as ``harness_safety_test.py``.
 
 The property that matters is not "the numbers come out right for this
 input" but the one a CI matrix typo would silently break: **the shards
@@ -116,5 +116,5 @@ def test_env_var_names_are_the_documented_contract() -> None:
     # The workflow sets these two names; a rename here without a rename
     # there makes every shard silently run the full suite (3x the work,
     # no error) or, worse, run nothing.
-    assert func_shard.TOTAL_ENV == "NALAR_FUNC_SHARD_TOTAL"
-    assert func_shard.INDEX_ENV == "NALAR_FUNC_SHARD_INDEX"
+    assert func_shard.TOTAL_ENV == "PABRIK_FUNC_SHARD_TOTAL"
+    assert func_shard.INDEX_ENV == "PABRIK_FUNC_SHARD_INDEX"

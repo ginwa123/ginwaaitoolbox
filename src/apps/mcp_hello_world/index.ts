@@ -1,6 +1,6 @@
 //! mcp-hello-world — a tiny test MCP server.
 //!
-//! Self-test target for nalar's MCP stdio transport. Uses the
+//! Self-test target for pabrik's MCP stdio transport. Uses the
 //! canonical `@modelcontextprotocol/sdk` (TypeScript) because the
 //! majority of real-world MCP servers are written in TS.
 //!

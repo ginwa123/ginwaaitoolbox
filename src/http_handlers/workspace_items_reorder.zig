@@ -1,8 +1,8 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const sqlite = pabrikcore.sqlite;
 
 // ─── Pattern: thin handler + use case in one file ─────────────────────────
 //
@@ -87,7 +87,7 @@ pub fn workspaceItemsReorderHandler(
     }
 
     // Step 4: call the use case.
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const result = reorderWorkspaceItems(allocator, di.db, workspace_id, ids.items) catch |err| switch (err) {
         error.TooManyIds => return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "ordered_ids too long (max 100)" }) }),
         error.DatabaseUpdateFailed => return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update workspace item position" }) }),

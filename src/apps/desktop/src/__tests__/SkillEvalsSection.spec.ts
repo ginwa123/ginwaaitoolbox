@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import SkillEvalsSection from '../components/nalar/SkillEvalsSection.vue'
+import SkillEvalsSection from '../components/pabrik/SkillEvalsSection.vue'
 
 /**
  * `skill_evals.enabled` is the ONLY real control for `run_skill_eval` —

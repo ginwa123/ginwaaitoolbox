@@ -1,6 +1,6 @@
 // src/service/daemon.zig
 //
-// Cross-platform daemonization for the nalar service.
+// Cross-platform daemonization for the pabrik service.
 //
 // ## POSIX (Linux/macOS)
 //
@@ -24,9 +24,9 @@
 // "detached from controlling terminal" invariant.
 //
 // The parent/child dispatch is via an environment-variable sentinel
-// `NALAR_DAEMON_CHILD=1`:
+// `PABRIK_DAEMON_CHILD=1`:
 //   - Parent (foreground `service start`): sentinel NOT set → re-exec
-//     SELF with `NALAR_DAEMON_CHILD=1` and the two flags, then `exit(0)`.
+//     SELF with `PABRIK_DAEMON_CHILD=1` and the two flags, then `exit(0)`.
 //   - Child (the spawned daemon): sentinel IS set → just return.
 //
 // ## Cross-platform contract
@@ -120,7 +120,7 @@ pub fn mkdirP(path: []const u8) !void {
 /// AFTER `daemonize()` returns. The log file is opened with append
 /// mode so multiple daemon lifetimes (restart cycles) preserve history.
 /// Walks the parent directory chain and creates each missing component
-/// (idempotent) so that a fresh `$HOME` (no `~/.local/share/nalar/` yet)
+/// (idempotent) so that a fresh `$HOME` (no `~/.local/share/pabrik/` yet)
 /// works.
 pub fn redirectStdioToLog(log_path: []const u8) !void {
     switch (builtin.os.tag) {
@@ -187,7 +187,7 @@ fn redirectStdioToLogPosix(log_path: []const u8) !void {
     log_path_z[log_path.len] = 0;
 
     // mkdir -p the parent directory. Without this, a fresh $HOME has
-    // no ~/.local/share/nalar/ and the open() below fails.
+    // no ~/.local/share/pabrik/ and the open() below fails.
     try mkdirP(log_path);
 
     // stdin → /dev/null. std.c.open returns fd_t (i32) on success,
@@ -341,14 +341,15 @@ const win32_apis = if (builtin.os.tag == .windows) struct {
 } else struct {};
 
 /// Sentinel env var name. The parent re-execs itself with
-/// `NALAR_DAEMON_CHILD=1`; the spawned child sees this and returns
+/// `PABRIK_DAEMON_CHILD=1`; the spawned child sees this and returns
 /// from `daemonize` immediately (it IS the daemon).
-const NALAR_DAEMON_CHILD: [:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("NALAR_DAEMON_CHILD");
+const PABRIK_DAEMON_CHILD: [:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("PABRIK_DAEMON_CHILD");
+
 
 fn daemonizeWindows(allocator: std.mem.Allocator) DaemonError!void {
-    // 1. If NALAR_DAEMON_CHILD is set, we ARE the spawned daemon. Just
+    // 1. If PABRIK_DAEMON_CHILD is set, we ARE the spawned daemon. Just
     //    return; the caller is the daemon process.
-    const sentinel = getEnvVarW(allocator, NALAR_DAEMON_CHILD) catch null;
+    const sentinel = getEnvVarW(allocator, PABRIK_DAEMON_CHILD) catch null;
     if (sentinel) |val| {
         defer allocator.free(val);
         if (val.len > 0) {
@@ -369,7 +370,7 @@ fn daemonizeWindows(allocator: std.mem.Allocator) DaemonError!void {
     var cmd_line: [std.fs.max_path_bytes * 2]u16 = undefined;
     const cmd_w = buildCommandLine(cmd_line[0..], app_path_w) catch return error.SpawnFailed;
 
-    // Build the env block: copy current env + NALAR_DAEMON_CHILD=1.
+    // Build the env block: copy current env + PABRIK_DAEMON_CHILD=1.
     // Env block is a sequence of NUL-terminated wide strings, terminated
     // by an empty wide string (double NUL). We append CWD parent's env
     // via GetEnvironmentStringsW (1) — but to keep this self-contained
@@ -588,11 +589,11 @@ fn buildCommandLine(buf: []u16, exe_path: [:0]const u16) ![:0]u16 {
 
 /// Build an environment block for CreateProcessW: a sequence of
 /// NUL-terminated wide strings `NAME=VALUE`, terminated by an empty
-/// wide string (double NUL). We just build `NALAR_DAEMON_CHILD=1\0\0`.
+/// wide string (double NUL). We just build `PABRIK_DAEMON_CHILD=1\0\0`.
 fn buildEnvBlock(buf: []u16) ![:0]u16 {
     if (builtin.os.tag != .windows) unreachable;
-    // "NALAR_DAEMON_CHILD=1" in UTF-16 = 20 chars + 1 NUL terminator + 1 final NUL.
-    const name = "NALAR_DAEMON_CHILD=1";
+    // "PABRIK_DAEMON_CHILD=1" in UTF-16 = 20 chars + 1 NUL terminator + 1 final NUL.
+    const name = "PABRIK_DAEMON_CHILD=1";
     const needed = std.unicode.calcUtf16LeLen(name) catch return error.PathTooLong;
     if (needed + 2 > buf.len) return error.PathTooLong;
     _ = std.unicode.utf8ToUtf16Le(buf[0..needed], name) catch return error.PathTooLong;
@@ -635,7 +636,7 @@ fn buildEnvBlock(buf: []u16) ![:0]u16 {
 // `CreateProcessW` with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`
 // flags, then the parent exits. The detection that "we are the
 // detached daemon, not the parent" uses an environment-variable
-// sentinel (`NALAR_DAEMON_CHILD=1`). The static-contract test verifies
+// sentinel (`PABRIK_DAEMON_CHILD=1`). The static-contract test verifies
 // the sentinel-based dispatch is in place; the behavioral test
 // (forking the executable) only runs on POSIX.
 //
@@ -821,7 +822,7 @@ test "Windows mkdirP creates all parent dirs of a fresh nested path" {
     @memcpy(tmp_buf[0..tmp.len], tmp);
     const tmp_dir_path: []u8 = tmp_buf[0..tmp.len];
 
-    const leaf = "\\nalar-mkdirP-test\\deeply\\nested\\that\\does\\not\\exist\\service.log";
+    const leaf = "\\pabrik-mkdirP-test\\deeply\\nested\\that\\does\\not\\exist\\service.log";
     const path = try testing.allocator.alloc(u8, tmp_dir_path.len + leaf.len);
     defer testing.allocator.free(path);
     @memcpy(path[0..tmp_dir_path.len], tmp_dir_path);

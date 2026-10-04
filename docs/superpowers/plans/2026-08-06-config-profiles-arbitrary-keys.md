@@ -4,7 +4,7 @@
 
 User says: *"when change profile via chatview i think the profile is not selected as effective on demand"*. The dropdown chip in the chatview shows the selected profile name, but the actual LLM call uses the top-level config (same model in this specific user's case, but a different `api_key`/`base_url` profile would not be picked up).
 
-Screenshot shows the chatview profile picker with `900rlbu` selected (a typo for the user's actual profile name `900ribu` in `~/.config/nalar/config.json`).
+Screenshot shows the chatview profile picker with `900rlbu` selected (a typo for the user's actual profile name `900ribu` in `~/.config/pabrik/config.json`).
 
 ## Root cause (live trace)
 
@@ -44,7 +44,7 @@ key. So the user's `profiles_models: { "900ribu": {...} }` becomes
 `profiles_models: {}` after load, even though `mcp_servers` (which uses
 the same `json.Value` reparse approach) handles arbitrary keys correctly.
 
-The NalarSettings UI lets the user name their profiles anything (the
+The PabrikSettings UI lets the user name their profiles anything (the
 profile name is the key they pick), so ANY profile name other than
 `profile1`..`profile4` is broken.
 
@@ -122,7 +122,7 @@ profile — negligible for the typical 1-5 profiles case.
 
 2. **GREEN**: Apply the fix above. All tests pass.
 
-3. **Live verification**: Restart the user's nalar instance on port 8080
+3. **Live verification**: Restart the user's pabrik instance on port 8080
    (don't kill 8081). Send a POST with `selected_profile_model: 900ribu`
    and verify the server log shows `[CHECKPOINT] ... effective_model=...`
    matches the profile's model (not the top-level fallback).
@@ -157,7 +157,7 @@ inspects `cfg.profiles_models.getEntry(name)`.
 
 ### Chunk 3: Live smoke
 
-- Restart user's nalar on port 8080
+- Restart user's pabrik on port 8080
 - POST `/api/llm/session` with `selected_profile_model: 900ribu`
 - Verify `agentic_coding.log` shows `effective_model=MiniMax-M3` AND
   `effective_api_key=<profile api key>` (not the top-level value)
@@ -212,4 +212,4 @@ inspects `cfg.profiles_models.getEntry(name)`.
 - `src/modules/config/Config.zig:441-469` — the `mcp_servers` pattern to mirror
 - `src/ai_workflow/tui/agentic_loop/workflow.zig:569-577` — the warning that surfaces the bug
 - `src/apps/desktop/src/components/views/ChatView.vue:796-811` — the chatview picker (no bug; correct wire)
-- Memory: `.nalar/memories/profile-not-effective-on-demand-2026-08-06.md` (to be created)
+- Memory: `.pabrik/memories/profile-not-effective-on-demand-2026-08-06.md` (to be created)

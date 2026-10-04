@@ -42,7 +42,7 @@ from ui_harness import UIHarness
 
 
 def _seed_db_path(h: UIHarness):
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _wait_for_text(page, text: str, timeout_ms: int = 10000) -> None:

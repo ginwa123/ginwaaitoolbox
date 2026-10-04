@@ -21,7 +21,7 @@
 - **Backend:** Zig 0.16, SQLite (via `src/databases` + `SqliteBackend`), `addColumnIfMissing` migration helper
 - **Frontend:** Vue 3 + TypeScript, Pinia (`stores/workspaces.ts`), vitest, pnpm
 - **Functional tests:** `tests/functional/harness.py` + pytest, isolated tmpdir HOME per test
-- **Build:** `zig build test --summary all`, `zig build nalar-desktop --summary all`, `pnpm test:unit`, `pytest tests/functional/<name>_test.py -v`
+- **Build:** `zig build test --summary all`, `zig build pabrik-desktop --summary all`, `pnpm test:unit`, `pytest tests/functional/<name>_test.py -v`
 
 ## What exists today (read this before changing anything)
 
@@ -43,7 +43,7 @@
 src/migrations/migration_082_test.zig              # Static-contract + behavioural tests for Migration 082
 src/ai_workflow/tui/agentic_loop/session_human_touched_at_test.zig  # Tests for the helper + serializer field
 src/apps/desktop/src/__tests__/ChatsList.relativeTime.spec.ts   # 6-case frontend display tests
-tests/functional/session_human_touched_at_test.py   # Boot nalar + wire roundtrip
+tests/functional/session_human_touched_at_test.py   # Boot pabrik + wire roundtrip
 ```
 
 ### Edited files
@@ -62,7 +62,7 @@ src/migrations/test_runner.zig                                            # Regi
 src/apps/desktop/src/api/index.ts                                         # Session type gains `last_human_touched_at: string | null`
 src/apps/desktop/src/components/views/ChatsList.vue                      # Swap timestamp + add stale-dot
 src/apps/desktop/src/stores/workspaces.ts                                 # WorkspaceState Session type mirror (if separate)
-NALAR.md                                                                  # Recent changes entry
+PABRIK.md                                                                  # Recent changes entry
 ```
 
 ### NOT changed
@@ -91,7 +91,7 @@ NALAR.md                                                                  # Rece
 
 - **Per-request Arena Cleanup** — handlers allocate from `ctx.allocator` (arena) → NO `defer allocator.free` inside HTTP handlers or tool exec for slices owned by the allocator. The `now_unix_ms` formatters in `updateSessionLastHumanTouchedAt` use `try ... defer allocator.free(...)` because the SQL parameter is arena-bound and the helper runs in a per-call arena (not the handler arena) — same as the sibling task helper.
 - **Tests live INLINE at the bottom of impl files** (`test "..." { }` blocks). New HTTP-handler test files use `_ = @import(...)` in `src/ai_workflow/tui/test_runner.zig`.
-- **No new CHANGELOG file** — update `NALAR.md` (§"Recent changes") with one entry that lands on the same commit as the wire-up task.
+- **No new CHANGELOG file** — update `PABRIK.md` (§"Recent changes") with one entry that lands on the same commit as the wire-up task.
 - **Empty-slice-as-NULL rule** — `SqliteBackend.exec` binds `""` as SQL NULL. The helper only stamps when the SQL UPDATE receives a non-empty `touched_at_str`; for empty we treat as a no-op (early return) to avoid the trap.
 - **SSE wire-format contract** — we add NO new SSE event names. The column rides on the existing `session.updated` event.
 - **DONT KILL THE PORT 8081 SERVER** — functional harness uses ports 8080..8199.
@@ -300,7 +300,7 @@ NALAR.md                                                                  # Rece
 **File:** `tests/functional/session_human_touched_at_test.py` (new).
 
 **Sub-steps:**
-- [ ] Boot a fresh `nalar` against an isolated tmpdir HOME per the harness.
+- [ ] Boot a fresh `pabrik` against an isolated tmpdir HOME per the harness.
 - [ ] **Test 1 — happy path**: POST `/api/llm/session` to create a chat with a `queue_message` → assert the GET `/api/sessions` response includes `last_human_touched_at: <recent unix-ms>`.
 - [ ] **Test 2 — PUT stamps**: PUT `/api/llm/session/:id` with `{name: "renamed"}` → assert `last_human_touched_at` was updated to a newer value than the create time.
 - [ ] **Test 3 — error stamps**: trigger an error path (e.g. POST a session with an invalid queue_message that forces a retry/bail, OR call `dev_sse_emit.zig`'s `is_error=true` endpoint) → assert `last_human_touched_at` was updated.
@@ -312,10 +312,10 @@ NALAR.md                                                                  # Rece
 
 ### Step 10: Final verification + changelog
 
-**Files:** `NALAR.md` (§"Recent changes" entry).
+**Files:** `PABRIK.md` (§"Recent changes" entry).
 
 **Sub-steps:**
-- [ ] Add a Recent changes entry to `NALAR.md` summarizing:
+- [ ] Add a Recent changes entry to `PABRIK.md` summarizing:
   - Migration 082 + new column
   - `updateSessionLastHumanTouchedAt` helper (sibling of task version)
   - 3 stamp sites (emit_run_agent, session_update, saveRetryAttemptMessage)
@@ -324,8 +324,8 @@ NALAR.md                                                                  # Rece
 - [ ] Run `zig build test --summary all` — confirm 0 regressions.
 - [ ] Run `pnpm test:unit` — confirm 0 regressions.
 - [ ] Run `pytest tests/functional/session_human_touched_at_test.py -v` — confirm 5 pass.
-- [ ] Run `zig build nalar-desktop --summary all` — confirm desktop binary builds.
-- [ ] Commit: `docs: NALAR.md recent changes for sessions.last_human_touched_at`
+- [ ] Run `zig build pabrik-desktop --summary all` — confirm desktop binary builds.
+- [ ] Commit: `docs: PABRIK.md recent changes for sessions.last_human_touched_at`
 - [ ] Push branch + open PR for human review (move kanban card to `in_review_task`).
 
 ---

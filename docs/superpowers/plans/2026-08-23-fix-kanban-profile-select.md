@@ -120,8 +120,8 @@ test "kanban_tasks_create forwards unattended flag to useCase ONLY for mode=crea
 - [ ] Add helper `_get_session_selected_profile(harness, session_id)` — GET `/api/llm/session/:id/messages?limit=1`, return `body.get("selected_profile_model")`.
 - [ ] Add test `test_create_session_persists_selected_profile_model`: create task with `mode='create_session'`, body includes `"is_auto_retry_until_stop": "1"` AND `"selected_profile_model": "stub"` (the harness's stub profile name). Assert GET returns `"stub"` — NOT `""`/None. This is the exact wire the dialog sends with Unattended ON.
 - [ ] Add test `test_create_and_run_persists_selected_profile_model`: same but `mode='create_and_run'` with `queue_message`. Assert GET returns `"stub"`.
-- [ ] Add test `test_create_session_unattended_flag_still_persists`: assert the flag itself isn't lost by the gating — GET the session row via sqlite3 (`h.temp_dir/.config/nalar/agent.db`, `SELECT is_auto_retry_until_stop FROM sessions WHERE id=?`) and assert `'1'`.
-- [ ] Run: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/kanban_create_session_user_message_test.py -v` — all pass (new tests FAIL before Task 2's fix if run against a stale binary; run after rebuild).
+- [ ] Add test `test_create_session_unattended_flag_still_persists`: assert the flag itself isn't lost by the gating — GET the session row via sqlite3 (`h.temp_dir/.config/pabrik/agent.db`, `SELECT is_auto_retry_until_stop FROM sessions WHERE id=?`) and assert `'1'`.
+- [ ] Run: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/kanban_create_session_user_message_test.py -v` — all pass (new tests FAIL before Task 2's fix if run against a stale binary; run after rebuild).
 - [ ] Commit: `git commit -am "test(functional): wire round-trip for selected_profile_model on create_session/create_and_run"`
 
 ## Task 4 — Functional UI test (Playwright, user-requested)
@@ -133,7 +133,7 @@ test "kanban_tasks_create forwards unattended flag to useCase ONLY for mode=crea
 
 - [ ] Write the suite. Key mechanics:
   - Use the `ui_harness` + `page` fixtures from `conftest.py`.
-  - The default `ui_harness` boots WITHOUT a stub profile — the dialog's picker loads profiles from `GET /api/config/nalar` (reads `config.json` fresh per request, `nalar_config_get.zig:33`), so seed a profile into `h.temp_dir/.config/nalar/config.json` AFTER boot (write `{"profiles_models": {"900ribu": {"model": "m", "base_url": "http://127.0.0.1:1", "api_key": "k"}}, "active_profile": "alpha"}` — wait, use profile names that exist in the picker: seed TWO profiles `900ribu` and `alpha` with `active_profile: "alpha"` so the fallback would visibly show `alpha` if the bug regresses).
+  - The default `ui_harness` boots WITHOUT a stub profile — the dialog's picker loads profiles from `GET /api/config/pabrik` (reads `config.json` fresh per request, `pabrik_config_get.zig:33`), so seed a profile into `h.temp_dir/.config/pabrik/config.json` AFTER boot (write `{"profiles_models": {"900ribu": {"model": "m", "base_url": "http://127.0.0.1:1", "api_key": "k"}}, "active_profile": "alpha"}` — wait, use profile names that exist in the picker: seed TWO profiles `900ribu` and `alpha` with `active_profile: "alpha"` so the fallback would visibly show `alpha` if the bug regresses).
   - Pre-create workspace + kanban via API (mirror `kanban_lifecycle_ui_test.py` helpers).
   - Navigate to `_kanban_url(h, ws_id, kanban_id)` (`/app?view=workspace&workspaceId=...&itemId=...`), `wait_until="domcontentloaded"`.
   - Open dialog: `[data-testid="kanban-add-task-button"]`.
@@ -144,7 +144,7 @@ test "kanban_tasks_create forwards unattended flag to useCase ONLY for mode=crea
   - **Assert via API** (reliable, per README guidance): GET `/api/llm/session/<task_id>/messages?limit=1` → `selected_profile_model == "900ribu"`. Get `task_id` from `GET /api/workspaces/:ws/items/:kanban/kanban/tasks` (match by name).
   - Second test: same flow but click `[data-testid="kanban-task-detail-create-and-run"]` ("Create task & run agent") — assert same persistence. (The agent run fails silently against the stub's dead port — fine.)
   - Third test (UI-visible assertion): after "Create task", navigate to the chat (`/app/chat/<task_id>`), wait, and assert the profile chip shows `900ribu` — the chip renders `{{ effectiveProfile ?? 'Default' }}` (ChatView.vue:3300). Locate via `page.locator('button:has-text("900ribu")')` near the bottom bar, or open the picker and check `[data-testid="profile-picker-900ribu"]` has the ✓. Prefer: `page.get_by_test_id("profile-picker-900ribu")` visible after clicking the chip button.
-- [ ] Run: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 PYTHONPATH=tests/functional:tests/functional_ui python3 -m pytest tests/functional_ui/kanban_profile_select_ui_test.py -v` (needs `playwright install chromium` once).
+- [ ] Run: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 PYTHONPATH=tests/functional:tests/functional_ui python3 -m pytest tests/functional_ui/kanban_profile_select_ui_test.py -v` (needs `playwright install chromium` once).
 - [ ] Commit: `git commit -am "test(functional-ui): Playwright coverage — dialog profile pick survives create (unattended on)"`
 
 ## Task 5 — Full verification + PR
@@ -153,8 +153,8 @@ test "kanban_tasks_create forwards unattended flag to useCase ONLY for mode=crea
 
 - [ ] Copy vendor dirs into worktree if not done: `mkdir -p src/modules/custom_http_client/vendor && cp -r ~/ginwaaitoolbox/src/modules/custom_http_client/vendor/{curl,openssl} src/modules/custom_http_client/vendor/` (adjust source path to main repo).
 - [ ] `zig build test --summary all` — no new failures vs baseline.
-- [ ] `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/kanban_create_session_user_message_test.py tests/functional/kanban_lifecycle_test.py -v` — pass.
-- [ ] Functional UI suite: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 PYTHONPATH=tests/functional:tests/functional_ui python3 -m pytest tests/functional_ui/kanban_profile_select_ui_test.py -v` — pass.
+- [ ] `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/kanban_create_session_user_message_test.py tests/functional/kanban_lifecycle_test.py -v` — pass.
+- [ ] Functional UI suite: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 PYTHONPATH=tests/functional:tests/functional_ui python3 -m pytest tests/functional_ui/kanban_profile_select_ui_test.py -v` — pass.
 - [ ] Frontend untouched — skip `bun run build` (no `.vue`/`.ts` changes).
 - [ ] Revert build noise if any: `git checkout -- src/apps/desktop_app/embedded/webapp_assets.zig` (only if modified).
 - [ ] Push + PR: `git push -u origin worktree/fix-kanban-profile-select && gh pr create --title "fix: kanban New Task dialog profile select lost (wrong profile select)" --body "..."`.

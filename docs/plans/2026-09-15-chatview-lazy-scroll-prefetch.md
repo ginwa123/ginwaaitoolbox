@@ -261,13 +261,13 @@ Assert:
 3. After the commit, the anchor element's offset is preserved (reuse the existing ±2 px style assertion).
 
 ### D. MANDATORY functional UI test — real backend + real Vite + real Chromium (post-implementation gate)
-`tests/functional_ui/chatview_lazy_prefetch_ui_test.py`, modeled on `chatview_sse_stick_ui_test.py` + `chatview_ui_test.py`. Harness verified present and tracked: `tests/functional_ui/{ui_harness.py,db_seed.py,conftest.py}`; the `ui_harness` fixture boots real `nalar` + real Vite in an isolated tmpdir HOME and reserves ports `(5173, 8081)` while the backend port comes from `[40000, 60000]` — **never 8081**.
+`tests/functional_ui/chatview_lazy_prefetch_ui_test.py`, modeled on `chatview_sse_stick_ui_test.py` + `chatview_ui_test.py`. Harness verified present and tracked: `tests/functional_ui/{ui_harness.py,db_seed.py,conftest.py}`; the `ui_harness` fixture boots real `pabrik` + real Vite in an isolated tmpdir HOME and reserves ports `(5173, 8081)` while the backend port comes from `[40000, 60000]` — **never 8081**.
 
 Setup:
 ```bash
 # binary must exist first (zig-out/bin/ is not in a fresh worktree)
 zig build
-NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \
+PABRIK_BIN=./zig-out/bin/pabrikcore-linux-x86_64 \
   python3 -m pytest tests/functional_ui/chatview_lazy_prefetch_ui_test.py -v
 ```
 - Seed one session with 250 alternating `seed_user_message`/`seed_assistant_message` rows via `DbSeed` so the initial page (100) has `has_more = true`; open the canonical URL `/app?view=chat&session=<id>` (`_open_chatview`) and wait for the newest seeded text.
@@ -377,7 +377,7 @@ the implementation as well as the plan).
    `.prettierrc.json` (`singleQuote: true`); it now passes `prettier --check`.
 
 ## Verification — actual numbers
-*(run in this worktree; `NALAR_BIN` pointed at the existing `nalarcore-linux-x86_64` because the backend is
+*(run in this worktree; `PABRIK_BIN` pointed at the existing `pabrikcore-linux-x86_64` because the backend is
 untouched by this task and a fresh worktree has no `zig-out/`)*
 
 | Gate | Command | Result |

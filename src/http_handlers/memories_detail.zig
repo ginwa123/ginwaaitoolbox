@@ -16,9 +16,9 @@
 //!   - `std.json.Stringify.valueAlloc` + `content` field substring checks
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const memories_mod = nalarcore.memories;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const memories_mod = pabrikcore.memories;
 const http_response = @import("http_response.zig");
 
 /// Response payload for `GET /api/memories/:name`.
@@ -87,7 +87,7 @@ fn useCase(
     io: std.Io,
     input: MemoryDetailInput,
 ) MemoryDetailError!MemoryDetailOutput {
-    const di = nalarcore.getSingleton() catch return error.ServerNotInitialized;
+    const di = pabrikcore.getSingleton() catch return error.ServerNotInitialized;
     const environment = di.environment orelse return error.MissingEnvironment;
 
     if (input.name.len == 0) return error.NameRequired;
@@ -243,7 +243,7 @@ pub fn memoryDetailHandler(
 // Why static checks (not behavioural tests)
 // ──────────────────────────────────────────
 // Standing up a full HTTP request/response against a real or in-memory
-// `GinwaServer` requires the `nalarcore` singleton, the Io runtime,
+// `GinwaServer` requires the `pabrikcore` singleton, the Io runtime,
 // the SQLite DB, and a real `*const std.process.Environ.Map`. That's
 // the same problem the existing `routines_run_test.zig` and
 // `task_create_routines_test.zig` solve with static substring

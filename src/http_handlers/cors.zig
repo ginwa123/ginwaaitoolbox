@@ -1,5 +1,5 @@
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
 
 /// Handle OPTIONS preflight requests for CORS
 pub fn corsPreflightHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {

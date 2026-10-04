@@ -19,8 +19,8 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 
 pub const TasksReorderPinnedError = error{
     ItemIdRequired,
@@ -56,8 +56,8 @@ fn useCase(
 ) TasksReorderPinnedError!TasksReorderPinnedResult {
     if (input.item_id.len == 0) return error.ItemIdRequired;
 
-    const di = nalarcore.getSingleton() catch return error.ReorderFailed;
-    nalarcore.ai_mod.workspace_item_tasks.reorderPinnedTasks(
+    const di = pabrikcore.getSingleton() catch return error.ReorderFailed;
+    pabrikcore.ai_mod.workspace_item_tasks.reorderPinnedTasks(
         allocator,
         di.db,
         input.item_id,

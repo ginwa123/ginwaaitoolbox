@@ -2,7 +2,7 @@
 
 Reproduces the user-reported bug "when i click code editor there is no
 code" (kanban task_1790594549955_1) against the REAL production bundle,
-a real nalar backend (isolated tmpdir HOME, random ports — never :8081)
+a real pabrik backend (isolated tmpdir HOME, random ports — never :8081)
 and a real headless Chromium.
 
 WHY PRODUCTION AND NOT THE VITE DEV SERVER
@@ -38,8 +38,8 @@ Covered scenarios:
      row so the diff-review "open at this line" jump lands visibly.
 
 Run:
-    NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \\
-      /tmp/nalar-ui-venv/bin/python -m pytest \\
+    PABRIK_BIN=./zig-out/bin/pabrikcore-linux-x86_64 \\
+      /tmp/pabrik-ui-venv/bin/python -m pytest \\
       tests/functional_ui/code_editor_viewer_ui_test.py -v -s
 """
 
@@ -94,7 +94,7 @@ def _frontend_root() -> Path:
 
 
 @pytest.fixture(scope="session")
-def frontend_dist(default_nalar_bin: Path) -> Path:  # noqa: ARG001 — skip if no binary
+def frontend_dist(default_pabrik_bin: Path) -> Path:  # noqa: ARG001 — skip if no binary
     """Build the production frontend bundle once for the whole session.
 
     rolldown + vite 8 build this app in ~2s, so paying it once per
@@ -131,16 +131,16 @@ def frontend_dist(default_nalar_bin: Path) -> Path:  # noqa: ARG001 — skip if 
 
 @pytest.fixture
 def prod_harness(
-    default_nalar_bin: Path, frontend_dist: Path
+    default_pabrik_bin: Path, frontend_dist: Path
 ) -> Iterator[FunctionalHarness]:
-    """nalar backend serving the BUILT frontend at ``/`` (same origin as /api).
+    """pabrik backend serving the BUILT frontend at ``/`` (same origin as /api).
 
     ``--static-dir`` is the backend's own static handler (with an SPA
     fallback for /app paths), so the production bundle and the API share
     one origin — exactly how it is deployed.
     """
     h = FunctionalHarness.boot(
-        default_nalar_bin,
+        default_pabrik_bin,
         extra_args=("--static-dir", str(frontend_dist)),
     )
     try:

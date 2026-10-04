@@ -1,7 +1,7 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 
 pub const MAX_SIBLING_ITEMS: u32 = 20;
 pub const MAX_TASKS_PER_ITEM: u32 = 5;

@@ -2,7 +2,7 @@
 <!--
   Debug-only manifest overlay.
 
-  The functional UI suite points a debug APK at a nalar running on the machine
+  The functional UI suite points a debug APK at a pabrik running on the machine
   that hosts the emulator, and that request is plain HTTP. The main manifest sets
   `android:usesCleartextTraffic="false"`, which on API 28+ is enforced by the
   platform — the socket is refused before any application code runs, so no amount

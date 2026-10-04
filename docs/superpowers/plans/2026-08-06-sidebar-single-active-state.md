@@ -15,7 +15,7 @@
 - **CRITICAL**: never kill port 8081 — use 8080 for local smoke (N/A here, frontend only).
 - **CRITICAL**: every change must work on Linux + macOS + Windows. Frontend-only so this is automatic.
 - **CRITICAL**: NO static-contract tests (user rule 2026-07-29). All new tests are behavioural.
-- **CRITICAL**: do not touch `.nalar/agents/<name>/NALAR.md`. Only root `nalar-frontend-patterns` / project memory files.
+- **CRITICAL**: do not touch `.pabrik/agents/<name>/PABRIK.md`. Only root `pabrik-frontend-patterns` / project memory files.
 - File paths: `src/apps/desktop/src/composables/useCurrentMainView.ts` (new); `src/apps/desktop/src/components/{shell,workspace,views}/*.vue` (modified); `src/apps/desktop/src/__tests__/*` (new + updated).
 - Pre-commit: `cd src/apps/desktop && bun run build && bunx vitest run`.
 

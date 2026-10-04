@@ -1,14 +1,14 @@
 """The project hook runs zig fmt on edited Zig files.
 
-The hook itself (.nalar/hooks/register_hook.lua) is the deliverable, and it
-runs INSIDE nalar's vendored Lua interpreter, on every tool dispatch. There
+The hook itself (.pabrik/hooks/register_hook.lua) is the deliverable, and it
+runs INSIDE pabrik's vendored Lua interpreter, on every tool dispatch. There
 is no way to reach it over HTTP without driving a whole LLM agent loop, so
 these tests execute the real hook file through a Lua interpreter and assert
 on what it did to the file on disk.
 
 Vendored Lua is 5.4.9 (vendor/lua/lua.h: LUA_VERSION_RELEASE 9) and the
 system lua5.4 here is also 5.4.9, so running the shipped file under the
-system interpreter exercises the same semantics nalar gets. The test skips
+system interpreter exercises the same semantics pabrik gets. The test skips
 when no system Lua is present rather than silently passing.
 
 Behaviour under test: a .zig file edited by the agent comes out canonically
@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-HOOK = REPO_ROOT / ".nalar" / "hooks" / "register_hook.lua"
+HOOK = REPO_ROOT / ".pabrik" / "hooks" / "register_hook.lua"
 
 
 def _lua() -> str | None:
@@ -102,7 +102,7 @@ def workdir(tmp_path: Path) -> Path:
 
 
 def test_hook_file_is_valid_lua(lua: str) -> None:
-    """The shipped hook must parse under the same Lua nalar embeds."""
+    """The shipped hook must parse under the same Lua pabrik embeds."""
     assert HOOK.exists(), f"project hook missing: {HOOK}"
     r = subprocess.run(
         [lua, "-e", f"assert(loadfile({str(HOOK)!r}))"],

@@ -88,7 +88,7 @@ Stale-by-one-turn note: assistant/placeholder `llm_full` (handle_tool `:459,:564
   2. REST: `GET /api/llm/session/{sid}/messages?limit=10` → assert `body["skills"][0]["skill_name"]=="..."`.
   3. SSE: open `/api/events?channels=llm`, trigger one agent turn (or re-emit), drain until `llm_full` with `session_id==sid`, assert `data["session_skills"][0]["skill_name"]=="..."`.
   4. Assert key-name contract explicitly: REST key `skills`, SSE key `session_skills` (locks the mismatch so future renames fail loudly).
-- [ ] Run `timeout 180 NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/session_skills_live_test.py -v 2>&1 | tail -n 20` — green (rebuild binary via `install:linux` first if stale; `nalar-desktop` step does NOT rebuild core).
+- [ ] Run `timeout 180 PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/session_skills_live_test.py -v 2>&1 | tail -n 20` — green (rebuild binary via `install:linux` first if stale; `pabrik-desktop` step does NOT rebuild core).
 - [ ] Commit: `test(functional): session skills REST+SSE wire`.
 
 ## Task 6: Docs + verification sweep
@@ -109,6 +109,6 @@ Stale-by-one-turn note: assistant/placeholder `llm_full` (handle_tool `:459,:564
 
 - [ ] `zig build test --summary all` green (new SSE skills lock test passes).
 - [ ] `pnpm test:unit` green (new SseEvent + ChatView live specs pass).
-- [ ] `NALAR_BIN=... python3 -m pytest tests/functional/session_skills_live_test.py -v` green (REST `skills` + SSE `session_skills` agree).
+- [ ] `PABRIK_BIN=... python3 -m pytest tests/functional/session_skills_live_test.py -v` green (REST `skills` + SSE `session_skills` agree).
 - [ ] Manual: equip skill mid-run → 🧠 badge count increments without refresh; `SkillsPopup` lists new skill; zero-skill sessions show no badge (unchanged).
 - [ ] Grep `session_skills` appears in: both backend emitters, `SseEvent` in `api/index.ts`, ChatView handler. `additionalEventTypes` unchanged (no new event name).

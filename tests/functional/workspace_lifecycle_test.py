@@ -1,7 +1,7 @@
 """Functional tests for workspace lifecycle.
 
 Exercises the full HTTP surface for workspace CRUD, item creation,
-reorder, and cascade-delete. Boots a real nalar binary against an
+reorder, and cascade-delete. Boots a real pabrik binary against an
 isolated tmpdir HOME; each test gets a fresh binary, a fresh
 workspace, and a fresh set of items. The point of these tests is to
 exercise non-trivial data shapes — 7 items per workspace, 3

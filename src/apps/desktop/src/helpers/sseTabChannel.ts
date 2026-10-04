@@ -92,7 +92,7 @@ type Msg =
   | { k: 'reconnect'; tabId: string }
 
 const DEFAULTS = {
-  channelName: 'nalar-sse-bus',
+  channelName: 'pabrik-sse-bus',
   heartbeatMs: 1000,
   leaderTimeoutMs: 3000,
   electionJitterMs: 250,

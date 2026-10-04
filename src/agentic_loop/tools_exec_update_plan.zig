@@ -16,16 +16,16 @@
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const migration = @import("../migrations/migration.zig");
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const session_plan = @import("session_plan.zig");
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const update_plan_mod = nalarcore.update_plan;
+const agent = pabrikcore.agent;
+const update_plan_mod = pabrikcore.update_plan;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execUpdatePlan(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

@@ -38,7 +38,7 @@ const emit = defineEmits<{
 
 const panelRef = ref<InstanceType<typeof SidebarDiffPanel> | null>(null)
 
-const STORAGE_KEY_PANEL = 'nalar-right-sidebar-panel'
+const STORAGE_KEY_PANEL = 'pabrik-right-sidebar-panel'
 
 type SidebarPanel = 'explorer' | 'changes' | 'terminal'
 

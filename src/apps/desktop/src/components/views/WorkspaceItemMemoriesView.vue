@@ -19,7 +19,7 @@ const isCreating = ref(false)
 
 const hasCwd = computed(() => !!props.cwd && props.cwd.length > 0)
 const headerPath = computed(() =>
-  hasCwd.value ? `${props.cwd}/.nalar/memories/` : '',
+  hasCwd.value ? `${props.cwd}/.pabrik/memories/` : '',
 )
 
 const loadList = async () => {

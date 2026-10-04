@@ -92,7 +92,7 @@ import PresentFiles from '../tool_outputs/PresentFiles.vue'
 import ReadWorkspaceSession from '../tool_outputs/ReadWorkspaceSession.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
 import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
-import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
+import SubAgentPeekHost from '../pabrik/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
 import ChatAppBar from './ChatAppBar.vue'
 import CenterDiffSection from './chat_right_sidebar/CenterDiffSection.vue'
@@ -144,7 +144,7 @@ const props = defineProps<{
    * edge-to-edge.
    *
    * Defaults to `false` so older call sites that don't supply it
-   * still compile — see the nalar-frontend-task-literal-typing-rule
+   * still compile — see the pabrik-frontend-task-literal-typing-rule
    * memory for the broader pattern.
    */
   showHeader?: boolean
@@ -1241,14 +1241,14 @@ const maxCapacityTotalTokens = ref(200000)
 // Per-session model selection. The chip in the status bar shows the EFFECTIVE
 // profile (per-session `selected_profile_model` → `config.active_profile` →
 // top-level default) and lets the user pick a profile from the list in
-// NalarConfig. Per-session selection is persisted via PUT
+// PabrikConfig. Per-session selection is persisted via PUT
 // /api/llm/session/:id and forwarded to the next LLM call via POST
 // /api/llm/session. The chip mirrors the backend cascade in
 // `workflow.zig::resolveProfileField` so the user sees the same name that's
 // actually applied.
 const availableProfiles = ref<Array<{ name: string; model: string; base_url: string }>>([])
 const selectedProfile = ref<string | null>(null)
-/// User-chosen default profile from NalarSettings → Profiles → "Set active".
+/// User-chosen default profile from PabrikSettings → Profiles → "Set active".
 /// `null` when no profile is marked active (or no profiles configured). The
 /// chatview shows this as the chip's effective selection when no per-session
 /// override is set. See plan docs/superpowers/plans/2026-08-06-chatview-profile-cascade-display.md.
@@ -1259,7 +1259,7 @@ const profilePickerRef = ref<HTMLElement | null>(null)
 
 const loadProfiles = async () => {
   try {
-    const config = await api.getNalarConfig()
+    const config = await api.getPabrikConfig()
     const profiles = (config.profiles ?? {}) as Record<
       string,
       { model?: string; base_url?: string }
@@ -1269,9 +1269,9 @@ const loadProfiles = async () => {
       model: p.model ?? '',
       base_url: p.base_url ?? '',
     }))
-    // `active_profile` is the user-chosen default from NalarSettings. Empty
+    // `active_profile` is the user-chosen default from PabrikSettings. Empty
     // string → null (matches the backend's PUT coercion in
-    // `nalar_config_put.zig`).
+    // `pabrik_config_put.zig`).
     const raw = (config as { active_profile?: string | null }).active_profile
     activeProfile.value = raw && raw.length > 0 ? raw : null
   } catch (err) {
@@ -1284,7 +1284,7 @@ const loadProfiles = async () => {
 /// Effective profile the chip / picker reflect — mirrors the backend cascade
 /// in `workflow.zig::resolveProfileField`. `selectedProfile` wins; if the
 /// user has not picked one for this session, `activeProfile` (the
-/// NalarSettings "Set active" default) applies; otherwise the chip shows
+/// PabrikSettings "Set active" default) applies; otherwise the chip shows
 /// "Default" and the backend uses the top-level config.
 ///
 /// NOTE: we use `||` (not `??`) so an empty string from the session's

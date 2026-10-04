@@ -2,7 +2,7 @@
 
 Date: 2026-09-19
 Task: `text replace output code coloring` (task_1789844988331_2)
-Worktree: `/home/ginwa/.config/nalar/.worktrees/text-replace-output-code-coloring-1789844985140`
+Worktree: `/home/ginwa/.config/pabrik/.worktrees/text-replace-output-code-coloring-1789844985140`
 Status: planning — for human review before any implementation
 
 ## 1. Problem

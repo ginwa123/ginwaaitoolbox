@@ -25,11 +25,11 @@ This file's job is the END-TO-END wire-level demonstration:
           style respawn at the binary level by killing+respawning
           via subprocess).
 
-This module deliberately does NOT boot nalar. Launching the full
+This module deliberately does NOT boot pabrik. Launching the full
 backend to test a 30s timeout would make the suite 30s slower per
 test; the workflow integration is covered by the Zig unit tests
 (they're faster) and by the manual smoke test the user can run with
-`zig build nalar-desktop && ./zig-out/bin/nalar --port 8080` against
+`zig build pabrik-desktop && ./zig-out/bin/pabrik --port 8080` against
 a hung-server.sh config.
 
 Run:
@@ -152,7 +152,7 @@ def test_hung_child_can_be_replaced_by_fresh_process() -> None:
     the process level: a registered name in the registry can be
     replaced by a fresh child after the hung one is killed.
 
-    Why this is a contract test, not a nalar test: the
+    Why this is a contract test, not a pabrik test: the
     StdioRegistry's `dirty → drop → respawn` is just bookkeeping
     over `std.process.spawn`. The Zig unit test 23 `markStale forces
     respawn on next getOrSpawn` covers the bookkeeping; this test

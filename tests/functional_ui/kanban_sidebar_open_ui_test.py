@@ -18,7 +18,7 @@ and its follow-ups:
    ``/chat/<taskId>`` suffix onto the new item).
 
 Run:
-    NALAR_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/nalar \
+    PABRIK_BIN=/home/ginwa/ginwaaitoolbox/zig-out/bin/pabrik \
       /home/ginwa/ginwaaitoolbox/.venv-func/bin/python -m pytest \
       tests/functional_ui/kanban_sidebar_open_ui_test.py -v -s
 """
@@ -170,7 +170,7 @@ def test_sidebar_rightclick_agent_go_to_settings_opens_item_settings(
     # a fresh browser tab whose URL and localStorage point at different
     # workspaces without reloading the source page.
     page.evaluate(
-        "workspaceId => localStorage.setItem('nalar-active-workspace', workspaceId)",
+        "workspaceId => localStorage.setItem('pabrik-active-workspace', workspaceId)",
         persisted_ws_id,
     )
     page.locator("text=UISETTINGS_AGENT").first.click(button="right")
@@ -194,7 +194,7 @@ def test_sidebar_rightclick_agent_go_to_settings_opens_item_settings(
         assert page.url == original_url, (
             f"Current tab navigated while opening agent settings: {original_url} -> {page.url}"
         )
-        assert local_storage_value(popup, "nalar-active-workspace") == target_ws_id, (
+        assert local_storage_value(popup, "pabrik-active-workspace") == target_ws_id, (
             "Agent settings popup did not select the workspace encoded in its URL"
         )
     finally:

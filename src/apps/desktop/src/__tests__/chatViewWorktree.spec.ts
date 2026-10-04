@@ -24,7 +24,7 @@
  *
  * Mounting ChatView is heavier than the standalone components: it
  * subscribes to the sseBus for `llm` + `queue` events, polls git
- * status, calls `getChatHistory`, `getQueuedMessages`, `getNalarConfig`,
+ * status, calls `getChatHistory`, `getQueuedMessages`, `getPabrikConfig`,
  * and sets up a spacer MutationObserver. All of those are stubbed —
  * the bus is installed once in `beforeEach` with a stub global
  * SseClient. Tests drive `llm` and `queue` events via
@@ -150,8 +150,8 @@ function installChatViewMocks(opts: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // loadProfiles() is called outside onMounted; the response shape
-  // matches the real `/api/config/nalar` payload.
-  vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
+  // matches the real `/api/config/pabrik` payload.
+  vi.spyOn(api, 'getPabrikConfig').mockResolvedValue({
     profiles: {},
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)

@@ -1,8 +1,8 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
+const root_mod = @import("pabrikcore");
 const gserverz = root_mod.gserverz;
-const nalarcore = root_mod;
-const ai_workflow = nalarcore.ai_workflow;
+const pabrikcore = root_mod;
+const ai_workflow = pabrikcore.ai_workflow;
 const auth_common = @import("auth_common.zig");
 
 pub const WorkspaceDeleteError = error{
@@ -17,7 +17,7 @@ pub const WorkspaceDeleteError = error{
 /// DELETE /api/workspaces/:id
 pub fn workspaceDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const id = req.params.get("id") orelse "";
@@ -47,7 +47,7 @@ const WorkspaceDeleteResult = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    sqlite_db: *nalarcore.sqlite.SqliteBackend,
+    sqlite_db: *pabrikcore.sqlite.SqliteBackend,
     id: []const u8,
     auth_enabled: bool,
     headers: anytype,
@@ -129,7 +129,7 @@ fn useCase(
 // that gap — it forces compilation AND covers the new behaviour.
 
 const testing = std.testing;
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 
 const DeleteCtx = struct {
     db: sqlite.SqliteBackend,

@@ -1,7 +1,7 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const testing = std.testing;
 
 pub fn isSessionKanban(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !bool {

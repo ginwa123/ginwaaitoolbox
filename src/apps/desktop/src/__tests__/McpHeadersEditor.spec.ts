@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import McpHeadersEditor from '../components/nalar/McpHeadersEditor.vue'
+import McpHeadersEditor from '../components/pabrik/McpHeadersEditor.vue'
 
 describe('McpHeadersEditor', () => {
   it('renders a row per header', () => {

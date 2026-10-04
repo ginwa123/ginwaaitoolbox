@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** When the functional-test harness Python process is killed unexpectedly (Ctrl+C, `kill -9`, OOM, terminal close), the nalar child it spawned survives in its own process group and continues to hold its TCP port. After enough such incidents, the 120-port scan window 8080..8199 (excluding 8081) is exhausted and every subsequent test errors at boot with `No free port found in 8080..8199 (excluding 8081)`. Add an orphan-reap step that runs at the top of every harness boot so prior aborted runs are cleaned up automatically.
+**Goal:** When the functional-test harness Python process is killed unexpectedly (Ctrl+C, `kill -9`, OOM, terminal close), the pabrik child it spawned survives in its own process group and continues to hold its TCP port. After enough such incidents, the 120-port scan window 8080..8199 (excluding 8081) is exhausted and every subsequent test errors at boot with `No free port found in 8080..8199 (excluding 8081)`. Add an orphan-reap step that runs at the top of every harness boot so prior aborted runs are cleaned up automatically.
 
-**Architecture:** Per-tempdir pidfile at `<tempdir>/.harness.pid` containing two whitespace-separated PIDs: the harness's own (worker) Python PID and the nalar child PID. On `boot()`, scan every `nalar-func-*/.harness.pid` file under `tempfile.gettempdir()`. For each entry, if the harness PID is no longer alive (the test was aborted mid-run) AND the nalar child PID is still alive, send SIGTERM to the nalar PID, wait briefly, fall back to SIGKILL, then `rmtree` the orphaned tempdir. On `teardown()`, remove the pidfile before `rmtree` so the next boot doesn't see a false positive.
+**Architecture:** Per-tempdir pidfile at `<tempdir>/.harness.pid` containing two whitespace-separated PIDs: the harness's own (worker) Python PID and the pabrik child PID. On `boot()`, scan every `pabrik-func-*/.harness.pid` file under `tempfile.gettempdir()`. For each entry, if the harness PID is no longer alive (the test was aborted mid-run) AND the pabrik child PID is still alive, send SIGTERM to the pabrik PID, wait briefly, fall back to SIGKILL, then `rmtree` the orphaned tempdir. On `teardown()`, remove the pidfile before `rmtree` so the next boot doesn't see a false positive.
 
 **Tech Stack:** Python 3 stdlib only (`os`, `signal`, `pathlib`, `shutil`, `subprocess`). No new dependencies.
 
@@ -24,11 +24,11 @@
 
 ## Task 1: Write the reap helper (test-first)
 
-### Step 1.1 — Add the failing test for reap kills an orphan nalar pid
+### Step 1.1 — Add the failing test for reap kills an orphan pabrik pid
 
 In `tests/functional/harness_orphan_reap_test.py`, write a test that:
-1. Creates a fake tempdir under `tempfile.gettempdir()` named `nalar-func-fakeorphanXXX` (with the required `nalar-func-` substring so `is_safe_tmp` accepts it).
-2. Spawns a long-lived child process (`subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])` with `start_new_session=True` so it has its own pgid, mimicking the nalar spawn pattern).
+1. Creates a fake tempdir under `tempfile.gettempdir()` named `pabrik-func-fakeorphanXXX` (with the required `pabrik-func-` substring so `is_safe_tmp` accepts it).
+2. Spawns a long-lived child process (`subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])` with `start_new_session=True` so it has its own pgid, mimicking the pabrik spawn pattern).
 3. Writes `<some_other_pid> <child.pid>\n` to `<tempdir>/.harness.pid` where `<some_other_pid>` is a PID that's definitely dead (e.g., pick a random high int that's never been assigned — or use a pid we just `os.kill()`'d and waited for).
 4. Calls `_reap_orphan_test_pids()`.
 5. Asserts: child.pid is no longer alive (`os.kill(child.pid, 0)` raises `ProcessLookupError`). Asserts the tempdir is gone.
@@ -49,13 +49,13 @@ Add to `harness.py`:
 
 ```python
 def _reap_orphan_test_pids() -> int:
-    """Kill orphaned nalar children from prior aborted runs. Idempotent.
+    """Kill orphaned pabrik children from prior aborted runs. Idempotent.
 
-    On every harness boot, scan <tempdir>/nalar-func-*/.harness.pid. Each
-    pidfile contains "<harness_worker_pid> <nalar_child_pid>\n" — written
+    On every harness boot, scan <tempdir>/pabrik-func-*/.harness.pid. Each
+    pidfile contains "<harness_worker_pid> <pabrik_child_pid>\n" — written
     by boot(). If the harness python parent died (kill -0 returns ESRCH),
-    the tempdir is an orphan: the nalar child survived in its own pgid
-    and is still holding its TCP port. Kill the nalar child, then
+    the tempdir is an orphan: the pabrik child survived in its own pgid
+    and is still holding its TCP port. Kill the pabrik child, then
     rmtree the tempdir.
 
     Returns the number of orphans reaped. Failures are logged to stderr
@@ -71,7 +71,7 @@ def _reap_orphan_test_pids() -> int:
         print(f"warning: orphan reap scan failed: {e}", file=sys.stderr)
         return 0
     for entry in candidates:
-        if not entry.is_dir() or not entry.name.startswith("nalar-func-"):
+        if not entry.is_dir() or not entry.name.startswith("pabrik-func-"):
             continue
         pidfile = entry / ".harness.pid"
         if not pidfile.is_file():
@@ -81,7 +81,7 @@ def _reap_orphan_test_pids() -> int:
             if len(content) != 2:
                 continue  # malformed; leave alone
             harness_pid = int(content[0])
-            nalar_pid = int(content[1])
+            pabrik_pid = int(content[1])
         except (OSError, ValueError):
             continue
         # If the harness python is alive, the test is still in progress — skip.
@@ -91,16 +91,16 @@ def _reap_orphan_test_pids() -> int:
             pass  # harness is dead — this dir is an orphan
         else:
             continue  # harness alive — skip
-        # Harness is dead. Kill the nalar child if alive.
-        if nalar_pid and nalar_pid != os.getpid():
+        # Harness is dead. Kill the pabrik child if alive.
+        if pabrik_pid and pabrik_pid != os.getpid():
             try:
-                os.kill(nalar_pid, signal.SIGTERM)
+                os.kill(pabrik_pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 pass
             # Wait up to 1s for graceful exit; SIGKILL fallback.
-            if not _wait_pid_dead(nalar_pid, 1.0):
+            if not _wait_pid_dead(pabrik_pid, 1.0):
                 try:
-                    os.kill(nalar_pid, signal.SIGKILL)
+                    os.kill(pabrik_pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
         # rmtree via the safety validator (same gate as teardown).
@@ -142,16 +142,16 @@ Expected: PASS.
 
 ```bash
 git add tests/functional/harness.py tests/functional/harness_orphan_reap_test.py
-git commit -m "feat(tests): reap orphaned nalar pids from prior aborted runs
+git commit -m "feat(tests): reap orphaned pabrik pids from prior aborted runs
 
-When the harness python is killed (Ctrl+C, kill -9, OOM), the nalar
+When the harness python is killed (Ctrl+C, kill -9, OOM), the pabrik
 child survives in its own process group and continues holding its TCP
 port. After ~120 such incidents the harness's 8080..8199 scan window
 is exhausted and every subsequent test errors at boot with 'No free
 port found in 8080..8199 (excluding 8081)'.
 
 Write a per-tempdir pidfile at boot() and scan them at the top of the
-NEXT boot() — kill any nalar whose harness parent is dead, then rmtree
+NEXT boot() — kill any pabrik whose harness parent is dead, then rmtree
 the tempdir. Cross-platform via tempfile.gettempdir(). Idempotent (safe
 under xdist). Failures are non-fatal."
 ```
@@ -163,7 +163,7 @@ under xdist). Failures are non-fatal."
 In the same test file, add a test that calls `FunctionalHarness.boot()` directly, then asserts:
 1. `<h.temp_dir>/.harness.pid` exists.
 2. The file contains two whitespace-separated integers.
-3. The second integer equals `h.pid` (the nalar child PID).
+3. The second integer equals `h.pid` (the pabrik child PID).
 4. After `h.teardown()`, the pidfile is gone (because rmtree'd).
 
 ### Step 2.2 — Run the test, confirm it fails
@@ -209,7 +209,7 @@ git add tests/functional/harness.py tests/functional/harness_orphan_reap_test.py
 git commit -m "feat(tests): wire orphan-reap into boot()/teardown()
 
 boot() now calls _reap_orphan_test_pids() before picking a port, and
-writes <harness_pid> <nalar_pid> to <tempdir>/.harness.pid after spawn.
+writes <harness_pid> <pabrik_pid> to <tempdir>/.harness.pid after spawn.
 teardown() removes the pidfile (defensive — rmtree would also remove it)
 so the next boot sees a clean slate even when dry_run skips rmtree."
 ```
@@ -222,7 +222,7 @@ In the test file, add:
 - `test_reap_idempotent_when_no_orphans` — call reap twice; second call sees zero candidates; no exceptions.
 - `test_reap_skips_live_harness` — write a pidfile with the CURRENT harness's PID (so reap sees it as alive), call reap, assert the tempdir is still there.
 - `test_reap_skips_malformed_pidfile` — write `garbage\n` to the pidfile, call reap, assert tempdir is still there.
-- `test_reap_skips_non_nalar_tempdir` — create `/tmp/not-a-harness-dir` with a pidfile inside; assert reap doesn't touch it (because `is_safe_tmp` rejects it — no `nalar-func-` prefix, well it DOES have `nalar-func-` since the name check uses `entry.name.startswith("nalar-func-")` but `is_safe_tmp` also checks ALLOWED_TMP_PREFIXES and REQUIRED_TMP_SUBSTR — both pass for a fake tempdir under tempfile.gettempdir()). Skip this test if hard to construct — the safety invariant is already covered by `harness_safety_test.py`.
+- `test_reap_skips_non_pabrik_tempdir` — create `/tmp/not-a-harness-dir` with a pidfile inside; assert reap doesn't touch it (because `is_safe_tmp` rejects it — no `pabrik-func-` prefix, well it DOES have `pabrik-func-` since the name check uses `entry.name.startswith("pabrik-func-")` but `is_safe_tmp` also checks ALLOWED_TMP_PREFIXES and REQUIRED_TMP_SUBSTR — both pass for a fake tempdir under tempfile.gettempdir()). Skip this test if hard to construct — the safety invariant is already covered by `harness_safety_test.py`.
 
 ### Step 3.2 — Run, confirm pass
 
@@ -239,7 +239,7 @@ git commit -m "test(tests): cover reap idempotency + malformed-pidfile paths"
 
 ```bash
 cd /home/ginwa/ginwaaitoolbox/.worktrees/fix-functional-test-port-leak
-NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/ -v --tb=short 2>&1 | tail -n 80
+PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/ -v --tb=short 2>&1 | tail -n 80
 ```
 
 Expected: all 64 tests still pass; no port-exhaustion regressions. Each test should still take ~0.2s for teardown (PR #252 baseline).
@@ -255,16 +255,16 @@ Expected: all tests pass on every worker.
 ### Step 4.3 — Simulate the leak scenario manually
 
 ```bash
-# Spawn a fake harness python holding a real nalar in a tempdir.
-TEMP=$(mktemp -d /tmp/nalar-func-manualXXX)
-PID=$(pgrep -f 'nalarcore-linux-x86_64' | head -1)
+# Spawn a fake harness python holding a real pabrik in a tempdir.
+TEMP=$(mktemp -d /tmp/pabrik-func-manualXXX)
+PID=$(pgrep -f 'pabrikcore-linux-x86_64' | head -1)
 echo "0 $PID" > "$TEMP/.harness.pid"
 # Now run a harness boot — it should reap $PID.
 python3 -c "import sys; sys.path.insert(0, 'tests/functional'); from harness import FunctionalHarness; print('reaped =', __import__('harness')._reap_orphan_test_pids())"
 ls "$TEMP" 2>&1  # should be "No such file or directory"
 ```
 
-Expected: tempdir is gone, nalar PID is killed.
+Expected: tempdir is gone, pabrik PID is killed.
 
 ### Step 4.4 — Commit any test infrastructure tweaks
 
@@ -285,7 +285,7 @@ Skip if none.
 
 ## Pitfalls
 
-- **Don't conflate `os.getpid()` with the nalar child PID.** The harness python and the nalar binary are SEPARATE processes. The pidfile tracks both so reap can tell the difference between "test still running" (harness alive) and "test was killed" (harness dead).
+- **Don't conflate `os.getpid()` with the pabrik child PID.** The harness python and the pabrik binary are SEPARATE processes. The pidfile tracks both so reap can tell the difference between "test still running" (harness alive) and "test was killed" (harness dead).
 - **Don't use a global registry file.** Multiple xdist workers would race on file writes. Per-tempdir pidfile is naturally race-free because each test owns its own dir.
 - **Don't skip the `is_safe_tmp()` gate** even for orphan reaping. The orphan tempdirs are by definition "not in our control" (they were left behind by some other process), so the safety net matters MORE, not less.
 - **Don't trust the pidfile without verification.** A PID that was dead a moment ago could have been recycled by the OS. The cmdline check (`/proc/<pid>/cmdline`) defends against this but adds Linux-specific code. For v1, skip the cmdline check — the reap window is small and the worst case is "we kill an unrelated process" which is rare and noisy (visible in ps).

@@ -1,7 +1,7 @@
 # Functional UI tests — native Android
 
 Real-data, isolated-in-`/tmp`, end-to-end coverage for the **Android client**.
-Boots a real `nalar` binary against an isolated tmpdir `HOME`, seeds real
+Boots a real `pabrik` binary against an isolated tmpdir `HOME`, seeds real
 `llm_history` rows into that instance's own `agent.db`, builds the debug APK
 against it, and drives the real `MainActivity` on a real emulator.
 
@@ -45,7 +45,7 @@ closing: find the node carrying the click action.
 ## Isolation
 
 Inherited whole from `tests/functional/harness.py`: `HOME` is shadowed to a
-`nalar-func-*` tmpdir before the binary starts, every delete goes through
+`pabrik-func-*` tmpdir before the binary starts, every delete goes through
 `is_safe_tmp` (the single source of truth), and teardown rmtree's only
 `harness.temp_dir`. The developer's real `$HOME` is never read or written.
 
@@ -57,7 +57,7 @@ Two dimensions are new here:
    one that matters: the nav graph resumes it on launch, so a leftover one lands
    a test somewhere other than the deep link it asked for.
 2. **The app's host is a build-time value** — the APK is built with
-   `-PnalarBaseUrl=http://10.0.2.2:<port>`, and `ALLOW_INSECURE_HTTP` (false in
+   `-PpabrikBaseUrl=http://10.0.2.2:<port>`, and `ALLOW_INSECURE_HTTP` (false in
    release) is what lets the debug variant speak plain HTTP to it.
 
 ## Running
@@ -77,7 +77,7 @@ zig build install:linux
 export JAVA_HOME=/path/to/jdk17          # AGP 8.7.3 rejects a newer JDK
 export ANDROID_HOME=$HOME/Android/Sdk
 export ANDROID_SERIAL=emulator-5554      # tells Gradle which device
-export NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64
+export PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64
 export PYTHONPATH=tests/functional:tests/functional_ui:tests/functional_android
 
 .venv-func/bin/python -m pytest tests/functional_android/ -q -rs

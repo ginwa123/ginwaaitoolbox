@@ -4,9 +4,9 @@
 //! handler that maps the outcome + errors to status codes / JSON.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const session_helpers = nalarcore.session_helpers;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const session_helpers = pabrikcore.session_helpers;
 
 pub const SessionLatestError = error{
     MissingCwd,
@@ -32,7 +32,7 @@ pub const SessionLatestData = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     cwd: []const u8,
 ) SessionLatestError!SessionLatestResult {
     // Local arena isolates allocations to this use-case so the
@@ -76,14 +76,14 @@ pub fn sessionLatestHandler(
     const cwd = req.query.get("cwd") orelse {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = try nalarcore.http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing cwd parameter" }),
+            .data = try pabrikcore.http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing cwd parameter" }),
         });
     };
 
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
-            .data = try nalarcore.http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }),
+            .data = try pabrikcore.http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }),
         });
     };
     const sqlite_db = di.db;
@@ -101,7 +101,7 @@ pub fn sessionLatestHandler(
         };
         return res.jsonResponse(.{
             .status_code = status,
-            .data = try nalarcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+            .data = try pabrikcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
 

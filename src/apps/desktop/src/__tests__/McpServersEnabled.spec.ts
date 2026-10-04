@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseMcpServers, serializeMcpServers } from '../components/nalar/mcpServers'
+import { parseMcpServers, serializeMcpServers } from '../components/pabrik/mcpServers'
 
 describe('MCP server enabled toggle — parse/serialize', () => {
   it('parse hydrates enabled:false on http entries', () => {

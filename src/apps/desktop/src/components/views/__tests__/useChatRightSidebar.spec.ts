@@ -58,7 +58,7 @@ describe('useChatRightSidebar', () => {
     const { wrapper, exposed } = mountComposable('task')
     exposed.toggle()
     expect(exposed.isOpen.value).toBe(true)
-    expect(localStorage.getItem('nalar-chat-right-sidebar-open:task')).toBe('true')
+    expect(localStorage.getItem('pabrik-chat-right-sidebar-open:task')).toBe('true')
     exposed.toggle()
     expect(exposed.isOpen.value).toBe(false)
     wrapper.unmount()
@@ -72,7 +72,7 @@ describe('useChatRightSidebar', () => {
     expect(exposed.width.value).toBe(600)
     exposed.setWidth(360)
     expect(exposed.width.value).toBe(360)
-    expect(localStorage.getItem('nalar-right-sidebar-width')).toBe('360')
+    expect(localStorage.getItem('pabrik-right-sidebar-width')).toBe('360')
     wrapper.unmount()
   })
 

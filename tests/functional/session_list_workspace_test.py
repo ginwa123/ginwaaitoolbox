@@ -27,7 +27,7 @@ Zig-side coverage lives in `src/http_handlers/session_list.zig`,
 `src/agentic_loop/llm_history.zig` (count-query contract).
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/session_list_workspace_test.py -v
 """
 

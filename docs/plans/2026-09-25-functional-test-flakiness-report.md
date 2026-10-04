@@ -1,6 +1,6 @@
 # Are `zig build functional-test` / `functional-test-ui` flaky?
 
-**Task:** `task_1790361290183_5` · **Date:** 2026-09-25 · **Binary:** `zig-out/bin/nalar` @ `main`
+**Task:** `task_1790361290183_5` · **Date:** 2026-09-25 · **Binary:** `zig-out/bin/pabrik` @ `main`
 **Method:** CI job history (31 runs) + 3× local full runs of both suites (junit-xml) + targeted repro probes.
 
 ---
@@ -61,7 +61,7 @@ Local run 1 reproduced CI **exactly**: `9 failed, 565 passed, 1 error in 592.66s
 `http2_tls_test.py` — all 4 TLS tests fail identically:
 
 ```
-Failed: nalar did not become ready in 45.0s in TLS mode
+Failed: pabrik did not become ready in 45.0s in TLS mode
         (last probe: curl rc=35 code='000' err='curl: (35) Send failure: Broken pipe')
 ```
 
@@ -91,7 +91,7 @@ notBefore=Sep 25 18:57:30 2026 GMT   notAfter=Sep 25 18:57:30 2027 GMT
 X509v3 Subject Alternative Name: DNS:localhost, IP Address:127.0.0.1
 ```
 
-nalar logs `TLS enabled (ALPN: h2, http/1.1) cert=...` then `Agent is ready to serve!` and stays
+pabrik logs `TLS enabled (ALPN: h2, http/1.1) cert=...` then `Agent is ready to serve!` and stays
 alive — but **the TLS handshake completes and the server drops the socket without ever emitting an
 HTTP response.** That is a bug in the TLS request path, and it makes the whole `--tls` /
 `--tls-selfsigned` surface unusable. Contract lives in `docs/http2-tls.md`; the 4 tests are doing
@@ -134,7 +134,7 @@ Instrumented probe (`/tmp/probe_prurl2.py`) shows the UPDATE *does* land and a f
 *does* read it back, but the server still answers `null`:
 
 ```
-[TEST-2] port=46833 sid=sess_1790362354_f2c2b66ada1c261d2200 db=/tmp/nalar-func-f1o9iltl/...
+[TEST-2] port=46833 sid=sess_1790362354_f2c2b66ada1c261d2200 db=/tmp/pabrik-func-f1o9iltl/...
 [TEST-2] UPDATE rows_changed=1
 [TEST-2] fresh-conn readback:   [('https://github.com/acme/app/pull/42', 'github')]
 [TEST-2] HTTP pr_url=None pr_provider=None        <-- server disagrees with the file
@@ -162,19 +162,19 @@ error: BindFailed
   kabelweb/src/server/http_server.zig:292:25: in bindPort
   kabelweb/src/server/http_server.zig:220:9:  in init
   src/main.zig:367:21: in main
-→ harness.FunctionalHarnessError: nalar exited rc=-11 during boot
+→ harness.FunctionalHarnessError: pabrik exited rc=-11 during boot
 ```
 
-`rc = -11` is **SIGSEGV**. Reproduced 1/1 deterministically by pointing nalar at an occupied port:
+`rc = -11` is **SIGSEGV**. Reproduced 1/1 deterministically by pointing pabrik at an occupied port:
 
 ```python
 s.bind(('127.0.0.1', 45999)); s.listen(1)
-subprocess.run(['zig-out/bin/nalar', '--port', '45999'], …)
+subprocess.run(['zig-out/bin/pabrik', '--port', '45999'], …)
 # returncode: -11
 # error: BindFailed
 ```
 
-**Bug A (product, 1 line class):** a port that is already in use makes nalar **segfault** instead
+**Bug A (product, 1 line class):** a port that is already in use makes pabrik **segfault** instead
 of exiting with a clean `1` and a readable message. That is why a routine port collision shows up
 in CI as an apparent crash.
 
@@ -194,7 +194,7 @@ $ cat /proc/sys/net/ipv4/ip_local_port_range
 32768 60999
 ```
 
-Every outbound connection on the box (pnpm, vite, zig, git, the CI runner, nalar's own libcurl
+Every outbound connection on the box (pnpm, vite, zig, git, the CI runner, pabrik's own libcurl
 probes) draws its *source* port from the same pool the harness picks listeners from. Under load
 the window is stealable — which is exactly what happened.
 
@@ -359,9 +359,9 @@ Both are "the budget is a guess, the tolerance is tight" rather than "the code i
 ### Environment-coupled test (will fail on any dev box, not CI)
 
 `tests/functional/sessions_and_llm_test.py::test_no_state_leaked_to_real_home` asserts
-`time.time() - mtime("$HOME/.config/nalar/agent.db") > 60` on the **developer's real** DB. This
-box permanently runs a dev nalar on **8081** (PID 2027624) writing exactly that file, so the test
-is racing an unrelated long-lived process. It should be skipped when a real nalar is detected, or
+`time.time() - mtime("$HOME/.config/pabrik/agent.db") > 60` on the **developer's real** DB. This
+box permanently runs a dev pabrik on **8081** (PID 2027624) writing exactly that file, so the test
+is racing an unrelated long-lived process. It should be skipped when a real pabrik is detected, or
 rewritten to assert on the harness's own `temp_dir`.
 
 ---
@@ -392,12 +392,12 @@ matrix. The junit XML is the source of truth — the console log is not:
 
 ```bash
 # API suite (575 tests, ~10 min)
-NALAR_BIN=$PWD/zig-out/bin/nalar .venv-func/bin/python -m pytest tests/functional/ \
+PABRIK_BIN=$PWD/zig-out/bin/pabrik .venv-func/bin/python -m pytest tests/functional/ \
     -q --tb=no -rf --junit-xml=/tmp/junit_func_$i.xml
 
 # UI suite (75 tests, ~13 min) — MUST use .venv-func (it has playwright);
-# /tmp/nalar-func-venv silently SKIPS every test with `could not import 'playwright'`
-NALAR_BIN=$PWD/zig-out/bin/nalar .venv-func/bin/python -m pytest tests/functional_ui/ \
+# /tmp/pabrik-func-venv silently SKIPS every test with `could not import 'playwright'`
+PABRIK_BIN=$PWD/zig-out/bin/pabrik .venv-func/bin/python -m pytest tests/functional_ui/ \
     -q --tb=no -rf --junit-xml=/tmp/junit_ui_$i.xml
 ```
 

@@ -1,11 +1,11 @@
 // src/service/state_file.zig
 //
-// Reads and writes the nalar service state file (state.json).
+// Reads and writes the pabrik service state file (state.json).
 //
-// The state file is the source of truth for `nalar service` lifecycle
+// The state file is the source of truth for `pabrik service` lifecycle
 // commands: `service start` writes the daemon's pid + port; `service stop`
 // reads it to send SIGTERM; `service status` reads it to report state.
-// The desktop's `attach.zig` also reads it to find a running nalar.
+// The desktop's `attach.zig` also reads it to find a running pabrik.
 //
 // File format (JSON):
 //   {
@@ -14,7 +14,7 @@
 //     "host": "127.0.0.1",
 //     "started_at": 1751558400,
 //     "version": "0.4.0",
-//     "static_dir": "/run/user/1000/nalar-desktop-webapp-1234" | null
+//     "static_dir": "/run/user/1000/pabrik-desktop-webapp-1234" | null
 //   }
 //
 // Writes use the standard "write to <path>.tmp, then rename" pattern for
@@ -171,8 +171,8 @@ pub fn writeStateFile(
 
     // mkdir -p the parent directory of the state file (POSIX only;
     // on Windows, %LOCALAPPDATA% always exists). This lets the daemon
-    // be the first nalar process on a fresh $HOME — no manual `mkdir
-    // -p ~/.local/state/nalar` required. We use the same
+    // be the first pabrik process on a fresh $HOME — no manual `mkdir
+    // -p ~/.local/state/pabrik` required. We use the same
     // componentIterator trick as daemon.zig: each yielded `.path` is the
     // cumulative path-so-far.
     //
@@ -208,9 +208,9 @@ pub const PathError = error{
 };
 
 /// Compute the canonical state.json path for the current platform:
-///   Linux/macOS: $XDG_STATE_HOME/nalar/state.json, fallback to
-///                $HOME/.local/state/nalar/state.json (creates parent dirs).
-///   Windows:     %LOCALAPPDATA%\nalar\state.json.
+///   Linux/macOS: $XDG_STATE_HOME/pabrik/state.json, fallback to
+///                $HOME/.local/state/pabrik/state.json (creates parent dirs).
+///   Windows:     %LOCALAPPDATA%\pabrik\state.json.
 ///
 /// Caller owns the returned slice. Returns `PathResolutionFailed` if
 /// neither XDG_STATE_HOME nor HOME is set (extremely unusual).
@@ -228,7 +228,7 @@ pub fn defaultStatePath(allocator: std.mem.Allocator) PathError![]u8 {
             return error.PathResolutionFailed;
         const appdata = std.mem.sliceTo(appdata_z, 0);
         if (!std.fs.path.isAbsolute(appdata)) return error.PathResolutionFailed;
-        return std.fs.path.join(allocator, &.{ appdata, "nalar", "state.json" });
+        return std.fs.path.join(allocator, &.{ appdata, "pabrik", "state.json" });
     }
     // POSIX: XDG_STATE_HOME wins; fall back to ~/.local/state.
     const home_z = std.c.getenv("HOME") orelse return error.PathResolutionFailed;
@@ -236,10 +236,10 @@ pub fn defaultStatePath(allocator: std.mem.Allocator) PathError![]u8 {
     if (std.c.getenv("XDG_STATE_HOME")) |xdg_z| {
         const xdg = std.mem.sliceTo(xdg_z, 0);
         if (!std.fs.path.isAbsolute(xdg)) return error.PathResolutionFailed;
-        return std.fs.path.join(allocator, &.{ xdg, "nalar", "state.json" });
+        return std.fs.path.join(allocator, &.{ xdg, "pabrik", "state.json" });
     }
     if (!std.fs.path.isAbsolute(home)) return error.PathResolutionFailed;
-    return std.fs.path.join(allocator, &.{ home, ".local", "state", "nalar", "state.json" });
+    return std.fs.path.join(allocator, &.{ home, ".local", "state", "pabrik", "state.json" });
 }
 
 // ===== Tests merged from state_file_test.zig (2026-09-29 flatten) =====
@@ -309,7 +309,7 @@ test "writeStateFile round-trips a State" {
         .host = "127.0.0.1",
         .started_at = 1751558400,
         .version = "0.4.0",
-        .static_dir = "/tmp/nalar-webapp-1234",
+        .static_dir = "/tmp/pabrik-webapp-1234",
     };
     try writeStateFile(allocator, testing.io, path, original);
     const restored = try readStateFile(allocator, testing.io, path);
@@ -326,9 +326,9 @@ test "defaultStatePath returns XDG-aware path on POSIX" {
     const allocator = testing.allocator;
     const path = try defaultStatePath(allocator);
     defer allocator.free(path);
-    // Path should end in /state.json under a 'nalar' dir.
+    // Path should end in /state.json under a 'pabrik' dir.
     try testing.expect(std.mem.endsWith(u8, path, "/state.json"));
-    try testing.expect(std.mem.indexOf(u8, path, "nalar") != null);
+    try testing.expect(std.mem.indexOf(u8, path, "pabrik") != null);
 }
 
 test "writeStateFile does mkdir-p into a fresh nested dir" {

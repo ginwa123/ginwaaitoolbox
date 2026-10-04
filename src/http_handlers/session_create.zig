@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
-const gserverz = nalarcore.gserverz;
+const gserverz = pabrikcore.gserverz;
 const auth_common = @import("auth_common.zig");
-const ai_workflow = nalarcore.ai_mod;
-const sqlite_db_mod = nalarcore.sqlite;
+const ai_workflow = pabrikcore.ai_mod;
+const sqlite_db_mod = pabrikcore.sqlite;
 
 /// Create a sandbox directory in data/apps and return the path
 fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, session_id: []const u8) ![]u8 {
@@ -92,7 +92,7 @@ pub const ResponseSession = struct {
 pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const io = ctx.io;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
 
     {
         const prefix_len = @min(200, req.body.len);
@@ -123,7 +123,7 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     };
 
     // Owner for the session row this request creates (plan 2026-09-25, W1).
-    // Server-derived from the `nalar_session` cookie only — never a body,
+    // Server-derived from the `pabrik_session` cookie only — never a body,
     // query, or header field. Empty when auth is off, which leaves the row in
     // the shared legacy bucket.
     var owner_buf: [128]u8 = undefined;
@@ -168,7 +168,7 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     });
 }
 
-fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parsed: RequestSession, owner: []const u8) !ResponseSession {
+fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.ContextIPCTui, parsed: RequestSession, owner: []const u8) !ResponseSession {
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
 
     // --- Resolve all values locally using arena ---
@@ -306,7 +306,7 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
     var selected_profile_model: []const u8 = "";
     if (parsed.selected_profile_model.len > 0) {
         selected_profile_model = parsed.selected_profile_model;
-    } else if (nalarcore.getLlmConfig(di).active_profile) |ap| {
+    } else if (pabrikcore.getLlmConfig(di).active_profile) |ap| {
         // 2026-08-21 — snapshot the user's active profile into the
         // session row at create time. Without this, a "Default" chat
         // inherits the active profile only implicitly (via the workflow's
@@ -411,8 +411,8 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
     // compaction decision, and workflow all agree from message #1).
     const effective_profile: []const u8 = blk: {
         if (parsed.selected_profile_model.len > 0) break :blk parsed.selected_profile_model;
-        const di = nalarcore.getSingleton() catch break :blk "";
-        if (nalarcore.getLlmConfig(di).active_profile) |ap| break :blk ap;
+        const di = pabrikcore.getSingleton() catch break :blk "";
+        if (pabrikcore.getLlmConfig(di).active_profile) |ap| break :blk ap;
         break :blk "";
     };
     const effective_auto_retry: []const u8 = blk: {
@@ -466,7 +466,7 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
 /// responsible for falling back to `createSandbox(...)` on empty.
 fn resolveCwdFromTaskOrItem(
     alloc: std.mem.Allocator,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.ContextIPCTui,
     session_id: []const u8,
 ) ![]const u8 {
     // Single JOIN'd query — cheaper than two separate SELECTs and
@@ -532,7 +532,7 @@ fn resolveCwdFromTaskOrItem(
 /// guard against in `resolveCwdFromTaskOrItem`.
 fn resolveNameFromTask(
     alloc: std.mem.Allocator,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.ContextIPCTui,
     session_id: []const u8,
 ) !?[]const u8 {
     var q = di.db.query(
@@ -561,7 +561,7 @@ fn resolveNameFromTask(
 // an in-memory SQLite + migrations + ContextIPCTui to test resolveNameFromTask
 // would duplicate the migration setup; the functional test in
 // tests/functional/kanban_task_session_name_test.py already pins the
-// end-to-end behaviour against a real nalar binary. These static
+// end-to-end behaviour against a real pabrik binary. These static
 // checks lock in the structural contract — fail closed if a future
 // refactor drops the helper or removes the useCase call site.
 

@@ -190,7 +190,7 @@ export interface KanbanColumn {
    * string when no description has been set. The Settings UI
    * renders an "Add a description..." placeholder for empty
    * values. Optional for backwards compat with legacy column
-   * literals in test files (see nalar-frontend-task-literal-typing-rule).
+   * literals in test files (see pabrik-frontend-task-literal-typing-rule).
    */
   description?: string | null
   position: number
@@ -390,7 +390,7 @@ export interface WorkspaceItem {
   // `item_type === 'kanban'`; omitted for folder/chat/memory items.
   // Optional so legacy workspace-item literals (5+ test files
   // construct WorkspaceItem without this field) keep type-checking —
-  // see the nalar-frontend-task-literal-typing-rule memory.
+  // see the pabrik-frontend-task-literal-typing-rule memory.
   kanban_columns?: KanbanColumn[]
 }
 
@@ -411,7 +411,7 @@ export interface Task {
   // NEW (pinned-tasks feature, plan: docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md).
   // Both optional so legacy task literals (8+ test files construct Task
   // without these fields) keep type-checking — see the
-  // nalar-frontend-task-literal-typing-rule memory.
+  // pabrik-frontend-task-literal-typing-rule memory.
   is_pinned?: boolean
   pinned_position?: number
   // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
@@ -884,7 +884,7 @@ export async function markTaskHumanTouched(
  *
  * The backend stores `task_type` on `workspace_item_tasks`.
  * For memories, the backend creates the .md file
- * at `<workspace_item.path>/.nalar/memories/<name>.md` AND inserts
+ * at `<workspace_item.path>/.pabrik/memories/<name>.md` AND inserts
  * the task row pointing at it.
  */
 export async function createTask(
@@ -2153,7 +2153,7 @@ export async function createWorkspaceItem(
 /**
  * Create a new design workspace item (`item_type='design'`). The
  * `path` is REQUIRED because design elements live as HTML files
- * under `<path>/.nalar/design/...` (the model layer rejects
+ * under `<path>/.pabrik/design/...` (the model layer rejects
  * element-add with `ItemPathMissing` if path is NULL — see
  * design_model.zig).
  *
@@ -2773,7 +2773,7 @@ export async function ungroupDesignElements(
  * Delete a design page. The backend (design_model.deletePage) handles
  * the SQL DELETE on design_pages (FK ON DELETE CASCADE cleans up the
  * child design_page_elements rows) and recursively rmdirs the
- * on-disk `<item_path>/.nalar/design/<sanitized_page_name>/` folder.
+ * on-disk `<item_path>/.pabrik/design/<sanitized_page_name>/` folder.
  *
  * UI-only — no LLM tool exposes this endpoint, only the DesignView
  * tab-strip × button. Returns 200 with `{success:true}`. 404 if the
@@ -3166,7 +3166,7 @@ export async function deleteMemory(name: string): Promise<MemoryDeleteResponse> 
   })
 }
 
-// Local Memories API (per-cwd memories at `<cwd>/.nalar/memories/`).
+// Local Memories API (per-cwd memories at `<cwd>/.pabrik/memories/`).
 //
 // Distinct from the global memories above: local memories are scoped
 // to a specific project directory (the cwd) and are auto-injected
@@ -3174,7 +3174,7 @@ export async function deleteMemory(name: string): Promise<MemoryDeleteResponse> 
 // prompt (see `loadLocalKnowledge` in
 // `src/modules/agent/prompts.zig`). The `cwd` is passed in the body
 // (POST/PUT) or the query string (GET/DELETE) and is required for
-// the request to be useful. The backend falls back to the nalar
+// the request to be useful. The backend falls back to the pabrik
 // server's CWD when no cwd is provided.
 
 /**
@@ -4352,7 +4352,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
     onStateChange: (state, info) => {
       // Match the convention of the 5 old factories: terminal-failure
       // only. Transient errors are retried internally by the SseClient.
-      // See memory nalar-sse-incomplete-chunked-encoding.md for why
+      // See memory pabrik-sse-incomplete-chunked-encoding.md for why
       // ChatView's isStreaming flag flips ONLY on 'failed'.
       // Throw-isolation: a throwing onError must never break emitState's
       // per-subscriber loop (emitState already guards, but guard here too
@@ -4368,8 +4368,8 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   })
 }
 
-// Nalar Config API
-export interface NalarProfile {
+// Pabrik Config API
+export interface PabrikProfile {
   model?: string
   base_url?: string
   thinking?: string
@@ -4378,7 +4378,7 @@ export interface NalarProfile {
   api_key?: string
   /**
    * Per-profile sub-agents. Same shape as the top-level
-   * `NalarConfig.sub_agents` field — profiles can override the default
+   * `PabrikConfig.sub_agents` field — profiles can override the default
    * sub-agent set with their own.
    */
   sub_agents?: SubAgent[]
@@ -4486,9 +4486,9 @@ export interface McpServer {
  * `key` may come back MASKED rather than as the secret, so the value the
  * form holds is not necessarily the credential. Round-tripping it
  * unchanged is therefore required — replacing it with `""` would blank
- * the stored secret. See `components/nalar/webSearchProviders.ts`.
+ * the stored secret. See `components/pabrik/webSearchProviders.ts`.
  */
-export interface NalarWebSearchProvider {
+export interface PabrikWebSearchProvider {
   /** Host pin. The ONLY host whose requests may carry `key`. Must be
    *  `https` and must not name a loopback, private or link-local host. */
   url: string
@@ -4515,7 +4515,7 @@ export interface NalarWebSearchProvider {
  * fields are the budgets around it and are sent back unchanged so a save
  * from the toggle can never reset a value the user hand-edited.
  */
-export interface NalarSkillEvalsConfig {
+export interface PabrikSkillEvalsConfig {
   enabled?: boolean
   max_skills_per_run?: number
   max_evals_per_day?: number
@@ -4525,13 +4525,13 @@ export interface NalarSkillEvalsConfig {
   apply_mode?: string | null
 }
 
-export interface NalarConfig {
+export interface PabrikConfig {
   // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
   // defaults (api_endpoint/api_key/model/url_style/temperature/max_tokens/
   // system_prompt) were REMOVED from config.json. LLM access is configured
   // exclusively via `profiles`; the backend derives effective credentials
   // from the active profile at load time.
-  profiles?: Record<string, NalarProfile>
+  profiles?: Record<string, PabrikProfile>
   active_profile?: string
   /**
    * Map of MCP server name to its raw JSON config (snake_case).
@@ -4544,7 +4544,7 @@ export interface NalarConfig {
    * field is present: `command` ⇒ stdio, `url` ⇒ http.
    *
    * Note: this type is also re-exported and re-used by the
-   * `NalarSettings.vue` parser/serializer pair so the frontend
+   * `PabrikSettings.vue` parser/serializer pair so the frontend
    * round-trips config.json unchanged. If you add a field here, add
    * it to the `McpServer` interface above too (camelCase).
    */
@@ -4567,14 +4567,14 @@ export interface NalarConfig {
    * agent discovers them through `list_web_search_providers`.
    *
    * `null` / absent = the key is not in config.json. Sent verbatim to
-   * the backend on save; see `NalarWebSearchProvider` for the value
+   * the backend on save; see `PabrikWebSearchProvider` for the value
    * shape and the rules the backend enforces on it.
    */
-  web_search?: Record<string, NalarWebSearchProvider> | null
+  web_search?: Record<string, PabrikWebSearchProvider> | null
   /**
    * @deprecated Per-profile only (plan 2026-09-04-subagents-per-profile).
-   * The backend (`GET /api/config/nalar`) always returns `sub_agents: null`
-   * at the top level; each profile owns its list via `NalarProfile.sub_agents`.
+   * The backend (`GET /api/config/pabrik`) always returns `sub_agents: null`
+   * at the top level; each profile owns its list via `PabrikProfile.sub_agents`.
    * Kept as an optional field so legacy payloads still type-check — do NOT
    * read or write it in new code.
    */
@@ -4609,7 +4609,7 @@ export interface NalarConfig {
    * in the PUT persists the switch; omitting it leaves the on-disk value
    * untouched.
    */
-  skill_evals?: NalarSkillEvalsConfig
+  skill_evals?: PabrikSkillEvalsConfig
   /**
    * Compaction threshold in KB. Sessions whose DB-stored token
    * estimate exceeds this value trigger context compaction. Defaults
@@ -4648,20 +4648,20 @@ export interface NalarConfig {
    */
   web_launch_enabled?: boolean
   // Per-profile compaction overrides (`max_capacity_tokens` /
-  // `compaction_threshold_percent`) live on `NalarProfile` (Chunk
+  // `compaction_threshold_percent`) live on `PabrikProfile` (Chunk
   // 7.6) and remain there. Both layers coexist.
 }
 
-export async function getNalarConfig(): Promise<NalarConfig> {
+export async function getPabrikConfig(): Promise<PabrikConfig> {
   try {
-    return await apiFetch<NalarConfig>('/config/nalar')
+    return await apiFetch<PabrikConfig>('/config/pabrik')
   } catch {
     return {}
   }
 }
 
-export async function saveNalarConfig(config: NalarConfig): Promise<{ success: boolean }> {
-  return await apiFetch<{ success: boolean }>('/config/nalar', {
+export async function savePabrikConfig(config: PabrikConfig): Promise<{ success: boolean }> {
+  return await apiFetch<{ success: boolean }>('/config/pabrik', {
     method: 'PUT',
     body: config,
   })
@@ -4691,7 +4691,7 @@ export async function getWebStatus(): Promise<WebStatus | null> {
 }
 
 /**
- * Response shape from `DELETE /api/config/nalar/profiles/:name`.
+ * Response shape from `DELETE /api/config/pabrik/profiles/:name`.
  *
  * `active_profile_was_cleared` is `true` when the deleted profile was
  * the active one (the backend also cleared `active_profile` on disk).
@@ -4707,7 +4707,7 @@ export interface ProfileDeleteResponse {
 }
 
 /**
- * DELETE /api/config/nalar/profiles/:name
+ * DELETE /api/config/pabrik/profiles/:name
  *
  * Removes a profile from `config.json` and live-reloads the backend's
  * in-memory LLM config. Throws an Error (with the HTTP status) on
@@ -4716,7 +4716,7 @@ export interface ProfileDeleteResponse {
  */
 export async function deleteProfile(name: string): Promise<ProfileDeleteResponse> {
   return await apiFetch<ProfileDeleteResponse>(
-    `/config/nalar/profiles/${encodeURIComponent(name)}`,
+    `/config/pabrik/profiles/${encodeURIComponent(name)}`,
     { method: 'DELETE' },
   )
 }

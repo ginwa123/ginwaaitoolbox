@@ -9,7 +9,7 @@
  *   Path: <worktreePath>          <- only when useGitWorktree is true
  *                                    AND worktreePath is non-empty.
  *                                    Canonical root (Option A):
- *                                    $HOME/.config/nalar/.worktrees/<slug>.
+ *                                    $HOME/.config/pabrik/.worktrees/<slug>.
  *                                    Always absolute — the dialog expands
  *                                    `~` before calling this.
  *   Base: <baseBranch>            <- only when useGitWorktree is true

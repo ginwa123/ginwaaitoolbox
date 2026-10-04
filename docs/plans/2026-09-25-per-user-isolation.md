@@ -25,7 +25,7 @@ Concrete A↔B interference that exists **right now** with `--auth` on (each is 
 1. **B sees A's workspace list.** `workspaces_list.zig:84` has no `WHERE`; B's sidebar shows A's workspace names.
 2. **B can open A's chat.** `GET /api/session/:id` / `/api/llm/session/:id/messages` are keyed by raw session id only (`src/agentic_loop/llm_history.zig:530,1672`); any id is readable by any authenticated user.
 3. **B's browser receives A's live events.** `/api/events?channels=sessions` subscribes to a family routing key (`unified_events_sse.zig:357-359`), so A's session renames, worker progress, kanban moves, and LLM tokens are pushed to B's EventSource.
-4. **A's UI state leaks into B's session on the same browser.** `nalar-active-workspace`, `active-chat-id`, `nalar-workspaces:v1`, and IndexedDB `nalar-sync` are never namespaced and never cleared on logout (`stores/workspaces.ts:1176-1207,1363-1369`; `helpers/authMe.ts:109-116`).
+4. **A's UI state leaks into B's session on the same browser.** `pabrik-active-workspace`, `active-chat-id`, `pabrik-workspaces:v1`, and IndexedDB `pabrik-sync` are never namespaced and never cleared on logout (`stores/workspaces.ts:1176-1207,1363-1369`; `helpers/authMe.ts:109-116`).
 5. **Settings are the one thing already correct** — `users.config_json` is per-user via a server-side cookie lookup (`src/modules/config/UserConfigStore.zig:24-27`) — **except** for one live bug: the background `add_mcp_server` tool resolves the owner from `sessions.user_id` (`src/agentic_loop/tools_exec_add_mcp_server.zig:343-349`), which is never written, so it writes MCP servers to the sentinel `user_system` row for every user.
 
 ## Non-goals (v1)
@@ -43,7 +43,7 @@ Concrete A↔B interference that exists **right now** with `--auth` on (each is 
 - **2026-09-25 (user, approved):** the open questions are answered — legacy data is shared, `admin` gets no cross-user visibility, new rows are private while legacy rows stay shared (writes included), filesystem scope deferred. Locked in "Decisions resolved by the user" below; implementation may proceed on these.
 - **2026-09-25 (this plan):** enforcement is scoped to three ownership **roots** + transitive ownership, not a `user_id` column on all 40 tables. §Design D1.
 - **2026-09-25 (this plan):** legacy pre-auth rows (owner `user_system`) stay visible to every authenticated user — a local-first upgrade must not make the existing user's data vanish. §Design D2. This matches the unmerged worker branch and deliberately overrides the M077 spec's stricter `WHERE user_id = current_user` reading.
-- **2026-09-25 (this plan):** identity is re-resolved per request from the `nalar_session` cookie via a shared helper; **kabelweb is not modified**. §Design D3.
+- **2026-09-25 (this plan):** identity is re-resolved per request from the `pabrik_session` cookie via a shared helper; **kabelweb is not modified**. §Design D3.
 - 2026-08-21 (prior, `docs/superpowers/specs/2026-08-21-users-rbac-foundation-design.md:484`): "Personal-first (Option A). workspaces belong to users, not companies."
 - 2026-08-21 (prior, same doc `:17`): sub-project 1 was schema-only; "no permission checks, no frontend changes."
 - **2026-09-25 (user, approved):** with `--auth` off there is no identity, so the **system user sees every workspace** — not just the shared legacy bucket. This replaces my fail-closed first cut. §Design D2, §Progress log correction 2.
@@ -127,7 +127,7 @@ Verified constraints (kabelweb pinned at `7e97a09ea9e01cec0fe1d46e54aedce76852f7
 /// - valid cookie                  -> the session's user id (owned copy)
 pub fn resolveRequestUserId(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     auth_enabled: bool,
     headers: anytype,
 ) ![]const u8;
@@ -142,7 +142,7 @@ pub const owner_visibility_clause =
 
 Cost: one extra indexed lookup per request in auth mode (`auth_sessions.token_hash` is the PK, `src/migrations/migration.zig:4824`). 181 of 185 handlers need it — **do not** edit all 181 in one PR; migrate by route family (W2) and keep a ratchet test that lists the still-unscoped routes (W6).
 
-**Rule to add to `AGENTS.md`** (there is no such rule today; the closest is `read_workspace_session.zig:11-21`, "a client-supplied id would be a spoofing vector"): the owner is **always** server-derived from the `nalar_session` cookie and never accepted from a request body, query, or header. A frontend-supplied `user_id` must be rejected or ignored, and a functional test must assert that a spoofed body `user_id` is ignored.
+**Rule to add to `AGENTS.md`** (there is no such rule today; the closest is `read_workspace_session.zig:11-21`, "a client-supplied id would be a spoofing vector"): the owner is **always** server-derived from the `pabrik_session` cookie and never accepted from a request body, query, or header. A frontend-supplied `user_id` must be rejected or ignored, and a functional test must assert that a spoofed body `user_id` is ignored.
 
 ### D4 — Not-found discipline
 
@@ -173,8 +173,8 @@ This is the only failure mode in this plan that produces no error message, so it
 
 | artifact | scope | mechanism | verdict |
 |---|---|---|---|
-| LLM profiles / MCP servers / operational flags | **per user** | `users.config_json` via `UserConfigStore.zig:24-27,49-60`; handlers resolve the cookie themselves (`nalar_config_get.zig:19-33`, `nalar_config_put.zig:42-58`) | ✅ correct — make it the template |
-| `config.json` on disk (`$XDG_CONFIG_HOME/nalar/config.json`, `Config.zig:2567-2570`) | global per OS account | used when auth is off; process config still initialised from it (`main.zig:180`) | auth-mode API path already bypasses it (`user_config_test.py::test_auth_put_leaves_config_file_untouched`); the background/CLI path still reads it — see W4 |
+| LLM profiles / MCP servers / operational flags | **per user** | `users.config_json` via `UserConfigStore.zig:24-27,49-60`; handlers resolve the cookie themselves (`pabrik_config_get.zig:19-33`, `pabrik_config_put.zig:42-58`) | ✅ correct — make it the template |
+| `config.json` on disk (`$XDG_CONFIG_HOME/pabrik/config.json`, `Config.zig:2567-2570`) | global per OS account | used when auth is off; process config still initialised from it (`main.zig:180`) | auth-mode API path already bypasses it (`user_config_test.py::test_auth_put_leaves_config_file_untouched`); the background/CLI path still reads it — see W4 |
 | browser `settings-*` localStorage (legacy store) | browser profile | `src/apps/desktop/src/stores/settings.ts:5-73` | legacy, no production call site; delete or namespace (W5) |
 | `agent.db` | **one global file per OS account** (`src/helpers/db_path.zig:4-44`, opened at `main.zig:216-221`) | all users share one DB → ownership must be row-level | the reason D1/D2 exist; a per-user DB file is explicitly **not** the plan (it would break cross-user workspace sharing later and double the migration surface) |
 
@@ -182,7 +182,7 @@ This is the only failure mode in this plan that produces no error message, so it
 
 `users.role = 'admin'` grants **no** cross-user read or write. The owner predicate is applied identically for every authenticated user, admins included. Deliberate: the authorization rule stays a single predicate with no role branch — a role branch is the classic hiding place for a bypass bug — and it matches "personal-first" from the M077 spec. RBAC over other users' rows is a later sub-project with its own spec.
 
-Test consequence, and a free win: `nalar create-admin` is the only way to make a user, and it creates `role = 'admin'`. So the two-user functional tests **are** admin-vs-admin tests — `test_workspaces_list_is_per_user` with both users created via `create-admin` already asserts "no admin bypass". Say so in the test docstrings rather than adding a separate case.
+Test consequence, and a free win: `pabrik create-admin` is the only way to make a user, and it creates `role = 'admin'`. So the two-user functional tests **are** admin-vs-admin tests — `test_workspaces_list_is_per_user` with both users created via `create-admin` already asserts "no admin bypass". Say so in the test docstrings rather than adding a separate case.
 
 ### D9 — Filesystem scope: deferred boundary (approved 2026-09-25, unresolved)
 
@@ -248,7 +248,7 @@ Plan:
 ### W4 — settings / config follow-ups
 
 1. Background paths that read the **global** `config.json` while auth is on (worker/CLI/tool processes): resolve the owner from the session row (available after W1) and read `users.config_json`. This closes the same class of bug as `tools_exec_add_mcp_server.zig`.
-2. `nalar_config_get/put/profile_delete` already re-resolve the cookie inline — refactor them onto `resolveRequestUserId` so there is exactly one identity implementation, not four.
+2. `pabrik_config_get/put/profile_delete` already re-resolve the cookie inline — refactor them onto `resolveRequestUserId` so there is exactly one identity implementation, not four.
 3. Document `config.json` as "auth-off only" in `README.md` (the README already documents the `users.config_json` partition at `:200-210`; extend, don't rewrite).
 
 **Acceptance:** extend `tests/functional/user_config_test.py` — a background/worker config write lands in the right user's row.
@@ -257,16 +257,16 @@ Plan:
 
 Inventory (from the audit; keys are **all** origin/window-global today):
 
-- localStorage: `nalar-active-workspace`, `nalar-workspace-expanded`, `nalar-workspace-item-expanded`, `nalar-workspace-item-tasks-expanded`, `nalar-workspaces:v1`, `sidebar-collapsed`, `sidebar-width`, `active-chat-id`, `active-chat-name`, `active-task-id`, `nalar_chats_sort_direction`, `nalar-sidebar-*`, `nalar-right-sidebar-width`, `nalar-right-sidebar-panel`, `nalar-tabs:v1:<windowId>`, `nalar-folder-picker-recent:v1`, `nalar-task-media:v1`, `nalar-git-status:v1:<cwd>`, `nalar-auth-me:v1`, `session_cwd_<id>`, `chat-scroll-*`, `kanban-*-scroll-*`, `diff-review-comments`, `diff-comment:*` (`src/apps/desktop/src/stores/workspaces.ts:225-230`, `src/apps/desktop/src/stores/navigation.ts:5-10`, `src/apps/desktop/src/stores/sidebar.ts:4-13`, `src/apps/desktop/src/stores/tabs.ts:49-61`, `src/apps/desktop/src/helpers/taskMediaCache.ts:35`, `src/apps/desktop/src/helpers/workspacesCache.ts:22`).
-- IndexedDB: single database **`nalar-sync`** v3 with stores `messages`, `sessions`, `tasks`, `sync_state` (`src/apps/desktop/src/sync/IndexedDbStore.ts:10-15`) containing full cached message bodies.
-- Logout clears only `nalar-auth-me:v1` (`src/apps/desktop/src/components/shell/Sidebar.vue:256-268`, `src/apps/desktop/src/helpers/authMe.ts:109-116`).
+- localStorage: `pabrik-active-workspace`, `pabrik-workspace-expanded`, `pabrik-workspace-item-expanded`, `pabrik-workspace-item-tasks-expanded`, `pabrik-workspaces:v1`, `sidebar-collapsed`, `sidebar-width`, `active-chat-id`, `active-chat-name`, `active-task-id`, `pabrik_chats_sort_direction`, `pabrik-sidebar-*`, `pabrik-right-sidebar-width`, `pabrik-right-sidebar-panel`, `pabrik-tabs:v1:<windowId>`, `pabrik-folder-picker-recent:v1`, `pabrik-task-media:v1`, `pabrik-git-status:v1:<cwd>`, `pabrik-auth-me:v1`, `session_cwd_<id>`, `chat-scroll-*`, `kanban-*-scroll-*`, `diff-review-comments`, `diff-comment:*` (`src/apps/desktop/src/stores/workspaces.ts:225-230`, `src/apps/desktop/src/stores/navigation.ts:5-10`, `src/apps/desktop/src/stores/sidebar.ts:4-13`, `src/apps/desktop/src/stores/tabs.ts:49-61`, `src/apps/desktop/src/helpers/taskMediaCache.ts:35`, `src/apps/desktop/src/helpers/workspacesCache.ts:22`).
+- IndexedDB: single database **`pabrik-sync`** v3 with stores `messages`, `sessions`, `tasks`, `sync_state` (`src/apps/desktop/src/sync/IndexedDbStore.ts:10-15`) containing full cached message bodies.
+- Logout clears only `pabrik-auth-me:v1` (`src/apps/desktop/src/components/shell/Sidebar.vue:256-268`, `src/apps/desktop/src/helpers/authMe.ts:109-116`).
 
 Plan:
-1. **One namespacing helper**: `userScopedKey(key)` using the id from `/api/auth/me` (`nalar-auth-me:v1` already caches `user.id`). When auth is off, `userScopedKey` returns the key unchanged → zero migration for the auth-off case.
-2. Apply it to the **data-bearing** keys first — `nalar-workspaces:v1`, `nalar-active-workspace`, `active-chat-id`, `active-chat-name`, `active-task-id`, `nalar-tabs:v1`, `nalar-task-media:v1`, `diff-review-comments`, `session_cwd_*`. Pure-preference keys (sidebar widths) can follow or be left global; call the split out explicitly in the PR.
-3. **IndexedDB**: include the user id in the database name (e.g. `nalar-sync:<userId>`; `IndexedDbStore.ts:10`), or add `userId` to the key paths. Cheapest safe version is the DB-name split — no schema/key migration, no cross-database reads.
+1. **One namespacing helper**: `userScopedKey(key)` using the id from `/api/auth/me` (`pabrik-auth-me:v1` already caches `user.id`). When auth is off, `userScopedKey` returns the key unchanged → zero migration for the auth-off case.
+2. Apply it to the **data-bearing** keys first — `pabrik-workspaces:v1`, `pabrik-active-workspace`, `active-chat-id`, `active-chat-name`, `active-task-id`, `pabrik-tabs:v1`, `pabrik-task-media:v1`, `diff-review-comments`, `session_cwd_*`. Pure-preference keys (sidebar widths) can follow or be left global; call the split out explicitly in the PR.
+3. **IndexedDB**: include the user id in the database name (e.g. `pabrik-sync:<userId>`; `IndexedDbStore.ts:10`), or add `userId` to the key paths. Cheapest safe version is the DB-name split — no schema/key migration, no cross-database reads.
 4. **Purge on identity change**: on logout *and* when `/api/auth/me` returns a different id than the cached one, clear the previous user's namespaced keys, delete the old IndexedDB database, and reset the Pinia stores (`workspaces`, `navigation`, `tabs`, `sidebar`) — including via a `storage` event listener so an already-open sibling tab reacts.
-5. **Gate the first paint**: while auth is on and `/api/auth/me` is unresolved, do not paint from `nalar-workspaces:v1` / IndexedDB (`stores/workspaces.ts:1176-1207`, `ChatView.vue:2611-2645`, `ChatsList.vue:463-485`). B must never see A's cached list, even for one frame.
+5. **Gate the first paint**: while auth is on and `/api/auth/me` is unresolved, do not paint from `pabrik-workspaces:v1` / IndexedDB (`stores/workspaces.ts:1176-1207`, `ChatView.vue:2611-2645`, `ChatsList.vue:463-485`). B must never see A's cached list, even for one frame.
 6. **Tests** (vitest): `userScopedKey` round-trip; a spec that logs in as A with state present, then switches to B, and asserts A's cache is gone and never painted; `authMe` change → purge invoked. Follow the repo rule that any view state change also updates the URL (existing `appUrl.ts` canonical routes are already user-agnostic and stay as-is).
 
 ### W6 — tests, ratchet, CI
@@ -432,8 +432,8 @@ unchanged. Verification: `tests/functional/terminal_isolation_test.py`
 
 **W2.6 — resolved as a documented boundary, not a code change.** `/api/skills*`
 and `/api/memories*` are **filesystem-scoped**, not DB rows: global entries
-live in one `~/.config/nalar/skills|memories/` directory per OS account, and
-local entries in `{cwd}/.nalar/…` with a caller-supplied `cwd`. There is no
+live in one `~/.config/pabrik/skills|memories/` directory per OS account, and
+local entries in `{cwd}/.pabrik/…` with a caller-supplied `cwd`. There is no
 `user_id` to filter on, so "scope them per user" means inventing a per-user
 filesystem root — which is exactly the **deferred D9 boundary**, not a
 row-level predicate. A fake fix would make the system *look* isolated while
@@ -454,10 +454,10 @@ the single mapping from a logical key to a per-user physical key:
 byte-identical and needs no migration; with an identity it returns
 `key::u:<userId>`. `purgeForeignScopedKeys` removes only keys carrying the
 `::u:` marker, so unscoped preferences and the auth cache are never
-destroyed. Data-bearing keys namespaced: `nalar-workspaces:v1`,
-`nalar-active-workspace`, `active-chat-id`/`-name`, `active-task-id`,
-`nalar-tabs:v1:<win>`, `nalar-task-media:v1`, `nalar-git-status:v1:<cwd>`.
-The IndexedDB **database** name is per user (`nalar-sync:<userId>`) — a
+destroyed. Data-bearing keys namespaced: `pabrik-workspaces:v1`,
+`pabrik-active-workspace`, `active-chat-id`/`-name`, `active-task-id`,
+`pabrik-tabs:v1:<win>`, `pabrik-task-media:v1`, `pabrik-git-status:v1:<cwd>`.
+The IndexedDB **database** name is per user (`pabrik-sync:<userId>`) — a
 database split rather than a `userId` in every key path, so no schema/key
 migration and a cross-user read is impossible by construction.
 `router/index.ts`'s `applyIdentity()` runs in the guard on every navigation

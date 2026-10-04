@@ -1,8 +1,8 @@
-# ginwaaitoolbox — Nalar
+# ginwaaitoolbox — Pabrik
 
 [![CI](https://github.com/ginwa123/ginwaaitoolbox/actions/workflows/ci.yml/badge.svg)](https://github.com/ginwa123/ginwaaitoolbox/actions/workflows/ci.yml)
 
-**Nalar** is an AI agent workspace. Chat with LLMs that can actually *do things*
+**Pabrik** is an AI agent workspace. Chat with LLMs that can actually *do things*
 (read/write files, search code, run shell commands, manage kanban boards, draw on
 a design canvas), all persisted in a local SQLite database and presented through
 a Vue web app, a native desktop shell, a native Android client, or the terminal.
@@ -30,28 +30,28 @@ One backend, five clients, one repo:
    - Built with Vite + pnpm, tested with Vitest. `src/apps/desktop/src/sync/`
      is the Effect-TS offline-sync slice (see
      [docs/effect-migration.md](docs/effect-migration.md)).
-3. **Desktop shell — `nalar-desktop`** (`src/apps/desktop_app/`)
+3. **Desktop shell — `pabrik-desktop`** (`src/apps/desktop_app/`)
    - Native webview wrapper (WebKitGTK 4.1 on Linux, WKWebView on macOS,
      WebView2 on Windows) that embeds the built web app. Pure GUI shell —
-     it connects to a running `nalar` service, it doesn't own it.
+     it connects to a running `pabrik` service, it doesn't own it.
 4. **Terminal clients** (`src/apps/cli/`)
-   - **`nalarcli`** — terminal wrapper around the REST API
+   - **`pabrikcli`** — terminal wrapper around the REST API
      (`send` / `sessions` / `messages` / `events` SSE tail / `pr-status`).
-   - **`nalar-tui`** — a full-screen, Claude-Code-style streaming chat client
+   - **`pabrik-tui`** — a full-screen, Claude-Code-style streaming chat client
      over the same endpoints, built on a from-scratch Bubble-Tea-style
      `tui` module at `src/apps/cli/src/tui/`. No extra dependencies.
 5. **Android client — native Jetpack Compose** (`src/apps/android_mobile/`)
-   - A standalone Kotlin client (`com.nalar.mobile`, minSdk 26). It is a real
+   - A standalone Kotlin client (`com.pabrik.mobile`, minSdk 26). It is a real
      client, not a stub: HTTPS sign-in, Keystore-encrypted session restore,
      SSE chat with markdown/reasoning/tool cards, projects + task creation,
      a recents drawer, three Room offline caches, an in-app network inspector
-     with request replay, `nalar://chat/…` deep links, and session resume.
+     with request replay, `pabrik://chat/…` deep links, and session resume.
    - It does **not** embed the web app and does **not** start or manage a
-     Nalar server. See [its README](src/apps/android_mobile/README.md).
+     Pabrik server. See [its README](src/apps/android_mobile/README.md).
 
 Plus two standalone side services:
 
-- **`src/modules/nalar_browser/`** — a Bun + TypeScript anti-bot scraping
+- **`src/modules/pabrik_browser/`** — a Bun + TypeScript anti-bot scraping
   microservice (CloakBrowser / stealth Chromium) with its own
   `http_handlers/` bridge. This is the one place Bun is still used; the webapp
   build path is pnpm-only (see [Prerequisites](#prerequisites)).
@@ -68,7 +68,7 @@ Key features at a glance:
 - ⏰ Workspace routines + in-process scheduler
 - 🧠 Agent memories (append-only, FTS5), skills, sub-agents, git worktrees
 - 🔌 MCP servers (stdio + HTTP), LLM profiles, web-launch mode, TLS / HTTP/2 (h2c)
-- 🖥️ Service mode (`nalar service start`) shared by desktop + browser + CLI
+- 🖥️ Service mode (`pabrik service start`) shared by desktop + browser + CLI
 - 🔐 Optional `--auth` multi-user mode with per-user DB + SSE scoping
 
 > Full feature list: [docs/SPEC.md](docs/SPEC.md) — note it is a
@@ -120,19 +120,19 @@ Repo layout:
 src/
 ├── agentic_loop/                # LLM loop + tool dispatch (tools_exec_*.zig)
 ├── modules/agent/tools/         # tool implementations (58 files)
-├── modules/nalar_browser/       # Bun anti-bot scraping service (TS)
+├── modules/pabrik_browser/       # Bun anti-bot scraping service (TS)
 ├── modules/databases/sqlite/    # SqliteBackend + transactions
 ├── http_handlers/               # REST endpoints (thin wrappers)
 ├── migrations/migration.zig     # all 92 migrations, registered in allMigrations
 ├── schedulers/ · models/        # routines scheduler, shared data types
 ├── ai_workflow/tui/routines/    # routines TUI
 ├── apps/desktop/                # Vue 3 SPA (screens under src/components/views/)
-├── apps/desktop_app/            # nalar-desktop webview wrapper
-├── apps/cli/                    # nalarcli + nalar-tui (src/apps/cli/src/tui/)
+├── apps/desktop_app/            # pabrik-desktop webview wrapper
+├── apps/cli/                    # pabrikcli + pabrik-tui (src/apps/cli/src/tui/)
 ├── apps/android_mobile/         # native Kotlin/Compose client
 ├── apps/mcp_hello_world/        # MCP stdio fixture
 ├── apps/mcp_http_hello_world/   # MCP Streamable-HTTP fixture
-├── service/                     # `nalar service` daemon (POSIX + Win32)
+├── service/                     # `pabrik service` daemon (POSIX + Win32)
 └── main.zig / root.zig / startup.zig
 docs/
   SPEC.md, ci.md, agent-tools.md, hooks.md, http2*.md, tabs.md,
@@ -152,9 +152,9 @@ examples/  # hooks
 | **Zig** | **0.16.0** (`minimum_zig_version`) | `zig version` must print `0.16.0`. Install via `mlugg/setup-zig@v2` in CI or [ziglang.org](https://ziglang.org/download/). |
 | **Linux system libs** | — | `sudo apt-get install -y build-essential libssl-dev libsqlite3-dev pkg-config` (Arch: `base-devel openssl sqlite pkgconf`). Linux links system `libsqlite3`. |
 | **macOS** | — | Xcode CLT (`xcode-select --install`) + `brew install pkg-config openssl@3` (sqlite via Homebrew keg-only or vendored fallback). |
-| **Windows** | — | MSVC Build Tools 2022 + Windows 10 SDK (for the `nalar-desktop` C++ shim) and/or vcpkg `sqlite3` — otherwise the vendored SQLite amalgamation is used. |
+| **Windows** | — | MSVC Build Tools 2022 + Windows 10 SDK (for the `pabrik-desktop` C++ shim) and/or vcpkg `sqlite3` — otherwise the vendored SQLite amalgamation is used. |
 | **Node + pnpm** | **Node ^20.19.0 or >=22.12.0** (CI uses Node 24) + **pnpm 11** | Only needed for the frontend / desktop build. **`pnpm-lock.yaml` is canonical** — there is no `package-lock.json`; npm and Bun were dropped from the webapp build in CI and `build.zig` on 2026-08-28. |
-| **Bun** | optional | Only for the standalone `src/modules/nalar_browser/` service. |
+| **Bun** | optional | Only for the standalone `src/modules/pabrik_browser/` service. |
 | **JDK + Android SDK** | JDK 17, SDK platform 35 | Only for `src/apps/android_mobile/`. |
 | **Python** | **3.10+** + `pytest` | Only needed for functional tests (`pip install -r tests/functional/requirements.txt`). Playwright + Chromium only for `tests/functional_ui/`. |
 
@@ -174,10 +174,10 @@ git clone https://github.com/ginwa123/ginwaaitoolbox.git
 cd ginwaaitoolbox
 
 # 1. Backend binary (native for your OS)
-zig build install:linux:system   # Linux → zig-out/bin/nalar, cp /usr/local/bin/nalar
-zig build install:macos          # → zig-out/bin/nalarcore-macos-x86_64
-zig build install:macos-arm      # → zig-out/bin/nalarcore-macos-aarch64
-zig build install:windows        # → zig-out/bin/nalarcore-windows-x86_64.exe
+zig build install:linux:system   # Linux → zig-out/bin/pabrik, cp /usr/local/bin/pabrik
+zig build install:macos          # → zig-out/bin/pabrikcore-macos-x86_64
+zig build install:macos-arm      # → zig-out/bin/pabrikcore-macos-aarch64
+zig build install:windows        # → zig-out/bin/pabrikcore-windows-x86_64.exe
 # SQLite comes from the pinned `databases` package (ruangsql) — no extra
 # fetch on hosts with system SQLite. Without system libs, populate its
 # vendored amalgamation first (idempotent, checksum-verified; see the
@@ -187,16 +187,16 @@ zig build install:windows        # → zig-out/bin/nalarcore-windows-x86_64.exe
 # 2. Frontend web app (only if you hack on the UI)
 cd src/apps/desktop
 pnpm install
-pnpm run build     # vue-tsc + vite → dist/, embedded into nalar-desktop
+pnpm run build     # vue-tsc + vite → dist/, embedded into pabrik-desktop
 ```
 
 Desktop shell, the `.app`-style installers, and the terminal clients:
 
 ```bash
-zig build nalar-desktop          # → zig-out/bin/nalar-desktop (backend + embedded webapp)
-zig build install:cli            # → nalarcli
-zig build install:tui            # → nalar-tui
-zig build install-tui            # nalar-tui → ~/.local/bin (or %LOCALAPPDATA%\nalar\bin)
+zig build pabrik-desktop          # → zig-out/bin/pabrik-desktop (backend + embedded webapp)
+zig build install:cli            # → pabrikcli
+zig build install:tui            # → pabrik-tui
+zig build install-tui            # pabrik-tui → ~/.local/bin (or %LOCALAPPDATA%\pabrik\bin)
 
 # One-click launcher entries (need sudo on Linux, ~/Applications on macOS)
 sudo zig build install:linux:app
@@ -210,17 +210,17 @@ zig build build:all
 Useful build & test commands:
 
 ```bash
-zig build test                    # nalarcore module unit tests
-zig build test:cli                # nalarcli unit tests
-zig build test:tui                # nalar-tui unit tests
-zig build test:desktop-app        # nalar-desktop unit tests
+zig build test                    # pabrikcore module unit tests
+zig build test:cli                # pabrikcli unit tests
+zig build test:tui                # pabrik-tui unit tests
+zig build test:desktop-app        # pabrik-desktop unit tests
 zig build functional-test         # Python API tests only, via zig
 zig build functional-test-ui      # Playwright UI tests only, via zig
 zig build functional-test-all     # both suites, one pytest run (what CI runs)
 zig build --help                  # every step (install:*, test:*, build:*, run:*)
 ```
 
-> `zig build test` covers the `nalarcore` module only. The CLI, TUI, and
+> `zig build test` covers the `pabrikcore` module only. The CLI, TUI, and
 > desktop-app test suites are separate steps and are **not** pulled in by it —
 > run them explicitly (CI runs all of them).
 
@@ -229,11 +229,11 @@ zig build --help                  # every step (install:*, test:*, build:*, run:
 ### 1. Start the server (simplest)
 
 ```bash
-./zig-out/bin/nalar --port 8081
+./zig-out/bin/pabrik --port 8081
 # → http://127.0.0.1:8081/  (API at /api/*, SSE at /api/events?channels=...)
 ```
 
-Flags (`nalar --help`):
+Flags (`pabrik --help`):
 
 ```
 --port PORT            Port to listen on (0 = random free port; default 8081,
@@ -252,11 +252,11 @@ Examples:
 
 ```bash
 # Serve the built UI from the same process
-./zig-out/bin/nalar --port 8081 --static-dir src/apps/desktop/dist
+./zig-out/bin/pabrik --port 8081 --static-dir src/apps/desktop/dist
 # → open http://127.0.0.1:8081/app
 
 # Random-port browser mode + self-signed TLS (HTTP/2 via ALPN)
-./zig-out/bin/nalar --port 0 --tls-selfsigned
+./zig-out/bin/pabrik --port 0 --tls-selfsigned
 
 # Frontend dev loop (Vite HMR against a running backend on 8081)
 cd src/apps/desktop && pnpm dev
@@ -268,18 +268,18 @@ cd src/apps/desktop && pnpm dev
 ### 2. Run as a background service (desktop + browser share one instance)
 
 ```bash
-nalar service start    # daemonizes, writes ~/.local/state/nalar/state.json
-nalar service status   # → status: running (pid 12345, http://127.0.0.1:8081/)
-nalar service restart  # stop + start, optionally with --port/--auth
-nalar service stop     # the ONLY way to stop it — closing the desktop won't
+pabrik service start    # daemonizes, writes ~/.local/state/pabrik/state.json
+pabrik service status   # → status: running (pid 12345, http://127.0.0.1:8081/)
+pabrik service restart  # stop + start, optionally with --port/--auth
+pabrik service stop     # the ONLY way to stop it — closing the desktop won't
 ```
 
-`nalar-desktop` is a pure GUI shell: on launch it probes `state.json` for a
-running `nalar`; if none is found it shows:
+`pabrik-desktop` is a pure GUI shell: on launch it probes `state.json` for a
+running `pabrik`; if none is found it shows:
 
 ```
-error: nalar is not running.
-Run `nalar service start` in a terminal first, then re-open the desktop.
+error: pabrik is not running.
+Run `pabrik service start` in a terminal first, then re-open the desktop.
 ```
 
 Smoke tests:
@@ -297,7 +297,7 @@ Smoke tests:
 On first run an empty config is auto-created — the server still starts
 (non-LLM endpoints work), but chat calls fail until you fill it in:
 
-- File: `~/.config/nalar/config.json`
+- File: `~/.config/pabrik/config.json`
 - Or via UI: Settings → Profiles (strict validation — empty `api_key` is
   rejected on save with an error body so you can correct it).
 - Fields per profile: `base_url` / `model` / `api_key`, plus `url_style`,
@@ -307,7 +307,7 @@ On first run an empty config is auto-created — the server still starts
   Settings UI / API). Seed the first account from the CLI:
 
 ```bash
-nalar create-admin --email you@example.com --password '…' --name 'You' [--force]
+pabrik create-admin --email you@example.com --password '…' --name 'You' [--force]
 #   --email    required, must contain '@'
 #   --password required, min 8 chars
 #   --name     optional display name
@@ -331,8 +331,8 @@ the system user sees everything — the pre-isolation behaviour.
 `terminal/ws`, `read_file`, `list_directory`, `/api/git/*`,
 `/api/files/download`, `/api/skills*` and `/api/memories*` all run as the
 **OS user** against caller-supplied paths. Global skills/memories live in
-one `~/.config/nalar/skills|memories/` directory per OS account, and local
-ones in `{cwd}/.nalar/…` where `cwd` comes from the request — so a second
+one `~/.config/pabrik/skills|memories/` directory per OS account, and local
+ones in `{cwd}/.pabrik/…` where `cwd` comes from the request — so a second
 browser user on the same machine can still read those files by path. This
 is a known boundary, not a regression: closing it needs a per-user OS
 uid/chroot or a workspace-root allowlist, which is a separate decision.
@@ -343,13 +343,13 @@ describe the system as "sandboxed" or "multi-tenant".
 ### 4. CLI + tests
 
 ```bash
-nalarcli send "hello"                # message is POSITIONAL — no --message flag
-nalarcli sessions                   # list sessions
-nalarcli messages <session-id>       # read history for one session
-nalarcli events                     # tail the SSE stream
-nalarcli pr-status [pr] [--path .]   # PR/MR status (alias: `pr`); --json for machine output
+pabrikcli send "hello"                # message is POSITIONAL — no --message flag
+pabrikcli sessions                   # list sessions
+pabrikcli messages <session-id>       # read history for one session
+pabrikcli events                     # tail the SSE stream
+pabrikcli pr-status [pr] [--path .]   # PR/MR status (alias: `pr`); --json for machine output
 
-zig build test                       # nalarcore unit tests
+zig build test                       # pabrikcore unit tests
 zig build test:cli && zig build test:tui
 cd src/apps/desktop && pnpm run test # frontend (vitest)
 pytest tests/functional/             # API functional tests (isolated tmp HOME)
@@ -357,9 +357,9 @@ pytest tests/functional_ui/          # Playwright UI tests (needs Chromium)
 cd src/apps/android_mobile && ./gradlew test   # Android unit + Robolectric
 ```
 
-Global `nalarcli` flags: `--server <url>` (default `http://localhost:8081`),
-`--session <id>`, `--profile <name>` — also readable from `NALARCLI_SERVER`,
-`NALARCLI_SESSION_ID`, `NALARCLI_PROFILE`.
+Global `pabrikcli` flags: `--server <url>` (default `http://localhost:8081`),
+`--session <id>`, `--profile <name>` — also readable from `PABRIKCLI_SERVER`,
+`PABRIKCLI_SESSION_ID`, `PABRIKCLI_PROFILE`.
 
 > Android is not in the CI workflow matrix; build and test it locally with the
 > checked-in Gradle wrapper.
@@ -374,7 +374,7 @@ Global `nalarcli` flags: `--server <url>` (default `http://localhost:8081`),
 - [docs/http2.md](docs/http2.md) / [docs/http2-tls.md](docs/http2-tls.md) — HTTP/2 modes
 - [docs/tabs.md](docs/tabs.md), [docs/sse-tab-sharing.md](docs/sse-tab-sharing.md) — tabs + SSE
 - [src/apps/android_mobile/README.md](src/apps/android_mobile/README.md) — Android client
-- [src/modules/nalar_browser/README.md](src/modules/nalar_browser/README.md) — Bun scraping service
+- [src/modules/pabrik_browser/README.md](src/modules/pabrik_browser/README.md) — Bun scraping service
 - [tests/functional/README.md](tests/functional/README.md) — functional-test harness
   (never deletes real `$HOME`; use ports 8080–8199, never kill 8081)
 - [tests/functional_ui/README.md](tests/functional_ui/README.md) — Playwright UI-test harness

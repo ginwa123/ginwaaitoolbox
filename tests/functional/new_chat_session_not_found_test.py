@@ -70,17 +70,17 @@ def _login(port: int, email: str, password: str) -> str:
     )
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
-def test_touched_lazy_creates_missing_session(default_nalar_bin: Path):
+def test_touched_lazy_creates_missing_session(default_pabrik_bin: Path):
     """POST touched on a brand-new chat id must 200, not 404 Session not found."""
-    h = _boot_auth(default_nalar_bin)
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "a@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "a@example.com", "supersecret123")
         tok = _login(h.port, "a@example.com", "supersecret123")
-        cookie = f"nalar_session={tok}"
+        cookie = f"pabrik_session={tok}"
 
         # Frontend's New Chat id: task row exists, session row does not.
         new_id = "task_1790361260259_4_newchat"
@@ -93,13 +93,13 @@ def test_touched_lazy_creates_missing_session(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_update_lazy_creates_missing_session(default_nalar_bin: Path):
+def test_update_lazy_creates_missing_session(default_pabrik_bin: Path):
     """PUT update on a brand-new chat id must 200, not 404 session not found."""
-    h = _boot_auth(default_nalar_bin)
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "a@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "a@example.com", "supersecret123")
         tok = _login(h.port, "a@example.com", "supersecret123")
-        cookie = f"nalar_session={tok}"
+        cookie = f"pabrik_session={tok}"
 
         new_id = "task_1790361260259_4_profile"
         status, _, body = _raw(
@@ -112,12 +112,12 @@ def test_update_lazy_creates_missing_session(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_foreign_existing_session_still_404(default_nalar_bin: Path):
+def test_foreign_existing_session_still_404(default_pabrik_bin: Path):
     """Isolation preserved: B touching A's existing session is still 404."""
-    h = _boot_auth(default_nalar_bin)
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "a@example.com", "supersecret123")
-        _create_admin(default_nalar_bin, h.temp_dir, "b@example.com", "supersecret123", force=True)
+        _create_admin(default_pabrik_bin, h.temp_dir, "a@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "b@example.com", "supersecret123", force=True)
         tok_a = _login(h.port, "a@example.com", "supersecret123")
         tok_b = _login(h.port, "b@example.com", "supersecret123")
 
@@ -125,7 +125,7 @@ def test_foreign_existing_session_still_404(default_nalar_bin: Path):
         status, _, body = _raw(
             "POST", h.port, "/api/llm/session",
             body={"session_id": sid, "queue_message": "hello from A"},
-            cookie=f"nalar_session={tok_a}",
+            cookie=f"pabrik_session={tok_a}",
         )
         assert status == 201, body[:500]
         # Wait for the async insert_worker to commit (create is async).
@@ -133,13 +133,13 @@ def test_foreign_existing_session_still_404(default_nalar_bin: Path):
 
         deadline = time.time() + 10
         while time.time() < deadline:
-            s, _, _ = _raw("GET", h.port, f"/api/llm/session/{sid}", cookie=f"nalar_session={tok_a}")
+            s, _, _ = _raw("GET", h.port, f"/api/llm/session/{sid}", cookie=f"pabrik_session={tok_a}")
             if s == 200:
                 break
             time.sleep(0.2)
 
         status_b, _, body_b = _raw(
-            "POST", h.port, f"/api/llm/session/{sid}/touched", body={}, cookie=f"nalar_session={tok_b}"
+            "POST", h.port, f"/api/llm/session/{sid}/touched", body={}, cookie=f"pabrik_session={tok_b}"
         )
         assert status_b == 404, f"expected 404 for foreign session, got {status_b}: {body_b[:300]}"
         assert b"Session not found" in body_b

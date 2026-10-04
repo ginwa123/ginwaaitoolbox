@@ -1756,7 +1756,7 @@ test "search: only_matching = true does NOT return a validation error" {
 // These exercise the rg spawn path. Marked Linux-only because rg may not
 // be installed on the CI macOS runner and the cross-platform behavior
 // of `-e` + `--` + `--no-config` is the same on macOS anyway. See
-// project memory `nalar-cross-platform-blockers-and-fixes.md` for the
+// project memory `pabrik-cross-platform-blockers-and-fixes.md` for the
 // cross-platform test pattern.
 //
 // On macOS these tests are skipped (return success) to avoid false
@@ -3446,7 +3446,7 @@ test "search: search_result_to_json_grouped renders files entries" {
 //
 // These run anywhere (don't need rg) and protect against regressions in
 // the source-file form. They mirror the convention from project memory
-// `nalar-http-handler-thin-wrapper-pattern.md`.
+// `pabrik-http-handler-thin-wrapper-pattern.md`.
 
 const SEARCH_SOURCE_PATH = "src/modules/agent/tools/search.zig";
 

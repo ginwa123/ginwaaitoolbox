@@ -5,7 +5,7 @@ runSubAgent never forwarded the parent's selection to RunParamsNew,
 so every LLM call fell back to top-level defaults instead of the
 parent profile (e.g. union alpha).
 
-Wire contract over HTTP (harness boots a fresh nalar per test):
+Wire contract over HTTP (harness boots a fresh pabrik per test):
 
   - PUT /api/llm/session/:id {selected_profile_model} persists it
     (same updateSessionSelectedProfileModel the workflow fix uses).

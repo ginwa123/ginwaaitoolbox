@@ -240,8 +240,8 @@ No icon library is installed.
   under the group with a left rail (`ml-4 pl-2 border-l border-[--color-border]/30`,
   the repo's established "these belong to that group" signal — `WorkspaceItem.vue:720-728`).
 - **Collapse state** — per group, persisted in `localStorage` under
-  `nalar-kanban-row-collapsed:<itemId>` as a JSON array of column ids
-  (mirrors `nalar-workspace-item-expanded`, `stores/workspaces.ts:228`).
+  `pabrik-kanban-row-collapsed:<itemId>` as a JSON array of column ids
+  (mirrors `pabrik-workspace-item-expanded`, `stores/workspaces.ts:228`).
   Collapse is *not* URL state — it is a density preference, like
   `sidebar-width`, and the repo's URL rule targets *view switches*, not
   disclosure state.
@@ -354,7 +354,7 @@ const layout = ref<KanbanLayout>(readLayoutParam() ?? readStoredLayout() ?? 'col
 const setLayout = (next: KanbanLayout) => {
   if (layout.value === next) return
   layout.value = next
-  writeStoredLayout(next)          // try/catch, key `nalar-kanban-layout`
+  writeStoredLayout(next)          // try/catch, key `pabrik-kanban-layout`
   try {
     const q = flatQuery()
     if (next === 'columns') delete q[LAYOUT_PARAM]   // strip the default
@@ -417,7 +417,7 @@ watch(columnSorts, (next) => {
    `useKanbanScrollRestore.spec.ts` (432 lines) already covers the hard parts
    (rAF ticks, `scrollend` fast path, debounce, unmount flush).
 
-6. **Collapse persistence** — `nalar-kanban-row-collapsed:<itemId>` (JSON array),
+6. **Collapse persistence** — `pabrik-kanban-row-collapsed:<itemId>` (JSON array),
    read/written with the repo's `try/catch` + allow-list shape
    (`DiffView.vue:81-101`). Not user-scoped: it is a visual preference, and
    `userScope.ts:13-16` reserves `userScopedKey()` for identity data.
@@ -453,9 +453,9 @@ watch(columnSorts, (next) => {
   it (`router.replace`, not `push`, for tab switches)"* (`AGENTS.md:180-181`).
   `push` is reserved for opening a discrete record (`?detail=`, 690).
 - **Default stripped:** `columns` deletes the key, mirroring
-  `SidebarDiffPanel.vue:77-79` and `NalarSettings.vue:105-111`.
+  `SidebarDiffPanel.vue:77-79` and `PabrikSettings.vue:105-111`.
 - **Precedence:** URL → localStorage → `columns`. Deep links must beat the
-  sticky preference (`NalarTabStrip.vue:35-38` states the same rule).
+  sticky preference (`PabrikTabStrip.vue:35-38` states the same rule).
 - **Preservation:** the `?sorts=` watcher fix (§5.3.2) is what keeps `layout`
   and `detail` alive. Without it, picking a column sort silently resets the
   layout — the exact bug class documented at `AppLayout.vue:642-645`.

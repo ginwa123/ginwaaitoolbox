@@ -16,7 +16,7 @@ after a pull request is found. Worktree bindings and branches without
 a pull request render no git badge.
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \\
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \\
       python3 -m pytest tests/functional/sidebar_git_branch_test.py -v
 """
 

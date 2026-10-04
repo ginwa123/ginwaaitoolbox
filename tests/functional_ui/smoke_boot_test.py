@@ -1,12 +1,12 @@
 """End-to-end smoke test for the UIHarness.
 
-Boots a real nalar backend + Vite dev server against an isolated
+Boots a real pabrik backend + Vite dev server against an isolated
 tmpdir HOME, then opens the running web app in a headless Chromium
 browser and verifies (a) the Vue app mounts, (b) the API proxy
 works (a request to /api/* via the browser reaches the test backend,
 not the developer's :8081).
 
-This is the FIRST test that requires both a built nalar binary AND
+This is the FIRST test that requires both a built pabrik binary AND
 installed Playwright browsers. Run:
 
     # One-time setup (downloads ~150 MB of browser binaries):
@@ -14,7 +14,7 @@ installed Playwright browsers. Run:
     playwright install chromium
 
     # Run the smoke test:
-    NALAR_BIN=/path/to/nalar pytest tests/functional_ui/smoke_boot_test.py -v
+    PABRIK_BIN=/path/to/pabrik pytest tests/functional_ui/smoke_boot_test.py -v
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ def test_temp_dir_is_isolated_from_real_home(ui_harness: UIHarness) -> None:
     assert h.temp_dir != real_home
     # The tempdir must exist on disk and contain the backend's DB.
     assert h.temp_dir.exists()
-    db_path = h.temp_dir / ".config" / "nalar" / "agent.db"
+    db_path = h.temp_dir / ".config" / "pabrik" / "agent.db"
     assert db_path.exists(), (
         f"Backend agent.db not found at expected tempdir path: {db_path}. "
         f"The backend may have written to the real $HOME — STOP and "

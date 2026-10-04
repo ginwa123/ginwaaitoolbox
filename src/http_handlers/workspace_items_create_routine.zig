@@ -23,8 +23,8 @@
 //! Task: task_1789032258828_0.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 const cron = @import("../ai_workflow/tui/routines/cron.zig");
@@ -97,7 +97,7 @@ pub const WorkspaceItemsCreateRoutineResult = []const u8; // pre-serialized JSON
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: WorkspaceItemsCreateRoutineInput,
 ) WorkspaceItemsCreateRoutineError!WorkspaceItemsCreateRoutineResult {
     if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
@@ -201,7 +201,7 @@ fn useCase(
 /// (mirrors `workspace_items_create_agent.zig::readInsertedPosition`).
 fn readInsertedPosition(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) i64 {
     var q = db.query(allocator,
@@ -227,7 +227,7 @@ pub fn workspaceItemsCreateRoutineHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
@@ -307,7 +307,7 @@ pub fn workspaceItemsCreateRoutineHandler(
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration084ReplaceRoutinesWithWorkspaceRoutines = @import("../migrations/migration.zig").Migration084ReplaceRoutinesWithWorkspaceRoutines;
 const Migration087CreateAgentRoutines = @import("../migrations/migration.zig").Migration087CreateAgentRoutines;

@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - DONT KILL THE PORT 8081 SERVER — functional tests use another port (harness picks 8080..8199 excl. 8081).
-- Verification via isolated functional harness (`tests/functional/harness.py` boots fresh `nalarcore-linux-x86_64` against tmpdir HOME), NEVER `nohup ./zig-out/bin/nalar + curl` live server.
+- Verification via isolated functional harness (`tests/functional/harness.py` boots fresh `pabrikcore-linux-x86_64` against tmpdir HOME), NEVER `nohup ./zig-out/bin/pabrik + curl` live server.
 - TDD: failing test first (red), minimal fix (green), regression suite, commit per task. Never delete existing tests to make green.
 - Git worktree for all implementation (`worktree/fix-subagent-peek-realtime`); open PR for `in_review_task`.
 - SSE wire-format contract: any new/renamed `event_type` must change all 3 sites (backend emitter + `additionalEventTypes` + dispatch chain). This plan adds NO new event_type — do not add one.
@@ -36,7 +36,7 @@ Touch:
 - `src/ai_workflow/tui/http_handlers/session_messages_get.zig` — static-contract test target (decode expectation), no logic change if router decodes.
 - `src/apps/desktop/src/composables/useSubAgentPeek.ts` — `encodeURIComponent`, `watch(sessionId)` refetch, listen for parent `completed` with matching `subagent_session_id` → refetch, fix premature `tool_calls→complete`.
 - `src/apps/desktop/src/components/views/ChatView.vue` — move `useSubAgentPeek` out of `computed` into setup-scope + pass-through.
-- `src/apps/desktop/src/components/nalar/SpawnSubAgent.vue` — `encodeURIComponent`-safe sid handling (no logic change if composable encodes; add regression spec for sid with space).
+- `src/apps/desktop/src/components/pabrik/SpawnSubAgent.vue` — `encodeURIComponent`-safe sid handling (no logic change if composable encodes; add regression spec for sid with space).
 - `src/apps/desktop/src/api/index.ts` — `getChatHistory`-adjacent encode (same bug shape at `:1246`); verify `additionalEventTypes` untouched.
 - Tests: `*_test.zig` inline/static-contract, `tests/functional/subagent_peek_test.py` (new), `useSubAgentPeek.spec.ts` + `SpawnSubAgent.spec.ts` (new/extend).
 
@@ -78,7 +78,7 @@ Read-only (verify, don't change unless test proves otherwise):
 - [ ] E4. Verify no new `event_type` added (3-site grep: new name must appear in emitter + `additionalEventTypes` + dispatch — assert none added); `pnpm test:unit` green; commit E.
 
 ### F — End-to-end verification + PR
-- [ ] F1. Functional suite GREEN: `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/subagent_peek_test.py -v` (new: space-name after-done, single-token regression, live-open-then-complete refetch if harness supports SSE; at minimum the two GET-shape tests).
+- [ ] F1. Functional suite GREEN: `PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/subagent_peek_test.py -v` (new: space-name after-done, single-token regression, live-open-then-complete refetch if harness supports SSE; at minimum the two GET-shape tests).
 - [ ] F2. Full regression: `zig build test --summary all` (0 fail) + `pnpm test:unit` (all pass) + `vue-tsc --noEmit` clean.
 - [ ] F3. Manual wire replay (functional harness only, never port 8081): open eye mid-run → messages stream; open after done → full history; name with space → works; refresh-after-done → works via envelope sid.
 - [ ] F4. Push worktree branch, open PR, move card to `in_review_task` (human reviews PR). Do NOT move to `merged` (human-only).

@@ -12,9 +12,9 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const llm_history = nalarcore.llm_history;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const llm_history = pabrikcore.llm_history;
 
 pub const SessionListError = error{
     QueryFailed,
@@ -71,7 +71,7 @@ fn parseInput(query: anytype) !SessionListInput {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     io: std.Io,
     input: SessionListInput,
 ) SessionListError!SessionListResult {
@@ -81,7 +81,7 @@ fn useCase(
     // `getSessionListWithCursor` fails closed on (`1 = 0`) — the
     // endpoint never leaks another workspace's sessions.
     var scoped_ids: ?[][]u8 = null;
-    defer if (scoped_ids) |ids| nalarcore.workspace_scope.freeSessionIds(allocator, ids);
+    defer if (scoped_ids) |ids| pabrikcore.workspace_scope.freeSessionIds(allocator, ids);
 
     // Const view of the same ids ([][]u8 does not coerce to
     // []const []const u8 element-wise); pointer-shares the id
@@ -90,7 +90,7 @@ fn useCase(
     defer scope_view.deinit(allocator);
 
     if (input.workspace_id) |wid| {
-        scoped_ids = nalarcore.workspace_scope.workspaceSessionIds(allocator, db, wid) catch return error.QueryFailed;
+        scoped_ids = pabrikcore.workspace_scope.workspaceSessionIds(allocator, db, wid) catch return error.QueryFailed;
         if (scoped_ids) |ids| {
             for (ids) |id| scope_view.append(allocator, id) catch return error.OutOfMemory;
         }
@@ -165,7 +165,7 @@ pub fn sessionListHandler(
     const allocator = ctx.allocator;
     const io = ctx.io;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // Server-derived owner (cookie only, never a query param). Scopes the
@@ -223,7 +223,7 @@ pub fn sessionListHandler(
 const testing = std.testing;
 
 const TestCtx = struct {
-    db: nalarcore.sqlite.SqliteBackend,
+    db: pabrikcore.sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
 };
 
@@ -232,7 +232,7 @@ fn setupDb() !TestCtx {
     var threaded = std.Io.Threaded.init(alloc, .{});
     errdefer threaded.deinit();
     const io = threaded.io();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
 

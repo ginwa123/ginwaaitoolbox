@@ -25,15 +25,15 @@
 //! Note: this module lives in its own file (not `on_event_sent.zig`)
 //! so the kanban event types are co-located with the kanban domain
 //! code, and `on_event_sent.zig` stays untouched. The new module is
-//! re-exported as `nalarcore.ai_mod.on_event_sent_kanban` from
+//! re-exported as `pabrikcore.ai_mod.on_event_sent_kanban` from
 //! `src/ai_workflow/tui/mod.zig`.
 //!
 //! Plan: docs/superpowers/plans/2026-06-26-fix-kanban-list-empty-add-sse.md
 //!   (Chunk 3)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const on_event_sent = nalarcore.ai_mod.on_event_sent;
+const pabrikcore = @import("pabrikcore");
+const on_event_sent = pabrikcore.ai_mod.on_event_sent;
 const SseEvent = on_event_sent.SseEvent;
 
 /// Action discriminator for `kanban_column` events.
@@ -100,7 +100,7 @@ pub fn onEventSendKanbanColumn(
     // event_bus.emit returns void and silently no-ops when no
     // subscriber is registered — so tests that don't stand up an SSE
     // server still pass.
-    const di = nalarcore.getSingleton() catch return;
+    const di = pabrikcore.getSingleton() catch return;
     di.event_bus.emit(SseEvent, "kanban_column", event);
 }
 
@@ -158,6 +158,6 @@ pub fn onEventSendKanbanTask(
         .event_type = "kanban_task",
     };
 
-    const di = nalarcore.getSingleton() catch return;
+    const di = pabrikcore.getSingleton() catch return;
     di.event_bus.emit(SseEvent, "kanban_task", event);
 }

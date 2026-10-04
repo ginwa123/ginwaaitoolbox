@@ -30,8 +30,8 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 // The one containment rule, shared with the `present_files` agent tool. The
 // two disagreed once — the tool accepted any absolute path while this
 // handler 403'd anything outside the session working directory — and the
@@ -161,7 +161,7 @@ pub fn filesDownloadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
         );
     }
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const root = file_sandbox.resolveSessionRoot(allocator, di.db, session_id) catch |err| switch (err) {
         error.SessionNotFound => return gserverz.HttpResponse.init(404, "Not Found", allocator).withJson(
             try http_response.makeErrorResponse(allocator, .{ .@"error" = "Session not found" }),

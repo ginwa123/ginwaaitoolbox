@@ -801,8 +801,8 @@ at the top. OpenAI parser is untouched — backward compatible."
 
 **Steps:**
 
-- [ ] `timeout 180 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig` — expect clean.
-- [ ] `timeout 180 zig build-obj -fno-emit-bin -target aarch64-macos -lc --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig` — expect clean.
+- [ ] `timeout 180 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig` — expect clean.
+- [ ] `timeout 180 zig build-obj -fno-emit-bin -target aarch64-macos -lc --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig` — expect clean.
 - [ ] `timeout 240 rm -rf zig-out/bin && zig build` — expect all binaries produced.
 - [ ] Confirm `zig build test --summary all` still passes end-to-end.
 
@@ -810,14 +810,14 @@ at the top. OpenAI parser is untouched — backward compatible."
 
 **Steps:**
 
-- [ ] **DO NOT kill the existing `nalar` on port 8081** (PID 538546 — that's the user's running instance per the port rules in `AGENTS.md`). Use port 8080 for testing.
+- [ ] **DO NOT kill the existing `pabrik` on port 8081** (PID 538546 — that's the user's running instance per the port rules in `AGENTS.md`). Use port 8080 for testing.
 - [ ] Start the freshly-built binary on 8080:
     ```bash
     cd /home/ginwa/ginwaaitoolbox
-    timeout 180 ./zig-out/bin/nalar --port 8080 > /tmp/anthropic_smoke_8080.log 2>&1 &
+    timeout 180 ./zig-out/bin/pabrik --port 8080 > /tmp/anthropic_smoke_8080.log 2>&1 &
     echo $! > /tmp/anthropic_smoke_8080.pid
     ```
-- [ ] Configure a profile in `~/.config/nalar/config.json` with `url_style=anthropic`, `base_url=https://api.anthropic.com` (or a test-compatible relay), `model=claude-…`, `api_key=sk-ant-…`. (Skip if the user already has such a profile configured — confirm with them.)
+- [ ] Configure a profile in `~/.config/pabrik/config.json` with `url_style=anthropic`, `base_url=https://api.anthropic.com` (or a test-compatible relay), `model=claude-…`, `api_key=sk-ant-…`. (Skip if the user already has such a profile configured — confirm with them.)
 - [ ] Open `http://localhost:8080`, pick the Anthropic profile in the chatview dropdown.
 - [ ] Send a short message ("hi").
 - [ ] Tail `/tmp/anthropic_smoke_8080.log`. **Confirm**: the response streams token-by-token (NOT a single retry-then-fail loop). The user-visible chat shows the model's reply.
@@ -858,9 +858,9 @@ timeout 360 zig build
 
 # 4. Cross-compile smoke (mandatory)
 zig build-obj -fno-emit-bin -target x86_64-windows-gnu -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 zig build-obj -fno-emit-bin -target aarch64-macos -lc \
-  --dep nalarcore -Mroot=/tmp/test_mod.zig -Mnalarcore=src/root.zig
+  --dep pabrikcore -Mroot=/tmp/test_mod.zig -Mpabrikcore=src/root.zig
 # Expect: both clean (no errors)
 
 # 5. Frontend — no changes expected, but sanity-check

@@ -8,7 +8,7 @@ const STORAGE_KEY_SIDEBAR_WIDTH = 'sidebar-width'
 const STORAGE_KEY_ACTIVE_CHAT_ID = 'active-chat-id'
 const STORAGE_KEY_ACTIVE_CHAT_NAME = 'active-chat-name'
 const STORAGE_KEY_ACTIVE_TASK_ID = 'active-task-id'
-const STORAGE_KEY_CHATS_SORT_DIRECTION = 'nalar_chats_sort_direction'
+const STORAGE_KEY_CHATS_SORT_DIRECTION = 'pabrik_chats_sort_direction'
 
 export const useNavigationStore = defineStore('navigation', () => {
   // Sidebar state

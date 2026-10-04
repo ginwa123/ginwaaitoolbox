@@ -32,10 +32,10 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 
-// Import the storage layer directly (the `nalarcore.session_plan`
+// Import the storage layer directly (the `pabrikcore.session_plan`
 // alias is wired up in src/root.zig by Task 4; for the pure-fn layer
 // we just need the module itself). Same pattern as update_plan.zig.
 const session_plan = @import("../../../agentic_loop/session_plan.zig");

@@ -1,7 +1,7 @@
 # Functional Tests
 
-Real-data, isolated-in-`/tmp` end-to-end coverage for nalar. Each test
-boots a fresh `nalar` binary against an isolated tempdir HOME, exercises
+Real-data, isolated-in-`/tmp` end-to-end coverage for pabrik. Each test
+boots a fresh `pabrik` binary against an isolated tempdir HOME, exercises
 the HTTP API with non-trivial data, and rmtree's the tempdir on
 teardown.
 
@@ -14,7 +14,7 @@ defensive layers enforce this:
    before every `shutil.rmtree`. Returns True only if the path
    (a) starts with `/tmp/`, `/private/tmp/`, `/private/var/folders/`,
    or `tempfile.gettempdir() + "/"`, AND (b) contains the literal
-   substring `nalar-func-`, AND (c) does not resolve to the real
+   substring `pabrik-func-`, AND (c) does not resolve to the real
    `$HOME` (catches symlinks via `os.path.realpath`).
 2. **Captured `Path` attribute, not `$HOME`** — `h.temp_dir` is set
    once at boot. `teardown()` rmtree's THIS attribute. A test that
@@ -38,11 +38,11 @@ pytest tests/functional/harness_safety_test.py -v
 # Expect: 12 passed.
 ```
 
-### Full suite (requires a built nalar)
+### Full suite (requires a built pabrik)
 
 ```bash
 # Option A: use an existing binary
-NALAR_BIN=/path/to/nalar pytest tests/functional/
+PABRIK_BIN=/path/to/pabrik pytest tests/functional/
 
 # Option B: build first, then run
 zig build install:linux:system
@@ -55,26 +55,26 @@ zig build functional-test
 ### Single suite
 
 ```bash
-NALAR_BIN=./zig-out/bin/nalar pytest tests/functional/workspace_lifecycle_test.py -v
+PABRIK_BIN=./zig-out/bin/pabrik pytest tests/functional/workspace_lifecycle_test.py -v
 ```
 
 ### Dry-run mode (skip rmtree; useful for debugging)
 
 ```bash
-NALAR_FUNCTIONAL_DRY_RUN=1 NALAR_BIN=./zig-out/bin/nalar pytest tests/functional/smoke_boot_test.py -v -s
+PABRIK_FUNCTIONAL_DRY_RUN=1 PABRIK_BIN=./zig-out/bin/pabrik pytest tests/functional/smoke_boot_test.py -v -s
 # tempdirs are NOT cleaned up; you can inspect them after the run.
 ```
 
 ### Parallel
 
 ```bash
-NALAR_BIN=./zig-out/bin/nalar pytest tests/functional/ -n auto
-# Each worker gets its own nalar process, its own port, its own tempdir.
+PABRIK_BIN=./zig-out/bin/pabrik pytest tests/functional/ -n auto
+# Each worker gets its own pabrik process, its own port, its own tempdir.
 ```
 
 ## TUI suites (pty-driven, no HTTP)
 
-`tui_perf_test.py` covers `nalar-tui`'s memory + input-latency behaviour. It is
+`tui_perf_test.py` covers `pabrik-tui`'s memory + input-latency behaviour. It is
 different in kind from the HTTP suites:
 
 * it drives the **TUI binary inside a pty** (`tui_perf_probe.py`) because the TUI
@@ -82,17 +82,17 @@ different in kind from the HTTP suites:
   key-to-echo latency) only exist at the terminal layer;
 * it is **hermetic** — the TUI is pointed at an unreachable backend, so no port is
   bound, no server boots and nothing is written to disk;
-* it **skips** (does not fail) when `nalar-tui` is missing, because CI's
-  functional-test step installs only the `nalar` binary.
+* it **skips** (does not fail) when `pabrik-tui` is missing, because CI's
+  functional-test step installs only the `pabrik` binary.
 
 ```bash
 zig build install:tui
-python3 tests/functional/tui_perf_probe.py --binary zig-out/bin/nalar-tui   # standalone report
+python3 tests/functional/tui_perf_probe.py --binary zig-out/bin/pabrik-tui   # standalone report
 python3 -m pytest tests/functional/tui_perf_test.py -v                      # gate
-NALAR_TUI_BIN=/path/to/nalar-tui python3 -m pytest tests/functional/tui_perf_test.py -v
+PABRIK_TUI_BIN=/path/to/pabrik-tui python3 -m pytest tests/functional/tui_perf_test.py -v
 ```
 
-Background: `docs/superpowers/plans/2026-09-13-audit-nalar-tui-memory-and-latency.md`.
+Background: `docs/superpowers/plans/2026-09-13-audit-pabrik-tui-memory-and-latency.md`.
 
 ## Adding a new suite
 
@@ -125,24 +125,24 @@ handles HTTP, JSON, and the safety net.
 When a test starts:
 
 1. `harness = FunctionalHarness.boot(bin)` runs.
-2. `boot()` calls `tempfile.mkdtemp(prefix="nalar-func-")` — a fresh
-   dir like `/var/folders/.../T/nalar-func-0v1e3wyf`.
+2. `boot()` calls `tempfile.mkdtemp(prefix="pabrik-func-")` — a fresh
+   dir like `/var/folders/.../T/pabrik-func-0v1e3wyf`.
 3. `is_safe_tmp()` validates the new path. If it fails, boot
    aborts and the test errors with `FunctionalHarnessError`.
-4. `os.environ["HOME"]` is shadowed to the tempdir. The nalar
+4. `os.environ["HOME"]` is shadowed to the tempdir. The pabrik
    process inherits this via `subprocess.Popen(env=...)`.
-5. nalar's `helpers.db_path.getDbPath(allocator, io, environment)`
-   reads `HOME` from the env and creates `$HOME/.config/nalar/agent.db`
-   (Linux) or `$HOME/Library/Application Support/nalar/config.json`
+5. pabrik's `helpers.db_path.getDbPath(allocator, io, environment)`
+   reads `HOME` from the env and creates `$HOME/.config/pabrik/agent.db`
+   (Linux) or `$HOME/Library/Application Support/pabrik/config.json`
    (macOS). **Both paths land inside the tempdir.**
-6. nalar runs all 64 migrations, listens on the chosen port, and
+6. pabrik runs all 64 migrations, listens on the chosen port, and
    the test drives the API.
 
 When the test ends:
 
 1. The fixture's `try/finally` calls `h.teardown()`.
 2. `teardown()` restores `os.environ["HOME"]` to `orig_home`.
-3. `teardown()` SIGTERMs nalar (then SIGKILLs after 5s).
+3. `teardown()` SIGTERMs pabrik (then SIGKILLs after 5s).
 4. `teardown()` calls `is_safe_tmp()` again as a safety net.
 5. If validation passes, `shutil.rmtree(temp_dir)` removes the
    entire tempdir.
@@ -153,7 +153,7 @@ When the test ends:
 ## Port allocation
 
 Per project memory "Mandatory: Dont ever kill the process port 8081",
-the harness never uses port 8081 (the always-running dev nalar).
+the harness never uses port 8081 (the always-running dev pabrik).
 
 ### Random by default
 
@@ -192,7 +192,7 @@ default or the dev backend.
 ### TIME_WAIT reuse
 
 The probe socket sets `SO_REUSEADDR` so it can bind ports in TIME_WAIT
-state. nalar's listener also sets `SO_REUSEADDR` (see
+state. pabrik's listener also sets `SO_REUSEADDR` (see
 `kabelweb repo src/server/http_server.zig:201 setReuseAddr`),
 so it can subsequently bind the same port despite lingering server-side
 TIME_WAITs from prior runs.
@@ -201,7 +201,7 @@ TIME_WAITs from prior runs.
 
 Pass an explicit port to force a deterministic value::
 
-    FunctionalHarness.boot(nalar_bin, port=8123)
+    FunctionalHarness.boot(pabrik_bin, port=8123)
     # Falls back to the legacy sequential scan from 8123.
 
 For tests that need a specific port, the random pick can be bypassed

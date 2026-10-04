@@ -9,7 +9,7 @@ server only reaches them as a failure if somebody remembers to update the
 fixture — and until then the phone shows a chat that never updates, with
 nothing in any log.
 
-This file closes the gap from the other side: it asks a real `nalar` for the
+This file closes the gap from the other side: it asks a real `pabrik` for the
 frames and asserts the exact fields the Kotlin reads. The sibling
 `android_workers_contract_test.py` does the same for the `workers` frames that
 now arrive on the same connection.
@@ -22,7 +22,7 @@ Two sources of frames, deliberately:
     as a four-character *string* — are the ones a fixture would have got
     wrong.
   * **The test-only emitter** (`POST /api/dev/sse/emit_llm`, gated behind
-    `NALAR_TEST_SSE_EMIT=1`, 404 otherwise) for `llm_chunk`, because the stub
+    `PABRIK_TEST_SSE_EMIT=1`, 404 otherwise) for `llm_chunk`, because the stub
     LLM does not stream deltas. It always labels its frames `llm_chunk`
     regardless of the `type` in the body, so it is only used where that
     label is the one being asserted.
@@ -110,23 +110,23 @@ FULL_ROW_KEYS = {
 
 @pytest.fixture(scope="module")
 def harness():
-    """One isolated nalar for the module, on a random free port (never 8081).
+    """One isolated pabrik for the module, on a random free port (never 8081).
 
-    `NALAR_TEST_SSE_EMIT=1` is exported *before* the boot, because the gate is
+    `PABRIK_TEST_SSE_EMIT=1` is exported *before* the boot, because the gate is
     read from the server process's own environment. With the var absent the
     test-only emitter is a 404 — deliberately, so a developer or production
     run can never be driven through it.
     """
-    previous = os.environ.get("NALAR_TEST_SSE_EMIT")
-    os.environ["NALAR_TEST_SSE_EMIT"] = "1"
+    previous = os.environ.get("PABRIK_TEST_SSE_EMIT")
+    os.environ["PABRIK_TEST_SSE_EMIT"] = "1"
     try:
         with FunctionalHarness.boot(stub_llm_profile=True) as h:
             yield h
     finally:
         if previous is None:
-            os.environ.pop("NALAR_TEST_SSE_EMIT", None)
+            os.environ.pop("PABRIK_TEST_SSE_EMIT", None)
         else:
-            os.environ["NALAR_TEST_SSE_EMIT"] = previous
+            os.environ["PABRIK_TEST_SSE_EMIT"] = previous
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────

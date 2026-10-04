@@ -295,7 +295,7 @@ Clone `agent_tools_{list,create,delete}.zig`. Include the `isKnownTool` registry
 - [ ] Full verification sweep:
   ```bash
   zig build test --summary all
-  NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/agent_kanbans_test.py -v
+  PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 python3 -m pytest tests/functional/agent_kanbans_test.py -v
   cd src/apps/desktop && npm run test:unit && npm run type-check && npm run build
   ```
 - [ ] Delete any stray `.js` files emitted by vue-tsc before committing (skill: vue-tsc-build-emits-js-files).

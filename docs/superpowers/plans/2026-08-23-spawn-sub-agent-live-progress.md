@@ -94,7 +94,7 @@
   }
   ```
 
-  Implementation of `emitProgressEvent`: call `nalarcore.getSingleton()`, then the same `onEventSendLLMHistory` path `sendSSEForMessageById` uses (see `handle_tool.zig:716` for the call shape) with `role = "subagent_progress"` and empty content. Wrap the whole body in `catch |err| { logger.warnFmt(...) }` — never propagate.
+  Implementation of `emitProgressEvent`: call `pabrikcore.getSingleton()`, then the same `onEventSendLLMHistory` path `sendSSEForMessageById` uses (see `handle_tool.zig:716` for the call shape) with `role = "subagent_progress"` and empty content. Wrap the whole body in `catch |err| { logger.warnFmt(...) }` — never propagate.
 - [ ] Re-export in `src/root.zig` (`pub const subagent_progress = @import("ai_workflow/tui/agentic_loop/subagent_progress.zig");`) and add the test import in `src/ai_workflow/tui/test_runner.zig`.
 - [ ] Run `zig build test --summary all` — 3 new tests PASS, zero regressions.
 - [ ] **Commit:** `feat(subagent): pure progress-event builder + emitter helper`
@@ -114,7 +114,7 @@
   - After `success = true` is set (~line 230), call `emitProgressEvent(.{ .status = .completed, .session_id = sess_id, ... })`.
   - Elapsed: capture `std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds` at thread start; compute ms at each emit.
 - [ ] Run `zig build test --summary all` — static-contract test PASSES, full suite green.
-- [ ] Manual smoke (optional but recommended): run the binary on port 8080 (NEVER 8081), send a message that triggers a 2-agent spawn, watch `~/.config/nalar/agent.db` + logs for 6 progress events (2 launched + 2 completed/failed).
+- [ ] Manual smoke (optional but recommended): run the binary on port 8080 (NEVER 8081), send a message that triggers a 2-agent spawn, watch `~/.config/pabrik/agent.db` + logs for 6 progress events (2 launched + 2 completed/failed).
 - [ ] **Commit:** `feat(subagent): emit launched/completed/failed progress events from sub-agent threads`
 
 ### Task 3 — Frontend: SpawnSubAgent.vue live-progress rendering

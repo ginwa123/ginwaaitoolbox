@@ -56,7 +56,7 @@ from harness import FunctionalHarness  # noqa: E402
 
 @pytest.fixture(scope="module")
 def harness():
-    """Boot one isolated nalar instance for the whole module.
+    """Boot one isolated pabrik instance for the whole module.
 
     Uses the harness' default random free port (never 8081, which is reserved
     for the developer's running instance) and an isolated tmpdir HOME.

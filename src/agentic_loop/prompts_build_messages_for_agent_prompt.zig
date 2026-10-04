@@ -1,19 +1,19 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const json = std.json;
-const nalarcore = @import("nalarcore");
-const mcp_stdio = nalarcore.mcp_stdio;
-const mcp_http = nalarcore.mcp_http;
-const mcp_types = nalarcore.mcp_types;
-const agent = nalarcore.agent;
+const pabrikcore = @import("pabrikcore");
+const mcp_stdio = pabrikcore.mcp_stdio;
+const mcp_http = pabrikcore.mcp_http;
+const mcp_types = pabrikcore.mcp_types;
+const agent = pabrikcore.agent;
 const llm_history = @import("llm_history.zig");
 const session_helpers = llm_history;
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const TUIHistory = @import("models.zig").TUIHistory;
-const tool_models = nalarcore.tool_models;
+const tool_models = pabrikcore.tool_models;
 
 // Inner prompt-template modules. Imported directly (not via
-// `nalarcore.prompt`) because the orchestrator-side file owns the
+// `pabrikcore.prompt`) because the orchestrator-side file owns the
 // `build_agent_prompt` rendering assembly as of the 2026-08-23 move.
 const prompts_const = @import("../modules/agent/prompts/prompts.zig");
 const memory_prompts = @import("../modules/agent/prompts/memory.zig");
@@ -23,7 +23,7 @@ const tool_memories_mod = @import("../modules/agent/tools/memories.zig");
 // `AgentTool.function.system_prompt` field (see schemas.zig). The aggregator
 // below reads `tool.function.system_prompt` dynamically from `filtered_tools`
 // without hardcoding names — the tool's own `.name` is the key.
-const config_mod = nalarcore.config;
+const config_mod = pabrikcore.config;
 const tool_eligibility = @import("tool_eligibility.zig");
 const custom_http_client = @import("kabelweb").client;
 const background_process = @import("background_process.zig");
@@ -39,37 +39,37 @@ const ToolParameters = tool_models.ToolParameters;
 const ToolProperty = tool_models.ToolProperty;
 const agentic_loop = @import("workflow.zig");
 
-const bash_tool_mod = nalarcore.bash_tool;
-const read_file_mod = nalarcore.read_file;
-const text_replace_mod = nalarcore.text_replace_tool;
-const write_file_mod = nalarcore.write_file;
-const list_skills_mod = nalarcore.skill_tools;
-const memories_mod = nalarcore.memories;
-const list_memory_mod = nalarcore.list_memory_tool;
-const use_skill_mod = nalarcore.skill_tools;
-const remove_skill_mod = nalarcore.skill_tools;
-const list_agents_mod = nalarcore.list_agents;
-const add_skill_mod = nalarcore.skill_tools;
-const edit_skill_mod = nalarcore.skill_tools;
-const set_git_worktree_mod = nalarcore.set_git_worktree;
-const kanban_list_mod = nalarcore.kanban_list;
-const kanban_move_task_mod = nalarcore.kanban_move_task;
-const kanban_create_task_tool = nalarcore.create_kanban_task;
-const set_design_page_mod = nalarcore.set_design_page;
-const add_design_element_mod = nalarcore.add_design_element;
-const update_design_element_mod = nalarcore.update_design_element;
-const group_design_elements_mod = nalarcore.group_design_elements;
-const set_element_parent_mod = nalarcore.set_element_parent;
-const move_design_element_mod = nalarcore.move_design_element;
-const move_element_to_page_mod = nalarcore.move_element_to_page;
-const remove_agent_mod = nalarcore.remove_agent;
-const remove_file_mod = nalarcore.remove_file;
-const change_agent_mod = nalarcore.change_agent;
-const web_search_mod = nalarcore.web_search;
-const glob_tool_mod = nalarcore.glob_tool;
-const search_tool_mod = nalarcore.search_tool;
-const semantic_search_mod = nalarcore.semantic_search;
-const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
+const bash_tool_mod = pabrikcore.bash_tool;
+const read_file_mod = pabrikcore.read_file;
+const text_replace_mod = pabrikcore.text_replace_tool;
+const write_file_mod = pabrikcore.write_file;
+const list_skills_mod = pabrikcore.skill_tools;
+const memories_mod = pabrikcore.memories;
+const list_memory_mod = pabrikcore.list_memory_tool;
+const use_skill_mod = pabrikcore.skill_tools;
+const remove_skill_mod = pabrikcore.skill_tools;
+const list_agents_mod = pabrikcore.list_agents;
+const add_skill_mod = pabrikcore.skill_tools;
+const edit_skill_mod = pabrikcore.skill_tools;
+const set_git_worktree_mod = pabrikcore.set_git_worktree;
+const kanban_list_mod = pabrikcore.kanban_list;
+const kanban_move_task_mod = pabrikcore.kanban_move_task;
+const kanban_create_task_tool = pabrikcore.create_kanban_task;
+const set_design_page_mod = pabrikcore.set_design_page;
+const add_design_element_mod = pabrikcore.add_design_element;
+const update_design_element_mod = pabrikcore.update_design_element;
+const group_design_elements_mod = pabrikcore.group_design_elements;
+const set_element_parent_mod = pabrikcore.set_element_parent;
+const move_design_element_mod = pabrikcore.move_design_element;
+const move_element_to_page_mod = pabrikcore.move_element_to_page;
+const remove_agent_mod = pabrikcore.remove_agent;
+const remove_file_mod = pabrikcore.remove_file;
+const change_agent_mod = pabrikcore.change_agent;
+const web_search_mod = pabrikcore.web_search;
+const glob_tool_mod = pabrikcore.glob_tool;
+const search_tool_mod = pabrikcore.search_tool;
+const semantic_search_mod = pabrikcore.semantic_search;
+const spawn_sub_agent_tool = pabrikcore.spawn_sub_agent;
 
 pub fn buildMessages(
     allocator: std.mem.Allocator,
@@ -83,7 +83,7 @@ pub fn buildMessages(
     inherited_context_mode: []const u8,
     activeAgentContent: []const u8,
 ) ![]agent.AgentMessage {
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const environment = di.environment;
 
     var final_system: std.ArrayList(u8) = .empty;
@@ -136,7 +136,7 @@ pub fn buildMessages(
     try final_system.appendSlice(allocator, prompts_const.SkillWriteToolRule);
     _ = activeAgentContent;
 
-    // 2. WorkingDirectoryContext — NALAR.md / CLAUDE.md / AGENTS.md (right after static sections)
+    // 2. WorkingDirectoryContext — PABRIK.md / CLAUDE.md / AGENTS.md (right after static sections)
     const memoryMd = try agentic_loop.prompts_mod.makeWorkingDirectoryContext(allocator, io, cwd);
     defer allocator.free(memoryMd);
     if (memoryMd.len > 0) {
@@ -151,7 +151,7 @@ pub fn buildMessages(
         try final_system.appendSlice(allocator, "\n\n## Local Knowledge\n\n");
         try final_system.appendSlice(allocator,
             \\The following markdown files are this project's local memory,
-            \\auto-loaded from `<cwd>/.nalar/memories/`. Use `read_file` to
+            \\auto-loaded from `<cwd>/.pabrik/memories/`. Use `read_file` to
             \\load a specific memory on demand. To update, use `write_file`
             \\or `text_replace`; to delete, use `remove_file`.
             \\
@@ -165,7 +165,7 @@ pub fn buildMessages(
         try final_system.appendSlice(allocator, "\n\n## Global Knowledge\n\n");
         try final_system.appendSlice(allocator,
             \\The following markdown files are your persistent global memory,
-            \\auto-loaded from `~/.config/nalar/memories/`. Use `list_memory` to
+            \\auto-loaded from `~/.config/pabrik/memories/`. Use `list_memory` to
             \\see metadata (and any files truncated below the budget).
         );
         try final_system.appendSlice(allocator, knowledge);
@@ -519,7 +519,7 @@ pub fn buildMCPToolsRun(
             break :blk buf[0..count];
         };
         // Via the singleton struct (see root.zig `mcpHttpRegistry`).
-        const http_registry = nalarcore.mcpHttpRegistry(allocator);
+        const http_registry = pabrikcore.mcpHttpRegistry(allocator);
         const http_client = http_registry.getOrConnect(
             server_name,
             url,
@@ -668,7 +668,7 @@ fn fetchToolsFromServerStdio(
     }
 
     // Via the singleton struct (see root.zig `mcpStdioRegistry`).
-    const reg = nalarcore.mcpStdioRegistry(allocator);
+    const reg = pabrikcore.mcpStdioRegistry(allocator);
 
     // Retry loop for cold-start race: process.spawn returns before the
     // child (python → SDK connect → _stdin.on('data')) has attached its
@@ -715,7 +715,7 @@ fn fetchToolsFromServerStdio(
         // Many servers (Python SDK, Node SDK) require initialize before
         // responding to tools/list. We use NDJSON framing (JSON + '\n')
         // which is the SDK default for both transports.
-        const init_body = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"nalar\",\"version\":\"0.0.1\"}}}";
+        const init_body = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"pabrik\",\"version\":\"0.0.1\"}}}";
         const initialized_body = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}";
         const tools_list_body = "{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"tools/list\",\"params\":{}}";
 
@@ -1280,7 +1280,7 @@ fn hasTool(tools: []const tool_models.AgentTool, name: []const u8) bool {
     return false;
 }
 
-/// Load the contents of all memory files in `~/.config/nalar/memories/` and
+/// Load the contents of all memory files in `~/.config/pabrik/memories/` and
 /// concatenate them as a single markdown blob. Each file is prefixed with a
 /// `### <title>` heading derived from `MemoryInfo.title`.
 ///
@@ -1345,7 +1345,7 @@ pub fn loadGlobalKnowledge(
     return result.toOwnedSlice(allocator);
 }
 
-/// Load the contents of all memory files in `<cwd>/.nalar/memories/` and
+/// Load the contents of all memory files in `<cwd>/.pabrik/memories/` and
 /// concatenate them as a single markdown blob. Mirrors `loadGlobalKnowledge`
 /// in shape, error handling, and output format (`### <title> (\`<name>\`)`)
 /// so the rendered prompt has visual consistency across both knowledge
@@ -1353,7 +1353,7 @@ pub fn loadGlobalKnowledge(
 ///
 /// Returns an empty string (allocated) when:
 ///   - `cwd` is empty
-///   - `<cwd>/.nalar/memories/` does not exist (first-run case)
+///   - `<cwd>/.pabrik/memories/` does not exist (first-run case)
 ///   - the directory exists but contains no `.md` files
 ///
 /// Per-file errors (open, read, title extraction) skip the file and
@@ -1419,7 +1419,7 @@ pub fn loadLocalKnowledge(
 ///
 /// After the static sections, the function appends dynamic session state:
 /// loaded skills, project memory, global knowledge (memories from
-/// `~/.config/nalar/memories/`), tool listing, active agent configuration,
+/// `~/.config/pabrik/memories/`), tool listing, active agent configuration,
 /// working directory, workspace context, OS info, background processes,
 /// and active workers.
 ///
@@ -1470,12 +1470,12 @@ pub fn build_agent_prompt(
         try appendSection(allocator, &result, section.content);
     }
 
-    // Project memory (NALAR.md / CLAUDE.md from cwd).
+    // Project memory (PABRIK.md / CLAUDE.md from cwd).
     if (memoryMd.len > 0) {
         try appendSection(allocator, &result, memoryMd);
     }
 
-    // Local Knowledge — auto-loaded from <cwd>/.nalar/memories/*.md.
+    // Local Knowledge — auto-loaded from <cwd>/.pabrik/memories/*.md.
     // Project-specific memories that ship with the codebase. Renders
     // BEFORE Global Knowledge so project context precedes cross-project
     // context ("most specific first" ordering).
@@ -1485,7 +1485,7 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, "\n\n## Local Knowledge\n\n");
         try result.appendSlice(allocator,
             \\The following markdown files are this project's local memory,
-            \\auto-loaded from `<cwd>/.nalar/memories/`. Use `read_file` to
+            \\auto-loaded from `<cwd>/.pabrik/memories/`. Use `read_file` to
             \\load a specific memory on demand. To update, use `write_file`
             \\or `text_replace`; to delete, use `remove_file`.
             \\
@@ -1499,7 +1499,7 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, "\n\n## Global Knowledge\n\n");
         try result.appendSlice(allocator,
             \\The following markdown files are your persistent global memory,
-            \\auto-loaded from `~/.config/nalar/memories/`. Use `list_memory` to
+            \\auto-loaded from `~/.config/pabrik/memories/`. Use `list_memory` to
             \\see metadata (and any files truncated below the budget).
         );
         try result.appendSlice(allocator, knowledge);
@@ -1613,7 +1613,7 @@ pub const SubAgentListingRow = struct {
 /// - **frontend-helper** — model: `claude-3.5-sonnet` — "You are a frontend..."
 ///
 /// (Loaded from the profile's `sub_agents` array in
-/// `~/.config/nalar/config.json` under `profiles_models`.)
+/// `~/.config/pabrik/config.json` under `profiles_models`.)
 /// ```
 ///
 /// No-op when `rows.len == 0` so callers can pass an empty slice
@@ -1669,7 +1669,7 @@ pub fn appendSubAgentsListing(
     try result.appendSlice(allocator,
         \\
         \\Loaded from the profile's `sub_agents` array in
-        \\`~/.config/nalar/config.json` under `profiles_models`.
+        \\`~/.config/pabrik/config.json` under `profiles_models`.
         \\
     );
 }

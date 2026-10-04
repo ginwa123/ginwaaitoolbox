@@ -12,7 +12,7 @@ covered by `kanban_lifecycle_test.py`:
   - POST /api/workspaces/:ws/items/:item_id/kanban/copy_spec_from/:source
     (merge/append mode preserves existing columns, 404 for nonexistent source)
 
-Each test boots a fresh nalar (function-scoped fixture).
+Each test boots a fresh pabrik (function-scoped fixture).
 """
 
 from __future__ import annotations

@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const remove_file_mod = nalarcore.remove_file;
+const agent = pabrikcore.agent;
+const remove_file_mod = pabrikcore.remove_file;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

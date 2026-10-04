@@ -4,14 +4,14 @@
 //! Each handler is in its own file for maintainability.
 
 const std = @import("std");
-pub const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const sqlite = nalarcore.sqlite;
-const ai_workflow = nalarcore.ai_workflow;
-const loggermod = nalarcore.loggermod;
+pub const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const sqlite = pabrikcore.sqlite;
+const ai_workflow = pabrikcore.ai_workflow;
+const loggermod = pabrikcore.loggermod;
 
-const config = nalarcore.config;
-pub const http_response = nalarcore.http_response;
+const config = pabrikcore.config;
+pub const http_response = pabrikcore.http_response;
 
 // =============================================================================
 // Re-exports
@@ -58,7 +58,7 @@ pub const workspacesListHandler = @import("workspaces_list.zig").workspacesListH
 pub const workspacesCreateHandler = @import("workspaces_create.zig").workspacesCreateHandler;
 // The single workspace-create path: id generation, the `position = MAX + 1`
 // INSERT, the `workspace_members` grant and the attached default project.
-// Exposed so `nalar create-admin` (src/main.zig) and any future signup route
+// Exposed so `pabrik create-admin` (src/main.zig) and any future signup route
 // can provision an account's "Default" workspace through the same code the
 // POST /api/workspaces handler uses.
 pub const workspace_provisioning = @import("workspace_provisioning.zig");
@@ -109,7 +109,7 @@ pub const agentKnowledgeCreateHandler = @import("agent_knowledge_create.zig").ag
 pub const agentKnowledgeUpdateHandler = @import("agent_knowledge_update.zig").agentKnowledgeUpdateHandler;
 pub const agentKnowledgeDeleteHandler = @import("agent_knowledge_delete.zig").agentKnowledgeDeleteHandler;
 pub const agentKnowledgeReorderHandler = @import("agent_knowledge_reorder.zig").agentKnowledgeReorderHandler;
-// Test-only SSE emit (dev_sse_emit.zig) — gated by NALAR_TEST_SSE_EMIT=1,
+// Test-only SSE emit (dev_sse_emit.zig) — gated by PABRIK_TEST_SSE_EMIT=1,
 // returns 404 when the gate is off. Used by functional UI tests to drive
 // the chatview's SSE streaming path without a real LLM.
 pub const devSseEmitLlmHandler = @import("dev_sse_emit.zig").emitLlmHandler;
@@ -218,8 +218,8 @@ pub const tasksDeleteHandler = @import("task_delete.zig").tasksDeleteHandler;
 // Use-case + outcome type live in the same file as the handler
 // (DELETE /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id).
 // The handler is a thin orchestrator over `deleteTaskUseCase`; both
-// are scoped under `nalarcore.http_handlers.*` per the project
-// convention (see `nalar_config_profile_delete.zig`'s re-exports).
+// are scoped under `pabrikcore.http_handlers.*` per the project
+// convention (see `pabrik_config_profile_delete.zig`'s re-exports).
 pub const deleteTaskUseCase = @import("task_delete.zig").deleteTaskUseCase;
 pub const TaskDeleteOutcome = @import("task_delete.zig").TaskDeleteOutcome;
 pub const taskPinHandler = @import("task_pin.zig").taskPinHandler;
@@ -245,7 +245,7 @@ pub const tasksReorderPinnedHandler = @import("tasks_reorder_pinned.zig").tasksR
 pub const startAgentHandler = @import("start_agent.zig").startAgentHandler;
 // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). The split
 // use-case, re-exported so callers + tests can reach it as
-// `nalarcore.http_handlers.startAgentUseCase` (matches the
+// `pabrikcore.http_handlers.startAgentUseCase` (matches the
 // `task_delete.zig::deleteTaskUseCase` re-export convention).
 pub const startAgentUseCase = @import("start_agent.zig").startAgentUseCase;
 pub const runAllAgentsHandler = @import("run_all_agents.zig").runAllAgentsHandler;
@@ -278,10 +278,10 @@ pub const memoryUpdateHandler = @import("memories_update.zig").memoryUpdateHandl
 pub const memoryDeleteHandler = @import("memories_delete.zig").memoryDeleteHandler;
 
 // Local Memories API handlers — same CRUD shape as the global memories
-// handlers above but operating on `<cwd>/.nalar/memories/` instead of
-// `~/.config/nalar/memories/`. The `cwd` resolution prefers the body
+// handlers above but operating on `<cwd>/.pabrik/memories/` instead of
+// `~/.config/pabrik/memories/`. The `cwd` resolution prefers the body
 // (for POST/PUT) or the query string (for GET/DELETE), falling back
-// to the nalar server's CWD via `io.realPath` when no explicit cwd
+// to the pabrik server's CWD via `io.realPath` when no explicit cwd
 // is provided. See `docs/plans/2026-06-20-add-markdown-memory.md`.
 pub const localMemoriesListHandler = @import("local_memories_list.zig").localMemoriesListHandler;
 pub const localMemoryDetailHandler = @import("local_memories_detail.zig").localMemoryDetailHandler;
@@ -384,23 +384,23 @@ pub const sessionToClientIdsHandler = @import("session_to_client_ids.zig").sessi
 // session. See `system_prompt_get.zig` for the full contract.
 pub const systemPromptGetHandler = @import("system_prompt_get.zig").systemPromptGetHandler;
 
-// Nalar config handlers
-pub const nalarConfigGetHandler = @import("nalar_config_get.zig").nalarConfigGetHandler;
-pub const nalarConfigPutHandler = @import("nalar_config_put.zig").nalarConfigPutHandler;
-pub const nalarConfigProfileDeleteHandler = @import("nalar_config_profile_delete.zig").nalarConfigProfileDeleteHandler;
+// Pabrik config handlers
+pub const pabrikConfigGetHandler = @import("pabrik_config_get.zig").pabrikConfigGetHandler;
+pub const pabrikConfigPutHandler = @import("pabrik_config_put.zig").pabrikConfigPutHandler;
+pub const pabrikConfigProfileDeleteHandler = @import("pabrik_config_profile_delete.zig").pabrikConfigProfileDeleteHandler;
 // Use-case + domain types live in the same file as the handler. The
 // handler is a thin orchestrator over the use-case; both are scoped
-// under `nalarcore.http_handlers.*` (the convention for handler
-// internals — see `nalar_config_profile_delete_test.zig`'s header).
-pub const removeProfileFromConfig = @import("nalar_config_profile_delete.zig").removeProfileFromConfig;
-pub const NalarConfigJsonForDelete = @import("nalar_config_profile_delete.zig").NalarConfigJsonForDelete;
-// `ConfigInput` is the wire format for `PUT /api/config/nalar`. It is
+// under `pabrikcore.http_handlers.*` (the convention for handler
+// internals — see `pabrik_config_profile_delete_test.zig`'s header).
+pub const removeProfileFromConfig = @import("pabrik_config_profile_delete.zig").removeProfileFromConfig;
+pub const PabrikConfigJsonForDelete = @import("pabrik_config_profile_delete.zig").PabrikConfigJsonForDelete;
+// `ConfigInput` is the wire format for `PUT /api/config/pabrik`. It is
 // `pub` so the test file can re-parse the same body the handler would
 // and lock in the parse-step tolerance (the on-disk object map vs the
 // granular array-of-changes shape). Exposed alongside `parseConfigInput`
 // for the same reason.
-pub const ConfigInput = @import("nalar_config_put.zig").ConfigInput;
-pub const parseConfigInput = @import("nalar_config_put.zig").parseConfigInput;
+pub const ConfigInput = @import("pabrik_config_put.zig").ConfigInput;
+pub const parseConfigInput = @import("pabrik_config_put.zig").parseConfigInput;
 
 // OS notification test handler — fires a real OS notification so the
 // user can verify their system can display them without running a
@@ -463,7 +463,7 @@ pub fn buildErrorResponse(allocator: std.mem.Allocator, format: ResponseFormat, 
 
 /// SSE stream context for persistent connections
 pub const SseStreamCtx = struct {
-    server: *nalarcore.gserverz.GinwaServer,
+    server: *pabrikcore.gserverz.GinwaServer,
     session_id: []const u8,
 };
 
@@ -474,7 +474,7 @@ pub const SseStreamCtx = struct {
 // keeps a single source per handler; the `notifyTestHandler` re-export
 // at the top of this file now resolves to the decl below.
 
-const notifications = nalarcore.notifications_mod;
+const notifications = pabrikcore.notifications_mod;
 
 /// POST /api/notify/test
 ///
@@ -494,7 +494,7 @@ pub fn notifyTestHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
     const allocator = ctx.allocator;
     const io = ctx.io;
 
-    notifications.notify(io, allocator, "nalar notification test", "If you can read this, OS notifications work.") catch |err| {
+    notifications.notify(io, allocator, "pabrik notification test", "If you can read this, OS notifications work.") catch |err| {
         const err_msg = @errorName(err);
         const data = std.fmt.allocPrint(allocator, "{{\"ok\":false,\"error\":\"{s}\"}}", .{err_msg}) catch {
             return res.jsonResponse(.{
@@ -515,7 +515,7 @@ pub fn notifyTestHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
 // Purpose: let the user click "Test" inside the Add/Edit profile modal
 // and verify their model + base_url + api_key + url_style actually work
 // BEFORE they click Save. The existing flow only validates locally
-// (name/model non-empty) and persists via `PUT /api/config/nalar`, so a
+// (name/model non-empty) and persists via `PUT /api/config/pabrik`, so a
 // typo'd base_url or revoked key would only surface mid-workflow.
 //
 // This endpoint is INERT: it does NOT touch `config.json` or the DB —
@@ -557,7 +557,7 @@ pub fn notifyTestHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
 // endpoints, stub upstreams in tests) — the auth header is simply
 // omitted in that case.
 //
-// Session: every probe sends `x-opencode-session: nalar-llm-test-probe`
+// Session: every probe sends `x-opencode-session: pabrik-llm-test-probe`
 // so Console Go / OpenCode Zen gateways can route it. Without the
 // header the gateway rejects the probe with 400
 // `{"type":"error","error":{"type":"MissingSessionID",...}}` — the
@@ -572,7 +572,7 @@ pub fn notifyTestHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, r
 
 // kabelweb is the unified web-framework package imported
 // directly via `@import("kabelweb").client` (see root.zig:509),
-// not a member of `nalarcore`.
+// not a member of `pabrikcore`.
 const custom_http_client = @import("kabelweb").client;
 const helpers = @import("helpers");
 
@@ -595,7 +595,7 @@ const MAX_REPLY_LEN: usize = 200;
 /// and prompt caching — see https://opencode.ai/docs/go/#where-can-i-use-it
 /// and `Agent.sessionId`. The probe has no real conversation, so a fixed
 /// id is enough to satisfy the gateway; direct providers ignore it.
-const PROBE_SESSION_ID: []const u8 = "nalar-llm-test-probe";
+const PROBE_SESSION_ID: []const u8 = "pabrik-llm-test-probe";
 
 /// Candidate profile fields. Mirrors the frontend's `LlmTestRequest`
 /// shape in `src/apps/desktop/src/api/index.ts`. Extra fields sent by
@@ -874,7 +874,7 @@ pub fn llmTestHandler(
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }),
@@ -1167,8 +1167,8 @@ test "llm_test probe sends x-opencode-session (Console Go requires it)" {
 // to render the error message inline, not as a 500).
 
 const builtin = @import("builtin");
-const mcp_stdio = nalarcore.mcp_stdio;
-const tool_models = nalarcore.tool_models;
+const mcp_stdio = pabrikcore.mcp_stdio;
+const tool_models = pabrikcore.tool_models;
 
 /// Per-call deadline for HTTP probes (libcurl has OS-level timeout
 /// support). See the "Timeout model" comment at the top.
@@ -1331,7 +1331,7 @@ fn mcpTestStdio(
     defer allocator.free(preview_name);
 
     // Via the singleton struct (see root.zig `mcpStdioRegistry`).
-    const reg = nalarcore.mcpStdioRegistry(allocator);
+    const reg = pabrikcore.mcpStdioRegistry(allocator);
 
     // Build the MCP handshake + tools/list bodies once. The SDK
     // expects line-delimited JSON on stdin.
@@ -1351,7 +1351,7 @@ fn mcpTestStdio(
     // retry with a fresh spawn.
     const init_body = std.fmt.allocPrint(
         allocator,
-        "{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"nalar-mcp-test\",\"version\":\"0.0.1\"}}}}}}\n",
+        "{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"pabrik-mcp-test\",\"version\":\"0.0.1\"}}}}}}\n",
         .{},
     ) catch return McpTestError.OutOfMemory;
     defer allocator.free(init_body);
@@ -2000,7 +2000,7 @@ pub fn mcpTestHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const io = ctx.io;
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }),

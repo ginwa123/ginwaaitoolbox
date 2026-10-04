@@ -12,7 +12,7 @@
 
 **Architecture:** The Agent Mode spec (2026-08-15) shipped 4 backend handlers + 4 API wrappers + 1 store + 1 view, but `handleAgentToggleTool` is currently a no-op stub (`void toolName; void enabled`). This plan wires it. The existing DELETE endpoint takes `:tool_id` (from Migration 076 era) but the toggle UX only knows `tool_name` (the checkbox label). Switch the DELETE path to `:tool_name` — cleaner REST for the toggle use case, and no external consumers exist yet (shipped 4 days ago). The frontend `disableAgentTool` wrapper signature changes accordingly. Toggle handler: optimistic local update (add/remove from `agentTools` ref) → await the API call → on failure, revert + `console.error`. No per-tool loading state for v1 — the SQLite-backed endpoint is sub-millisecond and double-click is harmless (UNIQUE → 409).
 
-**Tech Stack:** Zig 0.16 (backend), Vue 3 + TypeScript + Vitest (frontend), SQLite via `nalarcore.sqlite.SqliteBackend`. No new deps, no migration (the `agent_tools` table already exists from Migration 076).
+**Tech Stack:** Zig 0.16 (backend), Vue 3 + TypeScript + Vitest (frontend), SQLite via `pabrikcore.sqlite.SqliteBackend`. No new deps, no migration (the `agent_tools` table already exists from Migration 076).
 
 ## Global Constraints
 
@@ -20,7 +20,7 @@
 - **No port 8081**: smoke tests use port 8080.
 - **TDD**: failing test FIRST for every behavioural change. Run the test, confirm it fails for the right reason, then implement.
 - **Surgical patches**: do not refactor unrelated code. Only touch the files listed below.
-- **No new comments above `logger.infoFmt(...)` calls** (see `~/.config/nalar/memories/no-comments-on-logger-calls.md`).
+- **No new comments above `logger.infoFmt(...)` calls** (see `~/.config/pabrik/memories/no-comments-on-logger-calls.md`).
 - **Agent Mode inline-test convention** (per `mem_6b93a3d74434c6d9`): helper-layer tests are INLINE in the impl file. NO new `_test.zig` files for handler changes — extend the existing `useCase` test block in `agent_tools_delete.zig`.
 - **No frontend `_test.zig` parallel**: this is a Vue/TS change, so the Vitest spec file (`AppLayout.agentToolsToggle.spec.ts`) lives under `src/apps/desktop/src/__tests__/` per the existing convention.
 - **Optimistic update with rollback on failure** — matches typical Vue patterns; safer than "wait for server then update".
@@ -527,7 +527,7 @@ zig build run -Dport=8080  # custom port to avoid 8081
 In the desktop app (separate window):
 1. Navigate to a workspace, add an Agent (if none exists).
 2. Click `bash` in the Tools panel → checkbox ticks.
-3. Run `sqlite3 ~/.config/nalar/main.db "SELECT * FROM agent_tools;"` (or the project DB path) → row exists with `tool_name='bash'`.
+3. Run `sqlite3 ~/.config/pabrik/main.db "SELECT * FROM agent_tools;"` (or the project DB path) → row exists with `tool_name='bash'`.
 4. Click `bash` again → checkbox un-ticks.
 5. Re-run the SELECT → row gone.
 

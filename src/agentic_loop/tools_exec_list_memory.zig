@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const list_memory_mod = nalarcore.list_memory_tool;
+const agent = pabrikcore.agent;
+const list_memory_mod = pabrikcore.list_memory_tool;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execListMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

@@ -9,9 +9,9 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const design_model = nalarcore.ai_mod.design_model;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const design_model = pabrikcore.ai_mod.design_model;
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 
@@ -29,7 +29,7 @@ pub const SetDesignPageInput = struct {
     /// Human-readable page name (e.g. "Login", "Dashboard", "Settings").
     /// Must be unique within the design item. Must NOT contain `/` or
     /// null bytes (the v6 file-backed model stores pages under
-    /// `<item_path>/.nalar/design/<sanitized_page_name>/`).
+    /// `<item_path>/.pabrik/design/<sanitized_page_name>/`).
     page_name: []const u8 = "",
     /// Page width in CSS pixels. Defaults to 1440 when null.
     width: ?i64 = null,
@@ -186,7 +186,7 @@ pub fn executeSetDesignPageToString(
     // 1. Verify the page_name is non-empty and has no illegal
     //    characters. Empty page_name would create a row with `name=''`
     //    that conflicts with subsequent pages; the v6 file-backed
-    //    model stores pages under `<item_path>/.nalar/design/<name>/`,
+    //    model stores pages under `<item_path>/.pabrik/design/<name>/`,
     //    so `/` would escape the parent directory.
     if (input.page_name.len == 0) {
         return try errorJSON(allocator, "page_name is required");
@@ -446,8 +446,8 @@ test "tools_equipped.zig imports set_design_page module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "const set_design_page_mod = nalarcore.set_design_page;")) {
-        std.debug.print("!! tools_equipped.zig does not bind set_design_page_mod = nalarcore.set_design_page !!\n", .{});
+    if (!contains(source, "const set_design_page_mod = pabrikcore.set_design_page;")) {
+        std.debug.print("!! tools_equipped.zig does not bind set_design_page_mod = pabrikcore.set_design_page !!\n", .{});
         return error.SetDesignPageModBindingMissing;
     }
 }
@@ -504,7 +504,7 @@ test "root.zig exposes set_design_page module" {
     defer allocator.free(source);
     if (!contains(source, "pub const set_design_page = @import(\"modules/agent/tools/set_design_page.zig\");")) {
         std.debug.print("!! root.zig does not expose set_design_page as a top-level module !!\n", .{});
-        return error.NalarcoreExportMissing;
+        return error.PabrikcoreExportMissing;
     }
 }
 
@@ -570,7 +570,7 @@ test "toJSON renders element objects with v6 fields" {
         .id = try alloc.dupe(u8, "elem_xyz"),
         .page_id = try alloc.dupe(u8, "page_abc"),
         .name = try alloc.dupe(u8, "login-card"),
-        .file_path = try alloc.dupe(u8, "/tmp/.nalar/design/Login/login-card.html"),
+        .file_path = try alloc.dupe(u8, "/tmp/.pabrik/design/Login/login-card.html"),
         .x = 100,
         .y = 200,
         .width = 400,
@@ -639,7 +639,7 @@ test "toJSON renders parent_id for a nested element" {
         .id = try alloc.dupe(u8, "elem_child_1"),
         .page_id = try alloc.dupe(u8, "page_abc"),
         .name = try alloc.dupe(u8, "login-button"),
-        .file_path = try alloc.dupe(u8, "/tmp/.nalar/design/Login/login-button.html"),
+        .file_path = try alloc.dupe(u8, "/tmp/.pabrik/design/Login/login-button.html"),
         .x = 10,
         .y = 20,
         .width = 80,

@@ -3,7 +3,7 @@ const schemas = @import("schemas.zig");
 const path_validate = @import("helpers").path_validate;
 const invalidPathReason = path_validate.invalidPathReason;
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const helpers = @import("helpers");
 
 /// Cross-platform `/`-separator path concat. See memories.zig's

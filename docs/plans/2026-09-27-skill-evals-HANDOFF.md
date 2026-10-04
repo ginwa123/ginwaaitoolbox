@@ -1,7 +1,7 @@
 # Skill Evals — HANDOFF
 
 > Updated 2026-09-29 at the end of the audit + increments 7-10 session.
-> Worktree: `/home/ginwa/.config/nalar/.worktrees/skill-evals-impl-1790542117855`
+> Worktree: `/home/ginwa/.config/pabrik/.worktrees/skill-evals-impl-1790542117855`
 > Branch: `worktree/skill-evals-impl-1790542117855`, PR **#717**
 >
 > **Read this first, then the plan in PR #703** (`docs/plans/2026-09-27-skill-evals.md`).

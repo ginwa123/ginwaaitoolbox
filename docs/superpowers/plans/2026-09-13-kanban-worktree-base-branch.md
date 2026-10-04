@@ -152,7 +152,7 @@ path is not a git repo.
 | Zig unit/inline | `zig build test --summary all` | **3294 passed / 8 skipped / 3302 total**, exit 0 |
 | Frontend unit | `pnpm exec vitest run` (in `src/apps/desktop`) | **3086 passed**, 4 failed — all 4 reproduced identically on the untouched main repo (`FilePickerDialog.windows`, `WorkspaceItemHideTasksForDesign`, `workspacesStoreNormalizeTaskDates`, `workspacesStoreNormalizeTaskImageUrls`) |
 | Frontend build | `pnpm run build` | exit 0 (`vue-tsc` + `vite build`) |
-| Functional (wire) | `NALAR_BIN=…/zig-out/bin/nalar pytest tests/functional/kanban_task_create_message_format_test.py -v` | **11 passed** — includes `Base: origin/main` in the drained `llm_history` row, the no-base regression shape, and 4 live `GET /api/git/branches` cases (order, dropped `origin` symbolic ref, 404, 400) |
+| Functional (wire) | `PABRIK_BIN=…/zig-out/bin/pabrik pytest tests/functional/kanban_task_create_message_format_test.py -v` | **11 passed** — includes `Base: origin/main` in the drained `llm_history` row, the no-base regression shape, and 4 live `GET /api/git/branches` cases (order, dropped `origin` symbolic ref, 404, 400) |
 
 ## Out of Scope
 

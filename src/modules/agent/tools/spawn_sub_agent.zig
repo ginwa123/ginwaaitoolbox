@@ -96,7 +96,7 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\AGENT_NAME (sub-agent from config):
         \\- Each sub-agent MUST include an "agent_name" field. This is
         \\  the name of a pre-configured sub-agent to load from
-        \\  `~/.config/nalar/config.json`. The sub-agent uses that
+        \\  `~/.config/pabrik/config.json`. The sub-agent uses that
         \\  sub-agent's:
         \\    - model, base_url, api_key, url_style (overlay on orchestrator defaults)
         \\    - thinking ("auto" | "true" | "false")

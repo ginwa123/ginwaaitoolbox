@@ -26,7 +26,7 @@
   - `Install pnpm + webapp dependencies` (~line 1565)
   - `UI tests: functional-test-ui` → `zig build functional-test-ui` (~line 1618)
 - Windows already skips all four (the `runner.os != 'Windows'` gate). macOS runs both suites today — flaky/slow, the motivation for this change.
-- `zig build functional-test` (build.zig:3250) creates the venv at `$NALAR_FUNC_VENV_DIR`, installs requirements, boots a fresh `nalar` binary per test against an isolated tmpdir HOME. `zig build functional-test-ui` (build.zig:3296) reuses that venv, installs Playwright/Chromium, boots backend + Vite per test. Neither consumes an uploaded binary — both build from source.
+- `zig build functional-test` (build.zig:3250) creates the venv at `$PABRIK_FUNC_VENV_DIR`, installs requirements, boots a fresh `pabrik` binary per test against an isolated tmpdir HOME. `zig build functional-test-ui` (build.zig:3296) reuses that venv, installs Playwright/Chromium, boots backend + Vite per test. Neither consumes an uploaded binary — both build from source.
 
 ## File Map
 
@@ -65,9 +65,9 @@
       - uses: pnpm/action-setup@v4 (version 11)
       - uses: mlugg/setup-zig@v2 (ZIG_VERSION)
       - actions/cache@v4 (same path/key as the removed cache step)
-      - run: zig build functional-test (same NALAR_FUNC_VENV_DIR env + log/timing wrapper as the removed step)
+      - run: zig build functional-test (same PABRIK_FUNC_VENV_DIR env + log/timing wrapper as the removed step)
   ```
-- [ ] Copy the `env: NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv` and the `set -u … tee /tmp/functional-test.log` body verbatim from the removed step — no behaviour change, only relocation.
+- [ ] Copy the `env: PABRIK_FUNC_VENV_DIR: ${{ runner.temp }}/pabrik-ci-venv` and the `set -u … tee /tmp/functional-test.log` body verbatim from the removed step — no behaviour change, only relocation.
 - [ ] Verify YAML indent (2 spaces per level, `jobs:` → `functional-test:` → `runs-on/needs/steps`).
 - [ ] Commit: `ci: add linux-only functional-test job chained after backend`
 
@@ -82,7 +82,7 @@
     steps:
       - checkout, setup-node, pnpm setup, setup-zig (same as Task 2)
       - Install pnpm + webapp dependencies (verbatim body from removed step)
-      - run: zig build functional-test-ui (verbatim body + NALAR_FUNC_VENV_DIR env from removed step)
+      - run: zig build functional-test-ui (verbatim body + PABRIK_FUNC_VENV_DIR env from removed step)
   ```
 - [ ] Confirm the chain reads `backend → functional-test → functional-test-ui` via `needs:` (UI must NOT `needs: backend` directly — it inherits transitively).
 - [ ] Commit: `ci: add linux-only functional-test-ui job chained after functional-test`

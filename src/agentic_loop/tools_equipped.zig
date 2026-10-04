@@ -1,51 +1,51 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const helpers = @import("helpers");
-const agent = nalarcore.agent;
-const AgentTool = nalarcore.agent.AgentTool;
+const agent = pabrikcore.agent;
+const AgentTool = pabrikcore.agent.AgentTool;
 
-const read_file_mod = nalarcore.read_file;
-const text_replace_mod = nalarcore.text_replace_tool;
-const write_file_mod = nalarcore.write_file;
-const search_skills_mod = nalarcore.skill_tools;
-const memories_mod = nalarcore.memories;
-const list_memory_mod = nalarcore.list_memory_tool;
-const save_memory_mod = nalarcore.memory;
-const load_memory_mod = nalarcore.memory;
-const read_workspace_session_mod = nalarcore.read_workspace_session_tool;
-const document_mod = nalarcore.document_tool;
-const use_skill_mod = nalarcore.skill_tools;
-const remove_skill_mod = nalarcore.skill_tools;
-const list_agents_mod = nalarcore.list_agents;
-const add_skill_mod = nalarcore.skill_tools;
-const edit_skill_mod = nalarcore.skill_tools;
-const set_git_worktree_mod = nalarcore.set_git_worktree;
-const set_pull_request_mod = nalarcore.set_pull_request;
-const kanban_list_mod = nalarcore.kanban_list;
-const kanban_move_task_mod = nalarcore.kanban_move_task;
-const set_design_page_mod = nalarcore.set_design_page;
-const add_design_element_mod = nalarcore.add_design_element;
-const update_design_element_mod = nalarcore.update_design_element;
-const group_design_elements_mod = nalarcore.group_design_elements;
-const set_element_parent_mod = nalarcore.set_element_parent;
-const move_design_element_mod = nalarcore.move_design_element;
-const move_element_to_page_mod = nalarcore.move_element_to_page;
-const present_files_mod = nalarcore.ai_mod.present_files;
-const get_design_context_mod = nalarcore.get_design_context;
-const preview_design_page_mod = nalarcore.preview_design_page;
-const remove_agent_mod = nalarcore.remove_agent;
-const remove_file_mod = nalarcore.remove_file;
-const change_agent_mod = nalarcore.change_agent;
-const web_search_mod = nalarcore.web_search;
-const generate_image_mod = nalarcore.generate_image;
+const read_file_mod = pabrikcore.read_file;
+const text_replace_mod = pabrikcore.text_replace_tool;
+const write_file_mod = pabrikcore.write_file;
+const search_skills_mod = pabrikcore.skill_tools;
+const memories_mod = pabrikcore.memories;
+const list_memory_mod = pabrikcore.list_memory_tool;
+const save_memory_mod = pabrikcore.memory;
+const load_memory_mod = pabrikcore.memory;
+const read_workspace_session_mod = pabrikcore.read_workspace_session_tool;
+const document_mod = pabrikcore.document_tool;
+const use_skill_mod = pabrikcore.skill_tools;
+const remove_skill_mod = pabrikcore.skill_tools;
+const list_agents_mod = pabrikcore.list_agents;
+const add_skill_mod = pabrikcore.skill_tools;
+const edit_skill_mod = pabrikcore.skill_tools;
+const set_git_worktree_mod = pabrikcore.set_git_worktree;
+const set_pull_request_mod = pabrikcore.set_pull_request;
+const kanban_list_mod = pabrikcore.kanban_list;
+const kanban_move_task_mod = pabrikcore.kanban_move_task;
+const set_design_page_mod = pabrikcore.set_design_page;
+const add_design_element_mod = pabrikcore.add_design_element;
+const update_design_element_mod = pabrikcore.update_design_element;
+const group_design_elements_mod = pabrikcore.group_design_elements;
+const set_element_parent_mod = pabrikcore.set_element_parent;
+const move_design_element_mod = pabrikcore.move_design_element;
+const move_element_to_page_mod = pabrikcore.move_element_to_page;
+const present_files_mod = pabrikcore.ai_mod.present_files;
+const get_design_context_mod = pabrikcore.get_design_context;
+const preview_design_page_mod = pabrikcore.preview_design_page;
+const remove_agent_mod = pabrikcore.remove_agent;
+const remove_file_mod = pabrikcore.remove_file;
+const change_agent_mod = pabrikcore.change_agent;
+const web_search_mod = pabrikcore.web_search;
+const generate_image_mod = pabrikcore.generate_image;
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // Markdown task plan with - [ ] / - [x] checklist, persisted across iterations.
-const update_plan_mod = nalarcore.update_plan;
-const get_plan_mod = nalarcore.get_plan;
-const list_sub_agent_mod = nalarcore.list_sub_agent;
-const used_tools_mod = nalarcore.used_tools;
+const update_plan_mod = pabrikcore.update_plan;
+const get_plan_mod = pabrikcore.get_plan;
+const list_sub_agent_mod = pabrikcore.list_sub_agent;
+const used_tools_mod = pabrikcore.used_tools;
 const run_skill_eval_mod = @import("run_skill_eval.zig");
 // 2026-08-28 — add_mcp_server agent tool (Step 5 of 2026-08-28-add-mcp-server-agent-tool.md).
 // LLM-callable tool that registers a new MCP server in the live config +
@@ -54,24 +54,24 @@ const run_skill_eval_mod = @import("run_skill_eval.zig");
 // iteration and reach the LLM's tool list only after `use_tool` equips one.
 // v1 is stdio-only (HTTP lands in task_1787928601804_8 without changing the
 // wire shape).
-const add_mcp_server_mod = nalarcore.add_mcp_server;
-const glob_tool_mod = nalarcore.glob_tool;
-const search_tool_mod = nalarcore.search_tool;
+const add_mcp_server_mod = pabrikcore.add_mcp_server;
+const glob_tool_mod = pabrikcore.glob_tool;
+const search_tool_mod = pabrikcore.search_tool;
 // 2026-08-14 — list_directory tool (Task 5 of ban-absolute-paths plan).
-const list_directory_mod = nalarcore.list_directory;
-const semantic_search_mod = nalarcore.semantic_search;
-const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
+const list_directory_mod = pabrikcore.list_directory;
+const semantic_search_mod = pabrikcore.semantic_search;
+const spawn_sub_agent_tool = pabrikcore.spawn_sub_agent;
 // 2026-09-16 — ask_user: the interactive tool that ends the turn to ask the
 // human a question. Main-agent-only (a sub-agent has no answer surface), so
 // it is listed in `ask_user.MAIN_AGENT_ONLY_NAMES` and stripped for
 // sub-agent sessions by `tool_eligibility`.
-const ask_user_mod = nalarcore.ask_user;
-const kanban_create_task_tool = nalarcore.create_kanban_task;
-const command_tool_mod = nalarcore.command_tool;
+const ask_user_mod = pabrikcore.ask_user;
+const kanban_create_task_tool = pabrikcore.create_kanban_task;
+const command_tool_mod = pabrikcore.command_tool;
 // Progressive tool search: search_tool / view_tool / use_tool. Pure tool data
-// lives in `nalarcore.progressive_tools`; the catalog + renderers live in
+// lives in `pabrikcore.progressive_tools`; the catalog + renderers live in
 // `src/agentic_loop/progressive_catalog.zig`.
-const progressive_tools_mod = nalarcore.progressive_tools;
+const progressive_tools_mod = pabrikcore.progressive_tools;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 
@@ -280,7 +280,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // through the HTTP layer. This avoids the round-trip cost AND
         // works around the GET /tasks endpoint not returning
         // kanban table placement data directly (see project memory
-        // nalar-image-urls-vs-image-url for the parallel image_url
+        // pabrik-image-urls-vs-image-url for the parallel image_url
         // situation).
         .{ .name = "kanban_list", .exec = tools.execKanbanList, .tool_def = kanban_list_mod.kanban_list_tool },
         .{ .name = "kanban_move_task", .exec = tools.execKanbanMoveTask, .tool_def = kanban_move_task_mod.kanban_move_task_tool },
@@ -552,7 +552,7 @@ fn filterToRegistry(allocator: std.mem.Allocator, names: []const []const u8) ![]
 /// the rows in one call can't collide on the PK).
 pub fn seedDefaultAgentTools(
     allocator: std.mem.Allocator,
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     agent_id: []const u8,
     config_tools: ?[]const []const u8,
 ) !void {
@@ -589,7 +589,7 @@ pub fn seedDefaultAgentTools(
 /// beats the floor (D2/D3), only absent falls back to legacy defaults.
 pub fn seedDefaultKanbanTools(
     allocator: std.mem.Allocator,
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     kanban_id: []const u8,
     config_tools: ?[]const []const u8,
 ) !void {
@@ -688,7 +688,7 @@ test "DEFAULT_AGENT_TOOLS ships the spawn pair and the progressive meta-tools" {
 const testing = std.testing;
 
 const SeedTestCtx = struct {
-    db: nalarcore.sqlite.SqliteBackend,
+    db: pabrikcore.sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
 };
 
@@ -697,7 +697,7 @@ fn setupSeedDb() !SeedTestCtx {
     var threaded = std.Io.Threaded.init(alloc, .{});
     errdefer threaded.deinit();
     const io = threaded.io();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
     try db.exec(

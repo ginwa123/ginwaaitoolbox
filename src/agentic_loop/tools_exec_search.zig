@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const search_tool_mod = nalarcore.search_tool;
+const agent = pabrikcore.agent;
+const search_tool_mod = pabrikcore.search_tool;
 const wrapToolOutput = tools.wrapToolOutput;
 
 /// Parse the model-provided JSON and normalize zero-valued optional head/tail

@@ -54,7 +54,7 @@ import { ref } from 'vue'
  * too, and a single `localStorage.dl=on` line gets the diagnostic out
  * the door without a rebuild.
  */
-const STORAGE_KEY = 'nalar.design-logger.enabled'
+const STORAGE_KEY = 'pabrik.design-logger.enabled'
 
 const enabledRef = ref<boolean>(false)
 
