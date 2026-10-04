@@ -944,6 +944,20 @@ class TestStopBinaryKillsTheWholeTree:
         )
 
 
+@pytest.mark.skipif(
+        os.name != "nt",
+        reason=(
+            "the Job Object, `taskkill /T` and `_job_handle` exist only on "
+            "Windows. This class is the THIRD time this branch asserted a "
+            "Windows-only mechanism as though it were universal -- after a "
+            "bare `strict=True` xfail that turned a Linux PASS into "
+            "[XPASS(strict)], and two ungated harness tests. The docstring "
+            "said WINDOWS ONLY and the decorator was still missing, which is "
+            "exactly why the class now carries one. "
+            "`test_windows_only_tests_must_be_gated` in platform_gates_test.py "
+            "is the mechanical guard."
+        ),
+    )
 class TestWindowsJobObject:
     """The Job Object is what finally closes `WinError 32`. WINDOWS ONLY.
 
