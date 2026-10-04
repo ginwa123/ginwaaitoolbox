@@ -67,6 +67,17 @@ function loadPanel(): SidebarPanel {
 
 const activePanel = ref<SidebarPanel>(loadPanel())
 
+// The rail. The panel's name is the active segment's own label, so there is
+// no separate title row above it — one row of chrome instead of two. Glyphs
+// are the app's existing vocabulary (no icon dependency); each is
+// aria-hidden so a screen reader reads "Explorer", not "black square
+// Explorer".
+const PANEL_SEGMENTS: { id: SidebarPanel; glyph: string; label: string }[] = [
+  { id: 'explorer', glyph: '▤', label: 'Explorer' },
+  { id: 'changes', glyph: '⎇', label: 'Changes' },
+  { id: 'terminal', glyph: '⌁', label: 'Terminal' },
+]
+
 // Router is optional: unit mounts (ChatRightSidebar.spec) have no router.
 // Grab once at setup so setPanel can sync ?sidebar= without calling
 // useRouter inside the click handler.
@@ -167,22 +178,40 @@ defineExpose({
       data-testid="chat-right-sidebar-resize"
       @mousedown="startResize"
     />
+    <!-- One rail: the switcher and the close button share a row, and the
+         active segment's own label is the panel's title — the separate
+         title row it replaces repeated that word a second time. -->
     <div
-      class="flex items-center gap-2 px-3 h-10 shrink-0"
+      class="flex items-center gap-1.5 px-2 h-11 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
     >
-      <span class="text-dense font-semibold flex-1" style="color: var(--semantic-text)">
-        {{
-          activePanel === 'explorer'
-            ? 'Explorer'
-            : activePanel === 'terminal'
-              ? 'Terminal'
-              : 'Changes'
-        }}
-      </span>
+      <div
+        class="flex items-center gap-1 flex-1 min-w-0 h-full"
+        role="tablist"
+        aria-label="Right sidebar panel"
+      >
+        <button
+          v-for="seg in PANEL_SEGMENTS"
+          :key="seg.id"
+          type="button"
+          role="tab"
+          :aria-selected="activePanel === seg.id"
+          class="relative flex-1 min-w-0 h-8 rounded flex items-center justify-center gap-1.5 text-dense font-medium transition-colors duration-150"
+          :style="
+            activePanel === seg.id
+              ? 'background-color: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 0 -2px 0 0 var(--color-violet);'
+              : 'color: var(--semantic-text-dim); background-color: transparent;'
+          "
+          :data-testid="`chat-right-sidebar-tab-${seg.id}`"
+          @click="setPanel(seg.id)"
+        >
+          <span aria-hidden="true" class="shrink-0 opacity-70">{{ seg.glyph }}</span>
+          <span class="truncate min-w-0">{{ seg.label }}</span>
+        </button>
+      </div>
       <button
         type="button"
-        class="w-6 h-6 rounded flex items-center justify-center hover:opacity-70"
+        class="w-7 h-7 shrink-0 rounded flex items-center justify-center hover:opacity-70 transition-opacity"
         style="color: var(--semantic-text-dim)"
         title="Close sidebar"
         aria-label="Close sidebar"
@@ -190,57 +219,6 @@ defineExpose({
         @click="close"
       >
         ✕
-      </button>
-    </div>
-    <div
-      class="flex items-center gap-1 px-3 pt-2 shrink-0"
-      role="tablist"
-      aria-label="Right sidebar panel"
-    >
-      <button
-        type="button"
-        role="tab"
-        :aria-selected="activePanel === 'explorer'"
-        class="flex-1 text-center text-dense rounded-t px-2 py-1.5"
-        :style="
-          activePanel === 'explorer'
-            ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
-            : 'color: var(--semantic-text-dim)'
-        "
-        data-testid="chat-right-sidebar-tab-explorer"
-        @click="setPanel('explorer')"
-      >
-        Explorer
-      </button>
-      <button
-        type="button"
-        role="tab"
-        :aria-selected="activePanel === 'changes'"
-        class="flex-1 text-center text-dense rounded-t px-2 py-1.5"
-        :style="
-          activePanel === 'changes'
-            ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
-            : 'color: var(--semantic-text-dim)'
-        "
-        data-testid="chat-right-sidebar-tab-changes"
-        @click="setPanel('changes')"
-      >
-        Files changed
-      </button>
-      <button
-        type="button"
-        role="tab"
-        :aria-selected="activePanel === 'terminal'"
-        class="flex-1 text-center text-dense rounded-t px-2 py-1.5"
-        :style="
-          activePanel === 'terminal'
-            ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
-            : 'color: var(--semantic-text-dim)'
-        "
-        data-testid="chat-right-sidebar-tab-terminal"
-        @click="setPanel('terminal')"
-      >
-        ⌁ Terminal
       </button>
     </div>
     <div class="flex-1 min-h-0">
