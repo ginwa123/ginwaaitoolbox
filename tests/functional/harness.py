@@ -332,6 +332,147 @@ def is_safe_tmp(path: str | os.PathLike[str], orig_home: str | os.PathLike[str])
     return True
 
 
+# ============================================================================
+# Windows Job Object: reliable tree teardown
+# ============================================================================
+#
+# Why this exists, because three cheaper approaches all failed on the real
+# failure:
+#
+#   1. `os.kill(pid)` killed one process. Any worker nalar spawned survived,
+#      still holding `agent.db`.
+#   2. `taskkill /T` kills a tree, but only from a LIVE pid. Once nalar exits,
+#      its descendants are reparented and unreachable.
+#   3. Killing the tree BEFORE the parent exits fixed the reachable case --
+#      and moved the Windows error count only from 7 to 6, because the
+#      remaining cases are exactly the ones where nalar is already gone.
+#
+# A Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE is the primitive that
+# actually matches the requirement: membership is a property of the PROCESS,
+# not of the parent/child relationship, so a worker stays in the job after its
+# parent dies. Closing the last handle to the job terminates every member.
+#
+# Best-effort throughout. If the job cannot be created or the process cannot be
+# assigned (some CI agents already run inside a job that forbids nesting),
+# `_job_handle` stays None and teardown falls back to `taskkill /T`.
+
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+
+def _new_kill_on_close_job() -> int | None:
+    """Create a job that terminates all its members when its last handle closes.
+
+    Returns the raw HANDLE value, or None if the job could not be created or
+    configured. The caller owns it and must `CloseHandle` it exactly once.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:  # pragma: no cover - ctypes is always present on Windows
+        return None
+
+    class _IO_COUNTERS(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint64) for n in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class _BASIC(ctypes.Structure):
+        # LARGE_INTEGER is a signed 64-bit value; c_int64 matches.
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _EXTENDED(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _BASIC),
+            ("IoInfo", _IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD
+        ]
+        k32.SetInformationJobObject.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = _EXTENDED()
+        info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k32.SetInformationJobObject(
+            job,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            k32.CloseHandle(job)
+            return None
+        # Stash the resolved entry points on the handle's owner so
+        # `_close_kill_on_close_job` can reuse them without re-importing.
+        return int(job)
+    except Exception:
+        return None
+
+
+def _assign_to_kill_on_close_job(job: int, process_handle: int) -> bool:
+    """Put an already-running process into the job. False if not permitted."""
+    if os.name != "nt" or not job or not process_handle:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+        return bool(
+            k32.AssignProcessToJobObject(
+                wintypes.HANDLE(job), wintypes.HANDLE(process_handle)
+            )
+        )
+    except Exception:
+        return False
+
+
+def _close_kill_on_close_job(job: int | None) -> None:
+    """Close the job handle, terminating every process still inside it."""
+    if os.name != "nt" or not job:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.CloseHandle(wintypes.HANDLE(job))
+    except Exception:
+        pass
+
+
 def _make_tree_writable(root: Path) -> None:
     """Clear the read-only bit across ``root`` so Windows will let us delete it.
 
@@ -453,6 +594,13 @@ class FunctionalHarness:
     # it a matching release. Idempotent teardown must not double-decrement, so
     # the flag is cleared on first release.
     _env_owns_baseline: bool = dataclasses.field(default=False, repr=False)
+    # Windows Job Object with KILL_ON_JOB_CLOSE, created in `boot()` and closed
+    # in `_stop_binary()`. Closing it terminates every process still inside the
+    # job -- including workers whose parent nalar has already exited, which
+    # `taskkill /T` cannot reach. None when the job was unavailable or the
+    # process could not be assigned, in which case teardown falls back to
+    # `taskkill /T`.
+    _job_handle: int | None = dataclasses.field(default=None, repr=False)
     # Windows original env snapshot (USERPROFILE/APPDATA/LOCALAPPDATA) — empty on POSIX.
     orig_userprofile: str = ""
     orig_appdata: str = ""
@@ -715,6 +863,27 @@ class FunctionalHarness:
         except Exception:
             pass
 
+        # 7.4. Windows: put the server in a Job Object with
+        #      KILL_ON_JOB_CLOSE, so teardown can guarantee the whole tree dies
+        #      even when nalar has ALREADY exited and its workers have been
+        #      reparented -- the case `taskkill /T` cannot reach, and the cause
+        #      of the `WinError 32` on `.config\nalar\agent.db`. Membership is
+        #      a property of the process, not of the parent/child link, so a
+        #      worker stays in the job however its parent goes away.
+        #
+        #      Best-effort: if the job is unavailable or assignment is refused
+        #      (some CI agents already run inside a job that forbids nesting),
+        #      `_job_handle` stays None and `_stop_binary` falls back to
+        #      `taskkill /T`.
+        job_handle: int | None = None
+        if os.name == "nt":
+            job_handle = _new_kill_on_close_job()
+            if job_handle is not None:
+                proc_handle = getattr(proc, "_handle", 0) or 0
+                if not _assign_to_kill_on_close_job(job_handle, proc_handle):
+                    _close_kill_on_close_job(job_handle)
+                    job_handle = None
+
         # 7.5. Record pids so a subsequent boot can reap us if we die.
         #      The pidfile format is "<harness_pid> <nalar_pid>\n":
         #        - harness_pid: the Python process running this code
@@ -753,6 +922,7 @@ class FunctionalHarness:
             _env_backup=env_backup,
             _env_shadowed=env_shadowed,
             _env_owns_baseline=env_owns_baseline,
+            _job_handle=job_handle,
             orig_userprofile=orig_userprofile,
             orig_appdata=orig_appdata,
             orig_localappdata=orig_localappdata,
@@ -1042,35 +1212,32 @@ class FunctionalHarness:
         assert self.pid is not None
 
         if os.name == "nt":
-            # Kill the TREE FIRST on Windows, before the graceful path.
+            # Windows teardown, in order of authority:
             #
-            # This ordering is the fix, and it is forced: `taskkill /T` walks
-            # the tree from a LIVE pid, so once nalar exits on its own there
-            # is no tree left to walk and its descendants are orphaned.
-            # `/test/shutdown` is exactly what makes nalar exit, and
-            # `_wait_dead` only knows about the DIRECT child -- so the old
-            # order was:
+            #   1. Close the Job Object handle. This terminates EVERY process
+            #      still in the job, including workers whose parent nalar
+            #      already exited. Nothing else can do that: `taskkill /T`
+            #      walks a tree from a LIVE pid, so an already-exited nalar
+            #      orphans its workers and leaves them holding `agent.db`.
+            #      Measured: the tree-kill-before-shutdown ordering fixed the
+            #      reachable case and moved the windows-2022 error count only
+            #      from 7 to 6 -- the remainder is exactly this case.
+            #   2. Wait for the direct child so `poll()` reaps it.
+            #   3. `taskkill /T` as a fallback, for the hosts where the job
+            #      could not be created or assigned.
             #
-            #   1. /test/shutdown  -> nalar exits (the common case, ~50ms)
-            #   2. _wait_dead      -> True, so `return`
-            #   3. _signal_group   -> NEVER REACHED
-            #
-            # Any worker nalar spawned therefore survived teardown, still
-            # holding the SQLite handle, and rmtree failed with
-            #
-            #   PermissionError: [WinError 32] ... .config\nalar\agent.db
-            #
-            # for as long as that worker lived, which is why the retry loop
-            # could not help. Measured across the three windows-2022 shards of
-            # run `37188944641`: 7 teardown ERRORs, all in
-            # `chat_row_context_menu_ui_test`, the module that starts agents.
-            #
-            # Cost: no graceful SQLite shutdown on Windows. Nothing observes
-            # it -- the tempdir is rmtree'd immediately after, so a hot
-            # journal or unflushed WAL is irrelevant -- and
-            # `graceful_shutdown_test.py` is already gated off win32. POSIX
-            # keeps the graceful path below, where `os.killpg` still reaches
-            # descendants after the group leader is gone.
+            # The graceful `/test/shutdown` path is deliberately not used on
+            # Windows: once the job is closed there is nothing left to shut
+            # down gracefully, and nothing observes the difference -- the
+            # tempdir is rmtree'd immediately after, so a hot journal or
+            # unflushed WAL is irrelevant. `graceful_shutdown_test.py` is
+            # already gated off win32. POSIX keeps the graceful path, where
+            # `os.killpg` reaches descendants after the group leader is gone.
+            if self._job_handle is not None:
+                _close_kill_on_close_job(self._job_handle)
+                self._job_handle = None
+                self._wait_dead(3.0, "post-job-close")  # best-effort final wait
+                return
             self._signal_group(_SIGKILL)
             self._wait_dead(2.0, "post-tree-kill")  # best-effort final wait
             return

@@ -616,13 +616,15 @@ class TestParentEnvIsRestoredExactly:
                     os.environ[k] = real[k]
 
     @pytest.mark.skipif(
-        os.name == "nt",
+        os.name != "nt",
         reason=(
-            "POSIX asserts the opposite, on purpose. There boot() never "
-            "shadows the parent, so teardown has always restored HOME "
-            "unconditionally -- and that restore is what undoes a test that "
-            "mutated HOME itself. This test asserts a Windows-only "
-            "invariant; the sibling "
+            "asserts a Windows-ONLY invariant, and the first attempt at "
+            "gating it had the condition inverted -- skipif(os.name == 'nt') "
+            "skips it on Windows, where it passes, and runs it on POSIX, "
+            "where it fails. POSIX asserts the opposite on purpose: there "
+            "boot() never shadows the parent, so teardown has always restored "
+            "HOME unconditionally, which is what undoes a test that mutated "
+            "HOME itself. The sibling "
             "`test_a_hand_built_harness_without_a_snapshot_restores_nothing` "
             "covers the case that IS wrong everywhere (no snapshot at all)."
         ),
@@ -939,6 +941,130 @@ class TestStopBinaryKillsTheWholeTree:
         )
         assert "shutdown" not in calls, (
             f"/test/shutdown must not run before the tree kill: {calls!r}"
+        )
+
+
+class TestWindowsJobObject:
+    """The Job Object is what finally closes `WinError 32`. WINDOWS ONLY.
+
+    Three cheaper approaches were tried and each fixed part of the problem:
+
+      1. `os.kill(pid)` — one process. A worker survived holding `agent.db`.
+      2. `taskkill /T` — a tree, but walked from a LIVE pid. Once nalar
+         exits, its workers are reparented and unreachable.
+      3. Killing the tree BEFORE the server exits — fixed the reachable case
+         and moved the windows-2022 error count only from 7 to 6. The
+         remainder is exactly the case where nalar is already gone.
+
+    A Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` matches the actual
+    requirement: membership belongs to the PROCESS, not to the parent/child
+    relationship, so a worker stays in the job however its parent exits.
+    Closing the last handle terminates every member.
+    """
+
+    def test_a_worker_spawned_after_assignment_is_killed_with_the_job(self) -> None:
+        import pathlib
+        import tempfile
+
+        from harness import (
+            REQUIRED_TMP_SUBSTR,
+            _assign_to_kill_on_close_job,
+            _close_kill_on_close_job,
+            _new_kill_on_close_job,
+        )
+
+        holder = pathlib.Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
+        locked = holder / "agent.db"  # the shape that fails in CI
+        locked.write_bytes(b"x")
+
+        # The parent waits for a line on stdin and ONLY THEN spawns the worker
+        # that holds the file. That ordering is the whole point: had it
+        # spawned at startup, the worker would predate the job assignment --
+        # `AssignProcessToJobObject` affects only the process it names -- and
+        # closing the handle would leave the worker holding the file. A first
+        # version of this probe spawned immediately and "proved" the job did
+        # not work, when it had only proved the probe was wrong.
+        parent_src = (
+            "import subprocess, sys, time\n"
+            "sys.stdin.readline()\n"
+            "subprocess.Popen([sys.executable, '-c',\n"
+            "    \"import sys,time\\n\"\n"
+            "    \"f=open(sys.argv[1],'r+b')\\n\"\n"
+            "    \"time.sleep(600)\", sys.argv[1]])\n"
+            "print('spawned', flush=True)\n"
+            "time.sleep(600)\n"
+        )
+        parent = subprocess.Popen(
+            [sys.executable, "-c", parent_src, str(locked)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        job = None
+        try:
+            job = _new_kill_on_close_job()
+            assert job, (
+                "CreateJobObjectW / KILL_ON_JOB_CLOSE is unavailable on this "
+                "host, so the whole teardown strategy is unavailable and "
+                "teardown silently falls back to taskkill /T"
+            )
+            assert _assign_to_kill_on_close_job(
+                job, getattr(parent, "_handle", 0) or 0
+            ), "AssignProcessToJobObject was refused on this host"
+
+            parent.stdin.write(b"go\n")
+            parent.stdin.flush()
+            assert b"spawned" in parent.stdout.readline(), (
+                "the stand-in never spawned its worker, so this test would "
+                "prove nothing"
+            )
+
+            # The lock must be real, or the assertion below is vacuous.
+            time.sleep(0.4)
+            with pytest.raises(PermissionError):
+                locked.unlink()
+
+            _close_kill_on_close_job(job)
+            job = None
+
+            deadline = time.monotonic() + 20.0
+            while time.monotonic() < deadline:
+                try:
+                    locked.unlink()
+                    break
+                except PermissionError:
+                    time.sleep(0.2)
+            assert not locked.exists(), (
+                "the worker survived CloseHandle on the job, so teardown's "
+                "rmtree will fail with WinError 32 on agent.db. If this fails, "
+                "the worker must have been spawned BEFORE the job assignment."
+            )
+        finally:
+            if job:
+                _close_kill_on_close_job(job)
+            try:
+                parent.kill()
+                parent.wait(timeout=30)
+            except Exception:
+                pass
+
+    def test_boot_assigns_nalar_to_a_job_and_teardown_closes_it(
+        self, default_nalar_bin
+    ) -> None:
+        from harness import FunctionalHarness
+
+        h = FunctionalHarness.boot(default_nalar_bin)
+        try:
+            assert h._job_handle is not None, (
+                "boot() did not put the server in a KILL_ON_JOB_CLOSE job, so "
+                "teardown can only fall back to taskkill /T -- which cannot "
+                "reach a worker whose parent nalar has already exited"
+            )
+        finally:
+            h.teardown()
+        assert h._job_handle is None, (
+            "teardown must close the job handle, or the job leaks and its "
+            "members are never terminated"
         )
 
 
