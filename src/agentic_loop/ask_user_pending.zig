@@ -605,7 +605,7 @@ pub fn loadSessionRunFields(
 /// Guarded by `isWorkerRunning`: a double-click on Send answer must not start
 /// two runs. Returns false when a run was already in flight.
 pub fn resumeSession(
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     allocator: std.mem.Allocator,
     session_id: []const u8,
 ) !bool {

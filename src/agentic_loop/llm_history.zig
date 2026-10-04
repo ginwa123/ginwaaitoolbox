@@ -3947,7 +3947,7 @@ pub fn updateTaskLastHumanTouchedAt(
 ///
 /// Called by every HTTP handler / workflow site that mutates a chat on
 /// behalf of a human user:
-///   - `root.zig::emit_run_agent` — the single funnel for every
+///   - `app.zig::emit_run_agent` — the single funnel for every
 ///     "user sends a message" path (chat send, kanban "create & run",
 ///     kanban "Start agent", `+ Chat`). Stamps before the workflow
 ///     kicks off so even an immediate agent bail leaves the stamp in

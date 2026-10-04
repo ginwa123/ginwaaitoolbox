@@ -168,7 +168,7 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     });
 }
 
-fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.ContextIPCTui, parsed: RequestSession, owner: []const u8) !ResponseSession {
+fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.App, parsed: RequestSession, owner: []const u8) !ResponseSession {
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
 
     // --- Resolve all values locally using arena ---
@@ -466,7 +466,7 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
 /// responsible for falling back to `createSandbox(...)` on empty.
 fn resolveCwdFromTaskOrItem(
     alloc: std.mem.Allocator,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []const u8,
 ) ![]const u8 {
     // Single JOIN'd query — cheaper than two separate SELECTs and
@@ -532,7 +532,7 @@ fn resolveCwdFromTaskOrItem(
 /// guard against in `resolveCwdFromTaskOrItem`.
 fn resolveNameFromTask(
     alloc: std.mem.Allocator,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []const u8,
 ) !?[]const u8 {
     var q = di.db.query(
@@ -558,7 +558,7 @@ fn resolveNameFromTask(
 // =====================================================================
 //
 // Why static checks (and not behavioural DB tests) here: standing up
-// an in-memory SQLite + migrations + ContextIPCTui to test resolveNameFromTask
+// an in-memory SQLite + migrations + App to test resolveNameFromTask
 // would duplicate the migration setup; the functional test in
 // tests/functional/kanban_task_session_name_test.py already pins the
 // end-to-end behaviour against a real pabrik binary. These static
@@ -677,7 +677,7 @@ test "session_create resolveNameFromTask SELECTs from workspace_item_tasks" {
 // ─── Migration 082 / chat-sidebar-last-human-touched (Task 3) ──────────
 //
 // Load-bearing invariant: every user-sends-a-message path converges on
-// `root.zig::emit_run_agent` (the single funnel). The chat-create path
+// `app.zig::emit_run_agent` (the single funnel). The chat-create path
 // delegates to `emit_run_agent` at the bottom of `useCase` (line 229),
 // so a SESSION-side chat-side stamp call here would double-stamp the
 // same row. The TASK-side call at line 241 (workspace_item_tasks) stays -
@@ -700,7 +700,7 @@ test "session_create.zig does NOT call the chat-side human-touched stamp helper 
     if (contains(source, needle)) {
         std.debug.print(
             "\n!! {s} references the chat-side stamp helper !!\n"
-            ++ "   The session-side stamp lives in root.zig::emit_run_agent\n"
+            ++ "   The session-side stamp lives in app.zig::emit_run_agent\n"
             ++ "   (the single funnel for every user-sends-message path).\n"
             ++ "   Adding a redundant stamp here double-stamps the same row\n"
             ++ "   on the create-chat path (session_create.useCase delegates\n"
@@ -720,7 +720,7 @@ test "session_create.zig does NOT call the chat-side human-touched stamp helper 
 // module path is restructured (e.g. moved from llm_history to a new
 // module), this test fails loudly instead of silently no-op'ing the
 // guard above. The two tests together lock in: "the chat-side stamp
-// lives in root.zig::emit_run_agent, period".
+// lives in app.zig::emit_run_agent, period".
 
 test "session_create.zig does NOT import or alias the chat-side stamp helper in any form" {
     const allocator = testing.allocator;
@@ -737,7 +737,7 @@ test "session_create.zig does NOT import or alias the chat-side stamp helper in 
             "\n!! {s} references the chat-side stamp helper in any form !!\n"
             ++ "   Per the single-funnel invariant, this handler must NOT\n"
             ++ "   touch the chat-side stamp at all - the stamp lives in\n"
-            ++ "   root.zig::emit_run_agent (called by useCase at line 229).\n",
+            ++ "   app.zig::emit_run_agent (called by useCase at line 229).\n",
             .{HANDLER_PATH},
         );
         return error.SessionHumanTouchedStampAnyReference;

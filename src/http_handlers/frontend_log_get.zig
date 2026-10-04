@@ -504,7 +504,7 @@ fn nullableInt(v: []const u8) ?i64 {
 //      SQLite DB with the `logs` table loaded. The handler itself
 //      is too tightly coupled to `pabrikcore.getSingleton()` to
 //      behavioural-test end-to-end (would need a live
-//      `ContextIPCTui`), so the tests assert the SQL contract
+//      `App`), so the tests assert the SQL contract
 //      directly. Mirrors the dedup-SQL tests in
 //      `frontend_log_post_test.zig`.
 // 

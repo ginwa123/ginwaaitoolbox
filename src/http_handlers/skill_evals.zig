@@ -271,7 +271,7 @@ fn applyUseCase(
 /// after the claim is recorded; a failure here must not fail the apply.
 fn emitApplied(
     allocator: std.mem.Allocator,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     result_id: []const u8,
 ) void {
     skill_eval_events.emitSkillEvalEvent(allocator, di.event_bus, .{
@@ -291,7 +291,7 @@ fn emitApplied(
 fn readCurrentSkillHash(
     allocator: std.mem.Allocator,
     io: std.Io,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     skill_name: []const u8,
     session_id: []const u8,
 ) !?[]u8 {

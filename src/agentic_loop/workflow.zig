@@ -200,7 +200,7 @@ pub const RunAgenticMultiStepInput = struct {
     logger: *logger_mod.Logger,
     event_bus: *event_bus_mod.EventBus,
     active_loops: *models.ActiveLoops,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     environment: ?*const std.process.Environ.Map,
 };
 
@@ -373,7 +373,7 @@ fn touchCheckpointWorkers(input: TouchCheckpointWorkersInput) void {
 /// mcp-fetch-once-cache). Extracted verbatim from the old per-run blk in
 /// `runAgenticMultiStepnew` — same cancel-thunk, same 30s deadline inside
 /// `buildMCPToolsRun`, same fail-soft `catch → null`. The caller publishes
-/// the result via `ContextIPCTui.storeMcpToolsCache` so this runs exactly
+/// the result via `App.storeMcpToolsCache` so this runs exactly
 /// once per boot / per config mutation.
 fn fetchMcpToolsFresh(
     parent_allocator: std.mem.Allocator,
@@ -2337,7 +2337,7 @@ fn countNamesIn(list: []const agent.AgentTool, names: []const []const u8) usize 
 }
 
 pub const RunParams = struct {
-    ctxTui: *pabrikcore.ContextIPCTui,
+    ctxTui: *pabrikcore.App,
 
     parent_allocator: std.mem.Allocator,
     parent_session_id: []const u8,
@@ -3754,7 +3754,7 @@ test "generateSessionNameNew: name call failure leaves the placeholder name and 
 //
 // The user asked to move the `tools/list` fetch out of the per-run hot
 // path in `workflow.zig`: first workflow run fetches once via
-// `fetchMcpToolsFresh`, publishes to `ContextIPCTui`, and every later
+// `fetchMcpToolsFresh`, publishes to `App`, and every later
 // run (new session, queued message, retry) reads the snapshot.
 //
 // These are source-contract tests (grep the function body) because a

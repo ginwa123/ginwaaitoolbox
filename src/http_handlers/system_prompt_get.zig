@@ -175,7 +175,7 @@ pub fn systemPromptGetHandler(
 //   5. `getMessages` and `buildMessages` failures map to 500.
 //   6. The route path is `/test/system-prompt/:session_id`.
 // 
-// Standing up a sqlite DB + migrations + `ContextIPCTui` singleton to
+// Standing up a sqlite DB + migrations + `App` singleton to
 // behavioural-test the handler is out of scope (matches
 // `routines_run_test.zig`, `memories_crud_test.zig`, etc.). The static
 // checks below cover the same ground for less code.

@@ -171,7 +171,7 @@ pub fn runAllAgentsWithStarter(
 const LiveCtx = struct {
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
 };
 
 fn liveRun(ptr: ?*anyopaque, task_id: []const u8) PerTaskResult {
@@ -191,7 +191,7 @@ fn liveRun(ptr: ?*anyopaque, task_id: []const u8) PerTaskResult {
 pub fn runAllAgentsUseCase(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     column_id: []const u8,
 ) !RunAllAgentsOutcome {
     var live = LiveCtx{ .allocator = allocator, .db = db, .di = di };
@@ -226,7 +226,7 @@ pub fn runAllAgentsHandler(
         });
     }
 
-    // 2. Resolve the `ContextIPCTui` singleton (carries the DB handle).
+    // 2. Resolve the `App` singleton (carries the DB handle).
     const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,

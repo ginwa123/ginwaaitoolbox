@@ -263,7 +263,7 @@ pub fn tasksDeleteHandler(
 // pattern), NOT by spinning up an in-memory DB. Standing up sqlite +
 // migrations + event-bus to behavioural-test the handler would
 // duplicate the migration setup and pull in `pabrikcore.getSingleton()`
-// (which depends on a live `ContextIPCTui` with a server, logger,
+// (which depends on a live `App` with a server, logger,
 // and event bus). The static checks below directly test the bug —
 // they fail if and only if the running-check or the handler/usecase
 // split is removed or routed back to the old path.

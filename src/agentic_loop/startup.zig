@@ -33,7 +33,7 @@ const Scheduler = @import("../ai_workflow/tui/routines/Scheduler.zig");
 pub fn start(
     allocator: std.mem.Allocator,
     db: *pabrikcore.sqlite.SqliteBackend,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     io: std.Io,
 ) !void {
     try di.group_emit_session_create.concurrent(
@@ -42,7 +42,7 @@ pub fn start(
             fn run(
                 alloc: std.mem.Allocator,
                 database: *pabrikcore.sqlite.SqliteBackend,
-                di_inner: *pabrikcore.ContextIPCTui,
+                di_inner: *pabrikcore.App,
                 io_inner: std.Io,
             ) void {
                 Scheduler.start(alloc, database, di_inner, io_inner) catch |err| {
