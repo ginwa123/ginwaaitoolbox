@@ -329,10 +329,18 @@ def test_list_directory_relative_path_does_not_abort_worker(default_nalar_bin: A
         # is wrong and there is nothing here to fix in the product.
         # `os.path.normpath` is the platform's own answer to "are these the
         # same path", which is exactly the question being asked.
-        got_dir = os.path.normpath(envelope["data"]["path"])
+        got_path = (envelope.get("data") or {}).get("path")
+        assert got_path is not None, (
+            "list_directory reported success but carried no data.path, so the "
+            "relative-path resolution cannot be checked. This is a product "
+            "shape problem, not a separator problem -- and the envelope is "
+            f"printed in full because `data: null` on a success row says "
+            f"nothing on its own:\n  {envelope!r}"
+        )
+        got_dir = os.path.normpath(got_path)
         assert got_dir == os.path.normpath(expected_dir), (
             f"relative path must resolve against the SESSION cwd {expected_dir!r}, "
-            f"got {envelope['data']['path']!r}"
+            f"got {got_path!r}"
         )
         names = [e["name"] for e in envelope["data"]["entries"]]
         assert "index.ts" in names, f"expected index.ts in the listing, got {names}"
