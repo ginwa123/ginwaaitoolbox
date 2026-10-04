@@ -695,8 +695,8 @@ pub const AddSkillInput = struct {
 ///
 /// The `description` and the parameter docs below are the ONLY per-tool
 /// text that reaches the model: `AgentTool.function.system_prompt` is
-/// copied into the runtime tool struct (src/root.zig:865) and freed at
-/// :884, and never read into any prompt — the one renderer that would
+/// copied into the runtime tool struct (src/app.zig, `dupeAgentTool`)
+/// and freed next to it, and never read into any prompt — the one renderer that would
 /// consume it (`appendToolListing`) has no call sites. So the guidance
 /// has to live here, in the schema the model actually reads.
 pub const add_skill_tool_system_prompt =

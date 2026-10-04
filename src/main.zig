@@ -208,9 +208,9 @@ pub fn main(init: std.process.Init) !void {
 
     const global_logger_ptr = pabrikcore.loggermod.getGlobal().?;
 
-    const ctxParent = try allocator.create(pabrikcore.ContextIPCTui);
+    const ctxParent = try allocator.create(pabrikcore.App);
     defer allocator.destroy(ctxParent);
-    ctxParent.* = pabrikcore.ContextIPCTui{
+    ctxParent.* = pabrikcore.App{
         .allocator = allocator,
         .io = io,
         .db = &dbSqlite,

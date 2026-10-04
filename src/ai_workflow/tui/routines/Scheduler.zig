@@ -153,7 +153,7 @@ pub fn recomputeDueNextRunAt(
 pub fn fireDueRoutines(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     io: std.Io,
 ) !usize {
     const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
@@ -186,7 +186,7 @@ pub fn fireDueRoutines(
 pub fn start(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     io: std.Io,
 ) !void {
     // Restart safety: do these once at startup. A failure here is
@@ -239,7 +239,7 @@ pub fn start(
 // end-to-end via the `pabrik-routine-fire` sub-process is gone. The
 // new architecture submits the LLM work to
 // `di.group_emit_session_create.concurrent` which requires a real
-// `pabrikcore.ContextIPCTui` singleton with a wired event bus and a
+// `pabrikcore.App` singleton with a wired event bus and a
 // live `CallbackAiWorkerFlow` subscription. That machinery is not
 // constructible inside a unit test. The runtime smoke test (firing
 // a routine via the desktop UI and watching it run) is the

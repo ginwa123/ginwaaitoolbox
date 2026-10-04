@@ -113,7 +113,7 @@ pub fn watchAndNotify(args: WatchCoreArgs) bool {
 /// Io-task-owned args — every slice is heap-duped with `di.allocator` at
 /// schedule time and freed by the task on exit.
 const WatchArgs = struct {
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []u8,
     pid: u32,
     pid_str: []u8,
@@ -165,7 +165,7 @@ fn watchFn(args: WatchArgs) void {
 /// Must be called AFTER `background_process.save` succeeds, with the
 /// borrowed slices still alive (they are duped synchronously here).
 pub fn spawnCompletionWatcher(
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []const u8,
     pid: u32,
     command: []const u8,
@@ -177,7 +177,7 @@ pub fn spawnCompletionWatcher(
 /// Schedule with an explicit poll interval / cap (test hook; production passes
 /// the defaults via `spawnCompletionWatcher`).
 pub fn spawnCompletionWatcherWithPoll(
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []const u8,
     pid: u32,
     command: []const u8,

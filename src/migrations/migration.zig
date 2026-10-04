@@ -4911,7 +4911,7 @@ pub const Migration081CreateAgentKanbans = struct {
 /// `workspace_item_tasks`). Used by the chat sidebar to render the
 /// "last human touched" time pill instead of the AI-tainted
 /// `updated_at`. Stamped by:
-///   - `root.zig::emit_run_agent` - every user-sends-a-message path
+///   - `app.zig::emit_run_agent` - every user-sends-a-message path
 ///     (chat send, kanban "create & run", kanban "Start agent", `+ Chat`)
 ///   - `session_update.zig::useCase` - user renames / changes profile /
 ///     toggles unattended mode

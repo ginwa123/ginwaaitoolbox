@@ -405,7 +405,7 @@ fn resolveGitBranch(
 // Standing up an in-process sqlite DB + migrations + event bus to
 // behavioural-test the handler would duplicate the migration setup
 // and pull in `pabrikcore.getSingleton()` (which depends on a live
-// `ContextIPCTui` with a server, logger, and event bus). The static
+// `App` with a server, logger, and event bus). The static
 // checks below directly test the bug — they fail if and only if the
 // pagination contract is removed or routed back to the old path.
 

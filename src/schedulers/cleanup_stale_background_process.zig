@@ -11,7 +11,7 @@
 //!
 //! Architecture: pure helper `cleanupStaleBackgroundProcesses(input) !CleanupResult`
 //! does the work; thin `handle(ctx, now_unix) void` wrapper pulls
-//! `*ContextIPCTui` from the singleton and calls the helper. Per row:
+//! `*App` from the singleton and calls the helper. Per row:
 //! parse (session_id, pid, command, log_path), call `isProcessRunning`,
 //! keep if alive, otherwise queue the completion message via
 //! `insertQueueMessage` (notify) and DELETE (only if notified).
@@ -273,7 +273,7 @@ pub fn notifySingleBackgroundCompletion(args: NotifySingleBackgroundCompletionAr
 /// Moved verbatim out of the `handle()` wake loop so the immediate
 /// watcher thread can reuse the exact same path. All errors are caught
 /// and logged — never panics, never propagates.
-pub fn wakeSessionForCompletion(di: *pabrikcore.ContextIPCTui, allocator: std.mem.Allocator, sid: []const u8) void {
+pub fn wakeSessionForCompletion(di: *pabrikcore.App, allocator: std.mem.Allocator, sid: []const u8) void {
     const logger = di.logger;
 
     const running = ai_workflow.isWorkerRunning(allocator, di.db, sid);

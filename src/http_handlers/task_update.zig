@@ -396,7 +396,7 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
 // is a static source check). Standing up a sqlite DB + migrations +
 // event-bus subscription in a unit test would require either pulling
 // in the `pabrikcore.getSingleton()` singleton (which depends on a
-// live `ContextIPCTui` with a server, logger, and event bus) or
+// live `App` with a server, logger, and event bus) or
 // duplicating the migration setup. The two static checks below
 // directly test the bug — they fail if and only if the cascade
 // contract is removed or routed back to the old path.

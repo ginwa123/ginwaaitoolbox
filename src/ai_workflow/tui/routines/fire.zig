@@ -72,7 +72,7 @@ pub const FireError = error{
 /// surface as a chat-view error (the same path as a normal user
 /// session), not as a routine status change.
 ///
-/// `di` must be the initialized `pabrikcore.ContextIPCTui` singleton
+/// `di` must be the initialized `pabrikcore.App` singleton
 /// (the scheduler already has it from the start() call chain). The
 /// sub-allocated strings (`sid`/`qmsg`/...) are owned by the
 /// `runFire` callback and freed when it returns.
@@ -91,7 +91,7 @@ pub const FireError = error{
 pub fn fireWorkspaceRoutine(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     io: std.Io,
     routine_id: []const u8,
 ) anyerror!void {
@@ -170,7 +170,7 @@ pub fn fireWorkspaceRoutine(
 /// worker thread; this callback returns immediately. Frees the
 /// heap-allocated string args on the way out.
 fn runFire(
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     sid: []u8,
     qmsg: []u8,
     cwd: []u8,
@@ -236,7 +236,7 @@ fn runFire(
 ///     "Run #5" slots in as new bullets without breaking parsing.
 ///
 /// Public for unit testing in `fire_test.zig` — the happy-path of
-/// `fireWorkspaceRoutine` requires a real `pabrikcore.ContextIPCTui`
+/// `fireWorkspaceRoutine` requires a real `pabrikcore.App`
 /// singleton and a live `CallbackAiWorkerFlow` subscription (i.e. a
 /// real `pabrik` process), so the format is tested in isolation here.
 pub fn formatRoutineMessage(
@@ -299,7 +299,7 @@ pub fn formatSqliteDatetime(allocator: std.mem.Allocator, unix_nanos: i128) ![]u
 // `saveMessage` directly, and the success-state side effect now
 // flows through the same group as the rest of the session-create
 // pipeline. Testing the full happy path would require a real
-// initialized `pabrikcore.ContextIPCTui` singleton and a live
+// initialized `pabrikcore.App` singleton and a live
 // `CallbackAiWorkerFlow` subscription — i.e., a real `pabrik`
 // process. The runtime smoke test (manually firing a routine via
 // the desktop UI and watching it run) is the integration coverage.
