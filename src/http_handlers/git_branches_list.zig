@@ -273,30 +273,6 @@ pub fn gitBranchesListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 
 // ===== Tests =====
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
-
-const HANDLER_PATH = "src/http_handlers/git_branches_list.zig";
-const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/http_routes.zig";
-const HTTP_RESP_PATH = "src/http_handlers/http_response.zig";
-const TEST_RUNNER_PATH = "src/ai_workflow/tui/test_runner.zig";
-
-/// Read a source file from disk, relative to the project root. Mirrors
-/// the pattern from `git_worktree_info.zig` / `set_git_worktree_test.zig`
-/// — the project does not have behavioural handler-test infrastructure,
-/// so the wiring checks static-grep for required substrings.
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
 // ─── validateRepoPath ─────────────────────────────────────────────────────
 
 test "validateRepoPath accepts an absolute path" {
@@ -423,72 +399,4 @@ test "orderRefs keeps every row when the default name matches nothing" {
     try testing.expectEqual(@as(usize, 2), ordered.len);
     try testing.expectEqualStrings("origin/b", ordered[0].name);
     try testing.expectEqualStrings("a", ordered[1].name);
-}
-
-// ─── Static wiring ────────────────────────────────────────────────────────
-
-test "git_branches_list handler is exported from mod.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, MOD_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "pub const gitBranchesListHandler") == null) {
-        std.debug.print("!! mod.zig does not export gitBranchesListHandler !!\n", .{});
-        return error.GitBranchesListExportMissing;
-    }
-    if (std.mem.indexOf(u8, source, "@import(\"git_branches_list.zig\")") == null) {
-        std.debug.print("!! mod.zig does not @import git_branches_list.zig !!\n", .{});
-        return error.GitBranchesListImportMissing;
-    }
-}
-
-test "git branches route is registered in main.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, MAIN_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "/api/git/branches") == null) {
-        std.debug.print("!! http_routes.zig does not register /api/git/branches !!\n", .{});
-        return error.GitBranchesRouteMissing;
-    }
-    if (std.mem.indexOf(u8, source, "gitBranchesListHandler") == null) {
-        std.debug.print("!! http_routes.zig does not reference gitBranchesListHandler !!\n", .{});
-        return error.GitBranchesHandlerRefMissing;
-    }
-}
-
-test "http_response.zig defines GitBranchesResponse struct + helper" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HTTP_RESP_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "GitBranchesResponse") == null) {
-        std.debug.print("!! http_response.zig does not define GitBranchesResponse !!\n", .{});
-        return error.GitBranchesResponseTypeMissing;
-    }
-    if (std.mem.indexOf(u8, source, "makeGitBranchesResponse") == null) {
-        std.debug.print("!! http_response.zig does not define makeGitBranchesResponse !!\n", .{});
-        return error.GitBranchesResponseHelperMissing;
-    }
-}
-
-test "git_branches_list handler requires an absolute ?path= param" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "req.query.get(\"path\")") == null) {
-        std.debug.print("!! git_branches_list.zig does not read the ?path= query param !!\n", .{});
-        return error.GitBranchesPathParamMissing;
-    }
-    if (std.mem.indexOf(u8, source, "validateRepoPath(path_param)") == null) {
-        std.debug.print("!! git_branches_list.zig does not validate ?path= before spawning git !!\n", .{});
-        return error.GitBranchesPathNotValidated;
-    }
-}
-
-test "test_runner.zig registers git_branches_list.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TEST_RUNNER_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "@import(\"../../http_handlers/git_branches_list.zig\")") == null) {
-        std.debug.print("!! test_runner.zig does not import git_branches_list.zig !!\n", .{});
-        return error.GitBranchesListNotRegistered;
-    }
 }

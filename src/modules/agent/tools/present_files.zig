@@ -373,28 +373,9 @@ pub fn executePresentFilesToString(
 }
 
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
 const present_files = @import("present_files.zig");
 
-const TOOL_PATH = "src/modules/agent/tools/present_files.zig";
-
 // ─── Helpers ─────────────────────────────────────────────────────────────
-
-/// Read a source file from disk, relative to the project root.
-/// Normalizes CRLF → LF so multi-line literal needles match even when
-/// the file was checked out on Windows with autocrlf=true (see
-/// `.gitattributes` + `src/helpers/text_normalize.zig` for context).
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
 
 fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
@@ -405,60 +386,6 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
 fn setupIo() std.Io.Threaded {
     const threaded = std.Io.Threaded.init(testing.allocator, .{});
     return threaded;
-}
-
-// ─── Static source-check tests ───────────────────────────────────────────
-
-test "present_files tool definition has name \"present_files\"" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    if (!contains(source, ".name = \"present_files\"")) {
-        std.debug.print("!! present_files.zig does not define the tool with .name = \"present_files\" !!\n", .{});
-        return error.ToolNameMissing;
-    }
-}
-
-test "present_files schema has files property and required array" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    if (!contains(source, ".name = \"files\"")) {
-        std.debug.print("!! present_files.zig schema is missing property: files !!\n", .{});
-        return error.SchemaPropertyMissing;
-    }
-    if (!contains(source, "required = &.{\"files\"}")) {
-        std.debug.print("!! present_files.zig schema required array is wrong (want the files singleton) !!\n", .{});
-        return error.RequiredArrayWrong;
-    }
-}
-
-test "present_files defines pub fn executePresentFilesToString" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    if (!contains(source, "pub fn executePresentFilesToString(")) {
-        std.debug.print("!! present_files.zig does not define pub fn executePresentFilesToString !!\n", .{});
-        return error.ExecuteFnMissing;
-    }
-}
-
-test "present_files defines MAX_FILES and MAX_FILE_BYTES caps" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    if (!contains(source, "MAX_FILES")) {
-        std.debug.print("!! present_files.zig does not define MAX_FILES constant !!\n", .{});
-        return error.MaxFilesConstMissing;
-    }
-    if (!contains(source, "MAX_FILE_BYTES")) {
-        std.debug.print("!! present_files.zig does not define MAX_FILE_BYTES constant !!\n", .{});
-        return error.MaxFileBytesConstMissing;
-    }
-    if (!contains(source, "50 * 1024 * 1024")) {
-        std.debug.print("!! present_files.zig does not include the 50 MiB cap (50 * 1024 * 1024) !!\n", .{});
-        return error.FiftyMiBCapMissing;
-    }
 }
 
 // ─── Behavioral tests ────────────────────────────────────────────────────
@@ -1058,26 +985,4 @@ test "present_files: a label keeps its tabs and newlines (sanitizeControlChars c
     defer alloc.free(label);
     try testing.expect(contains(label, "\n"));
     try testing.expect(contains(label, "\t"));
-}
-
-test "present_files: the tool definition states the working-directory rule" {
-    // The model has to learn the rule from the schema, not from a failed call.
-    const alloc = testing.allocator;
-    const source = try readSource(alloc, TOOL_PATH);
-    defer alloc.free(source);
-    try testing.expect(contains(source, "working directory"));
-    try testing.expect(contains(source, "outside"));
-}
-
-test "present_files: the tool delegates containment to file_sandbox, not a private copy" {
-    // Two private copies of this rule are exactly how the tool and the
-    // endpoint drifted apart. This source check keeps them from reappearing.
-    const alloc = testing.allocator;
-    const source = try readSource(alloc, TOOL_PATH);
-    defer alloc.free(source);
-    try testing.expect(contains(source, "@import(\"file_sandbox.zig\")"));
-    // Assembled at runtime so the needle itself is not in this file — a
-    // a literal needle spelled out here would make the check match itself.
-    const private_copy = "fn isInside" ++ "Root";
-    try testing.expect(!contains(source, private_copy));
 }

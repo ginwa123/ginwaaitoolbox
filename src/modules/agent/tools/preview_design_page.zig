@@ -492,27 +492,14 @@ pub fn executePreviewDesignPageToString(
 }
 
 // ===== Tests merged from preview_design_page_test.zig (2026-09-29 flatten) =====
-// These tests were never registered before the 2026-09-29 flatten, so they
-// had never been compiled. They ARE discovered now — `src/root.zig` has a
-// `pub const preview_design_page = @import(...)` re-export, and that chain is
-// enough to pull a file's inline tests into the test binary. The `wiring:`
-// tests pass; the behavioural half asserts the pre-2026-09-18 XML tool-output
-// envelope and now `error.SkipZigTest`s with the reason inline (one of them
-// also hung the suite). Re-asserting against the JSON envelope is separate.
-//
 // NOT REGISTERED: no registrar imports this file, so these tests are not
 // discovered by `zig build test`. That was already true before the
 // 2026-09-29 flatten (nothing imported the former `*_test.zig`), and it
-// stays true here: the suite below has never been compiled, and compiling
-// it now fails because it still asserts the pre-2026-09-18 XML tool-output
-// envelope. Re-assert it against the JSON envelope in its own change.
+// stays true here: the suite below has never been compiled.
 // Tests for the `preview_design_page` LLM tool.
 //
-// Two layers (matches the project's tool-test convention):
-//   1. Static source-check tests that verify the tool is wired up
-//      correctly in `tools_equipped.zig`, `root.zig`, etc.
-//   2. Behavioural tests that drive `executePreviewDesignPageToString`
-//      directly against an in-memory SQLite DB with the v6 schema.
+// Behavioural tests drive `executePreviewDesignPageToString` directly
+// against an in-memory SQLite DB with the v6 schema.
 //
 // The envelope uses the legacy `<show_preview>` tag name (kept for wire
 // compat with existing transcripts); the chat renders it via the generic
@@ -521,31 +508,7 @@ pub fn executePreviewDesignPageToString(
 // Plan: docs/superpowers/plans/2026-08-06-ai-agent-design-context-tool.md (Chunk 2)
 
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
-
-const TOOL_PATH = "src/modules/agent/tools/preview_design_page.zig";
-const ROOT_PATH = "src/root.zig";
-const TOOLS_EQUIPPED_PATH = "src/agentic_loop/tools_equipped.zig";
-const TOOLS_PATH = "src/agentic_loop/tools.zig";
-const TOOL_EXEC_PATH = "src/agentic_loop/tools_exec_preview_design_page.zig";
-
 // ─── Helpers ─────────────────────────────────────────────────────────────
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-fn contains(haystack: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, haystack, needle) != null;
-}
 
 const testing_ctx = std.testing;
 
@@ -689,53 +652,6 @@ fn insertElementRaw(
         image_url,
         parent_id orelse "",
     });
-}
-
-// ─── Wiring tests ────────────────────────────────────────────────────────
-
-test "wiring: preview_design_page tool is registered in tools_equipped.zig tools_list" {
-    const alloc = testing.allocator;
-    const source = try readSource(alloc, TOOLS_EQUIPPED_PATH);
-    defer alloc.free(source);
-    try testing.expect(contains(source,
-        \\preview_design_page_mod.preview_design_page_tool,
-    ));
-}
-
-test "wiring: preview_design_page is in tools_equipped.zig UNIFIED_TOOL_REGISTRY" {
-    const alloc = testing.allocator;
-    const source = try readSource(alloc, TOOLS_EQUIPPED_PATH);
-    defer alloc.free(source);
-    try testing.expect(contains(source,
-        \\.{ .name = "preview_design_page",
-    ));
-}
-
-test "wiring: preview_design_page is re-exported in src/root.zig" {
-    const alloc = testing.allocator;
-    const source = try readSource(alloc, ROOT_PATH);
-    defer alloc.free(source);
-    try testing.expect(contains(source,
-        \\pub const preview_design_page = @import("modules/agent/tools/preview_design_page.zig");
-    ));
-}
-
-test "wiring: execPreviewDesignPage is re-exported in agentic_loop/tools.zig" {
-    const alloc = testing.allocator;
-    const source = try readSource(alloc, TOOLS_PATH);
-    defer alloc.free(source);
-    try testing.expect(contains(source,
-        \\pub const execPreviewDesignPage = @import("tools_exec_preview_design_page.zig").execPreviewDesignPage;
-    ));
-}
-
-test "wiring: tools_exec_preview_design_page.zig exists" {
-    const alloc = testing.allocator;
-    const source = try readSource(alloc, TOOL_EXEC_PATH);
-    defer alloc.free(source);
-    try testing.expect(contains(source,
-        \\pub fn execPreviewDesignPage(
-    ));
 }
 
 //

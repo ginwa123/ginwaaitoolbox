@@ -1786,52 +1786,14 @@ test "every skill tool refuses an unresolvable workspace with the same message" 
     try testing.expectEqualStrings(SCOPE_NO_WORKSPACE, b.value.@"error" orelse "");
 }
 
-// ─── static contracts ───
+// ─── schema contracts ───
 //
-// Source-scanning rather than behavioural, for the same reason
-// `modules/agent/tools/tools.zig` does it: the failure being guarded is a
-// FIELD COMING BACK, and only a field reappearing in a schema can be
-// observed at all without a model actually sending it.
-
-/// Directory of the tools, relative to the project root — the test
-/// binary's cwd is the build root, which is the same convention
-/// `tools.zig`'s own path-validation contract test uses.
-const TOOL_DIR = "src/modules/agent/tools/";
-
-fn readSelf(alloc: std.mem.Allocator) ![]u8 {
-    const full = try std.fmt.allocPrint(alloc, "{s}skill_tools.zig", .{TOOL_DIR});
-    defer alloc.free(full);
-    return std.Io.Dir.cwd().readFileAlloc(
-        testing.io,
-        full,
-        alloc,
-        std.Io.Limit.limited(1 << 20),
-    );
-}
-
-/// The `<field>:` needle, assembled at RUNTIME.
-///
-/// A plain `"path:"` literal would find itself: the string that contains
-/// the needle is in this file too, so the scan would match its own test
-/// and always pass. Building the needle from parts is the whole trick.
-fn fieldNeedle(alloc: std.mem.Allocator, field: []const u8) ![]u8 {
-    return std.fmt.allocPrint(alloc, "{s}:", .{field});
-}
-
-/// The `.name = "<field>"` needle a tool schema declares.
-fn propNeedle(alloc: std.mem.Allocator, field: []const u8) ![]u8 {
-    return std.fmt.allocPrint(alloc, ".name = \"{s}\"", .{field});
-}
-
-/// The body of `pub const <name> = struct { … }` — from the declaration
-/// to the `}` that closes it at column zero.
-fn structBody(src: []const u8, name: []const u8) ?[]const u8 {
-    const decl = std.fmt.allocPrint(std.heap.page_allocator, "pub const {s} = struct {{", .{name}) catch return null;
-    defer std.heap.page_allocator.free(decl);
-    const start = std.mem.indexOf(u8, src, decl) orelse return null;
-    const end = std.mem.indexOfScalarPos(u8, src, start + 1, '}') orelse return null;
-    return src[start..end];
-}
+// Asserted against the LIVE `AgentTool` constants the model receives and the
+// LIVE struct types the exec wrappers parse, not against this file's text.
+// The old versions read the file and scanned for `<field>:` — they failed on
+// a rename and stayed green through a field that actually came back. A tool
+// schema is a runtime value; so is a struct's field list. See the sibling
+// `schema contract:` tests in `document.zig`.
 
 /// Every field that described a DIRECTORY TIER, plus the two that only
 /// ever named one. A skill is a row; none of these has anything to say
@@ -1845,88 +1807,116 @@ const directory_shaped_fields = [_][]const u8{
     "create_with_dir",
 };
 
-/// The five tool inputs and the four tool payloads — the only structs a
-/// model reads or the exec wrapper parses.
-const wire_structs = [_][]const u8{
-    "SearchSkillsInput",
-    "UseSkillInput",
-    "AddSkillInput",
-    "EditSkillInput",
-    "RemoveSkillInput",
-    "UseSkillJSON",
-    "RemoveSkillJSON",
-    "AddSkillJSON",
-    "EditSkillJSON",
+/// The five tool schemas — the exact constants `tools_equipped` hands the LLM.
+const skill_tool_schemas = [_]AgentTool{
+    search_skills_tool,
+    use_skill_tool,
+    add_skill_tool,
+    edit_skill_tool,
+    remove_skill_tool,
 };
 
-test "static contract: no skill tool schema or payload carries a directory-shaped field" {
-    const alloc = testing.allocator;
-    const src = try readSelf(alloc);
-    defer alloc.free(src);
-
-    for (directory_shaped_fields) |f| {
-        const prop = try propNeedle(alloc, f);
-        defer alloc.free(prop);
-        if (std.mem.indexOf(u8, src, prop) != null) {
-            std.debug.print("!! a skill tool schema still declares the `{s}` property\n", .{f});
-            return error.DirectoryShapedFieldSurvived;
+test "schema contract: no skill tool schema or payload carries a directory-shaped field" {
+    for (skill_tool_schemas) |tool| {
+        for (tool.function.parameters.properties) |prop| {
+            for (directory_shaped_fields) |f| {
+                if (std.mem.eql(u8, prop.name, f)) {
+                    std.debug.print("!! {s} still declares the `{s}` property\n", .{ tool.function.name, f });
+                    return error.DirectoryShapedFieldSurvived;
+                }
+            }
         }
+        for (tool.function.parameters.required) |req| {
+            for (directory_shaped_fields) |f| {
+                if (std.mem.eql(u8, req, f)) {
+                    std.debug.print("!! {s} still requires the `{s}` property\n", .{ tool.function.name, f });
+                    return error.DirectoryShapedFieldSurvived;
+                }
+            }
+        }
+    }
 
-        const decl = try fieldNeedle(alloc, f);
-        defer alloc.free(decl);
-        for (wire_structs) |name| {
-            const body = structBody(src, name) orelse return error.MissingWireStruct;
-            if (std.mem.indexOf(u8, body, decl) != null) {
-                std.debug.print("!! {s} still has a `{s}` field\n", .{ name, f });
-                return error.DirectoryShapedFieldSurvived;
+    // The payload structs the exec wrapper deserialises are the other half of
+    // the wire: a field there is a slot for `ignore_unknown_fields` to fill.
+    inline for (.{
+        SearchSkillsInput,
+        UseSkillInput,
+        AddSkillInput,
+        EditSkillInput,
+        RemoveSkillInput,
+        UseSkillJSON,
+        RemoveSkillJSON,
+        AddSkillJSON,
+        EditSkillJSON,
+    }) |T| {
+        // `fields` values hold a `type`, so they must be indexed at comptime
+        // — hence inline for, not a runtime loop.
+        inline for (@typeInfo(T).@"struct".fields, 0..) |field, i| {
+            _ = i;
+            for (directory_shaped_fields) |f| {
+                if (std.mem.eql(u8, field.name, f)) {
+                    std.debug.print("!! {s} still has a `{s}` field\n", .{ @typeName(T), f });
+                    return error.DirectoryShapedFieldSurvived;
+                }
             }
         }
     }
 }
 
-test "static contract: no skill input accepts a workspace_id" {
-    const alloc = testing.allocator;
-    const src = try readSelf(alloc);
-    defer alloc.free(src);
-
+test "schema contract: no skill input accepts a workspace_id" {
     // A model-supplied workspace id would be a spoofing vector — the LLM
     // would be choosing which isolation boundary it writes inside. The
     // exec wrapper parses with `ignore_unknown_fields`, so a hallucinated
-    // one is dropped on the floor; this test fails if a REAL one ever
-    // lands and starts being honoured.
-    const needle = try fieldNeedle(alloc, "workspace_id");
-    defer alloc.free(needle);
+    // one is dropped on the floor; this fails if a REAL one ever lands and
+    // starts being honoured.
+    for (skill_tool_schemas) |tool| {
+        for (tool.function.parameters.properties) |prop| {
+            if (std.mem.eql(u8, prop.name, "workspace_id")) {
+                std.debug.print("!! {s} accepts a workspace_id\n", .{tool.function.name});
+                return error.WorkspaceIdInSchema;
+            }
+        }
+        for (tool.function.parameters.required) |req| {
+            if (std.mem.eql(u8, req, "workspace_id")) {
+                std.debug.print("!! {s} requires a workspace_id\n", .{tool.function.name});
+                return error.WorkspaceIdInSchema;
+            }
+        }
+    }
 
-    for ([_][]const u8{
-        "SearchSkillsInput",
-        "UseSkillInput",
-        "AddSkillInput",
-        "EditSkillInput",
-        "RemoveSkillInput",
-    }) |name| {
-        const body = structBody(src, name) orelse return error.MissingWireStruct;
-        if (std.mem.indexOf(u8, body, needle) != null) {
-            std.debug.print("!! {s} accepts a workspace_id\n", .{name});
-            return error.WorkspaceIdInSchema;
+    inline for (.{
+        SearchSkillsInput,
+        UseSkillInput,
+        AddSkillInput,
+        EditSkillInput,
+        RemoveSkillInput,
+    }) |T| {
+        inline for (@typeInfo(T).@"struct".fields, 0..) |field, i| {
+            _ = i;
+            if (std.mem.eql(u8, field.name, "workspace_id")) {
+                std.debug.print("!! {s} accepts a workspace_id\n", .{@typeName(T)});
+                return error.WorkspaceIdInSchema;
+            }
         }
     }
 }
 
-test "static contract: use_skill is keyed by name, not by path" {
-    const alloc = testing.allocator;
-    const src = try readSelf(alloc);
-    defer alloc.free(src);
-
-    // The name IS the handle. If `UseSkillInput` ever grows a `path`
-    // again, the model has a second way to name a skill and only one of
-    // them is scoped — the prompt rules that used to police this
-    // ("ends in SKILL.MD; pass it verbatim") are gone with the paths.
-    const body = structBody(src, "UseSkillInput") orelse return error.MissingWireStruct;
-    const path_field = try fieldNeedle(alloc, "path");
-    defer alloc.free(path_field);
-    try testing.expect(std.mem.indexOf(u8, body, path_field) == null);
-
-    const name_field = try fieldNeedle(alloc, "name");
-    defer alloc.free(name_field);
-    try testing.expect(std.mem.indexOf(u8, body, name_field) != null);
+test "schema contract: use_skill is keyed by name, not by path" {
+    // The name IS the handle. If `UseSkillInput` ever grows a `path` again,
+    // the model has a second way to name a skill and only one of them is
+    // scoped — the prompt rules that used to police this ("ends in SKILL.MD;
+    // pass it verbatim") are gone with the paths.
+    inline for (@typeInfo(UseSkillInput).@"struct".fields, 0..) |field, i| {
+        _ = i;
+        if (std.mem.eql(u8, field.name, "path")) {
+            std.debug.print("!! UseSkillInput is keyed by path again\n", .{});
+            return error.SkillKeyedByPath;
+        }
+    }
+    var has_name = false;
+    inline for (@typeInfo(UseSkillInput).@"struct".fields, 0..) |field, i| {
+        _ = i;
+        if (std.mem.eql(u8, field.name, "name")) has_name = true;
+    }
+    try testing.expect(has_name);
 }

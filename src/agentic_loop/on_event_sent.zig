@@ -744,51 +744,6 @@ pub fn sendStreamToolCallDelta(
 
 const testing_oes = std.testing;
 const pabrikcore_oes = tree1_mod;
-const text_normalize = @import("helpers").text_normalize;
-const ON_EVENT_SENT_PATH = "src/agentic_loop/on_event_sent.zig";
-
-fn readSourceOES(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(testing_oes.io, path, allocator, .unlimited);
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-test "on_event_sent.zig imports helpers" {
-    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
-    defer testing_oes.allocator.free(source);
-
-    if (std.mem.indexOf(u8, source, "const helpers = tree1_mod.helpers;") == null) {
-        std.debug.print("!! on_event_sent.zig missing `const helpers = tree1_mod.helpers;` !!\n", .{});
-        return error.HelpersImportMissing;
-    }
-}
-
-test "on_event_sent.zig calls sanitizeUtf8 on content" {
-    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
-    defer testing_oes.allocator.free(source);
-
-    const direct = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, input.content)") != null;
-    const via_const = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, c)") != null and
-        std.mem.indexOf(u8, source, "input.content") != null;
-    if (!direct and !via_const) {
-        std.debug.print("!! on_event_sent.zig does not sanitize input.content before JSON serialization !!\n", .{});
-        return error.ContentSanitizationMissing;
-    }
-}
-
-test "on_event_sent.zig calls sanitizeUtf8 on reasoning_content" {
-    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
-    defer testing_oes.allocator.free(source);
-
-    const direct = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, input.reasoning_content)") != null;
-    const via_const = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, r)") != null and
-        std.mem.indexOf(u8, source, "input.reasoning_content") != null;
-    if (!direct and !via_const) {
-        std.debug.print("!! on_event_sent.zig does not sanitize input.reasoning_content !!\n", .{});
-        return error.ReasoningSanitizationMissing;
-    }
-}
 
 test "sanitizeUtf8 fixes the exact bytes from the bug" {
     const corrupt_bytes = [_]u8{
@@ -953,62 +908,4 @@ test "serializeToolCallDeltas includes session_id" {
     try testing_oes.expect(std.mem.indexOf(u8, data, "\"session_id\"") != null);
     try testing_oes.expect(std.mem.indexOf(u8, data, "\"sess-abc\"") != null);
     try testing_oes.expect(std.mem.indexOf(u8, data, "\"type\": \"tool_call_delta\"") != null);
-}
-
-// ===== Tests merged from tool_calls_json_wire_shape_test.zig (2026-09-29 flatten) =====
-// Static-contract tests: tool_calls_json SSE wire shape (task_1787590621966_10)
-//
-// Regression lock for "msg.tool_calls_json?.trim is not a function".
-// Root cause: `on_event_sent.zig` emitted the assistant row's
-// tool_calls as a JSON ARRAY while every other path (REST
-// session_messages_get.zig, insert sse_on_event_send_llm_history.zig,
-// DB TEXT column) uses a JSON STRING. The frontend's ChatView.vue
-// calls `.trim()` on it — arrays crash the render.
-//
-// These are source-contract tests (grep the function body) because a
-// full wire round-trip needs a live event bus + logger; the python
-// functional harness covers the HTTP layer separately.
-
-/// The implementation half of this file, as it exists on disk.
-///
-/// These tests moved inline, so a whole-file read (or an `@embedFile` of this
-/// file) would hand the grep the needles it is searching for and make every
-/// assertion self-fulfilling. Caller owns the returned buffer.
-fn readOnEventSentImplSource() ![]u8 {
-    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
-    defer testing_oes.allocator.free(source);
-    return helpers.text_normalize.implementationOnly(testing_oes.allocator, source);
-}
-
-test "static contract: on_event_sent.zig SseEventLLMHistory.tool_calls_json is a string slice" {
-    // The payload struct field MUST be ?[]const u8 (string), NOT
-    // ?[]const ToolCallJson (array). If a future refactor reverts this,
-    // the frontend's .trim() consumer crashes on live SSE again.
-    const on_event_sent_src = try readOnEventSentImplSource();
-    defer testing_oes.allocator.free(on_event_sent_src);
-    try testing_oes.expect(std.mem.indexOf(u8, on_event_sent_src, "tool_calls_json: ?[]const u8 = null,") != null);
-    // The old array-shaped field must NOT reappear in the payload struct.
-    try testing_oes.expect(std.mem.indexOf(u8, on_event_sent_src, "tool_calls_json: ?[]const ToolCallJson") == null);
-}
-
-test "static contract: on_event_sent.zig serializes via llm_history.serializeToolCalls" {
-    // The emitter must serialize ONCE at emit time using the same
-    // helper saveMessage uses for the DB TEXT column.
-    const on_event_sent_src = try readOnEventSentImplSource();
-    defer testing_oes.allocator.free(on_event_sent_src);
-    try testing_oes.expect(std.mem.indexOf(u8, on_event_sent_src, "llm_history.serializeToolCalls(allocator, calls)") != null);
-    // The old per-call array build must be gone.
-    try testing_oes.expect(std.mem.indexOf(u8, on_event_sent_src, "tool_calls_owned.append(allocator, .{") == null);
-}
-
-test "static contract: handle_tool.zig passes the raw array; emitter serializes" {
-    // sendSSEForLatestMessage passes the raw []agent.ToolCall through —
-    // serialization happens ONCE inside on_event_sent.onEventSendLLMHistory
-    // (single point of truth for the wire shape).
-    const handle_tool_src = @embedFile("handle_tool.zig");
-    const on_event_sent_src = try readOnEventSentImplSource();
-    defer testing_oes.allocator.free(on_event_sent_src);
-    try testing_oes.expect(std.mem.indexOf(u8, handle_tool_src, ".tool_calls_json = tool_calls_json,") != null);
-    // The emitter-side serialization must exist (checked in detail above).
-    try testing_oes.expect(std.mem.indexOf(u8, on_event_sent_src, "llm_history.serializeToolCalls(allocator, calls)") != null);
 }

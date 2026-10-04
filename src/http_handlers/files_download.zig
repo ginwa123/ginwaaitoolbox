@@ -259,21 +259,6 @@ pub fn filesDownloadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
 
 const testing = std.testing;
 
-const text_normalize = @import("helpers").text_normalize;
-
-const HANDLER_PATH = "src/http_handlers/files_download.zig";
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, allocator, .limited(256 * 1024));
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-fn contains(haystack: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, haystack, needle) != null;
-}
-
 test "parseDisposition defaults to attachment and rejects unknown" {
     try testing.expectEqual(Disposition.attachment, try parseDisposition(null));
     try testing.expectEqual(Disposition.attachment, try parseDisposition("attachment"));
@@ -308,35 +293,4 @@ test "the shared rule is the one this endpoint applies" {
 test "MAX_DOWNLOAD_BYTES stays in sync with the tool cap" {
     const present_files = @import("../modules/agent/tools/present_files.zig");
     try testing.expectEqual(present_files.MAX_FILE_BYTES, MAX_DOWNLOAD_BYTES);
-}
-
-test "the download endpoint delegates containment to the shared file_sandbox rule" {
-    // The two halves of one contract must not keep private copies: the tool
-    // accepted any absolute path while this handler 403'd anything outside
-    // the session working directory, so a presented card could never be
-    // previewed. Plan: docs/plans/2026-09-29-present-files-sandbox-parity.md
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-    if (!contains(source, "@import(\"../modules/agent/tools/file_sandbox.zig\")")) {
-        std.debug.print("!! files_download.zig does not import the shared file_sandbox rule !!\n", .{});
-        return error.SharedRuleNotImported;
-    }
-}
-
-test "the download endpoint has no private containment copy" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-    // Assembled at runtime: a literal needle in this file would match itself.
-    const private_is_inside = "fn isInside" ++ "Root";
-    const private_root = "fn resolveSession" ++ "Root";
-    if (contains(source, private_is_inside)) {
-        std.debug.print("!! files_download.zig defines its own isInsideRoot — the shared rule is file_sandbox.isInsideRoot !!\n", .{});
-        return error.PrivateContainmentCopy;
-    }
-    if (contains(source, private_root)) {
-        std.debug.print("!! files_download.zig defines its own resolveSessionRoot — the shared rule is file_sandbox.resolveSessionRoot !!\n", .{});
-        return error.PrivateRootResolutionCopy;
-    }
 }

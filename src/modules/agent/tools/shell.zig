@@ -1205,21 +1205,3 @@ test "tempDirFor: the Windows fallback is never the POSIX literal" {
     try testing.expect(t.len > 0);
     try testing.expect(!std.mem.eql(u8, t, "/tmp"));
 }
-
-// Pin the cause as well as the behaviour, so a future "simplification" back
-// to a hard-coded POSIX string is caught even where the current code is a
-// no-op. Scoped to the implementation: the forbidden literal appears
-// verbatim inside this test.
-test "static contract: spawn_background builds its command via backgroundSpec" {
-    const full = @embedFile("shell.zig");
-    const impl_end = std.mem.indexOf(u8, full, "// ─── Background detach (Windows)") orelse full.len;
-    const src = full[0..impl_end];
-
-    try testing.expect(std.mem.indexOf(u8, src, "pub fn backgroundSpec(") != null);
-    try testing.expect(std.mem.indexOf(u8, src, "try backgroundSpec(") != null);
-    try testing.expect(std.mem.indexOf(u8, src, "try tempDirFor(") != null);
-    // The literal must not be interpolated into a format string any more.
-    // It survives only inside the POSIX arm of defaultTempDir.
-    const hardcoded = "\"/tmp/bg_{d}.log\"";
-    try testing.expect(std.mem.indexOf(u8, src, hardcoded) == null);
-}

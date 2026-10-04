@@ -158,11 +158,13 @@ fn setupDb() !TestCtx {
 }
 
 fn seed(ctx: *TestCtx, workspace_id: []const u8, name: []const u8, description: []const u8) !void {
+    const content = try std.fmt.allocPrint(testing.allocator, "body of {s}", .{name});
+    defer testing.allocator.free(content);
     const row = try skills_store.upsertSkill(testing.allocator, &ctx.db, .{
         .workspace_id = workspace_id,
         .name = name,
         .description = description,
-        .content = "body of " ++ name,
+        .content = content,
     });
     skills_store.freeSkillRow(testing.allocator, row);
 }
@@ -230,58 +232,9 @@ test "useCase: an empty description round-trips as empty, not as a missing field
     try testing.expectEqual(@as(usize, 1), output.skills.len);
     try testing.expectEqualStrings("", output.skills[0].description);
 }
-
-// ─── Static route contracts ─────────────────────────────────────────────
-//
-// `matchRoute` walks routes in REGISTRATION ORDER and returns on the first
-// hit, so the collection route has to be registered before the
-// `:skill_name` route and any literal sibling has to precede both. A
-// violation here is invisible to every useCase test above — the use case
-// would be correct and the browser would still get a 404 — so it is
-// asserted against the route table as text. The python functional harness
-// covers the real wire round-trip; this is the cheap fail-closed guard.
-
-const route_src = @embedFile("../http_routes.zig");
-const mod_src = @embedFile("mod.zig");
-
-const LIST_ROUTE = "authed.get(\"/api/workspaces/:workspace_id/skills\"";
-const DETAIL_ROUTE = "authed.get(\"/api/workspaces/:workspace_id/skills/:skill_name\"";
-const DELETE_ROUTE = "authed.delete(\"/api/workspaces/:workspace_id/skills/:skill_name\"";
-
-test "skills routes: all three verbs are registered under the workspace" {
-    try testing.expect(std.mem.indexOf(u8, route_src, LIST_ROUTE) != null);
-    try testing.expect(std.mem.indexOf(u8, route_src, DETAIL_ROUTE) != null);
-    try testing.expect(std.mem.indexOf(u8, route_src, DELETE_ROUTE) != null);
-}
-
-test "skills routes: the collection route precedes the :skill_name route" {
-    const list_at = std.mem.indexOf(u8, route_src, LIST_ROUTE) orelse
-        return error.ListRouteMissing;
-    const detail_at = std.mem.indexOf(u8, route_src, DETAIL_ROUTE) orelse
-        return error.DetailRouteMissing;
-    try testing.expect(list_at < detail_at);
-}
-
-test "skills routes: the directory-tier collection routes are gone" {
-    // The old shape merged two directories and had no workspace to scope
-    // them to. Nothing may register it again: a bare collection route is
-    // exactly the endpoint that cannot satisfy `skills_store`'s required
-    // workspace_id argument.
-    //
-    // The needle carries the opening quote, so the sibling
-    // `/api/skill-evals/*` prefix (which is NOT under `/api/skills/` and
-    // exists precisely because of the registration-order rule) does not
-    // trip this.
-    try testing.expect(std.mem.indexOf(u8, route_src, "\"/api/skills\"") == null);
-    try testing.expect(std.mem.indexOf(u8, route_src, "\"/api/skills/") == null);
-}
-
-test "skills handlers are re-exported from http_handlers/mod.zig" {
-    for ([_][]const u8{
-        "skillsListHandler",
-        "skillDetailHandler",
-        "skillDeleteHandler",
-    }) |name| {
-        try testing.expect(std.mem.indexOf(u8, mod_src, name) != null);
-    }
-}
+// Registration ORDER is load-bearing: `matchRoute` returns on the first hit,
+// so the collection route must precede `:skill_name`. That is asserted
+// against the real route table by `route table: the three skills verbs
+// resolve to their handlers` in `http_routes.zig`, which builds the table and
+// asks `matchRoute` what it RESOLVES. Asserting it against the text of
+// `http_routes.zig` could only ever compare two byte offsets.

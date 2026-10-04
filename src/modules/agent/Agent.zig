@@ -1278,6 +1278,45 @@ pub const CallResponse = struct {
     }
 };
 
+/// Writes the UrlStyle-specific auth headers for one streaming request into
+/// `out` and returns how many it wrote.
+///
+/// Anthropic-style endpoints (native Anthropic API, relays like
+/// api.minimax.io/anthropic, opencode.ai/zen/go) authenticate with
+/// `x-api-key` + `anthropic-version: 2023-06-01`, NOT
+/// `Authorization: Bearer` — mirroring the Test probe in llm_test.zig.
+/// Sending only Bearer makes the upstream answer `{"type":"error",
+/// "error":{"type":"AuthError","message":"Missing API key."}}` on the
+/// stream with 0 chunks, which the SSE loop surfaces as
+/// StreamInterrupted. Every other style keeps its `Authorization: Bearer`
+/// header byte-identical to before.
+///
+/// `auth_value` receives the allocated `"Bearer <key>"` for the
+/// non-anthropic arms and stays null for the anthropic arm, which needs no
+/// allocation. The caller owns it and frees it on scope exit.
+pub fn authHeaders(
+    allocator: std.mem.Allocator,
+    style: []const u8,
+    api_key: []const u8,
+    out: []custom_http_client.Header,
+    auth_value: *?[]u8,
+) !usize {
+    if (!std.mem.eql(u8, style, "anthropic")) {
+        const bearer = try std.mem.concat(allocator, u8, &.{ "Bearer ", api_key });
+        auth_value.* = bearer;
+        out[0] = .{ .name = "authorization", .value = bearer };
+        return 1;
+    }
+    var n: usize = 0;
+    out[n] = .{ .name = "anthropic-version", .value = "2023-06-01" };
+    n += 1;
+    if (api_key.len > 0) {
+        out[n] = .{ .name = "x-api-key", .value = api_key };
+        n += 1;
+    }
+    return n;
+}
+
 pub const Agent = struct {
     name: []const u8 = "",
     apiKey: []const u8 = "",
@@ -2947,25 +2986,11 @@ pub const Agent = struct {
             return error.InvalidUri;
         }
 
-        // 3. Compose auth headers per UrlStyle.
-        // Anthropic-style endpoints (native Anthropic API, relays like
-        // api.minimax.io/anthropic, opencode.ai/zen/go) authenticate with
-        // `x-api-key` + `anthropic-version: 2023-06-01`, NOT
-        // `Authorization: Bearer` — mirroring the Test probe in
-        // llm_test.zig. Sending only Bearer makes the upstream answer
-        // `{"type":"error","error":{"type":"AuthError","message":
-        // "Missing API key."}}` on the stream with 0 chunks, which the
-        // SSE loop below surfaces as StreamInterrupted. OpenAI styles
-        // keep the existing Bearer header byte-identical to before.
-        const is_anthropic = std.mem.eql(u8, self.UrlStyle, "anthropic");
+        // 3. Compose auth headers per UrlStyle. `authHeaders` owns the
+        // anthropic-vs-Bearer split and is pinned by tests against the
+        // header list it emits, not by a grep of this file.
         var auth_value: ?[]u8 = null;
         defer if (auth_value) |v| self.allocator.free(v);
-        if (!is_anthropic) {
-            auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
-                self.log_error("concat auth", err, null);
-                return error.OutOfMemory;
-            };
-        }
 
         // 4. Build the custom_http_client.Request.
         // OpenCode Go / Zen routing requires a stable per-conversation
@@ -2979,17 +3004,17 @@ pub const Agent = struct {
         var header_count: usize = 0;
         header_buf[header_count] = .{ .name = "content-type", .value = "application/json" };
         header_count += 1;
-        if (is_anthropic) {
-            header_buf[header_count] = .{ .name = "anthropic-version", .value = "2023-06-01" };
-            header_count += 1;
-            if (self.apiKey.len > 0) {
-                header_buf[header_count] = .{ .name = "x-api-key", .value = self.apiKey };
-                header_count += 1;
-            }
-        } else {
-            header_buf[header_count] = .{ .name = "authorization", .value = auth_value.? };
-            header_count += 1;
-        }
+        const auth_count = authHeaders(
+            self.allocator,
+            self.UrlStyle,
+            self.apiKey,
+            header_buf[header_count..],
+            &auth_value,
+        ) catch |err| {
+            self.log_error("compose auth headers", err, null);
+            return error.OutOfMemory;
+        };
+        header_count += auth_count;
         header_buf[header_count] = .{ .name = "accept-encoding", .value = "identity" };
         header_count += 1;
         if (self.sessionId.len > 0) {
@@ -3941,21 +3966,48 @@ test "regression: buildJsonOpenAIRequest keeps 'stream_options.include_usage' ve
 // Regression: callStreaming auth headers per UrlStyle
 // ============================================================================
 
-fn agentSourceContainsAnthropicRequest(needle: []const u8) !bool {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(testing.io, "src/modules/agent/Agent.zig", testing.allocator, .limited(1024 * 1024));
-    defer testing.allocator.free(raw);
-    return std.mem.indexOf(u8, raw, needle) != null;
-}
-
 test "callStreaming: anthropic style sends x-api-key + anthropic-version (not only Bearer)" {
     // Regression for `AuthError: Missing API key` on anthropic-style
     // chat (e.g. opencode.ai/zen/go/v1/messages): callStreaming sent
     // only `Authorization: Bearer`, which Anthropic-style upstreams
-    // ignore. The header block must branch on UrlStyle and emit the
-    // Anthropic auth headers, mirroring the Test probe in llm_test.zig.
-    try testing.expect(try agentSourceContainsAnthropicRequest("x-api-key"));
-    try testing.expect(try agentSourceContainsAnthropicRequest("anthropic-version"));
-    try testing.expect(try agentSourceContainsAnthropicRequest("is_anthropic"));
+    // ignore. Assert the header list that actually reaches libcurl —
+    // the wire shape — rather than the spelling of the branch that
+    // builds it.
+    var buf: [4]custom_http_client.Header = undefined;
+    var auth_value: ?[]u8 = null;
+    defer if (auth_value) |v| testing.allocator.free(v);
+
+    const n = try authHeaders(testing.allocator, "anthropic", "sk-anthropic-key", buf[0..], &auth_value);
+    try testing.expectEqual(@as(usize, 2), n);
+    try testing.expectEqualStrings("anthropic-version", buf[0].name);
+    try testing.expectEqualStrings("2023-06-01", buf[0].value);
+    try testing.expectEqualStrings("x-api-key", buf[1].name);
+    try testing.expectEqualStrings("sk-anthropic-key", buf[1].value);
+    // No Bearer alongside it — the anthropic arm allocates nothing.
+    try testing.expect(auth_value == null);
+}
+
+test "callStreaming: a non-anthropic style keeps authorization: Bearer and drops the anthropic pair" {
+    var buf: [4]custom_http_client.Header = undefined;
+    var bearer: ?[]u8 = null;
+    defer if (bearer) |v| testing.allocator.free(v);
+
+    const n = try authHeaders(testing.allocator, "openai", "sk-openai-key", buf[0..], &bearer);
+    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqualStrings("authorization", buf[0].name);
+    try testing.expectEqualStrings("Bearer sk-openai-key", buf[0].value);
+}
+
+test "callStreaming: an anthropic request with no key omits x-api-key but keeps the version" {
+    var buf: [4]custom_http_client.Header = undefined;
+    var auth_value: ?[]u8 = null;
+    defer if (auth_value) |v| testing.allocator.free(v);
+
+    const n = try authHeaders(testing.allocator, "anthropic", "", buf[0..], &auth_value);
+    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqualStrings("anthropic-version", buf[0].name);
+    try testing.expectEqualStrings("2023-06-01", buf[0].value);
+    try testing.expect(auth_value == null);
 }
 
 // ===== Tests merged from call_streaming_test.zig (2026-09-29 flatten) =====
@@ -4035,121 +4087,6 @@ test "HttpOptions.idle_timeout_ms default stays above TCP keepalive window" {
     // revert to 60_000) shows up as a clear test failure, not a silent
     // behavioral change.
     try expectEqualCallStreaming(@as(u32, 180_000), defaults.idle_timeout_ms);
-}
-
-// ============================================================================
-// Static regression test for the callStreaming transport (2026-07-25).
-//
-// Background: callStreaming was migrated from std.http.Client (with a custom
-// StreamWatchdog thread that dup2'd the socket fd to /dev/null on
-// idle/total timeouts) to libcurl's openStream + StreamScanner. The
-// watchdog path caused the production FD-leak hang and the std.Io.Threaded
-// closeFd panic — both fixed by the transport swap. This test pins the
-// NEW contracts so a regression that re-introduces std.http.Client (or
-// drops the libcurl scanner) gets caught at test time rather than in
-// production after hours of accumulated FDs.
-//
-// Note: the OLD "ReadFailed diagnostic checks BOTH transport and HTTP
-// body_err" test (verified `response.request.reader.body_err` and
-// `std.http.Reader.BodyError` substrings) was deleted alongside the
-// std.http.Reader dependency — the libcurl scanner doesn't surface
-// ReadFailed at all (it returns `custom_http_client.Error` variants
-// which callStreaming maps to StreamInterrupted / ApiError).
-// ============================================================================
-
-const AGENT_SOURCE_PATHCallStreaming = "src/modules/agent/Agent.zig";
-
-test "callStreaming uses kabelweb client (libcurl) transport" {
-    // Contract 4 below asserts that `StreamWatchdog` and `apply_tcp_keepalive`
-    // are ABSENT from this file, and this very test's comments name both — so
-    // read the implementation half only (the inline suite is not the subject).
-    const whole = std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        AGENT_SOURCE_PATHCallStreaming,
-        std.testing.allocator,
-        .limited(4 * 1024 * 1024),
-    ) catch |err| {
-        std.debug.print("!! cannot read {s}: {{}} !!\n", .{AGENT_SOURCE_PATHCallStreaming});
-        return err;
-    };
-    defer std.testing.allocator.free(whole);
-    const source = try helpers.text_normalize.implementationOnly(std.testing.allocator, whole);
-    defer std.testing.allocator.free(source);
-
-    // Contract 1: callStreaming must import the libcurl-backed transport
-    // (kabelweb's client half).
-    if (std.mem.indexOf(u8, source, "@import(\"kabelweb\")") == null) {
-        std.debug.print(
-            "!! {s} does not import kabelweb — callStreaming regressed " ++
-                "to the std.http.Client path that caused the FD-leak hang !!\n",
-            .{AGENT_SOURCE_PATHCallStreaming},
-        );
-        return error.CustomHttpClientImportMissing;
-    }
-
-    // Contract 2: callStreaming must use the libcurl Scanner (not raw byte
-    // parsing with line_buffer + readSliceShort + '\n' byte scanning).
-    if (std.mem.indexOf(u8, source, "custom_http_client.StreamScanner") == null) {
-        std.debug.print(
-            "!! {s} does not use custom_http_client.StreamScanner — callStreaming " ++
-                "regressed to hand-rolled SSE parsing, dropping the libcurl " ++
-                "chunked-encoding correctness !!\n",
-            .{AGENT_SOURCE_PATHCallStreaming},
-        );
-        return error.StreamScannerMissing;
-    }
-
-    // Contract 3: the Agent struct must own a libcurl Client field, not
-    // a std.http.Client. The old `httpClient: std.http.Client` field is
-    // the symptom of the regressed path.
-    if (std.mem.indexOf(u8, source, "client: custom_http_client.Client") == null) {
-        std.debug.print(
-            "!! {s} Agent struct does not own a custom_http_client.Client — " ++
-                "the std.http path is back !!\n",
-            .{AGENT_SOURCE_PATHCallStreaming},
-        );
-        return error.LibcurlClientFieldMissing;
-    }
-    if (std.mem.indexOf(u8, source, "httpClient: std.http.Client") != null) {
-        std.debug.print(
-            "!! {s} still has `httpClient: std.http.Client` — the old transport " ++
-                "is coexisting with the new one; remove the old field !!\n",
-            .{AGENT_SOURCE_PATHCallStreaming},
-        );
-        return error.OldHttpClientFieldPresent;
-    }
-
-    // Contract 4: the StreamWatchdog + apply_tcp_keepalive + dup2-to-/dev/null
-    // machinery must NOT be present (it was the workaround for std.http
-    // parking workers in recv(); libcurl doesn't have that problem).
-    if (std.mem.indexOf(u8, source, "StreamWatchdog") != null) {
-        std.debug.print(
-            "!! {s} still references StreamWatchdog — the old std.http " ++
-                "parked-in-recv() workaround leaked FDs in production !!\n",
-            .{AGENT_SOURCE_PATHCallStreaming},
-        );
-        return error.StreamWatchdogPresent;
-    }
-    if (std.mem.indexOf(u8, source, "apply_tcp_keepalive") != null) {
-        std.debug.print(
-            "!! {s} still has apply_tcp_keepalive — the libcurl transport " ++
-                "doesn't need it (libcurl handles TCP keepalive internally) !!\n",
-            .{AGENT_SOURCE_PATHCallStreaming},
-        );
-        return error.ApplyTcpKeepalivePresent;
-    }
-
-    // Contract 5: the Anthropic endpoint must be the correct /v1/messages
-    // (the previous std.http path used a buggy /messages that the libcurl
-    // migration fixed in passing).
-    if (std.mem.indexOf(u8, source, "/v1/messages") == null) {
-        std.debug.print(
-            "!! {s} uses the wrong Anthropic endpoint — must be /v1/messages, " ++
-                "not the legacy /messages !!\n",
-            .{AGENT_SOURCE_PATHCallStreaming},
-        );
-        return error.AnthropicEndpointWrong;
-    }
 }
 
 // ============================================================================
@@ -8118,139 +8055,3 @@ test "parse_stream_chunk (default UrlStyle): falls through to OpenAI parser" {
     try expectEqualStringsParseAnthropicSse("world", chunk.?.content.?);
 }
 
-// ============================================================================
-// Part A — Raw SSE sample capture (structural contract test)
-//
-// We can't run callStreaming end-to-end here (Agent.deinit hangs after a
-// real HTTP roundtrip — see call_streaming_test.zig:415-441 for the
-// root cause). Instead we verify by source inspection that:
-//   1. callStreaming builds a raw_sse_sample buffer
-//   2. The buffer is appended when parse_stream_chunk returns null AND
-//      chunk_count == 0
-//   3. The final-error message includes a truncated sample
-// These are the three sites that must change together — a regression
-// in any one would re-hide the server's actual payload.
-// ============================================================================
-
-const AGENT_SOURCE_PATHParseAnthropicSse = "src/modules/agent/Agent.zig";
-
-test "callStreaming captures raw SSE sample when chunk_count stays at 0 (structural contract)" {
-    const source = std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        AGENT_SOURCE_PATHParseAnthropicSse,
-        std.testing.allocator,
-        .limited(4 * 1024 * 1024),
-    ) catch |err| {
-        std.debug.print("!! cannot read {s}: {{}} !!\n", .{AGENT_SOURCE_PATHParseAnthropicSse});
-        return err;
-    };
-    defer std.testing.allocator.free(source);
-
-    // Contract 1: raw_sse_sample buffer must be declared in callStreaming.
-    if (std.mem.indexOf(u8, source, "raw_sse_sample") == null) {
-        std.debug.print(
-            "!! {s} does not declare `raw_sse_sample` — Part A (raw SSE sample capture) regressed !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.RawSseSampleBufferMissing;
-    }
-
-    // Contract 2: max_raw_sse_sample_len must be defined (we use 2 KiB).
-    if (std.mem.indexOf(u8, source, "max_raw_sse_sample_len") == null) {
-        std.debug.print(
-            "!! {s} does not define `max_raw_sse_sample_len` — sample cap is missing !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.MaxRawSseSampleLenMissing;
-    }
-
-    // Contract 3: the buffer must be appended in the parse_stream_chunk
-    // null branch, gated on chunk_count == 0.
-    const append_pattern = "raw_sse_sample.appendSlice";
-    if (std.mem.indexOf(u8, source, append_pattern) == null) {
-        std.debug.print(
-            "!! {s} does not call `raw_sse_sample.appendSlice` — sample is never captured !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.RawSseSampleAppendMissing;
-    }
-    if (std.mem.indexOf(u8, source, "chunk_count == 0") == null) {
-        std.debug.print(
-            "!! {s} does not gate the sample append on `chunk_count == 0` — would capture redundant data on every chunk !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.ChunkCountGateMissing;
-    }
-
-    // Contract 4: the final error message must mention "first server lines"
-    // so the user knows where to find the sample in the log.
-    if (std.mem.indexOf(u8, source, "first server lines") == null) {
-        std.debug.print(
-            "!! {s} final-error message does not include 'first server lines' — the raw sample is captured but not surfaced !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.FirstServerLinesLabelMissing;
-    }
-}
-
-// ============================================================================
-// Part B — Anthropic parser structural contract (regression check)
-// ============================================================================
-
-test "Agent.zig defines parse_anthropic_stream_chunk (structural contract)" {
-    const source = std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        AGENT_SOURCE_PATHParseAnthropicSse,
-        std.testing.allocator,
-        .limited(4 * 1024 * 1024),
-    ) catch |err| {
-        std.debug.print("!! cannot read {s}: {{}} !!\n", .{AGENT_SOURCE_PATHParseAnthropicSse});
-        return err;
-    };
-    defer std.testing.allocator.free(source);
-
-    // Contract 1: the new function must exist.
-    if (std.mem.indexOf(u8, source, "parse_anthropic_stream_chunk") == null) {
-        std.debug.print(
-            "!! {s} does not define `parse_anthropic_stream_chunk` — Part B (Anthropic SSE parser) regressed !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.ParseAnthropicStreamChunkMissing;
-    }
-
-    // Contract 2: the dispatcher must branch on UrlStyle.
-    if (std.mem.indexOf(u8, source, "self.UrlStyle") == null) {
-        std.debug.print(
-            "!! {s} does not reference `self.UrlStyle` — UrlStyle dispatch is missing !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.UrlStyleDispatchMissing;
-    }
-
-    // Contract 3: stop_reason mapping helper must exist.
-    if (std.mem.indexOf(u8, source, "map_anthropic_stop_reason") == null) {
-        std.debug.print(
-            "!! {s} does not define `map_anthropic_stop_reason` — Anthropic→OpenAI stop_reason translation is missing !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.StopReasonMappingMissing;
-    }
-
-    // Contract 4: input_tokens cache field on Agent.
-    if (std.mem.indexOf(u8, source, "_anthropic_input_tokens") == null) {
-        std.debug.print(
-            "!! {s} does not declare `_anthropic_input_tokens` — input_tokens cache is missing !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.InputTokensCacheMissing;
-    }
-
-    // Contract 5: usage-emitted-once flag on Agent.
-    if (std.mem.indexOf(u8, source, "_anthropic_usage_emitted") == null) {
-        std.debug.print(
-            "!! {s} does not declare `_anthropic_usage_emitted` — usage-chunk-once guard is missing !!\n",
-            .{AGENT_SOURCE_PATHParseAnthropicSse},
-        );
-        return error.UsageEmittedFlagMissing;
-    }
-}

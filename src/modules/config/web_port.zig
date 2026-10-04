@@ -131,35 +131,7 @@ test "web_port: different seeds spread across the range" {
     try std.testing.expect(a != b);
 }
 
-// ---------------------------------------------------------------------------
-// Static contracts (repo convention — see pabrik_config_put_test.zig
-// "registered in test_runner.zig").
-// ---------------------------------------------------------------------------
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.Io.Dir.cwd().openFile(std.testing.io, path, .{});
-    defer file.close(std.testing.io);
-    var buf: [4096]u8 = undefined;
-    var reader = file.reader(std.testing.io, &buf);
-    return reader.interface.allocRemaining(allocator, .limited(128 * 1024));
-}
-
-test "web_port: picker is registered in root.zig test block" {
-    const allocator = std.testing.allocator;
-    const source = try readSource(allocator, "src/root.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "modules/config/web_port.zig") == null) {
-        std.debug.print("!! root.zig test block does not import modules/config/web_port.zig !!\n", .{});
-        return error.TestRunnerMissingWebPort;
-    }
-}
-
-test "web_port: --port 0 resolves via the picker in main.zig" {
-    const allocator = std.testing.allocator;
-    const source = try readSource(allocator, "src/main.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "web_port.pickFreePort(") == null) {
-        std.debug.print("!! main.zig does not resolve --port 0 via web_port.pickFreePort( !!\n", .{});
-        return error.PortZeroNotWired;
-    }
-}
+// The `--port 0` wiring itself is asserted by the functional harness
+// (`tests/functional/`), which boots the real binary and reads the port
+// off the boot log — the only place `main.zig`'s argument parsing is
+// actually observable.

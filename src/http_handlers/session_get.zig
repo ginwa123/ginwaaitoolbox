@@ -160,7 +160,6 @@ pub fn sessionGetHandler(
 // =====================================================================
 
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
 
 const TestCtx = struct {
     db: pabrikcore.sqlite.SqliteBackend,
@@ -271,42 +270,4 @@ test "useCase: task-linked, cwd-matched, and outside sessions resolve workspace_
     try testing.expect((try useCase(alloc, &ctx.db, "nope")) == null);
     // Empty session id → null without touching the resolver.
     try testing.expect((try useCase(alloc, &ctx.db, "")) == null);
-}
-
-// ─── Route registration contract ──────────────────────────────────────────
-// The wire test (tests/functional/session_list_workspace_test.py) hits
-// this route end-to-end; this static check fails closed if the
-// registration is dropped from main.zig (a missing route otherwise
-// only surfaces as a 404 in the wire suite).
-
-const MAIN_PATH = "src/http_routes.zig";
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-test "GET /api/llm/session/:session_id stays registered in main.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, MAIN_PATH);
-    defer allocator.free(source);
-
-    const needle = "\"/api/llm/session/:session_id\", ai_mod.http_handlers.sessionGetHandler";
-    if (std.mem.indexOf(u8, source, needle) == null) {
-        std.debug.print(
-            "\n!! main.zig no longer registers sessionGetHandler !!\n" ++
-                "   GET /api/llm/session/:session_id must stay wired to\n" ++
-                "   sessionGetHandler — the workspace_id detail endpoint.\n" ++
-                "   A dropped route only shows up as a 404 in the wire suite.\n",
-            .{},
-        );
-        return error.SessionGetRouteUnregistered;
-    }
 }

@@ -107,65 +107,45 @@ test "pwsh_available returns false when pwsh is not on PATH" {
     try testing.expect(true);
 }
 
-test "command-only registry: tools_equipped wires command, not bash/pwsh (static-contract grep)" {
-    // Post-unify contract (2026-09-04): the equipped tool surface is ONE
-    // shell tool named "command". `bash`/`pwsh` survive only as unregistered
-    // shim modules (bash.zig / pwsh.zig delegate to command.execute_command)
-    // so old code still compiles — but they must NOT appear in
-    // UNIFIED_TOOL_REGISTRY, otherwise the LLM sees three shell tools again.
-    //
-    // The grep proves four things at once:
-    //   1. tools_equipped.zig has the "command" name entry.
-    //   2. ... with .exec = tools.execCommand.
-    //   3. ... with .tool_def = command_tool_mod.command_tool.
-    //   4. ... and NO "bash"/"pwsh" name entries.
-    //
-    // If a future refactor re-adds a bash/pwsh entry, the test fails
-    // closed and prints an actionable error.
-    const tools_equipped_src = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        "src/agentic_loop/tools_equipped.zig",
-        testing.allocator,
-        std.Io.Limit.unlimited,
-    );
-    defer testing.allocator.free(tools_equipped_src);
+test "command-only registry: the model is offered exactly one shell tool, named command" {
+    const tools_equipped = @import("../../../agentic_loop/tools_equipped.zig");
 
-    var problems: u32 = 0;
-    if (std.mem.indexOf(u8, tools_equipped_src, ".name = \"command\"") == null) {
-        std.debug.print(
-            "\n!! UNIFIED_TOOL_REGISTRY is missing the command name entry !!\n",
-            .{},
-        );
-        problems += 1;
+    // Post-unify contract (2026-09-04): the tool surface is ONE shell tool.
+    // `bash`/`pwsh` survive only as unregistered shim modules (both delegate to
+    // command.execute_command) so old code still compiles — registering either
+    // would show the model three shell tools again. UNIFIED_TOOL_REGISTRY is
+    // the table this is read from, not the text of a wiring file.
+    var command_entries: usize = 0;
+    for (tools_equipped.UNIFIED_TOOL_REGISTRY()) |entry| {
+        if (std.mem.eql(u8, entry.name, "bash") or std.mem.eql(u8, entry.name, "pwsh")) {
+            std.debug.print(
+                "!! '{s}' is registered again -- the model would see three shell tools\n",
+                .{entry.name},
+            );
+            return error.LegacyShellToolRegistered;
+        }
+        if (!std.mem.eql(u8, entry.name, "command")) continue;
+        command_entries += 1;
+        // The entry must carry the merged command tool def, not a shim.
+        try testing.expectEqualStrings("command", entry.tool_def.function.name);
+        try testing.expectEqualStrings(command.command_tool.function.description, entry.tool_def.function.description);
     }
-    if (std.mem.indexOf(u8, tools_equipped_src, "tools.execCommand") == null) {
-        std.debug.print(
-            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .exec = tools.execCommand !!\n",
-            .{},
-        );
-        problems += 1;
+    try testing.expectEqual(@as(usize, 1), command_entries);
+
+    // …and the equipped list — the one the workflow actually hands the LLM —
+    // advertises neither legacy name.
+    const equip = tools_equipped.equips(testing.allocator);
+    defer testing.allocator.free(equip);
+    for (equip) |t| {
+        try testing.expect(!std.mem.eql(u8, t.function.name, "bash"));
+        try testing.expect(!std.mem.eql(u8, t.function.name, "pwsh"));
     }
-    if (std.mem.indexOf(u8, tools_equipped_src, "command_tool_mod.command_tool") == null) {
-        std.debug.print(
-            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .tool_def = command_tool_mod.command_tool !!\n",
-            .{},
-        );
-        problems += 1;
-    }
-    if (std.mem.indexOf(u8, tools_equipped_src, ".name = \"bash\"") != null) {
-        std.debug.print(
-            "\n!! UNIFIED_TOOL_REGISTRY still equips legacy bash (must be command-only) !!\n",
-            .{},
-        );
-        problems += 1;
-    }
-    if (std.mem.indexOf(u8, tools_equipped_src, ".name = \"pwsh\"") != null) {
-        std.debug.print(
-            "\n!! UNIFIED_TOOL_REGISTRY still equips legacy pwsh (must be command-only) !!\n",
-            .{},
-        );
-        problems += 1;
-    }
-    if (problems != 0) return error.MissingCommandWiring;
-    try testing.expect(problems == 0);
+
+    // Unregistered is not unreachable: a stale `bash` call the model was
+    // trained on still routes to `command` through the dispatch-only alias
+    // table. Removing the names must not come with removing this.
+    try testing.expectEqualStrings("command", tools_equipped.resolveToolAlias("bash").?);
+    try testing.expectEqualStrings("command", tools_equipped.resolveToolAlias("pwsh").?);
+    try testing.expect(tools_equipped.isDispatchableToolName("bash"));
+    try testing.expect(tools_equipped.isDispatchableToolName("pwsh"));
 }

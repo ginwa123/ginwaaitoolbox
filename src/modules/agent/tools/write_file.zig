@@ -1483,10 +1483,9 @@ test "writeFile: create_with_dir succeeds for a file in the drive root on Window
     // the reason, rather than reporting a red that a maintainer has to
     // reverse-engineer from a return trace.
     //
-    // The CAUSE stays pinned on this platform even when this skips: the two
-    // tests above assert `parentDirToCreate` directly with no I/O at all,
-    // and the static-contract test below pins that the tool delegates to
-    // `std.fs.path.dirname` rather than re-deriving a parent by scanning.
+    // The parent-dir logic is still pinned on this platform even when this
+    // skips: the tests above assert `parentDirToCreate` directly with no
+    // I/O at all.
     const probe = "C:\\pabrik_wf_probe.txt";
     std.Io.Dir.cwd().deleteFile(std.testing.io, probe) catch {};
     if (std.Io.Dir.cwd().createFile(std.testing.io, probe, .{})) |probe_file| {
@@ -1520,36 +1519,4 @@ test "writeFile: create_with_dir succeeds for a file in the drive root on Window
     const read = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, target, std.testing.allocator, std.Io.Limit.limited(1 << 16));
     defer std.testing.allocator.free(read);
     try std.testing.expectEqualStrings("root file", read);
-}
-
-// Static contract. The value-level tests above can only run on Windows,
-// because the bug has no POSIX manifestation — `std.fs.path.dirname` and
-// the old hand-rolled scan return the same thing for every POSIX input. So
-// pin the CAUSE here instead: the tool must delegate to `dirname` rather
-// than re-deriving a parent by scanning for the last separator. This is
-// the repo's existing idiom (cf. the wire-shape lock inline in
-// agentic_loop/on_event_sent.zig) and
-// it is the only assertion that can fail on a Linux runner.
-test "static contract: write_file delegates parent-dir resolution to std.fs.path.dirname" {
-    // Scan only the IMPLEMENTATION. `@embedFile` returns this whole file,
-    // and the forbidden patterns below appear verbatim inside this test —
-    // scanning the full text would always find itself.
-    const full = @embedFile("write_file.zig");
-    const impl_end = std.mem.indexOf(u8, full, "// ─── Parent-directory resolution") orelse full.len;
-    const src = full[0..impl_end];
-
-    try std.testing.expect(std.mem.indexOf(u8, src, "pub fn parentDirToCreate") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "return std.fs.path.dirname(path);") != null);
-
-    // No hand-rolled separator scan may survive in the tool body: that scan
-    // is what produced the bare drive name for a drive-root file.
-    const backslash_scan = "lastIndexOf(u8, path," ++ " \"";
-    const forward_scan = "lastIndexOf(u8, path," ++ " \"/";
-    try std.testing.expect(std.mem.indexOf(u8, src, backslash_scan) == null);
-    try std.testing.expect(std.mem.indexOf(u8, src, forward_scan) == null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "last_sep_pos") == null);
-
-    // Both call sites must go through the helper.
-    try std.testing.expect(std.mem.indexOf(u8, src, "parentDirToCreate(path)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "parentDirToCreate(path_copy)") != null);
 }

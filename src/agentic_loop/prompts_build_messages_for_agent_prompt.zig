@@ -83,8 +83,14 @@ pub fn buildMessages(
     inherited_context_mode: []const u8,
     activeAgentContent: []const u8,
 ) ![]agent.AgentMessage {
-    const di = try pabrikcore.getSingleton();
-    const environment = di.environment;
+    // `environment` feeds only `loadGlobalKnowledge` below. Production
+    // installs the singleton before any agent run (main.zig does it before
+    // the server starts), so it is always present there; tolerating its
+    // absence keeps the assembler callable from a unit test, which drives
+    // it against a bare in-memory database. Without a process environment
+    // there is simply no `## Global Knowledge` block.
+    const environment: ?*const std.process.Environ.Map =
+        if (pabrikcore.getSingleton()) |di| di.environment else |_| null;
 
     var final_system: std.ArrayList(u8) = .empty;
     defer final_system.deinit(allocator);
@@ -1925,31 +1931,107 @@ test "CrossProjectCwdRule content encourages sibling reads without guardrails" {
     try testing.expect(std.mem.indexOf(u8, rule, "do NOT modify") == null);
 }
 
-test "buildMessages wires CrossProjectCwdRule after workspace" {
-    const source = @embedFile("prompts_build_messages_for_agent_prompt.zig");
-    if (std.mem.indexOf(u8, source, "prompts_const.CrossProjectCwdRule") == null) {
-        std.debug.print("\n!! buildMessages does not reference CrossProjectCwdRule !!\n", .{});
-        return error.MissingCrossProjectPrompt;
-    }
-    const ws_pos = std.mem.indexOf(u8, source, "makeWorkspaceContext(allocator, db, session_id)") orelse
-        return error.WorkspaceLookupMissing;
-    const cross_pos = std.mem.indexOf(u8, source, "prompts_const.CrossProjectCwdRule") orelse
-        return error.CrossProjectMissing;
-    try testing.expect(ws_pos < cross_pos);
+// -------------------------------------------------------------------------
+// Cross-project cwd, live path. The static intro and the dynamic sibling
+// loop are both emitted by buildMessages, so this drives the assembler
+// and reads the prompt it returns rather than reading its source.
+// `makeCrossProjectCwdContext` has its own unit tests for the SQL side
+// (prompts_make_cross_project_context.zig); what only the assembled
+// prompt can prove is that the block reaches the agent at all, and that
+// it lands after the workspace listing.
+// -------------------------------------------------------------------------
+
+const migration = @import("../migrations/migration.zig");
+
+fn setupPromptDb() !PromptDbCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+    return .{ .db = db, .threaded = threaded };
 }
 
-test "buildMessages loops sibling cwds from workspace_items only" {
-    const source = @embedFile("prompts_make_cross_project_context.zig");
-    try testing.expect(std.mem.indexOf(u8, source, "FROM workspace_items") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "workspace_item_tasks") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "sessions") == null);
-    try testing.expect(std.mem.indexOf(u8, source, "worker") == null);
-    const build_source = @embedFile("prompts_build_messages_for_agent_prompt.zig");
-    const static_pos = std.mem.indexOf(u8, build_source, "prompts_const.CrossProjectCwdRule") orelse
-        return error.StaticMissing;
-    const loop_pos = std.mem.indexOf(u8, build_source, "makeCrossProjectCwdContext(allocator, db, session_id)") orelse
-        return error.LoopMissing;
-    try testing.expect(static_pos < loop_pos);
+const PromptDbCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn insertWorkspaceItem(db: *sqlite.SqliteBackend, id: []const u8, workspace_id: []const u8, name: []const u8, path: []const u8) !void {
+    try db.exec(testing.allocator,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position)
+        \\VALUES (?, ?, 'chat', ?, ?, 0)
+    , &[_][]const u8{ id, workspace_id, name, path });
+}
+
+fn insertWorkspaceTask(db: *sqlite.SqliteBackend, task_id: []const u8, item_id: []const u8) !void {
+    try db.exec(testing.allocator,
+        \\INSERT INTO workspace_item_tasks (id, name, workspace_item_id, created_at, updated_at, task_type)
+        \\VALUES (?, 'T', ?, datetime('now'), datetime('now'), 'standard')
+    , &[_][]const u8{ task_id, item_id });
+}
+
+test "buildMessages: the cross-project block reaches the prompt, after the workspace, listing workspace_items siblings" {
+    var ctx = try setupPromptDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try insertWorkspaceItem(&ctx.db, "item_self", "ws_1", "Self", "/nowhere/self");
+    try insertWorkspaceItem(&ctx.db, "item_sibling", "ws_1", "Sibling", "/nowhere/sibling");
+    // A different workspace: a cwd the agent may know about, but which is
+    // NOT reachable from this session's workspace, so it must not show up.
+    try insertWorkspaceItem(&ctx.db, "item_other_ws", "ws_2", "Other", "/nowhere/other-workspace");
+    try insertWorkspaceTask(&ctx.db, "sess_cross", "item_self");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const cwd = try testing.allocator.dupe(u8, path_buf[0..n]);
+    defer testing.allocator.free(cwd);
+
+    const messages = try buildMessages(
+        testing.allocator,
+        ctx.threaded.io(),
+        &ctx.db,
+        cwd,
+        "sess_cross",
+        "",
+        &.{},
+        &.{},
+        "",
+        "",
+    );
+    const prompt = try testing.allocator.dupe(u8, messages[0].content orelse "");
+    for (messages) |*msg| msg.deinit(testing.allocator);
+    testing.allocator.free(messages);
+    defer testing.allocator.free(prompt);
+
+    // The static intro reached the live prompt, and it reads AFTER the
+    // workspace listing (the agent needs to know the workspace id first).
+    const ws_at = std.mem.indexOf(u8, prompt, "## Workspace Context") orelse
+        return error.WorkspaceBlockMissing;
+    const cross_at = std.mem.indexOf(u8, prompt, "## Cross-Project Context") orelse
+        return error.CrossProjectBlockMissing;
+    try testing.expect(ws_at < cross_at);
+
+    // The dynamic sibling loop ran and listed the sibling cwd. Its row
+    // format ("- `<path>` (<name>) [item_id: `<id>`]") is distinct from the
+    // workspace listing's, so this cannot be satisfied by that block alone.
+    try testing.expect(std.mem.indexOf(u8, prompt, "Sibling project directories:") != null);
+    try testing.expect(std.mem.indexOf(u8, prompt, "- `/nowhere/sibling` (Sibling) [item_id: `item_sibling`]") != null);
+
+    // Source is workspace_items ONLY: the loop excludes the session's own
+    // item, and a cwd from another workspace never reaches the prompt.
+    // (The workspace block does print the self path as a cwd hint, so the
+    // exclusion is asserted against the loop's own row format.)
+    try testing.expect(std.mem.indexOf(u8, prompt, "[item_id: `item_self`]") == null);
+    try testing.expect(std.mem.indexOf(u8, prompt, "/nowhere/other-workspace") == null);
 }
 
 test "build_agent_prompt renders CrossProject section after workspace" {

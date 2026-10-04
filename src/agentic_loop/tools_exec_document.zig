@@ -1263,78 +1263,90 @@ test "execSearchDocuments: deleting what a search returned makes the next search
     try testing.expectEqual(@as(usize, 0), after.total);
 }
 
-// ─── Static wiring contracts ────────────────────────────────────────────
-// These grep the wiring files so a future refactor that drops a
-// registration fails closed here instead of silently hiding the tools
-// from the LLM (registered nowhere = the model can never call them, and
-// nothing else in the build complains).
+// ─── Registration + default seeding ───────────────────────────────────────
 
-const equipped_src = @embedFile("tools_equipped.zig");
-const tools_src = @embedFile("tools.zig");
-const root_src = @embedFile("../root.zig");
-
-test "static contract: document tools are wired into tools_equipped.zig" {
-    // equips() (advertised to the model) + UNIFIED_TOOL_REGISTRY()
-    // (dispatch) + DEFAULT_AGENT_TOOLS (seeded when an agent item is
-    // created). All three are required: a registry entry alone makes the
-    // tool dispatchable but invisible, an equips() entry alone makes it
-    // visible but undispatchable.
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "document_mod") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "add_document_tool") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "edit_document_tool") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "delete_document_tool") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "search_documents_tool") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "execAddDocument") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "execEditDocument") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "execDeleteDocument") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "execSearchDocuments") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "\"add_document\"") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "\"edit_document\"") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "\"delete_document\"") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "\"search_documents\"") != null);
+/// Is `name` among the rows `seedDefaultAgentTools` wrote for `agent_id`?
+fn seededFor(db: *sqlite.SqliteBackend, agent_id: []const u8, name: []const u8) !bool {
+    const alloc = testing.allocator;
+    var q = try db.query(alloc, "SELECT tool_name FROM agent_tools WHERE agent_id = ?", &.{agent_id});
+    defer q.deinit();
+    while ((q.next() catch null)) |row| {
+        defer row.deinit(alloc);
+        if (std.mem.eql(u8, row.values[0], name)) return true;
+    }
+    return false;
 }
 
-test "static contract: search_documents is seeded by default but delete_document is NOT" {
-    // The asymmetry is deliberate and this is the guard for it.
-    // `search_documents` is read-only and `edit_document` replaces the
-    // whole body, so finding the row is a prerequisite for every edit —
-    // a new agent that cannot search is crippled. `delete_document`
-    // irreversibly removes the user's work, so handing it to every new
-    // agent is a separate decision that must be made out loud, not by
-    // whoever next appends to the list.
-    //
-    // It stays reachable: `UNIFIED_TOOL_REGISTRY` makes it dispatchable
-    // and puts it in the Settings → Tools checklist, and
-    // `search_tool` → `use_tool` bypasses the allowlist entirely (see
-    // `filterAndMergeTools`'s `progressive_equipped` arm in
-    // workflow.zig). Registered is not the same as handed-out.
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "search_documents_tool.function.name") != null);
+test "document tools are offered to the model and resolve to dispatchable registry entries" {
+    const tools_equipped = @import("tools_equipped.zig");
+    const names = [_][]const u8{ "add_document", "edit_document", "delete_document", "search_documents" };
 
-    // The default list must not name delete_document. Checking the
-    // `.function.name` form specifically, so the registry entries above
-    // (which legitimately do name it) cannot satisfy this by accident.
-    const default_start = std.mem.indexOf(u8, equipped_src, "pub const DEFAULT_AGENT_TOOLS") orelse
-        return error.NoDefaultAgentTools;
-    const default_end = std.mem.indexOfPos(u8, equipped_src, default_start, "pub const DEFAULT_KANBAN_TOOLS") orelse
-        equipped_src.len;
-    const defaults = equipped_src[default_start..default_end];
-    try testing.expect(std.mem.indexOf(u8, defaults, "delete_document_tool") == null);
-    try testing.expect(std.mem.indexOf(u8, defaults, "search_documents_tool") != null);
+    // `equips()` is the list the workflow hands the LLM and
+    // UNIFIED_TOOL_REGISTRY() is the dispatcher's table. Both are required:
+    // a registry entry alone makes the tool dispatchable but invisible, an
+    // equips() entry alone makes it visible but undispatchable.
+    const equip = tools_equipped.equips(testing.allocator);
+    defer testing.allocator.free(equip);
+
+    for (names) |name| {
+        var in_equips = false;
+        for (equip) |t| {
+            if (std.mem.eql(u8, t.function.name, name)) in_equips = true;
+        }
+        try testing.expect(in_equips);
+
+        // Exactly one dispatch entry, carrying the SAME tool def the model
+        // was shown — a duplicate name would make the first match win and the
+        // second unreachable.
+        var entries: usize = 0;
+        for (tools_equipped.UNIFIED_TOOL_REGISTRY()) |entry| {
+            if (!std.mem.eql(u8, entry.name, name)) continue;
+            entries += 1;
+            try testing.expectEqualStrings(name, entry.tool_def.function.name);
+        }
+        try testing.expectEqual(@as(usize, 1), entries);
+        try testing.expect(tools_equipped.isDispatchableToolName(name));
+    }
 }
 
-test "static contract: document exec wrappers are re-exported from tools.zig" {
-    try testing.expect(std.mem.indexOf(u8, tools_src, "execAddDocument") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_src, "execEditDocument") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_src, "execDeleteDocument") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_src, "execSearchDocuments") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_src, "tools_exec_document.zig") != null);
-}
+test "search_documents is seeded by default but delete_document is not" {
+    const tools_equipped = @import("tools_equipped.zig");
 
-test "static contract: the document tool module is aliased on the pabrikcore root" {
-    try testing.expect(std.mem.indexOf(u8, root_src, "document_tool") != null);
-    try testing.expect(std.mem.indexOf(u8, root_src, "modules/agent/tools/document.zig") != null);
-    // The store must be reachable from the same root, or the tool module
-    // would have to reach into agentic_loop by relative path.
-    try testing.expect(std.mem.indexOf(u8, root_src, "documents_store") != null);
-    try testing.expect(std.mem.indexOf(u8, root_src, "agentic_loop/documents_store.zig") != null);
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // The creation-time seed writes `agent_tools`, which `setupDb` does not
+    // build (it only stands up the document schema). Same table shape the
+    // registry's own seed tests use.
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE agent_tools (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(agent_id, tool_name))
+    , &.{});
+
+    // `null` config is the legacy path a freshly created agent item takes.
+    try tools_equipped.seedDefaultAgentTools(alloc, .{ .db = &ctx.db }, "ag_doc_seed", null);
+
+    // Read-only, and a prerequisite for every edit (edit_document replaces the
+    // whole body, so finding the row comes first) — an agent that cannot
+    // search is crippled.
+    try testing.expect(try seededFor(&ctx.db, "ag_doc_seed", "add_document"));
+    try testing.expect(try seededFor(&ctx.db, "ag_doc_seed", "edit_document"));
+    try testing.expect(try seededFor(&ctx.db, "ag_doc_seed", "search_documents"));
+
+    // Irreversible, so handing every new agent a delete of the user's
+    // documents is a separate decision that must be made out loud.
+    try testing.expect(!try seededFor(&ctx.db, "ag_doc_seed", "delete_document"));
+
+    // …and it stays reachable: registered means the Settings → Tools
+    // checklist lists it and `search_tool` → `use_tool` can equip it for a
+    // session. Registered is not the same as handed-out.
+    try testing.expect(tools_equipped.isDispatchableToolName("delete_document"));
+    const equip = tools_equipped.equips(alloc);
+    defer alloc.free(equip);
+    var delete_in_equips = false;
+    for (equip) |t| {
+        if (std.mem.eql(u8, t.function.name, "delete_document")) delete_in_equips = true;
+    }
+    try testing.expect(delete_in_equips);
 }

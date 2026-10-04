@@ -839,7 +839,7 @@ fn dupeAgentTool(allocator: std.mem.Allocator, src: tool_models.AgentTool) !tool
 }
 
 /// Free one `AgentTool` previously duped with `dupeAgentTool`.
-fn freeAgentTool(allocator: std.mem.Allocator, tool: tool_models.AgentTool) void {
+pub fn freeAgentTool(allocator: std.mem.Allocator, tool: tool_models.AgentTool) void {
     allocator.free(tool.type);
     allocator.free(tool.function.name);
     allocator.free(tool.function.description);

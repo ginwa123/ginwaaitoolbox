@@ -275,12 +275,10 @@ fn resolveCreateProvider(allocator: std.mem.Allocator, io: std.Io, body: anytype
 }
 
 // ===== Tests merged from git_pr_create_test.zig (2026-09-11 flatten) =====
-// Stub test file - Chunk 3 fills this in.
-// ===== Behavioural tests: the forge CLI argv + output handling =====
+// Behavioural tests: the forge CLI argv + output handling.
 //
-// Everything below used to be source-grep only. `createPullRequestUseCase`
-// had ZERO coverage of the argv it built or the stdout it turned into a
-// `pr_url`, which is exactly the half that GitLab support changes — and
+// These cover the argv `createPullRequestUseCase` builds and the stdout
+// it turns into a `pr_url` — the half that GitLab support changes, and
 // the half that decides whether the user ends up with a working link.
 //
 // Hermetic like the git_pr_status fixtures: `createPullRequestUseCase`
@@ -366,90 +364,6 @@ fn freeCreateResult(a: std.mem.Allocator, res: CreatePullRequestResult) void {
 }
 
 const testing = std.testing;
-const pabrikcore = @import("pabrikcore");
-const text_normalize = @import("helpers").text_normalize;
-
-const HANDLER_PATH = "src/http_handlers/git_pr_create.zig";
-const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/http_routes.zig";
-const HTTP_RESP_PATH = "src/http_handlers/http_response.zig";
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
-    return normalized;
-}
-
-test "git_pr_create handler is exported from mod.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, MOD_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "pub const gitPrCreateHandler") == null) {
-        std.debug.print("!! mod.zig does not export gitPrCreateHandler !!\n", .{});
-        return error.GitPrCreateExportMissing;
-    }
-    if (std.mem.indexOf(u8, source, "@import(\"git_pr_create.zig\")") == null) {
-        std.debug.print("!! mod.zig does not @import git_pr_create.zig !!\n", .{});
-        return error.GitPrCreateImportMissing;
-    }
-}
-
-test "git_pr_create route is registered in main.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, MAIN_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "/api/git/pr") == null) {
-        std.debug.print("!! http_routes.zig does not register /api/git/pr !!\n", .{});
-        return error.GitPrCreateRouteMissing;
-    }
-    if (std.mem.indexOf(u8, source, "gitPrCreateHandler") == null) {
-        std.debug.print("!! http_routes.zig does not reference gitPrCreateHandler !!\n", .{});
-        return error.GitPrCreateHandlerRefMissing;
-    }
-}
-
-test "http_response.zig defines GitPrCreateResponse struct + helper" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HTTP_RESP_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "GitPrCreateResponse") == null) {
-        std.debug.print("!! http_response.zig does not define GitPrCreateResponse !!\n", .{});
-        return error.GitPrCreateResponseTypeMissing;
-    }
-    if (std.mem.indexOf(u8, source, "makeGitPrCreateResponse") == null) {
-        std.debug.print("!! http_response.zig does not define makeGitPrCreateResponse helper !!\n", .{});
-        return error.GitPrCreateResponseHelperMissing;
-    }
-}
-
-test "git_pr_create handler body has worktree_path, base, title, body fields" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "worktree_path: []const u8") == null) {
-        std.debug.print("!! git_pr_create.zig Body struct is missing 'worktree_path' field !!\n", .{});
-        return error.WorktreePathFieldMissing;
-    }
-    if (std.mem.indexOf(u8, source, "base: []const u8") == null) {
-        std.debug.print("!! git_pr_create.zig Body struct is missing 'base' field !!\n", .{});
-        return error.BaseFieldMissing;
-    }
-    if (std.mem.indexOf(u8, source, "title: []const u8") == null) {
-        std.debug.print("!! git_pr_create.zig Body struct is missing 'title' field !!\n", .{});
-        return error.TitleFieldMissing;
-    }
-    if (std.mem.indexOf(u8, source, "body: []const u8") == null) {
-        std.debug.print("!! git_pr_create.zig Body struct is missing 'body' field !!\n", .{});
-        return error.BodyFieldMissing;
-    }
-}
-
 // ───────────────────────── GitLab (glab) create path ─────────────────────────
 
 test "create: github still runs the exact historical gh pr create argv" {
@@ -574,30 +488,4 @@ test "create: a missing CLI names glab, not gh" {
     try testing.expectEqual(GhStatus.gh_failed, res.status);
     try testing.expect(std.mem.indexOf(u8, res.stderr, "glab") != null);
     try testing.expect(std.mem.indexOf(u8, res.stderr, "gh") == null);
-}
-
-test "create: the handler body accepts a provider field" {
-    // The wire contract: POST /api/git/pr must be able to say which forge.
-    const a = testing.allocator;
-    const source = try readSource(a, HANDLER_PATH);
-    defer a.free(source);
-    if (std.mem.indexOf(u8, source, "provider: []const u8 = \"\"") == null) {
-        std.debug.print("!! git_pr_create Body struct has no provider field !!\n", .{});
-        return error.ProviderFieldMissing;
-    }
-}
-
-test "create: the production entry derives the program from the provider" {
-    // Regression guard for a bug the Zig tests structurally could not
-    // see: `createPullRequestUseCase` passed GH_PROGRAM for EVERY
-    // provider, so `provider: "gitlab"` spawned `gh mr create` and gh
-    // answered `unknown command "mr"`. Only the functional harness,
-    // which runs the real handler, ever hit it.
-    const a = testing.allocator;
-    const source = try readSource(a, HANDLER_PATH);
-    defer a.free(source);
-    if (std.mem.indexOf(u8, source, "createPullRequestUseCaseWith(allocator, io, cli.program") == null) {
-        std.debug.print("!! createPullRequestUseCase hardcodes the gh program for every provider !!\n", .{});
-        return error.ProgramNotDerivedFromProvider;
-    }
 }

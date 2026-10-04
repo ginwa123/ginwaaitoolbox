@@ -236,87 +236,6 @@ const ConfigJson = struct {
 
 // ===== Tests merged from pabrik_config_get_test.zig (2026-09-11 flatten) =====
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
-
-const RESP_PATH = "src/http_handlers/http_response.zig";
-const GET_PATH = "src/http_handlers/pabrik_config_get.zig";
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
-    return normalized;
-}
-
-test "GET /api/config/pabrik response includes retry_delay_ms" {
-    const allocator = testing.allocator;
-
-    // 1) PabrikConfigResponse declares retry_delay_ms: u32 = 0
-    const response_src = try readSource(allocator, RESP_PATH);
-    defer allocator.free(response_src);
-    if (std.mem.indexOf(u8, response_src, "retry_delay_ms: u32 = 0") == null) {
-        std.debug.print("!! PabrikConfigResponse missing retry_delay_ms !!\n", .{});
-        return error.RetryDelayMissingFromResponse;
-    }
-
-    // 2) ConfigJson declares retry_delay_ms: u32 = 0 (so the parsed
-    //    JSON gets the field).
-    const get_src = try readSource(allocator, GET_PATH);
-    defer allocator.free(get_src);
-    if (std.mem.indexOf(u8, get_src, "retry_delay_ms: u32 = 0") == null) {
-        std.debug.print("!! pabrik_config_get.zig ConfigJson missing retry_delay_ms field !!\n", .{});
-        return error.RetryDelayMissingFromConfigJson;
-    }
-
-    // 3) The GET handler pipes cfg.retry_delay_ms into the response
-    //    (i.e. the makePabrikConfigResponse call references the new
-    //    field sourced from cfg).
-    if (std.mem.indexOf(u8, get_src, ".retry_delay_ms = cfg.retry_delay_ms") == null) {
-        std.debug.print("!! pabrik_config_get.zig does not pipe retry_delay_ms !!\n", .{});
-        return error.RetryDelayNotWiredIntoGet;
-    }
-}
-
-test "GET /api/config/pabrik response includes notify_on_error (task_1787671269086_0)" {
-    // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
-    // error-notification toggle is a NEW field added to the wire
-    // shape. Like `notify_on_complete`, it must appear in BOTH
-    // `PabrikConfigResponse` (response shape) AND `ConfigJson` (parse
-    // shape) AND the GET handler must pipe `cfg.notify_on_error`
-    // into the response. Lock all three sites so a future refactor
-    // that drops one of them surfaces immediately at `zig build test`.
-    const allocator = testing.allocator;
-
-    // 1) PabrikConfigResponse declares notify_on_error: bool = false.
-    const response_src = try readSource(allocator, RESP_PATH);
-    defer allocator.free(response_src);
-    if (std.mem.indexOf(u8, response_src, "notify_on_error: bool = false") == null) {
-        std.debug.print("!! PabrikConfigResponse missing notify_on_error !!\n", .{});
-        return error.NotifyOnErrorMissingFromResponse;
-    }
-
-    // 2) ConfigJson declares notify_on_error: bool = false (so the
-    //    parsed JSON gets the field).
-    const get_src = try readSource(allocator, GET_PATH);
-    defer allocator.free(get_src);
-    if (std.mem.indexOf(u8, get_src, "notify_on_error: bool = false") == null) {
-        std.debug.print("!! pabrik_config_get.zig ConfigJson missing notify_on_error field !!\n", .{});
-        return error.NotifyOnErrorMissingFromConfigJson;
-    }
-
-    // 3) The GET handler pipes cfg.notify_on_error into the response
-    //    (i.e. the makePabrikConfigResponse call references the new
-    //    field sourced from cfg).
-    if (std.mem.indexOf(u8, get_src, ".notify_on_error = cfg.notify_on_error") == null) {
-        std.debug.print("!! pabrik_config_get.zig does not pipe notify_on_error !!\n", .{});
-        return error.NotifyOnErrorNotWiredIntoGet;
-    }
-}
 
 test "PabrikConfigResponse serializes tools: null when absent, array when set" {
     // D2 wire contract: the frontend must be able to tell "key absent"
@@ -352,36 +271,47 @@ test "PabrikConfigResponse serializes tools: null when absent, array when set" {
 
 // ─── web_search masking guard ──────────────────────────────────────────────
 
-test "both config GET branches mask web_search keys" {
+test "GET /api/config/pabrik never ships a web_search key in cleartext" {
     // `GET /api/config/pabrik` builds its response through TWO allowlist
     // sites: one for `--auth` mode (users.config_json) and one for file
-    // mode. Editing only one means the credential is masked in one
-    // deployment and shipped to the browser in cleartext in the other —
-    // and the passing one is the one nobody tests.
+    // mode. Both must run `cfg.web_search` through `maskProviders`
+    // before it reaches `makePabrikConfigResponse`, or the credential
+    // is masked in one deployment and shipped to the browser in
+    // cleartext in the other.
     //
-    // This test counts occurrences rather than trusting a review, because
-    // the two sites are visually near-identical and far apart in the file.
-    // Count only the HANDLER. The needle strings below appear verbatim in
-    // this very test, so scanning the whole file would count them and the
-    // assertion would never hold.
-    const full = @embedFile("pabrik_config_get.zig");
-    const src = full[0 .. std.mem.indexOf(u8, full, "// ─── web_search masking guard") orelse full.len];
+    // The security contract is about the BYTES that come out, so assert
+    // the bytes: serialize the response the handler builds and prove the
+    // secret is absent — with a positive control proving it really was
+    // there a moment earlier, so the absence assertion cannot pass
+    // vacuously.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const secret = "SENTINEL_SECRET_DO_NOT_LEAK";
 
-    var mask_calls: usize = 0;
-    var wire_fields: usize = 0;
-    var idx: usize = 0;
-    while (std.mem.indexOfPos(u8, src, idx, "maskProviders(allocator")) |at| {
-        mask_calls += 1;
-        idx = at + 1;
-    }
-    idx = 0;
-    while (std.mem.indexOfPos(u8, src, idx, ".web_search = masked_web_search,")) |at| {
-        wire_fields += 1;
-        idx = at + 1;
-    }
+    const config_text =
+        \\{"web_search":{"brave":{"url":"https://api.search.brave.com",
+        \\ "key":"SENTINEL_SECRET_DO_NOT_LEAK",
+        \\ "curl":"https://api.search.brave.com/res/v1/web/search?q=PLACEHOLDER -H \"X-Subscription-Token: {key}\""}}}
+    ;
+    const cfg = try std.json.parseFromSliceLeaky(ConfigJson, allocator, config_text, .{
+        .ignore_unknown_fields = true,
+    });
 
-    try std.testing.expectEqual(@as(usize, 2), mask_calls);
-    try std.testing.expectEqual(@as(usize, 2), wire_fields);
-    // And the response struct must actually carry the field.
-    try std.testing.expect(std.mem.indexOf(u8, @embedFile("http_response.zig"), "web_search: ?std.json.Value = null,") != null);
+    // Positive control: the parsed config really does hold the secret,
+    // and serializing it verbatim WOULD leak it.
+    const un_masked = try http_response.makePabrikConfigResponse(allocator, .{ .web_search = cfg.web_search });
+    try testing.expect(std.mem.indexOf(u8, un_masked, secret) != null);
+
+    // What the handler actually emits: mask first, then serialize.
+    const masked_web_search = web_search_mask.maskProviders(allocator, cfg.web_search);
+    try testing.expect(masked_web_search != null);
+    const wire = try http_response.makePabrikConfigResponse(allocator, .{ .web_search = masked_web_search });
+    try testing.expect(std.mem.indexOf(u8, wire, secret) == null);
+
+    // The provider block still ships — masking must redact the key, not
+    // drop the whole section the Settings UI renders.
+    try testing.expect(std.mem.indexOf(u8, wire, "\"web_search\":{") != null);
+    try testing.expect(std.mem.indexOf(u8, wire, "\"url\":\"https://api.search.brave.com\"") != null);
+    try testing.expect(std.mem.indexOf(u8, wire, "\"key\":") != null);
 }

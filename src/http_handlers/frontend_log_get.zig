@@ -37,14 +37,13 @@
 //! Plan: docs/plans/2026-07-17-frontend-error-logs-design.md
 //!       docs/superpowers/plans/2026-07-17-frontend-error-logs.md
 //!
-//! Preserves the static-contract assertions in `frontend_log_get_test.zig`:
-//!   - reads `req.query` (NOT `req.path_params`) — per the project
-//!     memory `pabrik-http-handler-thin-wrapper-pattern` and the
-//!     precedent in `tasks_list.zig` (line 210)
-//!   - `makeFrontendLogListResponse` for the success response shape
-//!   - `ORDER BY created_at DESC` for the recent-first ordering
-//!   - `100` literal for the limit default
-//!   - `1000` literal for the limit cap
+//! Reads the level/kind/session_id/since/limit query string via
+//! `req.query` (NOT `req.path_params`) — per the project memory
+//! `pabrik-http-handler-thin-wrapper-pattern` and the precedent in
+//! `tasks_list.zig` (line 210) — and answers with the typed
+//! `{logs, count}` envelope from `makeFrontendLogListResponse`,
+//! ordered most-recent-first, limit defaulting to 100 and capped
+//! at 1000.
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
@@ -486,159 +485,21 @@ fn nullableInt(v: []const u8) ?i64 {
 }
 
 // ===== Tests merged from frontend_log_get_test.zig (2026-09-11 flatten) =====
-// Static-contract + behavioural SQL tests for `frontend_log_get`
-// (GET /api/logs, Chunk 3 of
+// Behavioural SQL tests for `frontend_log_get` (GET /api/logs, Chunk 3 of
 // `docs/superpowers/plans/2026-07-17-frontend-error-logs.md`).
-// 
-// Layout of this file
-// ────────────────────
-//   1. Static-contract tests (5): grep the handler source for the
-//      contract substrings a future refactor must preserve — query
-//      param access, response helper, ORDER BY, limit default, limit
-//      cap. Same shape as `frontend_log_post_test.zig::readSource`
-//      and `tasks_list_test.zig`.
-// 
-//   2. Behavioural SQL tests (4): exercise the SAME SQL the use-case
-//      builds (recent-first ordering, `WHERE level = ?`,
-//      `WHERE created_at >= ?`, `LIMIT ?`) against an in-memory
-//      SQLite DB with the `logs` table loaded. The handler itself
-//      is too tightly coupled to `pabrikcore.getSingleton()` to
-//      behavioural-test end-to-end (would need a live
-//      `App`), so the tests assert the SQL contract
-//      directly. Mirrors the dedup-SQL tests in
-//      `frontend_log_post_test.zig`.
-// 
+//
+// These exercise the SAME SQL the use-case runs against an in-memory
+// SQLite DB with the logs table loaded. They lock in the contract:
+// ORDER BY created_at DESC, optional WHERE level/kind/session_id/created_at
+// filters, and LIMIT clamping. Each test sets up its own DB so they are
+// independent. The handler itself is too tightly coupled to the server
+// singleton to behavioural-test end-to-end (would need a live context),
+// so the tests assert the SQL contract directly.
+//
 // Plan: docs/plans/2026-07-17-frontend-error-logs-design.md
 //       docs/superpowers/plans/2026-07-17-frontend-error-logs.md
 
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
-
-const HANDLER_PATH = "src/http_handlers/frontend_log_get.zig";
-
-/// Read a source file from disk, normalize CRLF→LF, free raw.
-/// Same shape as `frontend_log_post_test.zig::readSource` and
-/// `tasks_list_test.zig::readSource`.
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-// =============================================================================
-// Static-contract tests
-// =============================================================================
-
-test "frontend_log_get handler reads the query params via req.query" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // `req.query` (NOT `req.params.get` — that's the path-param
-    // pattern) is the project convention for query-string params;
-    // see `tasks_list.zig:210` for the precedent.
-    if (std.mem.indexOf(u8, source, "req.query") == null) {
-        std.debug.print(
-            "\n!! {s} does not read query params !!\n" ++
-                "   The handler must access `req.query` (the StringHashMap field\n" ++
-                "   on the request struct) to read the level/kind/session_id/\n" ++
-                "   since/limit query string. See `tasks_list.zig:210`.\n",
-            .{HANDLER_PATH},
-        );
-        return error.QueryParamAccessMissing;
-    }
-}
-
-test "frontend_log_get handler uses makeFrontendLogListResponse for the response" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // The response helper enforces the typed response envelope.
-    // A hand-rolled `std.fmt.allocPrint` would risk escaping
-    // bugs in the `message` field (which can contain quotes /
-    // newlines from the frontend).
-    if (std.mem.indexOf(u8, source, "makeFrontendLogListResponse") == null) {
-        std.debug.print(
-            "\n!! {s} does not use makeFrontendLogListResponse !!\n" ++
-                "   The response shape must come from the typed helper to\n" ++
-                "   guarantee the documented envelope (logs array + count\n" ++
-                "   field) and match the frontend's typed interfaces.\n",
-            .{HANDLER_PATH},
-        );
-        return error.MakeFrontendLogListResponseMissing;
-    }
-}
-
-test "frontend_log_get handler orders by created_at DESC" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // Most-recent-first is the documented order (design doc §2,
-    // GET handler). Static test guards against a refactor that
-    // accidentally drops the DESC clause. Matches
-    // `created_at_nano` (not bare `created_at`) since Migration 075
-    // renamed the column — a bare-`created_at` grep would pass
-    // vacuously via test-helper strings while missing live code.
-    if (std.mem.indexOf(u8, source, "ORDER BY created_at_nano DESC") == null) {
-        std.debug.print(
-            "\n!! {s} is missing 'ORDER BY created_at_nano DESC' !!\n" ++
-                "   The GET handler must order by created_at_nano DESC so the\n" ++
-                "   most recent error appears first. The design doc says\n" ++
-                "   this explicitly; the index idx_logs_created_at_nano also\n" ++
-                "   expects DESC ordering.\n",
-            .{HANDLER_PATH},
-        );
-        return error.OrderByDescMissing;
-    }
-}
-
-test "frontend_log_get handler defaults limit to 100" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // The DEFAULT_LIMIT constant must be present in the source so the
-    // static test can grep for it. Using a named constant + the
-    // literal `100` in the same line keeps the assertion stable.
-    // The substring search is anchored to "DEFAULT_LIMIT: u32 = 100"
-    // — the const declaration shape — which uniquely identifies the
-    // constant value in this file.
-    if (std.mem.indexOf(u8, source, "DEFAULT_LIMIT: u32 = 100") == null) {
-        std.debug.print(
-            "\n!! {s} does not define DEFAULT_LIMIT: u32 = 100 !!\n" ++
-                "   The handler must default the limit to 100 when the\n" ++
-                "   client omits the query param. See the design doc §2.\n",
-            .{HANDLER_PATH},
-        );
-        return error.DefaultLimitMissing;
-    }
-}
-
-test "frontend_log_get handler caps limit at 1000" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // The MAX_LIMIT constant must be present with literal 1000 in
-    // the source — design doc §2 caps the limit at 1000 rows.
-    if (std.mem.indexOf(u8, source, "MAX_LIMIT: u32 = 1000") == null) {
-        std.debug.print(
-            "\n!! {s} does not define MAX_LIMIT: u32 = 1000 !!\n" ++
-                "   The handler must reject limit values > 1000 to prevent\n" ++
-                "   a client asking for unbounded rows. See design doc §2.\n",
-            .{HANDLER_PATH},
-        );
-        return error.MaxLimitMissing;
-    }
-}
 
 // =============================================================================
 // Behavioural SQL tests

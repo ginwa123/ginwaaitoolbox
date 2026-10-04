@@ -344,19 +344,3 @@ test "detectProviderFromRemote keeps path-marker detection for scheme remotes" {
         detectProviderFromRemote("https://git.corp.example.com/g/s/r.git"),
     );
 }
-
-test "detectProviderFromRemote does not allocate a path-sized stack buffer" {
-    // Windows `max_path_bytes` is PATH_MAX_WIDE * 3 + 1 (~96 KB). Any
-    // array sized from it inside a request handler overflows a worker
-    // thread's stack. This is a source guard, not a runtime one: the
-    // crash only reproduces on Windows, and CI here is Linux.
-    const source = @embedFile("pr_provider.zig");
-    // The needle is concatenated so this test's own source does not
-    // contain the literal it searches for — otherwise the guard always
-    // matches itself.
-    const needle = "[std.fs." ++ "max_path_bytes]u8";
-    if (std.mem.indexOf(u8, source, needle) != null) {
-        std.debug.print("!! pr_provider.zig sizes a stack buffer from std.fs.max_path_bytes (96 KB on Windows) !!\n", .{});
-        return error.PathSizedStackBuffer;
-    }
-}

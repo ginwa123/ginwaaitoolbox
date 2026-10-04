@@ -1636,11 +1636,12 @@ test "ResponseFormatting teaches the <html> wrapper tag" {
 //   2. No bloat: no rule pre-lists skills, and buildMessages never injects
 //      skill bodies — discovery stays a `search_skills` call so the cacheable
 //      system-prompt prefix does not grow with the user's skill library.
-//   3. Cache-stability: all four are appended unconditionally (no hasTool
+//   3. Cache-stability: all six are appended unconditionally (no hasTool
 //      gate), so the block is byte-identical for every agent and the shared
 //      prefix stays a cache hit instead of fragmenting per tool set.
-//   4. Live-path coverage: each rule must be referenced by buildMessages, not
-//      only by the test-only build_agent_prompt / PROMPT_SECTIONS path.
+//   4. Live-path coverage: each rule must survive into the prompt
+//      buildMessages RETURNS, not merely be referenced by the test-only
+//      build_agent_prompt / PROMPT_SECTIONS path.
 // -------------------------------------------------------------------------
 
 test "ProgressiveToolRule names the special tool and the three-call loop" {
@@ -1696,70 +1697,208 @@ test "SkillsToolRule does not pre-list skills (no Available Skills listing)" {
     try std.testing.expect(contains(prompt, "Nothing is pre-injected"));
 }
 
-test "static contract: buildMessages appends all four rules unconditionally" {
-    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+// -------------------------------------------------------------------------
+// Live-path coverage for the six tool mandates. These drive the real
+// assembler (`buildMessages`, what workflow.zig and session_compact.zig
+// call) and assert on the prompt it RETURNS, so the guarantee is
+// behavioural — the bytes are in the message an agent actually receives —
+// rather than a claim about how the assembler is spelled.
+//
+// `build_agent_prompt` is NOT the live path: nothing in production calls
+// it, which is exactly how MemoryToolRule / ReadWorkspaceSessionToolRule
+// shipped as advice no real agent ever received.
+// -------------------------------------------------------------------------
 
-    try std.testing.expect(contains(src, "prompts_const.ProgressiveToolRule"));
-    try std.testing.expect(contains(src, "prompts_const.SkillsToolRule"));
-    try std.testing.expect(contains(src, "prompts_const.MemoryToolRule"));
-    try std.testing.expect(contains(src, "prompts_const.ReadWorkspaceSessionToolRule"));
+const prompt_migration = @import("../../migrations/migration.zig");
+const prompt_sqlite = @import("pabrikcore").sqlite;
 
-    // No hasTool gate on any of the four: a per-agent condition in the
-    // cacheable prefix fragments the prompt cache across every distinct tool
-    // set. PROMPT_SECTIONS still gates memory on load_memory, but that
-    // constant only feeds build_agent_prompt, which no production caller
-    // reaches — so the gate there does not protect the live prompt.
-    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"search_tool\")"));
-    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"use_skill\")"));
-    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"search_skills\")"));
-    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"load_memory\")"));
-    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"save_memory\")"));
-    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"read_workspace_session\")"));
+const PromptDbCtx = struct {
+    db: prompt_sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
 
-    // No skill bodies / no skills listing injected into the prompt.
-    try std.testing.expect(!contains(src, "makeSkillsEquippedContext(allocator, db, session_id)"));
-    try std.testing.expect(!contains(src, "appendSkillsListing(allocator, &final_system"));
+fn setupPromptDb() !PromptDbCtx {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    var db: prompt_sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    var manager = prompt_migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try prompt_migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+    return .{ .db = db, .threaded = threaded };
 }
 
-test "static contract: the four rules sit in the static prefix, before dynamic blocks" {
-    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+/// The mandates, in the order buildMessages must append them.
+const mandate_order = [_][]const u8{
+    ProgressiveToolRule,
+    SkillsToolRule,
+    MemoryToolRule,
+    ReadWorkspaceSessionToolRule,
+    SkillEvalToolRule,
+    SkillWriteToolRule,
+};
 
-    const i_progressive = std.mem.indexOf(u8, src, "prompts_const.ProgressiveToolRule").?;
-    const i_skills = std.mem.indexOf(u8, src, "prompts_const.SkillsToolRule").?;
-    const i_memory_rule = std.mem.indexOf(u8, src, "prompts_const.MemoryToolRule").?;
-    const i_session_rule = std.mem.indexOf(u8, src, "prompts_const.ReadWorkspaceSessionToolRule").?;
-    const i_plan = std.mem.indexOf(u8, src, "## Task Planning").?;
-    const i_memory_md = std.mem.indexOf(u8, src, "makeWorkingDirectoryContext").?;
-    const i_finalize = std.mem.indexOf(u8, src, "final_system.toOwnedSlice").?;
-
-    // The four mandates sit together, in a stable order, after the other
-    // static rules ...
-    try std.testing.expect(i_progressive > i_plan);
-    try std.testing.expect(i_progressive < i_skills);
-    try std.testing.expect(i_skills < i_memory_rule);
-    try std.testing.expect(i_memory_rule < i_session_rule);
-    // ... and before the first dynamic block, so a per-session mutation
-    // cannot invalidate the prefix the provider caches.
-    try std.testing.expect(i_session_rule < i_memory_md);
-    try std.testing.expect(i_session_rule < i_finalize);
+/// Assemble one session's system prompt through the live path and hand
+/// back an owned copy of the returned bytes.
+fn buildSystemPrompt(ctx: *PromptDbCtx, cwd: []const u8, session_id: []const u8, tools: []AgentTool) ![]u8 {
+    const alloc = std.testing.allocator;
+    const messages = try prompts_mod.buildMessages(
+        alloc,
+        ctx.threaded.io(),
+        &ctx.db,
+        cwd,
+        session_id,
+        "",
+        &.{},
+        tools,
+        "",
+        "",
+    );
+    const prompt = try alloc.dupe(u8, messages[0].content orelse "");
+    for (messages) |*msg| msg.deinit(alloc);
+    alloc.free(messages);
+    return prompt;
 }
 
-test "MemoryToolRule reaches the live prompt, not just the test-only path" {
-    // MemoryToolRule used to be referenced ONLY by PROMPT_SECTIONS, which
-    // feeds build_agent_prompt — and build_agent_prompt has no production
-    // caller (workflow.zig and session_compact.zig both call buildMessages).
-    // So a prompt that opens with "failing to call load_memory ... is a task
-    // failure" never reached a real agent. Pin the live-path reference so a
-    // future refactor cannot drop it back to the test-only path.
-    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
-    try std.testing.expect(contains(src, "prompts_const.MemoryToolRule"));
+test "buildMessages: the six mandates reach the live prompt, ungated by the tool list" {
+    var ctx = try setupPromptDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
 
-    // Sanity: buildMessages is the live path and build_agent_prompt is not.
-    // workflow.zig:1348 and http_handlers/session_compact.zig:85 both call
-    // buildMessages; build_agent_prompt is referenced only from tests.
-    const workflow = @embedFile("../../agentic_loop/workflow.zig");
-    try std.testing.expect(contains(workflow, "buildMessages("));
-    try std.testing.expect(!contains(workflow, "build_agent_prompt("));
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const cwd = try std.testing.allocator.dupe(u8, path_buf[0..n]);
+    defer std.testing.allocator.free(cwd);
+
+    // A tool list carrying every tool the mandates talk about ...
+    var with_everything = [_]AgentTool{
+        makeTool("command", "Run a shell command"),
+        makeTool("update_plan", "Track a plan"),
+        makeTool("search_tool", "Search the tool catalog"),
+        makeTool("view_tool", "Read a tool"),
+        makeTool("use_tool", "Call a tool"),
+        makeTool("search_skills", "Search installed skills"),
+        makeTool("use_skill", "Load a skill"),
+        makeTool("load_memory", "Search saved notes"),
+        makeTool("save_memory", "Save a note"),
+        makeTool("read_workspace_session", "Search past sessions"),
+        makeTool("run_skill_eval", "Evaluate the skills this task used"),
+        makeTool("add_skill", "Write a skill"),
+        makeTool("edit_skill", "Update a skill"),
+    };
+    // ... and one with none of them. The mandates are deliberately NOT
+    // gated: a per-agent bit inside the cacheable prefix would fragment
+    // the prompt cache once per distinct tool set.
+    var with_none = [_]AgentTool{
+        makeTool("read_file", "Read a file"),
+        makeTool("text_replace", "Edit a file"),
+    };
+
+    const full = try buildSystemPrompt(&ctx, cwd, "sess_mandates_full", &with_everything);
+    defer std.testing.allocator.free(full);
+    const bare = try buildSystemPrompt(&ctx, cwd, "sess_mandates_bare", &with_none);
+    defer std.testing.allocator.free(bare);
+
+    for ([_][]const u8{ full, bare }) |prompt| {
+        // Every mandate is present, in append order, and non-overlapping —
+        // a dropped or reordered append fails here.
+        var consumed: usize = 0;
+        for (mandate_order) |rule| {
+            const at = std.mem.indexOf(u8, prompt[consumed..], rule) orelse
+                return error.MandateMissingFromLivePrompt;
+            consumed += at + rule.len;
+        }
+        // No skill bodies / no skills listing injected: discovery stays a
+        // `search_skills` call so the prefix does not grow with the user's
+        // skill library.
+        try std.testing.expect(!contains(prompt, "## Loaded Skills"));
+        try std.testing.expect(!contains(prompt, "## Available Skills"));
+    }
+
+    // Non-vacuity: the tool list really did change the prompt (Task
+    // Planning is gated on `update_plan`), yet every mandate survived it.
+    try std.testing.expect(contains(full, "## Task Planning"));
+    try std.testing.expect(!contains(bare, "## Task Planning"));
+}
+
+test "buildMessages: the mandates hold a byte-identical prefix across sessions" {
+    var ctx = try setupPromptDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const root = try std.testing.allocator.dupe(u8, path_buf[0..n]);
+    defer std.testing.allocator.free(root);
+
+    // Two sessions that differ only in their working directory — the
+    // simplest per-session payload. The sub-directories deliberately do
+    // not exist, so no PABRIK.md / CLAUDE.md / AGENTS.md is picked up and
+    // the cwd block is the first place the two prompts can diverge.
+    const cwd_a = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ root, "session-a" });
+    defer std.testing.allocator.free(cwd_a);
+    const cwd_b = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ root, "session-b" });
+    defer std.testing.allocator.free(cwd_b);
+
+    var tools = [_]AgentTool{makeTool("command", "Run a shell command")};
+
+    const a = try buildSystemPrompt(&ctx, cwd_a, "sess_prefix_a", &tools);
+    defer std.testing.allocator.free(a);
+    const b = try buildSystemPrompt(&ctx, cwd_b, "sess_prefix_b", &tools);
+    defer std.testing.allocator.free(b);
+
+    const tail = std.mem.indexOf(u8, a, SkillWriteToolRule) orelse
+        return error.MandateMissingFromLivePrompt;
+    const prefix_len = tail + SkillWriteToolRule.len;
+    try std.testing.expect(prefix_len <= a.len);
+    try std.testing.expect(prefix_len <= b.len);
+    // Every byte up to the end of the last mandate is shared, so the block
+    // the provider caches is one hit rather than one per session.
+    try std.testing.expectEqualStrings(a[0..prefix_len], b[0..prefix_len]);
+
+    // The prompts really do differ, and the difference starts strictly
+    // AFTER that prefix: a per-session mutation cannot invalidate it.
+    try std.testing.expect(!std.mem.eql(u8, a, b));
+    const cwd_a_at = std.mem.indexOf(u8, a, cwd_a) orelse return error.CwdMissing;
+    const cwd_b_at = std.mem.indexOf(u8, b, cwd_b) orelse return error.CwdMissing;
+    try std.testing.expect(cwd_a_at > prefix_len);
+    try std.testing.expect(cwd_b_at > prefix_len);
+    try std.testing.expect(std.mem.indexOf(u8, a, cwd_b) == null);
+    try std.testing.expect(std.mem.indexOf(u8, b, cwd_a) == null);
+}
+
+test "the tools the mandates name are really in the equipped set" {
+    // A mandate that names a tool the agent does not carry is a lie the
+    // model can do nothing about. Membership is checked against the table
+    // `filterAndMergeTools` actually iterates, not a source grep — which is
+    // how `run_skill_eval` shipped unreachable once already.
+    const tools_equipped = @import("../../agentic_loop/tools_equipped.zig");
+    const equipped = tools_equipped.equips(std.testing.allocator);
+    defer std.testing.allocator.free(equipped);
+    const named = [_][]const u8{
+        "search_skills",
+        "use_skill",
+        "load_memory",
+        "save_memory",
+        "read_workspace_session",
+        "run_skill_eval",
+        "add_skill",
+        "edit_skill",
+    };
+    for (named) |name| {
+        var found = false;
+        for (equipped) |t| {
+            if (std.mem.eql(u8, t.function.name, name)) found = true;
+        }
+        try std.testing.expect(found);
+    }
 }
 
 test "MemoryToolRule names both memory tools and the blocking gate" {
@@ -1774,19 +1913,6 @@ test "MemoryToolRule names both memory tools and the blocking gate" {
     try std.testing.expect(contains(prompt, "first user message of any session"));
     // Cross-reference stays accurate: buildMessages does inject this block.
     try std.testing.expect(contains(prompt, "## Global Knowledge"));
-}
-
-test "ReadWorkspaceSessionToolRule reaches the live prompt, not just PROMPT_SECTIONS" {
-    // Same defect as MemoryToolRule: the rule was referenced only by
-    // PROMPT_SECTIONS, which feeds build_agent_prompt — a function with no
-    // production caller. So "don't ask the user to repeat themselves" was
-    // advice no real agent ever received.
-    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
-    try std.testing.expect(contains(src, "prompts_const.ReadWorkspaceSessionToolRule"));
-
-    // The tool it mandates must actually be equipped, or the rule is a lie.
-    const equipped = @embedFile("../../agentic_loop/tools_equipped.zig");
-    try std.testing.expect(contains(equipped, "read_workspace_session"));
 }
 
 test "ReadWorkspaceSessionToolRule names the tool and the four behaviors" {
@@ -1811,47 +1937,6 @@ test "ReadWorkspaceSessionToolRule names the tool and the four behaviors" {
     try std.testing.expect(!contains(prompt, "compacted_messages"));
 }
 
-
-test "SkillEvalToolRule reaches the live prompt, not just PROMPT_SECTIONS" {
-    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
-    try std.testing.expect(contains(src, "prompts_const.SkillEvalToolRule"));
-
-    // The live append and the documented PROMPT_SECTIONS mirror must name the
-    // same tool, or the rule points at something nobody declares.
-    try std.testing.expect(contains(src, ".requires_tool = \"run_skill_eval\""));
-
-    // And the tool it mandates must actually be equipped, or the rule is a
-    // lie. This asserts MEMBERSHIP of the table `filterAndMergeTools` actually
-    // iterates — a source grep for the string would pass on an entry in
-    // UNIFIED_TOOL_REGISTRY, which is the dispatcher's table and is never
-    // consulted when the tool list is built. That is exactly how the tool
-    // shipped unreachable once already.
-    const tools_equipped = @import("../../agentic_loop/tools_equipped.zig");
-    const equipped = tools_equipped.equips(std.testing.allocator);
-    defer std.testing.allocator.free(equipped);
-    var found = false;
-    for (equipped) |t| {
-        if (std.mem.eql(u8, t.function.name, "run_skill_eval")) found = true;
-    }
-    try std.testing.expect(found);
-}
-
-test "SkillEvalToolRule is appended unconditionally, beside the other mandates" {
-    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
-
-    // Gating this rule on `hasTool` would make the cacheable prefix differ per
-    // agent, which is the one thing that block must not do. This asserts the
-    // append sits in the same run of unconditional appends as the four
-    // mandates above it: between the previous rule and this one there is no
-    // `hasTool` and no `if (`.
-    const i_prev = std.mem.indexOf(u8, src, "prompts_const.ReadWorkspaceSessionToolRule);").?;
-    const i_this = std.mem.indexOf(u8, src, "prompts_const.SkillEvalToolRule);").?;
-    try std.testing.expect(i_prev < i_this);
-
-    const between = src[i_prev..i_this];
-    try std.testing.expect(std.mem.indexOf(u8, between, "hasTool") == null);
-    try std.testing.expect(std.mem.indexOf(u8, between, "if (") == null);
-}
 
 test "SkillEvalToolRule names the tool and its non-negotiable behaviors" {
     const prompt: []const u8 = SkillEvalToolRule;
@@ -1882,46 +1967,6 @@ test "SkillEvalToolRule names the tool and its non-negotiable behaviors" {
 // plumbed (add_skill/edit_skill exec, auto_save_skill → session_skills,
 // skill_evals_db logging both) and never driven by the prompt.
 // -------------------------------------------------------------------------
-
-test "SkillWriteToolRule reaches the live prompt, not just PROMPT_SECTIONS" {
-    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
-    try std.testing.expect(contains(src, "prompts_const.SkillWriteToolRule"));
-
-    // Membership of the table `filterAndMergeTools` actually iterates, not a
-    // source grep: a grep would pass on a UNIFIED_TOOL_REGISTRY entry, which
-    // is the dispatcher's table and is never consulted when the tool list is
-    // built. That is how `run_skill_eval` shipped unreachable once already.
-    const tools_equipped = @import("../../agentic_loop/tools_equipped.zig");
-    const equipped = tools_equipped.equips(std.testing.allocator);
-    defer std.testing.allocator.free(equipped);
-    var found_add = false;
-    var found_edit = false;
-    for (equipped) |t| {
-        if (std.mem.eql(u8, t.function.name, "add_skill")) found_add = true;
-        if (std.mem.eql(u8, t.function.name, "edit_skill")) found_edit = true;
-    }
-    try std.testing.expect(found_add);
-    try std.testing.expect(found_edit);
-}
-
-test "SkillWriteToolRule is appended unconditionally, after SkillEvalToolRule" {
-    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
-
-    // Order matters: the write rule closes the loop with the eval rule, so it
-    // reads after it. And gating either on `hasTool` would make the cacheable
-    // prefix differ per agent — the one thing that block must not do.
-    const i_eval = std.mem.indexOf(u8, src, "prompts_const.SkillEvalToolRule);").?;
-    const i_write = std.mem.indexOf(u8, src, "prompts_const.SkillWriteToolRule);").?;
-    try std.testing.expect(i_eval < i_write);
-
-    const between = src[i_eval..i_write];
-    try std.testing.expect(std.mem.indexOf(u8, between, "hasTool") == null);
-    try std.testing.expect(std.mem.indexOf(u8, between, "if (") == null);
-
-    // Still in the static prefix, ahead of every dynamic block.
-    const i_memory_md = std.mem.indexOf(u8, src, "makeWorkingDirectoryContext").?;
-    try std.testing.expect(i_write < i_memory_md);
-}
 
 test "SkillWriteToolRule drives the create -> eval -> edit loop" {
     const prompt: []const u8 = SkillWriteToolRule;

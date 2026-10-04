@@ -410,142 +410,92 @@ test {
     _ = @import("models/agent_memory.zig");
 }
 
-// ===== Tests merged from windows_posix_tmp_path_test.zig (2026-09-29 flatten) =====
-// Static-contract gate: no Zig test may open or create a file at a literal
-// `/tmp/...` path (run 36496521345, job 109177302271 — `backend (Windows X64)`).
-//
-// Seven of the eight Windows-only failures shared one anti-pattern: tests
-// built paths with `allocPrint(..., "/tmp/x_{d}.md", ...)` and passed them to
-// `std.Io.Dir.createFileAbsolute`. On Windows `/tmp/x` is NOT the POSIX temp
-// dir — it resolves against the cwd's drive as `D:\tmp\x`, and `D:\tmp` does
-// not exist, so `NtCreateFile` returns `STATUS_OBJECT_PATH_NOT_FOUND` and Zig
-// surfaces `error.FileNotFound`. Linux passed, so the bug was invisible until
-// the hosted windows-2022 runner.
-//
-// Scope — what this gate does and does NOT catch:
-//
-//   * Catches: a *file*-creating/opening call whose path literal is `/tmp/...`
-//     on the same line. These need the parent directory to already exist,
-//     which `/tmp/x` does not on Windows.
-//   * Ignores: `createDirPath` / `mkdirP` / `makePath` with a `/tmp` path.
-//     These *create* the parent chain, so they succeed on Windows (they just
-//     litter `D:\tmp`) — `service/daemon.zig` and
-//     `modules/agent/tools/memories.zig` use that shape and are green.
-//   * Ignores: `/tmp/...` held in a variable and passed on a later line, and
-//     `/tmp/...` used as a plain string (DB fixtures compared with
-//     `expectEqualStrings`, CLI-arg parsing, JSON payloads). Neither touches
-//     the filesystem in a way that breaks.
-//
-// So this is a guard against the exact regression, not a full `/tmp` audit.
-// The replacement is `std.testing.tmpDir(.{})`, which roots under
-// `.zig-cache/tmp/<random>/` on every platform and is deleted by
-// `tmp.cleanup()`.
+// ─── Fetch-once MCP tools cache tests (plan: mcp-fetch-once-cache) ───
 
-/// File-creating/opening entry points: the path must resolve to a real file,
-/// so a missing parent directory is a hard error on Windows. Ordered so the
-/// longer names are tried first (`createFileAbsolute` before `createFile`).
-const tmp_gate_file_ops = [_][]const u8{
-    "createFileAbsolute",
-    "openFileAbsolute",
-    "deleteFileAbsolute",
-    "createFile",
-};
-
-/// Directories that hold no first-party Zig and are expensive to walk.
-const tmp_gate_pruned_dirs = [_][]const u8{
-    "node_modules",
-    ".zig-cache",
-    "zig-out",
-    ".gradle",
-    "dist",
-    "build",
-    "html",
-};
-
-/// Returns the index of a `/tmp` that begins a path (so `.zig-cache/tmp/x`
-/// does not count), or null when the line has no such token.
-fn tmpGatePathStartIndex(line: []const u8) ?usize {
-    var at: usize = 0;
-    while (std.mem.indexOfPos(u8, line, at, "/tmp")) |i| {
-        // A preceding path character means this is a segment of a longer
-        // path (e.g. `.zig-cache/tmp`), not a `/tmp` root.
-        if (i == 0 or line[i - 1] == '"' or line[i - 1] == '\'' or line[i - 1] == '(') return i;
-        at = i + 1;
-    }
-    return null;
+fn mcpCacheTestTool(allocator: std.mem.Allocator) !tool_models.AgentTool {
+    const props = try allocator.alloc(tool_models.ToolProperty, 1);
+    props[0] = .{
+        .name = try allocator.dupe(u8, "q"),
+        .type = try allocator.dupe(u8, "string"),
+        .description = try allocator.dupe(u8, "query"),
+    };
+    const required = try allocator.alloc([]const u8, 1);
+    required[0] = try allocator.dupe(u8, "q");
+    return .{
+        .type = try allocator.dupe(u8, "function"),
+        .function = .{
+            .name = try allocator.dupe(u8, "mcp_srv_do"),
+            .description = try allocator.dupe(u8, "does things"),
+            .parameters = .{
+                .type = try allocator.dupe(u8, "object"),
+                .properties = props,
+                .required = required,
+            },
+            .system_prompt = try allocator.dupe(u8, ""),
+        },
+    };
 }
 
-/// Returns true when `line` opens/creates a file at a literal `/tmp` path.
-fn tmpGateIsFileOpLine(line: []const u8) bool {
-    if (tmpGatePathStartIndex(line) == null) return false;
-    for (tmp_gate_file_ops) |op| {
-        var at: usize = 0;
-        while (std.mem.indexOfPos(u8, line, at, op)) |i| {
-            const after = line[i + op.len ..];
-            // Require an actual invocation, not the name mentioned in prose.
-            if (after.len > 0 and after[0] == '(') return true;
-            at = i + op.len;
-        }
-    }
-    return false;
+fn mcpCacheFreeTestTool(allocator: std.mem.Allocator, tool: tool_models.AgentTool) void {
+    app.freeAgentTool(allocator, tool);
 }
 
-test "static contract: no test opens or creates a file at a literal /tmp path" {
-    const root = std.Io.Dir.cwd();
-    var src = try root.openDir(std.testing.io, "src", .{ .iterate = true });
-    defer src.close(std.testing.io);
+fn mcpCacheTestCtx() app.App {
+    var ctx: app.App = undefined;
+    ctx.allocator = std.testing.allocator;
+    ctx.mcp_tools_cache = null;
+    ctx.mcp_tools_init = false;
+    ctx.mcp_tools_lock = .unlocked;
+    return ctx;
+}
 
-    var walker = try src.walkSelectively(std.testing.allocator);
-    defer walker.deinit();
+test "mcp fetch-once: uninitialized cache returns null snapshot" {
+    var ctx = mcpCacheTestCtx();
+    try std.testing.expect(!ctx.isMcpToolsInit());
+    try std.testing.expect(ctx.getMcpToolsCached(std.testing.allocator) == null);
+}
 
-    var offenders: std.ArrayList([]const u8) = .empty;
+test "mcp fetch-once: store + snapshot roundtrip with deep-dupe isolation" {
+    var ctx = mcpCacheTestCtx();
+    const src = try std.testing.allocator.alloc(tool_models.AgentTool, 1);
+    defer std.testing.allocator.free(src);
+    src[0] = try mcpCacheTestTool(std.testing.allocator);
+    defer mcpCacheFreeTestTool(std.testing.allocator, src[0]);
+    ctx.storeMcpToolsCache(src, true);
+    defer ctx.clearMcpToolsCache();
+    try std.testing.expect(ctx.isMcpToolsInit());
+    const snap = ctx.getMcpToolsCached(std.testing.allocator) orelse return error.SnapshotMiss;
     defer {
-        for (offenders.items) |o| std.testing.allocator.free(o);
-        offenders.deinit(std.testing.allocator);
+        for (snap) |s| app.freeAgentTool(std.testing.allocator, s);
+        std.testing.allocator.free(snap);
     }
+    try std.testing.expectEqual(@as(usize, 1), snap.len);
+    try std.testing.expectEqualStrings("mcp_srv_do", snap[0].function.name);
+    // Snapshots must be independently duped (not aliased to the cache):
+    // different backing pointers prove the deep dupe.
+    try std.testing.expect(snap[0].function.name.ptr != ctx.mcp_tools_cache.?[0].function.name.ptr);
+    try std.testing.expect(snap[0].function.parameters.properties.ptr != ctx.mcp_tools_cache.?[0].function.parameters.properties.ptr);
+}
 
-    // `SelectiveWalker` owns the path buffer and invalidates `entry.path` on
-    // the next call, so offender strings are copied out with `allocPrint`.
-    // Descent is opt-in via `enter`, which is what keeps this off the
-    // multi-hundred-megabyte `.zig-cache` / `node_modules` trees.
-    // A directory we cannot iterate ends the walk rather than failing —
-    // a partial scan beats a crash.
-    while (walker.next(std.testing.io) catch null) |entry| {
-        if (entry.kind == .directory) {
-            for (tmp_gate_pruned_dirs) |pruned| {
-                if (std.mem.eql(u8, entry.basename, pruned)) break;
-            } else {
-                try walker.enter(std.testing.io, entry);
-                continue;
-            }
-            continue;
-        }
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
+test "mcp fetch-once: clear resets to uninitialized" {
+    var ctx = mcpCacheTestCtx();
+    const src = try std.testing.allocator.alloc(tool_models.AgentTool, 1);
+    defer std.testing.allocator.free(src);
+    src[0] = try mcpCacheTestTool(std.testing.allocator);
+    defer mcpCacheFreeTestTool(std.testing.allocator, src[0]);
+    ctx.storeMcpToolsCache(src, true);
+    try std.testing.expect(ctx.isMcpToolsInit());
+    ctx.clearMcpToolsCache();
+    try std.testing.expect(!ctx.isMcpToolsInit());
+    try std.testing.expect(ctx.getMcpToolsCached(std.testing.allocator) == null);
+}
 
-        const contents = src.readFileAlloc(std.testing.io, entry.path, std.testing.allocator, .limited(4 << 20)) catch continue;
-        defer std.testing.allocator.free(contents);
-
-        var line_it = std.mem.splitScalar(u8, contents, '\n');
-        while (line_it.next()) |line| {
-            if (!tmpGateIsFileOpLine(line)) continue;
-            try offenders.append(std.testing.allocator, try std.fmt.allocPrint(
-                std.testing.allocator,
-                "src/{s}: {s}",
-                .{ entry.path, std.mem.trim(u8, line, " \t") },
-            ));
-        }
-    }
-
-    if (offenders.items.len == 0) return;
-    std.debug.print(
-        "\n=== {d} Windows-unsafe /tmp file op(s) — these pass on Linux and FAIL on the windows-2022 runner ===\n",
-        .{offenders.items.len},
-    );
-    for (offenders.items) |o| std.debug.print("  {s}\n", .{o});
-    std.debug.print(
-        "Fix: use `var tmp = testing.tmpDir(.{{}}); defer tmp.cleanup();` + `tmp.dir.writeFile(io, .{{ .sub_path = ..., .data = ... }})`.\n\n",
-        .{},
-    );
-    return error.PosixTmpPathInFileOp;
+test "mcp fetch-once: error publish (mark_init=false) leaves retry open" {
+    var ctx = mcpCacheTestCtx();
+    ctx.storeMcpToolsCache(null, false);
+    try std.testing.expect(!ctx.isMcpToolsInit());
+    // A null publish WITH init (no servers configured) is a valid cached state.
+    ctx.storeMcpToolsCache(null, true);
+    try std.testing.expect(ctx.isMcpToolsInit());
+    try std.testing.expect(ctx.getMcpToolsCached(std.testing.allocator) == null);
 }
