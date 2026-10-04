@@ -306,41 +306,7 @@ fn makeGitPrDiffResponse(allocator: std.mem.Allocator, pr_url: []const u8, resul
     return try buf.toOwnedSlice(allocator);
 }
 
-// ===== Static wiring tests (git_worktree_info.zig pattern) =====
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-test "git_pr_diff handler is exported from mod.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/http_handlers/mod.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "pub const gitPrDiffHandler") == null) {
-        std.debug.print("!! mod.zig does not export gitPrDiffHandler !!\n", .{});
-        return error.NotExported;
-    }
-}
-
-test "git_pr_diff route is registered in main.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/http_routes.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "/api/git/pr/diff") == null) {
-        std.debug.print("!! http_routes.zig does not register /api/git/pr/diff !!\n", .{});
-        return error.NotRegistered;
-    }
-}
 
 test "resolveStrategy picks CLI when present, fetch fallback otherwise" {
     try testing.expectEqual(DiffStrategy.gh_cli, resolveStrategy(.github, true));

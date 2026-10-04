@@ -739,33 +739,9 @@ fn extractOpenAiErrorMessage(allocator: std.mem.Allocator, body: []const u8) ?[]
 const builtin = @import("builtin");
 const testing = std.testing;
 const pabrikcore = @import("pabrikcore");
-const text_normalize = @import("helpers").text_normalize;
 const generate_image = @import("generate_image.zig");
 
-const TOOL_PATH = "src/modules/agent/tools/generate_image.zig";
-
 // ─── Helpers ─────────────────────────────────────────────────────────────
-
-/// Read a source file from disk, relative to the project root.
-/// Normalizes CRLF → LF so multi-line literal needles match even when
-/// the file was checked out on Windows with autocrlf=true (see
-/// `.gitattributes` + `src/helpers/text_normalize.zig` for context).
-/// The returned buffer is owned by the caller (freed with `allocator.free`).
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
-    return normalized;
-}
-
-fn contains(haystack: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, haystack, needle) != null;
-}
 
 /// Open a fresh `std.Io.Threaded` runtime for tests that need an Io
 /// (the save-to-disk helper needs it for `std.Io.Clock.now` and
@@ -774,101 +750,6 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
 fn setupIo() std.Io.Threaded {
     const threaded = std.Io.Threaded.init(testing.allocator, .{});
     return threaded;
-}
-
-// ─── Static source-check tests (6) ────────────────────────────────────────
-
-test "generate_image tool definition has name \"generate_image\"" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    if (!contains(source, ".name = \"generate_image\"")) {
-        std.debug.print("!! generate_image.zig does not define the tool with .name = \"generate_image\" !!\n", .{});
-        return error.ToolNameMissing;
-    }
-}
-
-test "generate_image schema has all 8 properties (prompt, model, n, size, quality, style, response_format, user)" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    const required_props = [_][]const u8{
-        "prompt",
-        "model",
-        "n",
-        "size",
-        "quality",
-        "style",
-        "response_format",
-        "user",
-    };
-    for (required_props) |prop| {
-        const needle = try std.fmt.allocPrint(allocator, ".name = \"{s}\"", .{prop});
-        defer allocator.free(needle);
-        if (!contains(source, needle)) {
-            std.debug.print("!! generate_image.zig schema is missing property: {s} !!\n", .{prop});
-            return error.SchemaPropertyMissing;
-        }
-    }
-}
-
-test "generate_image schema required array contains prompt" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    // The `required` array MUST include prompt (the only mandatory field).
-    // Accept any case where prompt is one of the entries — exact form is
-    // "&.{\"prompt\"}" alone or "&.{\"prompt\", ...}".
-    const required_lines = [_][]const u8{
-        "required = &.{\"prompt\"}",
-        "required = &.{\"prompt\",",
-    };
-    var found = false;
-    for (required_lines) |line| {
-        if (contains(source, line)) {
-            found = true;
-            break;
-        }
-    }
-    if (!found) {
-        std.debug.print("!! generate_image.zig schema `required` does not include \"prompt\" !!\n", .{});
-        return error.RequiredArrayMissingPrompt;
-    }
-}
-
-test "generate_image defines pub fn execute_generate_image" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    if (!contains(source, "pub fn execute_generate_image(")) {
-        std.debug.print("!! generate_image.zig does not define pub fn execute_generate_image !!\n", .{});
-        return error.ExecuteFnMissing;
-    }
-}
-
-test "generate_image defines MAX_RESPONSE_BYTES cap" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    if (!contains(source, "MAX_RESPONSE_BYTES")) {
-        std.debug.print("!! generate_image.zig does not define MAX_RESPONSE_BYTES constant !!\n", .{});
-        return error.MaxResponseBytesConstMissing;
-    }
-}
-
-test "generate_image references kabelweb client (libcurl-backed HTTP)" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, TOOL_PATH);
-    defer allocator.free(source);
-    // The implementation MUST use kabelweb's client
-    // (libcurl-backed, cross-platform) — not std.http.Client (which the
-    // pabrik_browser tool uses for its localhost server, but is not
-    // appropriate for HTTPS to api.openai.com). Guards against an
-    // accidental std-lib-only stub.
-    if (!contains(source, "kabelweb")) {
-        std.debug.print("!! generate_image.zig does not @import(\"kabelweb\") — must use the libcurl-backed client for api.openai.com !!\n", .{});
-        return error.CustomHttpClientMissing;
-    }
 }
 
 // ─── validateModelSize behavioural tests (8) ─────────────────────────────

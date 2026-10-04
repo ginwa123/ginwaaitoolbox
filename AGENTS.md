@@ -52,11 +52,15 @@ The harness at `tests/functional/harness.py` does all the heavy lifting:
 - Tears down the binary + tmpdir on test exit (even on assert-fail).
 - Runs `zig-out/bin/pabrikcore-linux-x86_64` (or whatever `$PABRIK_BIN` points at).
 
-For static checks (route order, function signatures, error mappings), prefer a
-Zig static-contract test in the same file as the impl (`<feature>_test.zig`
-inline with `pub const` exports + greps). For Zig-only behavior, an in-memory
-SQLite test in the same `useCase` file is enough — but for any HTTP route or
-wire payload, ALWAYS graduate to the python functional harness.
+For Zig-only behavior, an in-memory SQLite test in the same `useCase` file is
+enough — but for any HTTP route or wire payload, ALWAYS graduate to the python
+functional harness.
+
+**There is no third option.** An earlier version of this file recommended a
+"Zig static-contract test" — a `test` block that greps the impl's source text —
+as the light-weight middle ground. That was wrong, and ~700 of them accumulated
+because of it. They are gone; see the next section for why, and for what to
+write instead.
 
 **Anti-pattern: `nohup ./zig-out/bin/pabrik... --port 8080` + `curl`.** Leaks the
 process across tool calls, conflicts with the harness, and is exactly what
@@ -65,6 +69,100 @@ missed the bugs in PR #291.
 
 
 **Concrete example** (task_1786507100896, PR #215): backend's `onEventSendSessions` had an `event_type_name` if/else that knew about `created` and `deleted` and fell through to `session_unknown` for everything else. `action="updated"` (the most common case — fired by the auto-rename-on-first-message cascade in `workflow.zig` and the unattended toggle in `llm_history.zig`) reached the wire as `event: session_unknown`, which the frontend's `additionalEventTypes` didn't pre-register. The browser silently dropped it. Sidebar task rows kept showing "New Chat" until a manual page refresh.
+
+## Tests — Assert Behaviour, Never Source Text
+
+**The rule: a `test` block must call the code or observe its output. If it
+opens a `.zig` file under `src/` and searches that text, it is not a test.**
+
+This repo had ~700 such tests. They looked like this:
+
+```zig
+const HANDLER_PATH = "src/http_handlers/foo.zig";
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    // openFile + allocRemaining
+}
+test "foo handler is registered in http_routes.zig" {
+    const src = try readSource(allocator, "src/http_routes.zig");
+    try testing.expect(std.mem.indexOf(u8, src, "/api/foo") != null);
+}
+```
+
+or, in the purest form, an offset comparison:
+
+```zig
+test "http_routes: exactly one authed group exists, created before any use()" {
+    const group_at = std.mem.indexOf(u8, source, "gs.router.group(\"\")").?;
+    const use_at   = std.mem.indexOf(u8, source, "authed.use(...authMiddleware);").?;
+    if (use_at < group_at) return error.MiddlewareBeforeGroup;
+}
+```
+
+**Why they are worse than useless — they are simultaneously noisy AND blind:**
+
+- *Noisy.* Rename `authMiddleware`, change a route literal's wording, extract a
+  function, add a parameter — the test goes red and nothing is wrong.
+- *Blind.* Delete the route outright and the test still passes if any other
+  line mentions the string. Add a second, unauthenticated `group("")` ahead of
+  the routes and the *offset* test still passes if the offsets happen to line
+  up. The thing it is named after — "exactly one authed group, created before
+  any use" — is not what it checks.
+- *Redundant.* A large share asserted things the compiler already enforces.
+  "X is re-exported from Y", "mod.zig exports X", "the root aliases Z": break
+  the alias or the import and the file does not compile. A test for that is a
+  test that can never fail for the reason it exists.
+- *Absent assertions are unmaintainable.* "No envelope builder formats the key
+  into a message" is a permanent burden on every future edit, and it does not
+  even cover the envelope builders added tomorrow.
+- *Whole-repo textual lints are not unit tests.* "No test opens a file at a
+  literal `/tmp` path" walked every `.zig` under `src/` on every `zig build
+  test`. That belongs in `scripts/` + CI, if it is wanted at all.
+
+**What to write instead — in order of preference:**
+
+1. **Call the function and assert the return value.** The strongest witness is
+   the production entry point itself. `http_routes.registerAll` is now split so
+   a test can build the REAL route table (`registerAllOn(router)`) and assert
+   what `Router.matchRoute` **resolves** — which is the only honest witness for
+   route order, and it replaces seven separate greps.
+2. **Drive the handler / tool and assert the wire payload.** Error→status
+   mapping, key masking, validation: call it with the offending input and look
+   at what comes back. Include a **positive control** so an absence assertion
+   cannot pass vacuously (`GET /api/config/pabrik never ships a web_search key
+   in cleartext` first proves the sentinel IS present before masking).
+3. **Assert a property, not a position.** The old
+   "the four prompt rules sit in the STATIC PREFIX, before dynamic blocks" test
+   compared four byte offsets. The replacement calls `buildMessages` twice with
+   two different sessions and asserts the two returned prompts share an
+   **identical byte prefix** — which is the actual prompt-cache property, and
+   something no offset comparison could ever establish.
+4. **Concurrency properties need threads, not greps.** "the id generator has an
+   atomic counter (Mac CI 500 regression)" is now 32 threads calling the real
+   generator and asserting 32 distinct ids.
+5. **Not a unit test at all?** Then it is a **lint** (`scripts/` + CI) or a
+   **functional test** (`tests/functional/`). Say which, in the plan.
+
+**Anti-patterns to name in review:**
+
+- `const X_PATH = "src/...";` anywhere in a file's test section. That is the
+  smell. There should be **zero** `.zig` path literals under `src/` in tests.
+- `@embedFile("...zig")` in a test.
+- A test whose name contains `static contract`, `wiring`, `is re-exported from`,
+  `is registered in`, `defines pub fn`, `calls <fn>`, `does NOT use`, or
+  `never <verb>` **and** whose body is an `indexOf` on a buffer named `source`.
+- `indexOf` on JSON **the test itself just serialized** is fine — that is a
+  wire assertion, not a source assertion. Keep those.
+
+**Note on naming.** Four tests in `src/modules/agent/tools/document.zig` were
+renamed from `static contract:` to `schema contract:`. They were never greps —
+they reflect over the live `AgentTool` constants the model receives, which is
+the product. If you grep for `test "static contract` to find this class, you
+will find those too; the new name keeps them out of that scan.
+
+**Landmine note.** This class is easy to reintroduce by accident, because
+"just check the wiring" feels cheaper than standing up a context. If you cannot
+reach the behaviour from a test, write the contract down in the plan and say
+where it belongs (lint vs. functional harness). Do not write the grep.
 
 ## Code Exploration with Graphify — graph-first, grep-second
 

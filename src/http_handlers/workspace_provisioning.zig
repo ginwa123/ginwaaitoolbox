@@ -464,38 +464,6 @@ test "ensureDefaultWorkspace: two users each get their own, neither sees the oth
     );
 }
 
-test "workspaces_create delegates to the shared insert path instead of carrying its own copy" {
-    const alloc = testing.allocator;
-    const src = try readSource(alloc, "src/http_handlers/workspaces_create.zig");
-    defer alloc.free(src);
-
-    // The invariant is "one insert path". Two INSERTs living in two files is
-    // how a future change to the position formula, the membership grant, or
-    // the default project ends up applied to one creation route and not the
-    // other — with no test failing, because both routes still pass their own
-    // narrow tests.
-    try testing.expect(std.mem.indexOf(u8, src, "createWorkspaceRow(") != null);
-
-    // And the copies themselves must be gone from the handler.
-    try testing.expect(std.mem.indexOf(u8, src, "INSERT INTO workspaces") == null);
-    try testing.expect(std.mem.indexOf(u8, src, "INSERT OR IGNORE INTO workspace_members") == null);
-    try testing.expect(std.mem.indexOf(u8, src, "ensureDefaultProject") == null);
-}
-
-/// Read a source file relative to the project root (the cwd the test runner
-/// is launched from). Used only for static contract assertions about code
-/// shape, never for behaviour.
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        testing.io,
-        path,
-        allocator,
-        .limited(8 * 1024 * 1024),
-    );
-    const normalized = try @import("helpers").text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
 
 /// Read a single text column, interpolating ids that the code under test
 /// generated (never user input).

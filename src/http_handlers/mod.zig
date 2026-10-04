@@ -940,12 +940,6 @@ pub fn llmTestHandler(
 
 const testing = std.testing;
 
-fn llmSourceContains(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) !bool {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, allocator, .limited(1024 * 1024));
-    defer allocator.free(raw);
-    return std.mem.indexOf(u8, raw, needle) != null;
-}
-
 test "llm_test validate: rejects empty model" {
     const req: LlmTestRequest = .{ .model = "", .base_url = "http://127.0.0.1:9/x" };
     try testing.expectError(LlmTestError.MissingModel, llmTestValidate(req));
@@ -1042,63 +1036,6 @@ test "llm_test extractReply: rejects non-JSON body" {
         LlmTestError.JsonParseFailed,
         llmTestExtractReply(testing.allocator, "openai", "<html>login</html>"),
     );
-}
-
-test "llm_test.zig error mapping covers every TestError variant" {
-    // Static-grep guard: the handler's exhaustive switch must name each
-    // error variant so no probe failure falls through to a 500.
-    const variants = [_][]const u8{
-        "MissingModel",
-        "MissingBaseUrl",
-        "InvalidBaseUrl",
-        "UnsupportedStyle",
-        "SendFailed",
-        "Timeout",
-        "HttpError",
-        "JsonParseFailed",
-        "InvalidResponse",
-        "OutOfMemory",
-    };
-    for (variants) |variant| {
-        const found = try llmSourceContains(
-            testing.allocator,
-            "src/http_handlers/mod.zig",
-            variant,
-        );
-        if (!found) {
-            std.debug.print("\n!! llm_test error mapping missing variant {s} !!\n", .{variant});
-        }
-        try testing.expect(found);
-    }
-}
-
-test "llm_test.zig probe timeout is 15_000 ms" {
-    const found = try llmSourceContains(
-        testing.allocator,
-        "src/http_handlers/mod.zig",
-        "15_000",
-    );
-    try testing.expect(found);
-}
-
-test "llm_test probe sends x-opencode-session (Console Go requires it)" {
-    // Regression guard for the Edit-profile Test button 400
-    // `{"type":"error","error":{"type":"MissingSessionID",...}}`:
-    // the probe must carry the session header or Console Go rejects
-    // it before auth/routing. Asserts both the header name and the
-    // stable probe id constant exist in the useCase header block.
-    const has_header = try llmSourceContains(
-        testing.allocator,
-        "src/http_handlers/mod.zig",
-        "x-opencode-session",
-    );
-    try testing.expect(has_header);
-    const has_probe_id = try llmSourceContains(
-        testing.allocator,
-        "src/http_handlers/mod.zig",
-        "PROBE_SESSION_ID",
-    );
-    try testing.expect(has_probe_id);
 }
 
 // ===== Tests merged from mcp_test.zig (2026-09-29 flatten) =====

@@ -379,58 +379,7 @@ pub fn gitPrConflictsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     }) });
 }
 
-// ===== Static wiring tests (git_pr_diff.zig pattern) =====
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-test "git_pr_conflicts handler is exported from mod.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/http_handlers/mod.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "pub const gitPrConflictsHandler") == null) {
-        std.debug.print("!! mod.zig does not export gitPrConflictsHandler !!\n", .{});
-        return error.NotExported;
-    }
-}
-
-test "git_pr_conflicts route is registered in http_routes.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/http_routes.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "/api/git/pr/conflicts") == null) {
-        std.debug.print("!! http_routes.zig does not register /api/git/pr/conflicts !!\n", .{});
-        return error.RouteMissing;
-    }
-}
-
-test "git_pr_conflicts.zig spawns a child by hand — route it through helpers.run_captured !!" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/http_handlers/git_pr_conflicts.zig");
-    defer allocator.free(source);
-    // Assembled at comptime from fragments so this test does not match its own
-    // needle, which would otherwise appear in the comment two lines above.
-    const spawn_needle = "std.process." ++ "spawn";
-    const child_needle = "std.process." ++ "Child";
-    if (std.mem.indexOf(u8, source, spawn_needle) != null or
-        std.mem.indexOf(u8, source, child_needle) != null)
-    {
-        std.debug.print("!! git_pr_conflicts.zig spawns a child by hand — route it through helpers.run_captured !!\n", .{});
-        return error.SpawnBypass;
-    }
-}
-
 // ===== parseConflictPaths unit tests =====
 
 test "parseConflictPaths: clean merge returns an empty list" {

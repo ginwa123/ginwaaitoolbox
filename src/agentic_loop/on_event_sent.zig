@@ -744,51 +744,6 @@ pub fn sendStreamToolCallDelta(
 
 const testing_oes = std.testing;
 const pabrikcore_oes = tree1_mod;
-const text_normalize = @import("helpers").text_normalize;
-const ON_EVENT_SENT_PATH = "src/agentic_loop/on_event_sent.zig";
-
-fn readSourceOES(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(testing_oes.io, path, allocator, .unlimited);
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-test "on_event_sent.zig imports helpers" {
-    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
-    defer testing_oes.allocator.free(source);
-
-    if (std.mem.indexOf(u8, source, "const helpers = tree1_mod.helpers;") == null) {
-        std.debug.print("!! on_event_sent.zig missing `const helpers = tree1_mod.helpers;` !!\n", .{});
-        return error.HelpersImportMissing;
-    }
-}
-
-test "on_event_sent.zig calls sanitizeUtf8 on content" {
-    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
-    defer testing_oes.allocator.free(source);
-
-    const direct = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, input.content)") != null;
-    const via_const = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, c)") != null and
-        std.mem.indexOf(u8, source, "input.content") != null;
-    if (!direct and !via_const) {
-        std.debug.print("!! on_event_sent.zig does not sanitize input.content before JSON serialization !!\n", .{});
-        return error.ContentSanitizationMissing;
-    }
-}
-
-test "on_event_sent.zig calls sanitizeUtf8 on reasoning_content" {
-    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
-    defer testing_oes.allocator.free(source);
-
-    const direct = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, input.reasoning_content)") != null;
-    const via_const = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, r)") != null and
-        std.mem.indexOf(u8, source, "input.reasoning_content") != null;
-    if (!direct and !via_const) {
-        std.debug.print("!! on_event_sent.zig does not sanitize input.reasoning_content !!\n", .{});
-        return error.ReasoningSanitizationMissing;
-    }
-}
 
 test "sanitizeUtf8 fixes the exact bytes from the bug" {
     const corrupt_bytes = [_]u8{

@@ -690,50 +690,7 @@ pub fn gitPrStatusHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeGitPrStatusResponse(allocator, result) });
 }
 
-// ===== Static wiring tests (git_pr_diff.zig pattern) =====
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-test "git_pr_status handler is exported from mod.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/http_handlers/mod.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "pub const gitPrStatusHandler") == null) {
-        std.debug.print("!! mod.zig does not export gitPrStatusHandler !!\n", .{});
-        return error.NotExported;
-    }
-}
-
-test "git_pr_status route is registered in main.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/http_routes.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "/api/git/pr/status") == null) {
-        std.debug.print("!! http_routes.zig does not register /api/git/pr/status !!\n", .{});
-        return error.NotRegistered;
-    }
-}
-
-test "http_response defines GitPrStatusResponse + helper" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/http_handlers/http_response.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "GitPrStatusResponse") == null) return error.ResponseTypeMissing;
-    if (std.mem.indexOf(u8, source, "makeGitPrStatusResponse") == null) return error.ResponseHelperMissing;
-}
-
 test "normalizeStatus maps OPEN/CLOSED/MERGED" {
     try testing.expectEqualStrings("open", normalizeStatus("OPEN"));
     try testing.expectEqualStrings("open", normalizeStatus("open"));
@@ -760,9 +717,7 @@ test "GhPrView parses open-PR payload with null mergedAt/closedAt" {
 // ============================================================================
 // Behavioural test suite for the `gh pr view` child-process path.
 //
-// Everything above in the "Static wiring tests" section used to be
-// source-grep assertions only: `runGhPrView` had ZERO functional tests
-// while it was the function that aborted the whole server process
+// `runGhPrView` is the function that aborted the whole server process
 // (`thread N panic: reached unreachable code` from
 // `std/Io/Threaded.zig:closeFd` <- `childCleanupPosix` <- `Child.wait`)
 // and that could deadlock a worker-pool thread forever on a chatty
@@ -1688,41 +1643,3 @@ test "isNotFoundStderr separates a missing MR from an auth failure" {
 }
 
 // ─────────── source-contract guard against the regression ───────────
-
-test "runGhPrView must not hand-roll spawn/read/wait (regression contract)" {
-    // The crash shipped because the child-process dance was open-coded
-    // in the handler. If a future refactor reintroduces
-    // `std.process.spawn` here, it has also reintroduced the
-    // `closeFd`-on-stale-fd abort and the sequential-drain deadlock.
-    const a = testing.allocator;
-    const full = try readSource(a, "src/http_handlers/git_pr_status.zig");
-    defer a.free(full);
-    // Only the implementation matters. The fixture helpers below spawn
-    // `git init` on purpose, so scan everything above the test section.
-    const source = full[0 .. std.mem.indexOf(u8, full, "// ===== Static wiring tests") orelse full.len];
-    if (std.mem.indexOf(u8, source, "std.process.spawn(") != null) {
-        std.debug.print("!! git_pr_status.zig spawns a child by hand — route it through helpers.run_captured !!\n", .{});
-        return error.HandRolledSpawn;
-    }
-    if (std.mem.indexOf(u8, source, "run_captured.run") == null) {
-        std.debug.print("!! git_pr_status.zig does not use run_captured !!\n", .{});
-        return error.NotUsingHelper;
-    }
-}
-
-test "git_pr_create.zig no longer hand-rolls the same spawn dance" {
-    // Same bug, same crash shape, different handler: `gh pr create`
-    // spawned, drained stdout then stderr, and called `Child.wait`.
-    const a = testing.allocator;
-    const full = try readSource(a, "src/http_handlers/git_pr_create.zig");
-    defer a.free(full);
-    const source = full[0 .. std.mem.indexOf(u8, full, "// ===== Tests merged from") orelse full.len];
-    if (std.mem.indexOf(u8, source, "std.process.spawn(") != null) {
-        std.debug.print("!! git_pr_create.zig spawns a child by hand — route it through helpers.run_captured !!\n", .{});
-        return error.HandRolledSpawn;
-    }
-    if (std.mem.indexOf(u8, source, "run_captured.run") == null) {
-        std.debug.print("!! git_pr_create.zig does not use run_captured !!\n", .{});
-        return error.NotUsingHelper;
-    }
-}
