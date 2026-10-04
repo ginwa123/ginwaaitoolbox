@@ -32,13 +32,23 @@ pub fn resolveStrategy(provider: pr_provider.PrProvider, cli_available: bool) Di
     };
 }
 
-const PrDiffError = error{ NotARepository, CliMissing, FetchFailed, DiffFailed };
+const PrDiffError = error{ NotARepository, FetchFailed, DiffFailed };
 
+/// Every strategy returns OWNED slices — `diff_content` may be up to
+/// MAX_DIFF_BYTES, so leaking it per request is not an option, and `base` /
+/// `head` must outlive the `defer`s that built them. Callers must
+/// `deinit` once the response body is serialized.
 const PrDiffResult = struct {
     diff_content: []const u8,
     truncated: bool,
     base: []const u8,
     head: []const u8,
+
+    fn deinit(self: PrDiffResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.diff_content);
+        allocator.free(self.base);
+        allocator.free(self.head);
+    }
 };
 
 /// Check whether a CLI binary resolves on PATH (`gh` / `glab`).
@@ -65,7 +75,9 @@ fn runGit(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![
 /// Auto-detect the base branch: origin/main → origin/master →
 /// origin/develop → "main" fallback. Same probe order as
 /// git_worktree_info.zig (duplicated: that helper is not exported).
-fn detectBase(allocator: std.mem.Allocator, io: std.Io, path: []const u8) []const u8 {
+/// Always returns an OWNED string — the caller stores it in
+/// `PrDiffResult.base`.
+fn detectBase(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
     const bases = [_][]const u8{ "main", "master", "develop" };
     for (bases) |b| {
         var buf: [64]u8 = undefined;
@@ -75,23 +87,130 @@ fn detectBase(allocator: std.mem.Allocator, io: std.Io, path: []const u8) []cons
             allocator.free(probe.stdout);
             allocator.free(probe.stderr);
         }
-        if (probe.term.exited == 0) return allocator.dupe(u8, b) catch "main";
+        if (probe.term.exited == 0) return allocator.dupe(u8, b);
     }
-    return "main";
+    return allocator.dupe(u8, "main");
 }
 
-/// Current branch ("" when detached).
-fn currentBranch(allocator: std.mem.Allocator, io: std.Io, path: []const u8) []const u8 {
-    const res = std.process.run(allocator, io, .{ .argv = &.{ "git", "-C", path, "branch", "--show-current" } }) catch return "";
+/// Current branch ("" when detached). Returns an OWNED string.
+fn currentBranch(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
+    const res = std.process.run(allocator, io, .{ .argv = &.{ "git", "-C", path, "branch", "--show-current" } }) catch return allocator.dupe(u8, "");
     defer allocator.free(res.stderr);
     if (res.term.exited != 0) {
         allocator.free(res.stdout);
-        return "";
+        return allocator.dupe(u8, "");
     }
     const trimmed = std.mem.trim(u8, res.stdout, " \n\r");
     if (trimmed.len == res.stdout.len) return res.stdout;
     defer allocator.free(res.stdout);
-    return allocator.dupe(u8, trimmed) catch "";
+    return allocator.dupe(u8, trimmed);
+}
+
+/// GitHub refuses to serve the `/pulls/{n}` diff once a pull request
+/// touches more than this many files, answering HTTP 406 (surfaced by
+/// `gh pr diff` as `PullRequest.diff too_large` on a nonzero exit).
+pub const FORGE_MAX_DIFF_FILES: u32 = 300;
+
+/// Try the forge CLI (`gh pr diff` / `glab mr diff`). Returns null when the
+/// CLI is absent, exits nonzero, or produced nothing usable — every case
+/// where the caller must fall back to the git refspec.
+///
+/// A nonzero exit is NOT only "gh is not authed". GitHub serves the PR diff
+/// only while the PR stays under `FORGE_MAX_DIFF_FILES` files, so a repo-wide
+/// rename (a 1285-file PR) makes the installed CLI exit 1 and print
+/// `PullRequest.diff too_large`. Having `gh` on PATH is therefore no promise
+/// that it can answer, and only the refspec path below handles such PRs.
+fn tryForgeCli(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    provider: pr_provider.PrProvider,
+    normalized: []const u8,
+) !?PrDiffResult {
+    const ref = pr_provider.parsePrRef(normalized, provider) orelse return null;
+    const number = ref.number orelse return null;
+    var argv: [6][]const u8 = undefined;
+    if (provider == .github) {
+        argv = .{ "gh", "pr", "diff", number, "--repo", ref.repo_path };
+    } else {
+        argv = .{ "glab", "mr", "diff", number, "-R", ref.repo_path };
+    }
+    const res = std.process.run(allocator, io, .{ .argv = &argv }) catch return null;
+    defer allocator.free(res.stderr);
+    errdefer allocator.free(res.stdout);
+    if (res.term.exited != 0) {
+        allocator.free(res.stdout);
+        return null;
+    }
+    const capped = try capDiff(allocator, res.stdout);
+    errdefer allocator.free(capped.text);
+    // The CLI reports no base/head (it diffs server-side); owned empties so
+    // PrDiffResult.deinit can free all three unconditionally.
+    const base = try allocator.dupe(u8, "");
+    errdefer allocator.free(base);
+    const head = try allocator.dupe(u8, "");
+    return PrDiffResult{
+        .diff_content = capped.text,
+        .truncated = capped.truncated,
+        .base = base,
+        .head = head,
+    };
+}
+
+/// Fetch the forge's well-known head ref over the repo's own `origin`
+/// (`pull/N/head` on GitHub, `merge-requests/IID/head` on GitLab) and diff
+/// it against the base. Needs neither the forge CLI nor the forge API, so it
+/// is both the no-CLI strategy AND the rescue path when the CLI refuses.
+/// Handles arbitrarily large PRs; output is capped by `capDiff`.
+fn fetchRefRange(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    number: []const u8,
+    is_pr: bool,
+    base_override: ?[]const u8,
+) !PrDiffResult {
+    const refspec = if (is_pr)
+        try std.fmt.allocPrint(allocator, "pull/{s}/head:refs/pabrik-pr/{s}", .{ number, number })
+    else
+        try std.fmt.allocPrint(allocator, "merge-requests/{s}/head:refs/pabrik-mr/{s}", .{ number, number });
+    defer allocator.free(refspec);
+    const local_ref = if (is_pr)
+        try std.fmt.allocPrint(allocator, "refs/pabrik-pr/{s}", .{number})
+    else
+        try std.fmt.allocPrint(allocator, "refs/pabrik-mr/{s}", .{number});
+    // NOT deferred-free: ownership moves into PrDiffResult.head.
+    const fetch_argv: [6][]const u8 = .{ "git", "-C", path, "fetch", "origin", refspec };
+    const fetch = std.process.run(allocator, io, .{ .argv = &fetch_argv }) catch return error.FetchFailed;
+    defer {
+        allocator.free(fetch.stdout);
+        allocator.free(fetch.stderr);
+    }
+    if (fetch.term.exited != 0) {
+        allocator.free(local_ref);
+        return error.FetchFailed;
+    }
+    const base = if (base_override) |b|
+        try allocator.dupe(u8, b)
+    else
+        try detectBase(allocator, io, path);
+    const range = std.fmt.allocPrint(allocator, "{s}...{s}", .{ base, local_ref }) catch {
+        allocator.free(base);
+        allocator.free(local_ref);
+        return error.OutOfMemory;
+    };
+    defer allocator.free(range);
+    const diff_argv: [5][]const u8 = .{ "git", "-C", path, "diff", range };
+    const diff = runGit(allocator, io, &diff_argv) catch {
+        allocator.free(base);
+        allocator.free(local_ref);
+        return error.DiffFailed;
+    };
+    const capped = capDiff(allocator, diff) catch {
+        allocator.free(base);
+        allocator.free(local_ref);
+        return error.OutOfMemory;
+    };
+    return .{ .diff_content = capped.text, .truncated = capped.truncated, .base = base, .head = local_ref };
 }
 
 /// Cap diff output at MAX_DIFF_BYTES. Consumes `owned`: returns it
@@ -144,65 +263,39 @@ fn useCase(
     };
 
     switch (strategy) {
-        .gh_cli => {
-            const ref = pr_provider.parsePrRef(normalized, .github).?;
-            const argv: [6][]const u8 = .{ "gh", "pr", "diff", ref.number.?, "--repo", ref.repo_path };
-            const res = std.process.run(allocator, io, .{ .argv = &argv }) catch return error.CliMissing;
-            defer allocator.free(res.stderr);
-            errdefer allocator.free(res.stdout);
-            if (res.term.exited != 0) return error.FetchFailed;
-            const capped = try capDiff(allocator, res.stdout);
-            return .{ .diff_content = capped.text, .truncated = capped.truncated, .base = "", .head = "" };
-        },
-        .glab_cli => {
-            const ref = pr_provider.parsePrRef(normalized, .gitlab).?;
-            const argv: [6][]const u8 = .{ "glab", "mr", "diff", ref.number.?, "-R", ref.repo_path };
-            const res = std.process.run(allocator, io, .{ .argv = &argv }) catch return error.CliMissing;
-            defer allocator.free(res.stderr);
-            errdefer allocator.free(res.stdout);
-            if (res.term.exited != 0) return error.FetchFailed;
-            const capped = try capDiff(allocator, res.stdout);
-            return .{ .diff_content = capped.text, .truncated = capped.truncated, .base = "", .head = "" };
+        // The CLI is a fast path, not a guarantee: it exits nonzero on auth
+        // failure AND on the forge's oversized-PR refusal (GitHub caps the
+        // PR diff at FORGE_MAX_DIFF_FILES files). Any nonzero exit falls
+        // through to the refspec fetch, which has no such ceiling.
+        .gh_cli, .glab_cli => {
+            if (try tryForgeCli(allocator, io, provider, normalized)) |cli_result| {
+                return cli_result;
+            }
+            return fetchRefRange(allocator, io, path, number, provider == .github, base_override);
         },
         .git_fetch_pr_ref, .git_fetch_mr_ref => {
-            const refspec = if (strategy == .git_fetch_pr_ref)
-                try std.fmt.allocPrint(allocator, "pull/{s}/head:refs/pabrik-pr/{s}", .{ number, number })
-            else
-                try std.fmt.allocPrint(allocator, "merge-requests/{s}/head:refs/pabrik-mr/{s}", .{ number, number });
-            defer allocator.free(refspec);
-            const local_ref = if (strategy == .git_fetch_pr_ref)
-                try std.fmt.allocPrint(allocator, "refs/pabrik-pr/{s}", .{number})
-            else
-                try std.fmt.allocPrint(allocator, "refs/pabrik-mr/{s}", .{number});
-            defer allocator.free(local_ref);
-            const fetch_argv: [6][]const u8 = .{ "git", "-C", path, "fetch", "origin", refspec };
-            const fetch = std.process.run(allocator, io, .{ .argv = &fetch_argv }) catch return error.FetchFailed;
-            defer {
-                allocator.free(fetch.stdout);
-                allocator.free(fetch.stderr);
-            }
-            if (fetch.term.exited != 0) return error.FetchFailed;
-            const base = if (base_override) |b| b else detectBase(allocator, io, path);
-            const range = try std.fmt.allocPrint(allocator, "{s}...{s}", .{ base, local_ref });
-            defer allocator.free(range);
-            const diff_argv: [5][]const u8 = .{ "git", "-C", path, "diff", range };
-            const diff = try runGit(allocator, io, &diff_argv);
-            const capped = try capDiff(allocator, diff);
-            return .{ .diff_content = capped.text, .truncated = capped.truncated, .base = base, .head = local_ref };
+            return fetchRefRange(allocator, io, path, number, strategy == .git_fetch_pr_ref, base_override);
         },
         .git_local_range => {
-            const base: []const u8 = if (base_override) |b| b else detectBase(allocator, io, path);
-            var head: []const u8 = if (head_override) |h| h else currentBranch(allocator, io, path);
-            var head_owned = false;
-            if (head.len == 0) {
-                head = allocator.dupe(u8, "HEAD") catch "HEAD";
-                head_owned = true;
-            }
-            defer if (head_owned) allocator.free(head);
+            const base: []const u8 = if (base_override) |b|
+                try allocator.dupe(u8, b)
+            else
+                try detectBase(allocator, io, path);
+            errdefer allocator.free(base);
+            const head: []const u8 = blk: {
+                if (head_override) |h| break :blk try allocator.dupe(u8, h);
+                // Detached HEAD reports "", which `git diff main...` cannot
+                // resolve; fall back to the literal ref.
+                const cb = try currentBranch(allocator, io, path);
+                if (cb.len != 0) break :blk cb;
+                allocator.free(cb);
+                break :blk try allocator.dupe(u8, "HEAD");
+            };
+            errdefer allocator.free(head);
             const range = try std.fmt.allocPrint(allocator, "{s}...{s}", .{ base, head });
             defer allocator.free(range);
             const diff_argv: [5][]const u8 = .{ "git", "-C", path, "diff", range };
-            const diff = runGit(allocator, io, &diff_argv) catch return error.DiffFailed;
+            const diff = try runGit(allocator, io, &diff_argv);
             const capped = try capDiff(allocator, diff);
             return .{ .diff_content = capped.text, .truncated = capped.truncated, .base = base, .head = head };
         },
@@ -238,11 +331,8 @@ pub fn gitPrDiffHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
         error.NotARepository => {
             return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeGitStatusErrorResponse(allocator, "not a git repository") });
         },
-        error.CliMissing => {
-            return res.jsonResponse(.{ .status_code = 422, .data = try http_response.makeGitStatusErrorResponse(allocator, "forge CLI not found on PATH (install gh for GitHub, glab for GitLab) and remote fetch failed") });
-        },
         error.FetchFailed => {
-            return res.jsonResponse(.{ .status_code = 502, .data = try http_response.makeGitStatusErrorResponse(allocator, "failed to fetch PR diff (check PR URL, provider, and auth)") });
+            return res.jsonResponse(.{ .status_code = 502, .data = try http_response.makeGitStatusErrorResponse(allocator, "failed to fetch PR diff from the forge CLI and from the repo's origin remote (check the PR URL and that origin can reach pull/N/head)") });
         },
         error.DiffFailed => {
             return res.jsonResponse(.{ .status_code = 502, .data = try http_response.makeGitStatusErrorResponse(allocator, "failed to compute PR diff (check base/head refs)") });
@@ -250,6 +340,7 @@ pub fn gitPrDiffHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, re
         else => return err,
     };
 
+    defer result.deinit(allocator);
     return res.jsonResponse(.{ .status_code = 200, .data = try makeGitPrDiffResponse(allocator, pr_url_param, result) });
 }
 
