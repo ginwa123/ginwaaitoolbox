@@ -1,7 +1,8 @@
-## Rename: nalar → pabrik
+## Rename: the project is now **pabrik**
 
-A clean break. The old name is gone from the tree — `git grep -i nalar` matches
-exactly one line, and that is `finalArrived` in a design-context doc.
+A clean break. The previous name is gone from the tree — a case-insensitive
+grep matches exactly one line, and that is the English word `finalArrived` in a
+design-context doc.
 
 ### What changed
 
