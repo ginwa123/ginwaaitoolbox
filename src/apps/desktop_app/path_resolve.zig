@@ -85,7 +85,7 @@ pub fn resolve(
             return candidate; // hand off ownership
         }
         allocator.free(candidate);
-    }    }
+    }
 
     // 3. $PATH lookup. PATH separator is OS-specific: `:` on
     //    Linux/macOS, `;` on Windows. We pick the separator by
