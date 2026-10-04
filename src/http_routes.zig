@@ -208,9 +208,13 @@ fn registerSystemRoutes(authed: *Group, router: *gserverz.router.Router) !void {
     //
     // // Desktop app routes (system, health, workspaces)
     try router.get("/health", ai_mod.http_handlers.healthHandler);
-    try authed.get("/api/skills", ai_mod.http_handlers.skillsListHandler);
-    try authed.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
-    try authed.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
+    // Skills are NOT registered here. They are workspace-scoped, so their
+    // routes live in registerWorkspaceRoutes next to the documents routes:
+    // `/api/workspaces/:workspace_id/skills…`. A bare `/api/skills` has no
+    // source for a workspace id, and the store refuses to run without one —
+    // which is why keeping it registered answered 400 "workspace_id
+    // required" instead of 404, i.e. it advertised an endpoint that cannot
+    // work.
 
     // Skill Evals — the READ surface for the eval the agent runs on itself.
     // A SIBLING prefix under /api/skill-evals/, and it stays one: the skills
