@@ -169,10 +169,15 @@ fn fetchRefRange(
     is_pr: bool,
     base_override: ?[]const u8,
 ) !PrDiffResult {
+    // `+` forces the update. The destination is our own scratch ref, and a PR
+    // head is force-pushed as a matter of course (rebase, "update branch"), so
+    // the second fetch of a PR whose head was rewritten is a non-fast-forward.
+    // Without the `+` git rejects it, exits nonzero, and the endpoint 502s
+    // forever on a ref nobody ever deletes.
     const refspec = if (is_pr)
-        try std.fmt.allocPrint(allocator, "pull/{s}/head:refs/pabrik-pr/{s}", .{ number, number })
+        try std.fmt.allocPrint(allocator, "+pull/{s}/head:refs/pabrik-pr/{s}", .{ number, number })
     else
-        try std.fmt.allocPrint(allocator, "merge-requests/{s}/head:refs/pabrik-mr/{s}", .{ number, number });
+        try std.fmt.allocPrint(allocator, "+merge-requests/{s}/head:refs/pabrik-mr/{s}", .{ number, number });
     defer allocator.free(refspec);
     const local_ref = if (is_pr)
         try std.fmt.allocPrint(allocator, "refs/pabrik-pr/{s}", .{number})
