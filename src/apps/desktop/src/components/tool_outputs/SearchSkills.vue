@@ -1,25 +1,25 @@
 <!--
   SearchSkills — renderer for the `search_skills` agent tool.
 
-  `search_skills` is a paged regex-query search over the two skill tiers
-  (global + local), the same contract `search_tool` uses: `query`,
-  `pattern_mode`, `pattern_warning`, `scope`, `count`, `total`, `offset`,
-  `limit`, `skills[]` (rows of `name` / `description` / `scope` / `path`),
-  `truncated`, `next_offset`, `hint`. Backend renderer lives in
-  `src/agentic_loop/skills_search.zig`; ChatView passes the inner body here
-  via `innerToolData` and `parseSearchSkills` reads it (see
-  `_shared/toolOutputParser.ts`).
+  `search_skills` is a paged regex-query search over ONE workspace's
+  skills, using the same paging contract `search_tool` has: `query`,
+  `pattern_mode`, `pattern_warning`, `count`, `total`, `offset`, `limit`,
+  `skills[]` (rows of `name` / `description`), `truncated`, `next_offset`,
+  `hint`. Backend renderer lives in `src/agentic_loop/skills_search.zig`;
+  ChatView passes the inner body here via `innerToolData` and
+  `parseSearchSkills` reads it (see `_shared/toolOutputParser.ts`).
+
+  Rows carry NO `scope` and NO `path`. There are no skill tiers any more,
+  so the row key is the name alone — the identity a row actually has
+  inside one workspace. Keeping the old key would render a name whose
+  `:key` reads `undefined-undefined-<name>`: still unique most of the
+  time, but a key built from fields that never arrive is a key that will
+  collide the first time a page holds two rows with the same name.
 
   Header (always visible): `search_skills · "<query>" · <count>/<total> skills`
   plus the next offset when the page was truncated.
-  Expanded body: a FLAT row list — the per-row `scope` badge replaces the
-  old global/local sections — then the pattern warning, and finally the
+  Expanded body: a flat row list, then the pattern warning, then the
   backend hint (which names the offset for the next page).
-
-  Unrelated to the agent tool: the `/skills` HTTP endpoint still returns the
-  legacy `global_skills` / `local_skills` object and still powers the Skills
-  settings sidebar (`api.listSkills`, `SkillList.vue`,
-  `RightSideBarSkillList.vue`). Do not route it through this card.
 
   Style matches the other tool_outputs cards: monospace, violet tool name,
   muted meta, expand/collapse indicator, CSS vars only (no literal colours).
@@ -73,7 +73,6 @@ const headerTitle = computed(() => {
   const bits: string[] = [
     p.query ? `query: ${p.query}` : 'query: (empty — every skill)',
     p.patternMode ? `mode: ${p.patternMode}` : 'mode: —',
-    p.scope ? `scope: ${p.scope}` : 'scope: global + local',
     `offset: ${p.offset ?? 0} · limit: ${p.limit ?? '—'}`,
   ]
   if (p.nextOffset !== null) bits.push(`next offset: ${p.nextOffset}`)
@@ -81,9 +80,9 @@ const headerTitle = computed(() => {
 })
 
 /**
- * "Nothing matched this query" and "no skills are installed at all" are
- * different facts and collapse into one row count, so branch on whether the
- * query was empty.
+ * "Nothing matched this query" and "this workspace has no skills at all"
+ * are different facts and collapse into one row count, so branch on
+ * whether the query was empty.
  */
 const emptyMessage = computed(() =>
   isEmptyQuery.value
@@ -148,29 +147,19 @@ const copySkillName = async (e: Event, name: string) => {
         {{ emptyMessage }}
       </div>
 
-      <!-- One flat list — global/local is now a per-row badge, not a section -->
+      <!-- One flat list: one workspace's skills, one row each -->
       <div v-else class="px-2 py-1 space-y-1">
         <div
           v-for="skill in skills"
-          :key="`${skill.scope}-${skill.path}-${skill.name}`"
+          :key="skill.name"
           class="flex items-start gap-2 py-1 px-1 rounded hover:bg-violet-500/5 group"
           data-testid="search-skills-row"
+          :data-skill-name="skill.name"
         >
           <span class="text-[var(--color-violet)] mt-0.5 shrink-0">-</span>
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-1">
               <span class="text-[var(--semantic-text)] font-medium truncate">{{ skill.name }}</span>
-              <span
-                v-if="skill.scope"
-                class="text-micro px-1 rounded shrink-0"
-                :class="
-                  skill.scope === 'local'
-                    ? 'bg-green-500/10 text-green-500'
-                    : 'bg-violet-500/10 text-violet-500'
-                "
-                data-testid="search-skills-scope"
-                >{{ skill.scope }}</span
-              >
               <button
                 class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-dense transition-opacity shrink-0"
                 @click.stop="copySkillName($event, skill.name)"
@@ -184,9 +173,6 @@ const copySkillName = async (e: Event, name: string) => {
               class="text-micro text-[var(--semantic-text-muted)] line-clamp-2 mt-0.5"
             >
               {{ skill.description }}
-            </p>
-            <p v-if="skill.path" class="text-micro text-[var(--semantic-text-dim)] mt-0.5 truncate">
-              {{ skill.path }}
             </p>
           </div>
         </div>

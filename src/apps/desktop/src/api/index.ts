@@ -3043,64 +3043,65 @@ export async function moveDesignElementToPage(
 }
 
 // Skills API
+//
+// A skill is a ROW scoped to one workspace, and that scope is its whole
+// identity: no `is_global`, no `cwd`, no `path`. A skill wanted in two
+// workspaces is two rows. So every route here carries the workspace id in
+// the URL — the same shape `documents` uses — and "list the skills" is
+// never answerable without one.
 export interface Skill {
   name: string
   description: string
-  path?: string
 }
 
-export interface SkillDetail extends Skill {
+export interface SkillDetail {
+  name: string
+  description: string
   content: string
-  is_global: boolean
+  /**
+   * Companion files stored beside the body (`scripts/…`, `references/…`).
+   * `use_skill` materialises them into a temp directory so the body's
+   * relative references resolve, so a bundled skill is more than its one
+   * row. Zero for a plain single-file skill.
+   */
+  asset_count: number
+}
+
+export interface SkillListResponse {
+  skills: Skill[]
 }
 
 export interface SkillDeleteResponse {
   success: boolean
   skill_name: string
-  deleted_from: string | null
-  error_message: string | null
+  /** `''` on success; the reason on a refusal. */
+  error_message: string
 }
 
-export async function getSkills(cwd?: string): Promise<{
-  global_skills: Skill[]
-  local_skills: Skill[]
-}> {
-  const params = new URLSearchParams()
-  if (cwd) {
-    params.set('cwd', cwd)
-  }
-  const query = params.toString() ? `?${params.toString()}` : ''
-  return await apiFetch<{ global_skills: Skill[]; local_skills: Skill[] }>(`/skills${query}`)
+/** GET /api/workspaces/:workspaceId/skills */
+export async function getSkills(workspaceId: string): Promise<SkillListResponse> {
+  return await apiFetch<SkillListResponse>(`/workspaces/${encodeURIComponent(workspaceId)}/skills`)
 }
 
+/** GET /api/workspaces/:workspaceId/skills/:skillName */
 export async function getSkillDetail(
-  name: string,
-  cwd?: string,
-): Promise<{ skill: SkillDetail | null; error_message: string | null }> {
-  const params = new URLSearchParams()
-  if (cwd) {
-    params.set('cwd', cwd)
-  }
-  const query = params.toString() ? `?${params.toString()}` : ''
-  return await apiFetch<{ skill: SkillDetail | null; error_message: string | null }>(
-    `/skills/${encodeURIComponent(name)}${query}`,
+  workspaceId: string,
+  skillName: string,
+): Promise<{ skill: SkillDetail | null; error_message: string }> {
+  return await apiFetch<{ skill: SkillDetail | null; error_message: string }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/skills/${encodeURIComponent(skillName)}`,
   )
 }
 
+/** DELETE /api/workspaces/:workspaceId/skills/:skillName */
 export async function deleteSkill(
-  name: string,
-  options: { is_global?: boolean; cwd?: string },
+  workspaceId: string,
+  skillName: string,
 ): Promise<SkillDeleteResponse> {
-  const params = new URLSearchParams({ name })
-  if (options.is_global !== undefined) {
-    params.set('is_global', options.is_global.toString())
-  }
-  if (options.cwd) {
-    params.set('cwd', options.cwd)
-  }
-  return await apiFetch<SkillDeleteResponse>(`/skills?${params}`, {
-    method: 'DELETE',
-  })
+  return await apiFetch<SkillDeleteResponse>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/skills/${encodeURIComponent(skillName)}`,
+    { method: 'DELETE' },
+  )
 }
 
 // Memories API

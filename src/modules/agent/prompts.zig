@@ -1670,9 +1670,20 @@ test "SkillsToolRule names the special skills and the search->use loop" {
     // Mandate: load the skill the task needs, before improvising.
     try std.testing.expect(contains(prompt, "When to load"));
     try std.testing.expect(contains(prompt, "blocking, not advisory"));
-    // Path handling — the one argument use_skill takes.
-    try std.testing.expect(contains(prompt, "SKILL.MD"));
+    // `use_skill` takes ONE argument — the name `search_skills` returned,
+    // verbatim. The rule used to teach a path contract on top of it ("ends in
+    // SKILL.MD", "never construct it from the skill name") for a tool that no
+    // longer takes a path; a model told never to construct a name, then handed
+    // a name-only argument, is the failure this pins shut. Negatives, so the
+    // wording cannot drift back.
     try std.testing.expect(contains(prompt, "verbatim"));
+    try std.testing.expect(!contains(prompt, "SKILL.MD"));
+    try std.testing.expect(!contains(prompt, ".nalar/skills/"));
+    try std.testing.expect(!contains(prompt, "is_global"));
+    // Workspace scoping, and a miss is a real miss — no second tier to fall
+    // back to.
+    try std.testing.expect(contains(prompt, "workspace"));
+    try std.testing.expect(contains(prompt, "genuinely not found"));
 }
 
 test "SkillsToolRule does not pre-list skills (no Available Skills listing)" {
@@ -1947,4 +1958,11 @@ test "SkillWriteToolRule states when NOT to write and what a skill body needs" {
     try std.testing.expect(contains(prompt, "## Pitfalls"));
     // Self-check, like every other mandate in this block.
     try std.testing.expect(contains(prompt, "Self-check"));
+    // add_skill / edit_skill / remove_skill all land one row in THIS
+    // workspace. There is no directory tier to prefer and no scope flag to
+    // pass — and telling a model to reach for `is_global` buys an argument
+    // the tool rejects.
+    try std.testing.expect(!contains(prompt, "SKILL.MD"));
+    try std.testing.expect(!contains(prompt, ".nalar/skills/"));
+    try std.testing.expect(!contains(prompt, "is_global"));
 }

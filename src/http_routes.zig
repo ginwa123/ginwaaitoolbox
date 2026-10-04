@@ -198,16 +198,16 @@ fn registerSystemRoutes(authed: *Group, gs: *gserverz.GinwaServer) !void {
     //
     // // Desktop app routes (system, health, workspaces)
     try gs.router.get("/health", ai_mod.http_handlers.healthHandler);
-    try authed.get("/api/skills", ai_mod.http_handlers.skillsListHandler);
-    try authed.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
-    try authed.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
-
     // Skill Evals — the READ surface for the eval the agent runs on itself.
-    // A SIBLING prefix, not `/api/skills/evals`: `matchRoute` walks routes in
-    // registration order and returns on first hit, so a literal registered
-    // after `/api/skills/:name` above would be captured as name="evals". Both
-    // routes here are literals with query parameters, so there is no ordering
-    // hazard to remember. Plan: docs/plans/2026-09-27-skill-evals.md §4.10.
+    // A SIBLING prefix under /api/skill-evals/, and it stays one: the skills
+    // routes are workspace-scoped now (see `registerWorkspaceRoutes`), which
+    // means there IS a `:skill_name` param route on the table. `matchRoute`
+    // walks routes in registration order and returns on the FIRST hit, so a
+    // literal nested under that prefix — `/api/workspaces/:workspace_id/skills/evals`,
+    // say — would be captured as skill_name="evals" and the evals handler would
+    // never run, with no error to debug. Both routes here are literals with
+    // query parameters, so there is no ordering hazard to remember.
+    // Plan: docs/plans/2026-09-27-skill-evals.md §4.10.
     try authed.get("/api/skill-evals/runs", ai_mod.http_handlers.skillEvalsRunsHandler);
     try authed.get("/api/skill-evals/summary", ai_mod.http_handlers.skillEvalsSummaryHandler);
     // The apply endpoint. `result_id` is a QUERY parameter, not a path segment,
@@ -481,6 +481,23 @@ fn registerWorkspaceDocumentRoutes(authed: *Group) !void {
     try authed.get("/api/workspaces/:workspace_id/documents/:document_id", ai_mod.http_handlers.documentsGetHandler);
     try authed.patch("/api/workspaces/:workspace_id/documents/:document_id", ai_mod.http_handlers.documentsUpdateHandler);
     try authed.delete("/api/workspaces/:workspace_id/documents/:document_id", ai_mod.http_handlers.documentsDeleteHandler);
+
+    // Workspace-scoped skills (Migration 101). Registered NEXT TO the
+    // documents routes because they are the same shape: a row that belongs
+    // to a workspace and is read through `skills_store`, whose every
+    // function takes `workspace_id` as a parameter that lands in the SQL
+    // `WHERE` clause. The old collection route had no workspace to scope
+    // to, which is why it merged two directories on the way in.
+    //
+    // The COLLECTION route comes before the `:skill_name` routes for the
+    // usual reason: `matchRoute` walks routes in registration order and
+    // returns on the first hit, so a param route registered first would
+    // swallow the collection. See the sibling-prefix note in
+    // `registerSystemRoutes` for why the eval routes live outside this
+    // prefix entirely.
+    try authed.get("/api/workspaces/:workspace_id/skills", ai_mod.http_handlers.skillsListHandler);
+    try authed.get("/api/workspaces/:workspace_id/skills/:skill_name", ai_mod.http_handlers.skillDetailHandler);
+    try authed.delete("/api/workspaces/:workspace_id/skills/:skill_name", ai_mod.http_handlers.skillDeleteHandler);
 }
 
 fn registerKanbanRoutes(authed: *Group) !void {

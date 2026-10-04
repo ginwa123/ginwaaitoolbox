@@ -1,51 +1,86 @@
-//! `GET /api/skills` — list all skills from global and local dirs.
+//! `GET /api/workspaces/:workspace_id/skills`.
 //!
-//! Global skills come from `~/.config/pabrik/skills/` (or
-//! `XDG_CONFIG_HOME`); local skills come from `{cwd}/.pabrik/skills/`.
+//! One workspace, one list, no filesystem walk. Migration 101's `skills`
+//! table is the source of truth; this handler only projects rows onto the
+//! wire.
 //!
-//! Layered as `useCase` (resolve singleton + read skills + serialize
-//! to JSON) and a thin handler that maps errors to status codes.
+//! The route moved under `/api/workspaces/:workspace_id` because
+//! `skills_store.listSkills` REQUIRES a workspace id — it is a function
+//! parameter that lands in the `WHERE` clause, never a value a caller can
+//! choose to omit. The old collection route had no source for one, which
+//! is why it had to merge two directories on the way in and why "which
+//! directory won" was decided by walking the filesystem.
+//!
+//! Wire shape: `{ "skills": [{ "name", "description" }] }`. The body is
+//! deliberately absent from the list — a workspace can hold dozens of
+//! skills and the sidebar only renders a picker. One name's body comes from
+//! the detail route.
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
-const list_skills_mod = pabrikcore.skill_tools;
+const http_response = @import("http_response.zig");
+const skills_store = @import("../agentic_loop/skills_store.zig");
 
-/// Domain-level error set for `useCase`. The `listAllSkills` +
-/// `toJson` pipeline can fail with various Io / allocation errors
-/// (OutOfMemory, Canceled, …) — we collapse all of these into the
-/// single `Internal` variant since they all map to the same 500
-/// status and the caller doesn't need to distinguish them.
 pub const SkillsListError = error{
-    Internal,
+    WorkspaceIdRequired,
+    QueryFailed,
+    OutOfMemory,
+};
+
+pub const SkillsListInput = struct {
+    workspace_id: []const u8,
+};
+
+pub const SkillsListOutput = struct {
+    /// Owned slice; free with `skills_store.freeSkillRows`.
+    skills: []skills_store.SkillRow,
 };
 
 // =====================================================================
 // Use case
 // =====================================================================
+//
+// Takes the allocator and the database handle as ARGUMENTS and never
+// calls `getSingleton()` itself. That is the whole reason the handler and
+// the use case are separate: resolving the singleton inside would force
+// every test below to boot the whole application, and the tests below run
+// against an in-memory SQLite database instead.
 
 fn useCase(
     allocator: std.mem.Allocator,
-    io: std.Io,
-    cwd_param: ?[]const u8,
-) SkillsListError![]const u8 {
-    const di = pabrikcore.getSingleton() catch return error.Internal;
-    const environment = di.environment;
-
-    // List all skills. Catch the broader set of Io/alloc errors and
-    // collapse them to `error.Internal` so the declared error set
-    // matches the body's actual error surface.
-    const data = list_skills_mod.listAllSkills(allocator, io, cwd_param, environment) catch return error.Internal;
-    errdefer list_skills_mod.freeSkillsListData(allocator, data);
-
-    // Convert to JSON. `toJson` returns `error_set![]const u8` —
-    // collapse any internal errors to `error.Internal`.
-    return list_skills_mod.toJson(allocator, data) catch return error.Internal;
+    db: *pabrikcore.sqlite.SqliteBackend,
+    input: SkillsListInput,
+) SkillsListError!SkillsListOutput {
+    if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
+    return .{
+        .skills = skills_store.listSkills(allocator, db, input.workspace_id) catch |err| switch (err) {
+            // `WorkspaceIdRequired` is unreachable behind the guard above, but
+            // it is mapped rather than propagated with `try`: that would widen
+            // this function's error set to whatever the store declares, and the
+            // handler's exhaustive status-code switch would then break on a
+            // rename inside a file this handler does not own.
+            error.WorkspaceIdRequired => return error.WorkspaceIdRequired,
+            error.QueryFailed => return error.QueryFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        },
+    };
 }
 
 // =====================================================================
 // Handler
 // =====================================================================
+
+/// The per-skill row on the wire. A struct rather than a map so a field
+/// added to `SkillRow` cannot silently leak onto the list response.
+const SkillSummary = struct {
+    name: []const u8,
+    description: []const u8,
+};
+
+const SkillListResponse = struct {
+    skills: []const SkillSummary,
+};
 
 pub fn skillsListHandler(
     ctx: gserverz.HttpContext,
@@ -53,20 +88,200 @@ pub fn skillsListHandler(
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const cwd_param = req.query.get("cwd");
 
-    const json_response = useCase(allocator, ctx.io, cwd_param) catch |err| {
+    const di = try pabrikcore.getSingleton();
+    const sqlite_db = di.db;
+
+    const output = useCase(allocator, sqlite_db, .{
+        .workspace_id = req.params.get("workspace_id") orelse "",
+    }) catch |err| {
         const status: u16 = switch (err) {
-            error.Internal => 500,
+            error.WorkspaceIdRequired => 400,
+            error.QueryFailed, error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
-            error.Internal => "Internal server error",
+            error.WorkspaceIdRequired => "workspace_id required",
+            error.QueryFailed => "DB error",
+            error.OutOfMemory => "Out of memory",
         };
         return res.jsonResponse(.{
             .status_code = status,
-            .data = try pabrikcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
+    defer skills_store.freeSkillRows(allocator, output.skills);
 
-    return res.jsonResponse(.{ .status_code = 200, .data = json_response });
+    const summaries = try allocator.alloc(SkillSummary, output.skills.len);
+    defer allocator.free(summaries);
+    for (output.skills, 0..) |row, i| {
+        summaries[i] = .{ .name = row.name, .description = row.description };
+    }
+
+    const data = try std.json.Stringify.valueAlloc(
+        allocator,
+        SkillListResponse{ .skills = summaries },
+        .{},
+    );
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
+}
+
+// See the note in `skill_delete.zig`: the test binary has no HTTP server,
+// so nothing else in `zig build test` would analyse this handler's body.
+comptime {
+    _ = &skillsListHandler;
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
+
+const sqlite = pabrikcore.sqlite;
+const testing = std.testing;
+const migration = @import("../migrations/migration.zig");
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Real Migration 101 tables on an in-memory database, seeded with one row
+/// per workspace so the scoping assertions have something to be wrong
+/// about.
+fn setupDb() !TestCtx {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try migration.Migration102CreateSkills.up(&db, testing.allocator);
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn seed(ctx: *TestCtx, workspace_id: []const u8, name: []const u8, description: []const u8) !void {
+    const row = try skills_store.upsertSkill(testing.allocator, &ctx.db, .{
+        .workspace_id = workspace_id,
+        .name = name,
+        .description = description,
+        .content = "body of " ++ name,
+    });
+    skills_store.freeSkillRow(testing.allocator, row);
+}
+
+test "useCase: empty workspace_id returns WorkspaceIdRequired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Refused before SQL: `SqliteBackend.exec` binds "" as NULL and
+    // `skills.workspace_id` is NOT NULL.
+    try testing.expectError(
+        error.WorkspaceIdRequired,
+        useCase(alloc, &ctx.db, .{ .workspace_id = "" }),
+    );
+}
+
+test "useCase: a workspace with no skills returns an empty list" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const output = try useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1" });
+    defer skills_store.freeSkillRows(alloc, output.skills);
+    try testing.expectEqual(@as(usize, 0), output.skills.len);
+}
+
+test "useCase: never returns another workspace's skills" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try seed(&ctx, "ws_1", "pdf", "Work with PDFs");
+    try seed(&ctx, "ws_1", "zig-trap", "A Zig trap");
+    try seed(&ctx, "ws_2", "not-mine", "Another workspace's copy");
+
+    const mine = try useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1" });
+    defer skills_store.freeSkillRows(alloc, mine.skills);
+
+    // Name-ordered (the UNIQUE (workspace_id, name) index gives it), and
+    // scoped: `not-mine` is absent even though the name is a plain string.
+    try testing.expectEqual(@as(usize, 2), mine.skills.len);
+    try testing.expectEqualStrings("pdf", mine.skills[0].name);
+    try testing.expectEqualStrings("Work with PDFs", mine.skills[0].description);
+    try testing.expectEqualStrings("zig-trap", mine.skills[1].name);
+}
+
+test "useCase: an empty description round-trips as empty, not as a missing field" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // A model routinely writes the body first and the one-line
+    // description second, so "" is a legal skill state. If it round-tripped
+    // as NULL the JSON would carry `null` and the picker would show a
+    // blank row with no way to tell it apart from a bug.
+    try seed(&ctx, "ws_1", "half-written", "");
+
+    const output = try useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1" });
+    defer skills_store.freeSkillRows(alloc, output.skills);
+    try testing.expectEqual(@as(usize, 1), output.skills.len);
+    try testing.expectEqualStrings("", output.skills[0].description);
+}
+
+// ─── Static route contracts ─────────────────────────────────────────────
+//
+// `matchRoute` walks routes in REGISTRATION ORDER and returns on the first
+// hit, so the collection route has to be registered before the
+// `:skill_name` route and any literal sibling has to precede both. A
+// violation here is invisible to every useCase test above — the use case
+// would be correct and the browser would still get a 404 — so it is
+// asserted against the route table as text. The python functional harness
+// covers the real wire round-trip; this is the cheap fail-closed guard.
+
+const route_src = @embedFile("../http_routes.zig");
+const mod_src = @embedFile("mod.zig");
+
+const LIST_ROUTE = "authed.get(\"/api/workspaces/:workspace_id/skills\"";
+const DETAIL_ROUTE = "authed.get(\"/api/workspaces/:workspace_id/skills/:skill_name\"";
+const DELETE_ROUTE = "authed.delete(\"/api/workspaces/:workspace_id/skills/:skill_name\"";
+
+test "skills routes: all three verbs are registered under the workspace" {
+    try testing.expect(std.mem.indexOf(u8, route_src, LIST_ROUTE) != null);
+    try testing.expect(std.mem.indexOf(u8, route_src, DETAIL_ROUTE) != null);
+    try testing.expect(std.mem.indexOf(u8, route_src, DELETE_ROUTE) != null);
+}
+
+test "skills routes: the collection route precedes the :skill_name route" {
+    const list_at = std.mem.indexOf(u8, route_src, LIST_ROUTE) orelse
+        return error.ListRouteMissing;
+    const detail_at = std.mem.indexOf(u8, route_src, DETAIL_ROUTE) orelse
+        return error.DetailRouteMissing;
+    try testing.expect(list_at < detail_at);
+}
+
+test "skills routes: the directory-tier collection routes are gone" {
+    // The old shape merged two directories and had no workspace to scope
+    // them to. Nothing may register it again: a bare collection route is
+    // exactly the endpoint that cannot satisfy `skills_store`'s required
+    // workspace_id argument.
+    //
+    // The needle carries the opening quote, so the sibling
+    // `/api/skill-evals/*` prefix (which is NOT under `/api/skills/` and
+    // exists precisely because of the registration-order rule) does not
+    // trip this.
+    try testing.expect(std.mem.indexOf(u8, route_src, "\"/api/skills\"") == null);
+    try testing.expect(std.mem.indexOf(u8, route_src, "\"/api/skills/") == null);
+}
+
+test "skills handlers are re-exported from http_handlers/mod.zig" {
+    for ([_][]const u8{
+        "skillsListHandler",
+        "skillDetailHandler",
+        "skillDeleteHandler",
+    }) |name| {
+        try testing.expect(std.mem.indexOf(u8, mod_src, name) != null);
+    }
 }

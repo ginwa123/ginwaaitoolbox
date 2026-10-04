@@ -273,6 +273,21 @@ export function parseWriteFile(data: unknown): ParsedWriteFile {
   }
 }
 
+/**
+ * The name a skill tool acted on.
+ *
+ * `skill_name` is the canonical field on every skill tool payload; `name`
+ * is the echo of what was requested and is absent from some rows. An EMPTY
+ * `skill_name` counts as absent rather than winning — it would otherwise
+ * render a card whose only label is blank, and `??` alone would not catch
+ * it because `''` is neither null nor undefined.
+ */
+function skillNameField(o: Record<string, unknown>): string {
+  const primary = strOrNullField(o, 'skill_name')
+  if (primary !== null && primary.trim() !== '') return primary
+  return strField(o, 'name')
+}
+
 export interface ParsedRemoveFile {
   path: string
   deleted: boolean
@@ -298,7 +313,6 @@ export function parseRemoveFile(data: unknown): ParsedRemoveFile {
 export interface ParsedEditSkill {
   skillName: string
   edited: boolean
-  path: string | null
   success: boolean
   error: string | null
 }
@@ -308,9 +322,8 @@ export function parseEditSkill(data: unknown): ParsedEditSkill {
   const edited = boolField(o, 'edited', false)
   const error = strOrNullField(o, 'error')
   return {
-    skillName: strField(o, 'name'),
+    skillName: skillNameField(o),
     edited,
-    path: strOrNullField(o, 'path'),
     success: error === null,
     error,
   }
@@ -319,7 +332,6 @@ export function parseEditSkill(data: unknown): ParsedEditSkill {
 export interface ParsedAddSkill {
   skillName: string
   created: boolean
-  path: string | null
   success: boolean
   error: string | null
 }
@@ -329,9 +341,8 @@ export function parseAddSkill(data: unknown): ParsedAddSkill {
   const created = boolField(o, 'created', false)
   const error = strOrNullField(o, 'error')
   return {
-    skillName: strField(o, 'name'),
+    skillName: skillNameField(o),
     created,
-    path: strOrNullField(o, 'path'),
     success: error === null,
     error,
   }
@@ -340,7 +351,6 @@ export function parseAddSkill(data: unknown): ParsedAddSkill {
 export interface ParsedRemoveSkill {
   skillName: string
   removed: boolean
-  path: string | null
   success: boolean
   error: string | null
 }
@@ -350,9 +360,8 @@ export function parseRemoveSkill(data: unknown): ParsedRemoveSkill {
   const removed = boolField(o, 'removed', false)
   const error = strOrNullField(o, 'error')
   return {
-    skillName: strOrNullField(o, 'skill_name') ?? strField(o, 'name'),
+    skillName: skillNameField(o),
     removed,
-    path: strOrNullField(o, 'path'),
     success: error === null,
     error,
   }
@@ -512,15 +521,15 @@ export function parseSearch(data: unknown): ParsedSearch {
 }
 
 /**
- * One row of a `search_skills` page. `scope` is 'global' or 'local' — the
- * per-row tag the backend flattens the two-tier listing into. `path` is the
- * EXACT, case-sensitive `SKILL.MD` path to hand to `use_skill`.
+ * One row of a `search_skills` page. Identity is the name ALONE: the page
+ * is one workspace's skills, so there is no tier to tag and no path to
+ * hand back. A row that arrived with the old `scope` / `path` keys still
+ * parses — the extra keys are simply not read, which keeps a cached
+ * transcript from rendering blank rows.
  */
 export interface SkillSearchRow {
   name: string
   description: string
-  scope: string
-  path: string
 }
 
 /**
@@ -528,15 +537,16 @@ export interface SkillSearchRow {
  * (`query` / `count` / `total` / `truncated` / `hint`) so the two catalog
  * cards share one paging convention, plus the paging and pattern fields
  * `search_tool` has no use for (`pattern_mode` / `pattern_warning` /
- * `scope` / `offset` / `limit` / `next_offset`).
+ * `offset` / `limit` / `next_offset`).
  *
- * `scope: null` means the request named no tier and BOTH were searched.
+ * There is no `scope`. The row set is already one workspace's, and a name
+ * is unique inside a workspace, so a scope could only ever have been a
+ * second, redundant key.
  */
 export interface ParsedSearchSkills {
   query: string
   patternMode: string | null
   patternWarning: string | null
-  scope: string | null
   count: number
   total: number
   offset: number | null
@@ -554,8 +564,6 @@ function parseSkillRecord(item: unknown): SkillSearchRow | null {
   return {
     name,
     description: strField(r, 'description'),
-    scope: strField(r, 'scope'),
-    path: strField(r, 'path'),
   }
 }
 
@@ -571,7 +579,6 @@ export function parseSearchSkills(data: unknown): ParsedSearchSkills {
     query: strField(o, 'query'),
     patternMode: strOrNullField(o, 'pattern_mode'),
     patternWarning: strOrNullField(o, 'pattern_warning'),
-    scope: strOrNullField(o, 'scope'),
     count: numOrNullField(o, 'count') ?? skills.length,
     total: numOrNullField(o, 'total') ?? skills.length,
     offset: numOrNullField(o, 'offset'),

@@ -1,73 +1,41 @@
+//! Skill BODY helpers: frontmatter parsing and bundle materialisation.
+//!
+//! What used to live here — and what no longer does
+//! ─────────────────────────────────────────────────
+//! This file used to be the skills STORAGE layer: it resolved
+//! `~/.config/pabrik/skills/` vs `<cwd>/.pabrik/skills/`, walked those
+//! directories looking for `<skill>/SKILL.MD`, and returned `SkillInfo`
+//! rows carrying a `path`. All of that is gone. Skills are rows in the
+//! `skills` table now (Migration 101), read through
+//! `pabrikcore.skills_store`, and a skill's identity is `(workspace_id,
+//! name)` rather than a pathname. "Which directory did this come from?"
+//! no longer has an answer to give, so every function that existed only to
+//! produce one is deleted rather than left behind as dead glue.
+//!
+//! What remains is the part that has nothing to do with storage:
+//!
+//!   * `parseYamlFrontmatter` — still called by the three HTTP handlers
+//!     and by the importer, so its signature and its
+//!     `ParsedFrontmatter` struct are unchanged.
+//!   * `materializeAssetDir` — writes a bundle's `skill_assets` rows back
+//!     out as real files so the relative paths a skill body refers to
+//!     (`scripts/convert_pdf_to_images.py`) actually resolve when the
+//!     model follows them.
+//!
+//! The materialised directory is a MATERIALISATION, not a location of
+//! record: it is created per `use_skill` call and may be reaped. The row
+//! is the truth.
+
 const std = @import("std");
-const builtin = @import("builtin");
 const pabrikcore = @import("pabrikcore");
-const helpers = @import("helpers");
+const skills_store = pabrikcore.skills_store;
 
-/// Maximum size for skills.md file (100KB)
-const MAX_SKILLS_SIZE: usize = 100 * 1024;
-
-/// App name for config directory
-const APP_NAME = "pabrik";
-
-
-/// Cross-platform `/`-separator path concat. See memories.zig's `joinPath`
-/// for the rationale — `std.fs.path.join` produces OS-native separators
-/// (`\\` on Windows), which breaks test expectations that hardcode `/`.
-fn joinPath(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
-    if (dir.len == 0) return allocator.dupe(u8, name);
-    const out = try allocator.alloc(u8, dir.len + 1 + name.len);
-    @memcpy(out[0..dir.len], dir);
-    out[dir.len] = '/';
-    @memcpy(out[dir.len + 1 ..][0..name.len], name);
-    return out;
-}
-
-fn joinPath3(allocator: std.mem.Allocator, a: []const u8, b: []const u8, c: []const u8) ![]u8 {
-    const out = try allocator.alloc(u8, a.len + 1 + b.len + 1 + c.len);
-    var idx: usize = 0;
-    @memcpy(out[idx..][0..a.len], a);
-    idx += a.len;
-    out[idx] = '/';
-    idx += 1;
-    @memcpy(out[idx..][0..b.len], b);
-    idx += b.len;
-    out[idx] = '/';
-    idx += 1;
-    @memcpy(out[idx..][0..c.len], c);
-    return out;
-}
-
-fn joinPath4(allocator: std.mem.Allocator, a: []const u8, b: []const u8, c: []const u8, d: []const u8) ![]u8 {
-    const out = try allocator.alloc(u8, a.len + 1 + b.len + 1 + c.len + 1 + d.len);
-    var idx: usize = 0;
-    @memcpy(out[idx..][0..a.len], a);
-    idx += a.len;
-    out[idx] = '/';
-    idx += 1;
-    @memcpy(out[idx..][0..b.len], b);
-    idx += b.len;
-    out[idx] = '/';
-    idx += 1;
-    @memcpy(out[idx..][0..c.len], c);
-    idx += c.len;
-    out[idx] = '/';
-    idx += 1;
-    @memcpy(out[idx..][0..d.len], d);
-    return out;
-}
-
-/// Project-local skills directory (also the value quoted in tool descriptions)
-const LOCAL_SKILLS_DIR = ".pabrik/skills";
-
-/// Skills file name inside each skill folder
-const SKILL_FILE_NAME = "SKILL.MD";
-
-/// Skill information structure
-pub const SkillInfo = struct {
-    name: []const u8,
-    description: []const u8,
-    path: []const u8,
-};
+/// Root for materialised asset directories. `/tmp` is hardcoded for the
+/// same reason `run_skill_eval.zig`'s `makeTmpRoot` hardcodes it: these
+/// are short-lived scratch trees that must survive no reboot and must not
+/// sit inside a workspace (where an agent's `present_files` sweep would
+/// find them and a `deleteTree` would take user data with them).
+const TMP_ROOT = "/tmp";
 
 /// Parsed YAML frontmatter from a skill file
 pub const ParsedFrontmatter = struct {
@@ -138,622 +106,272 @@ pub fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?
     };
 }
 
-/// Free a ParsedFrontmatter allocated by parseYamlFrontmatter
-fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) void {
-    allocator.free(fm.name);
-    allocator.free(fm.description);
-}
+// ============================================================================
+// Asset materialisation
+// ============================================================================
 
-/// Get the local skills directory path (.pabrik/skills/)
-/// Returns allocated string that caller must free, or null if cwd unavailable
+/// Why a bundle could not be written out. Every arm is a REFUSAL: nothing
+/// here degrades to "skip that file and load the rest", because a skill
+/// body that says "run scripts/convert.py" and then silently has no
+/// scripts/convert.py is worse than a failed load — the model reports a
+/// script it never saw.
+pub const MaterializeError = error{
+    /// The skill has no companion files. A skill with no assets must
+    /// return `asset_dir: null`, not an empty directory.
+    NoAssets,
+    /// `skill_name` is not a legal single-token name. It becomes a path
+    /// segment of the materialisation directory, so `..` here would place
+    /// the bundle somewhere else entirely.
+    InvalidSkillName,
+    /// A `rel_path` escapes the materialisation directory, or is absolute,
+    /// or uses a backslash. See `isSafeRelPath`.
+    UnsafeAssetPath,
+    /// No free directory could be created under the temp root.
+    CannotCreateTempDir,
+};
+
+/// True when `rel_path` is safe to join onto a directory we just created.
 ///
-/// The cwd comes from `helpers.getcwd`, NOT `std.Io.Dir.cwd().realPath(io, ..)`:
-/// Zig 0.16 resolves a Dir with `readlink("/proc/self/fd/{fd}")`, and for
-/// `Dir.cwd()` that fd is the `AT_FDCWD` sentinel (-100), so Linux answers
-/// ENOENT and the call ALWAYS fails with `error.FileNotFound`. It works on
-/// macOS (`fcntl(F_GETPATH)`) and fails only on Linux, which is the worst
-/// possible split. With it, every project-local skill resolved to null.
-pub fn get_skills_dir_path(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
-    _ = io;
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = helpers.getcwd(&cwd_buf) orelse {
-        std.log.debug("Could not get current working directory", .{});
-        return null;
-    };
-
-    // Build path: <cwd>/.pabrik/skills/ — see joinPath for why we don't
-    // use std.fs.path.join (it produces `\` separators on Windows).
-    const path = joinPath(allocator, cwd, LOCAL_SKILLS_DIR) catch {
-        std.log.debug("Could not build local skills directory path", .{});
-        return null;
-    };
-
-    return path;
+/// Three shapes are refused outright, and refused as an ERROR rather than
+/// skipped:
+///
+///   * `..` anywhere — `../../etc/cron.d/x` and `scripts/../../escape`
+///     both leave the directory. The substring test is deliberately
+///     blunter than a path-component walk: it also rejects the legal-but-
+///     pointless `a..b`, which is the right trade for a guard that runs on
+///     untrusted input.
+///   * an absolute prefix — a leading `/`, or an NT drive prefix like
+///     `C:payload`, which `std.fs.path.join` would happily accept and
+///     resolve against the drive root.
+///   * a backslash — on Windows a backslash IS the separator, so a path
+///     that is a safe single-component string on Linux is a traversal on
+///     Windows. The materialised tree is written on whichever host the
+///     server runs, and a guard that only holds on one of them is not a
+///     guard.
+pub fn isSafeRelPath(rel_path: []const u8) bool {
+    if (rel_path.len == 0) return false;
+    if (std.mem.indexOf(u8, rel_path, "..") != null) return false;
+    if (rel_path[0] == '/') return false;
+    if (std.mem.indexOfScalar(u8, rel_path, '\\') != null) return false;
+    // `C:foo` / `Z:bar` — a drive-relative path, absolute for our purposes.
+    if (rel_path.len >= 2 and std.ascii.isAlphabetic(rel_path[0]) and rel_path[1] == ':') return false;
+    return true;
 }
 
-/// List all skill files in the skills directory
-/// Returns allocated array of file paths to SKILL.MD files inside skill folders
-/// Empty files are excluded from the list
-pub fn list_skill_files(allocator: std.mem.Allocator, io: std.Io) ?[][]const u8 {
-    const dir_path = get_skills_dir_path(allocator, io) orelse return null;
-    defer allocator.free(dir_path);
-
-    // Open the skills directory
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
-        std.log.debug("Could not open skills directory at {s}: {s}", .{ dir_path, @errorName(err) });
-        return null;
-    };
-    defer std.Io.Dir.close(dir, io);
-
-    // Collect skill file paths
-    var files: std.ArrayList([]const u8) = .empty;
-    defer files.deinit(allocator);
-
-    var iter = dir.iterate();
-    while (iter.next(io) catch null) |entry| {
-        // Only process directories
-        if (entry.kind != .directory) {
-            continue;
-        }
-
-        const folder_name = entry.name;
-
-        // Build path to SKILL.MD inside the folder
-        const skill_file_path = joinPath3(allocator, dir_path, folder_name, SKILL_FILE_NAME) catch continue;
-
-        // Check if SKILL.MD exists and is non-empty
-        const file = std.Io.Dir.cwd().openFile(io, skill_file_path, .{}) catch {
-            allocator.free(skill_file_path);
-            continue;
+/// Create a fresh, uniquely-named directory under `TMP_ROOT`. Returns an
+/// owned path the caller frees with `allocator.free`.
+///
+/// Uniqueness comes from a nanosecond stamp plus an attempt counter,
+/// mirroring `run_skill_eval.zig`'s `makeTmpRoot` — the two materialise
+/// short-lived trees per agent turn and must never collide, or one
+/// bundle's files would show up inside another's.
+fn createUniqueAssetDir(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    skill_name: []const u8,
+) ![]u8 {
+    const stamp = std.Io.Timestamp.now(io, .real).nanoseconds;
+    var attempt: u32 = 0;
+    while (attempt < 16) : (attempt += 1) {
+        var buf: [160]u8 = undefined;
+        const leaf = std.fmt.bufPrint(&buf, "pabrik-skill-assets-{s}-{d}-{d}", .{
+            skill_name,
+            stamp,
+            attempt,
+        }) catch return error.CannotCreateTempDir;
+        const dir = try std.fs.path.join(alloc, &.{ TMP_ROOT, leaf });
+        std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
+            alloc.free(dir);
+            // A name collision is the only expected failure: everything
+            // else (permissions, ENOSPC, a missing temp root) is a real
+            // filesystem problem the caller has to hear about.
+            if (err == error.PathAlreadyExists) continue;
+            return err;
         };
+        return dir;
+    }
+    return error.CannotCreateTempDir;
+}
+
+/// Write every companion file of one skill into a fresh directory and
+/// return it.
+///
+/// `rel_path` is honoured verbatim because a skill BODY refers to its
+/// companions by that exact string — `scripts/run_eval.py` in
+/// `skill-creator`, `scripts/convert_pdf_to_images.py` in `pdf` — so
+/// re-rooting, flattening or renames would all silently break the skill.
+/// Parent directories are created on demand; the store hands them back
+/// sorted by `rel_path`, so the write order is stable.
+///
+/// The returned `dir` is absolute and owned by the caller, who frees it
+/// with `allocator.free` (and owns the tree: `deleteTree` it when done).
+/// `file_count` is the number of files actually written, which equals
+/// `assets.len` — there is no partial-success path.
+///
+/// Refuses, never skips: `error.NoAssets` for an empty bundle,
+/// `error.InvalidSkillName` for a name that is not a single path-safe
+/// token, `error.UnsafeAssetPath` for any `rel_path` that would escape the
+/// directory. Validate BEFORE creating the directory so a hostile bundle
+/// cannot make the tool litter `/tmp` before it is rejected.
+pub fn materializeAssetDir(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    skill_name: []const u8,
+    assets: []const skills_store.SkillAssetRow,
+) !struct { dir: []const u8, file_count: usize } {
+    if (assets.len == 0) return error.NoAssets;
+    if (!skills_store.isValidSkillName(skill_name)) return error.InvalidSkillName;
+    for (assets) |a| {
+        if (!isSafeRelPath(a.rel_path)) return error.UnsafeAssetPath;
+    }
+
+    const dir = try createUniqueAssetDir(io, alloc, skill_name);
+    // Everything below is a partial-materialisation failure from here on,
+    // so unwind the tree rather than leaving an orphan directory holding
+    // half a bundle.
+    errdefer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    for (assets) |a| {
+        const full = try std.fs.path.join(alloc, &.{ dir, a.rel_path });
+        defer alloc.free(full);
+
+        // `dirname` yields `dir` itself for a top-level file, and
+        // `createDirPath` on an existing directory is a no-op.
+        const parent = std.fs.path.dirname(full) orelse dir;
+        std.Io.Dir.cwd().createDirPath(io, parent) catch |err| return err;
+
+        const file = std.Io.Dir.createFileAbsolute(io, full, .{}) catch |err| return err;
         defer std.Io.File.close(file, io);
-
-        const stat = std.Io.File.stat(file, io) catch {
-            allocator.free(skill_file_path);
-            continue;
-        };
-
-        // Skip empty files
-        if (stat.size == 0) {
-            allocator.free(skill_file_path);
-            continue;
-        }
-
-        files.append(allocator, skill_file_path) catch {
-            allocator.free(skill_file_path);
-            continue;
-        };
+        std.Io.File.writeStreamingAll(file, io, a.content) catch |err| return err;
     }
 
-    return files.toOwnedSlice(allocator) catch null;
+    return .{ .dir = dir, .file_count = assets.len };
 }
 
-/// Free a list of skill file paths
-pub fn free_skill_files(allocator: std.mem.Allocator, files: [][]const u8) void {
-    for (files) |file| {
-        allocator.free(file);
-    }
-    allocator.free(files);
-}
+// ============================================================================
+// skills.zig — inline tests
+// ============================================================================
+//
+// The three tests this file used to carry were all about DIRECTORY
+// RESOLUTION (`parse_skill` picking the session repo over the process
+// cwd, the process-cwd resolvers agreeing with each other). There is no
+// directory resolution any more, so there was nothing to convert — they
+// are replaced by tests for the one thing here that has a contract:
+// materialising a bundle, and refusing to materialise one that would
+// escape the directory it was given.
 
-/// Get the local skills path (.pabrik/skills/)
-/// Returns allocated string that caller must free, or null if cwd unavailable
-pub fn get_local_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
-    // Get current working directory
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    // `std.posix.getcwd` was removed in Zig 0.16. Use the cross-platform
-    // libc-backed `helpers.getcwd` wrapper (works on Linux/macOS/Windows
-    // without requiring an `io: std.Io` runtime).
-    const cwd = helpers.getcwd(&cwd_buf) orelse {
-        std.log.debug("Could not get current working directory", .{});
-        return null;
+const testing = std.testing;
+
+/// A `SkillAssetRow` without a database behind it. Every field is a plain
+/// slice, so the materialiser's only real input is `(rel_path, content)`
+/// and no store fixture is needed to exercise the traversal guard.
+fn fakeAsset(rel_path: []const u8, content: []const u8) skills_store.SkillAssetRow {
+    return .{
+        .id = "sa_1",
+        .skill_id = "sk_1",
+        .rel_path = rel_path,
+        .content = content,
+        .created_at = "",
     };
-
-    // Build path: <cwd>/.pabrik/skills/ — see joinPath for the rationale.
-    const dir_path = joinPath(allocator, cwd, LOCAL_SKILLS_DIR) catch {
-        std.log.debug("Could not build local skills path", .{});
-        return null;
-    };
-
-    return dir_path;
 }
 
-/// Get the global skills path following XDG standards
-/// Linux: ~/.config/pabrik/skills/
-/// macOS: ~/Library/Application Support/pabrik/skills/
-/// Windows: %APPDATA%/pabrik/skills/
-/// Returns allocated string that caller must free, or null if home/env not found
-pub fn get_global_skills_path(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) ?[]const u8 {
-    // Use environment map if provided
-    if (environment) |env| {
-        return get_global_skills_path_from_env(allocator, env);
-    }
-    // No fallback - environment is required in this codebase
-    return null;
+test "materializeAssetDir writes each asset at its rel_path, creating parents" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    const out = try materializeAssetDir(io, alloc, "pdf", &.{
+        fakeAsset("scripts/convert.py", "print('hi')"),
+        fakeAsset("references/schemas.md", "# ref"),
+        fakeAsset("README.md", "top level"),
+    });
+    defer alloc.free(out.dir);
+    defer std.Io.Dir.cwd().deleteTree(io, out.dir) catch {};
+
+    try testing.expectEqual(@as(usize, 3), out.file_count);
+    // Absolute, so the model can pass it to bash/read_file directly.
+    try testing.expect(std.fs.path.isAbsolute(out.dir));
+    try testing.expect(std.mem.indexOf(u8, out.dir, "pabrik-skill-assets-pdf-") != null);
+
+    // Two levels of nesting created, relative paths preserved verbatim —
+    // the body refers to these strings and nothing renames them.
+    const nested = try std.fs.path.join(alloc, &.{ out.dir, "scripts", "convert.py" });
+    defer alloc.free(nested);
+    const script_body = try std.Io.Dir.cwd().readFileAlloc(io, nested, alloc, std.Io.Limit.limited(1024));
+    defer alloc.free(script_body);
+    try testing.expectEqualStrings("print('hi')", script_body);
+
+    const deep = try std.fs.path.join(alloc, &.{ out.dir, "references", "schemas.md" });
+    defer alloc.free(deep);
+    const deep_body = try std.Io.Dir.cwd().readFileAlloc(io, deep, alloc, std.Io.Limit.limited(1024));
+    defer alloc.free(deep_body);
+    try testing.expectEqualStrings("# ref", deep_body);
+
+    const top = try std.fs.path.join(alloc, &.{ out.dir, "README.md" });
+    defer alloc.free(top);
+    const top_body = try std.Io.Dir.cwd().readFileAlloc(io, top, alloc, std.Io.Limit.limited(1024));
+    defer alloc.free(top_body);
+    try testing.expectEqualStrings("top level", top_body);
 }
 
-/// Resolve the skills directory path by checking local first, then global
-/// Returns allocated string that caller must free, or null if neither exists
-pub fn resolve_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
-    // Try local path first
-    if (get_local_skills_path(allocator)) |local_path| {
-        // Check if directory exists
-        const exists = helpers.fileExists(local_path);
-        if (exists) {
-            return local_path;
-        }
-        allocator.free(local_path);
-    }
+test "materializeAssetDir refuses a traversing / absolute / backslash rel_path" {
+    const alloc = testing.allocator;
+    const io = testing.io;
 
-    // Try global path
-    if (get_global_skills_path(allocator, null)) |global_path| {
-        // Check if directory exists
-        const exists = helpers.fileExists(global_path);
-        if (exists) {
-            return global_path;
-        }
-        allocator.free(global_path);
-    }
+    // Each of these would land outside the directory we just created.
+    // Silently skipping one would hand the model a body that points at a
+    // file that does not exist, so every arm must be an error.
+    try testing.expectError(error.UnsafeAssetPath, materializeAssetDir(io, alloc, "pdf", &.{
+        fakeAsset("../../etc/passwd", "pwned"),
+    }));
+    try testing.expectError(error.UnsafeAssetPath, materializeAssetDir(io, alloc, "pdf", &.{
+        fakeAsset("scripts/../../escape.py", "pwned"),
+    }));
+    try testing.expectError(error.UnsafeAssetPath, materializeAssetDir(io, alloc, "pdf", &.{
+        fakeAsset("/etc/passwd", "pwned"),
+    }));
+    // Backslash is a separator on Windows, so a path that is inert on
+    // Linux is a traversal there.
+    try testing.expectError(error.UnsafeAssetPath, materializeAssetDir(io, alloc, "pdf", &.{
+        fakeAsset("scripts\\..\\..\\escape.py", "pwned"),
+    }));
+    // NT drive prefix.
+    try testing.expectError(error.UnsafeAssetPath, materializeAssetDir(io, alloc, "pdf", &.{
+        fakeAsset("C:payload", "pwned"),
+    }));
+    // Empty rel_path has no parent to write into.
+    try testing.expectError(error.UnsafeAssetPath, materializeAssetDir(io, alloc, "pdf", &.{
+        fakeAsset("", "pwned"),
+    }));
 
-    return null;
+    // A legal name is not caught by the same substring rule: the guard is
+    // about escaping, not about punctuation.
+    try testing.expect(isSafeRelPath("scripts/run_eval.py"));
+    try testing.expect(isSafeRelPath("agents/grader.md"));
+    try testing.expect(!isSafeRelPath("a..b"));
 }
 
-/// Free a skills path allocated by get_local_skills_path, get_global_skills_path, or resolve_skills_path
-pub fn free_skills_path(allocator: std.mem.Allocator, path: []const u8) void {
-    allocator.free(path);
+test "materializeAssetDir refuses a name that is not a single path-safe token" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    // `skill_name` is a path SEGMENT of the materialisation directory, so
+    // the same guard the store's `isValidSkillName` applies to the row key
+    // has to apply here. This is the traversal the old `remove_skill`
+    // `deleteTree` guard used to exist for.
+    try testing.expectError(error.InvalidSkillName, materializeAssetDir(io, alloc, "..", &.{
+        fakeAsset("a.py", "x"),
+    }));
+    try testing.expectError(error.InvalidSkillName, materializeAssetDir(io, alloc, "a/b", &.{
+        fakeAsset("a.py", "x"),
+    }));
 }
 
-/// Load skills content from a specific file path
-/// Returns allocated string with skills content, or empty string if file not found/invalid
-/// Caller owns the returned memory and must free it with allocator.free()
-pub fn load_skills_from_path(allocator: std.mem.Allocator, io: std.Io, path: []const u8) []const u8 {
-    // Open file
-    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
-        // Log warning but don't crash - skills are optional
-        std.log.warn("Could not open skills file at {s}: {s}", .{ path, @errorName(err) });
-        return allocator.dupe(u8, "") catch "";
-    };
-    defer std.Io.File.close(file, io);
-
-    // Check file size
-    const stat = std.Io.File.stat(file, io) catch |err| {
-        std.log.warn("Could not stat skills file at {s}: {s}", .{ path, @errorName(err) });
-        return allocator.dupe(u8, "") catch "";
-    };
-
-    if (stat.size > MAX_SKILLS_SIZE) {
-        std.log.warn("Skills file too large ({} bytes), max is {} bytes", .{ stat.size, MAX_SKILLS_SIZE });
-        return allocator.dupe(u8, "") catch "";
-    }
-
-    // Read file content
-    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(MAX_SKILLS_SIZE)) catch |err| {
-        std.log.warn("Could not read skills file at {s}: {s}", .{ path, @errorName(err) });
-        return allocator.dupe(u8, "") catch "";
-    };
-
-    // Return empty string if content is empty or whitespace only
-    const trimmed = std.mem.trim(u8, content, " \t\n\r");
-    if (trimmed.len == 0) {
-        allocator.free(content);
-        return allocator.dupe(u8, "") catch "";
-    }
-
-    return content;
-}
-
-/// Parse a specific skill from the skills directory by name
-/// If is_global is true, ONLY the global path (~/.config/pabrik/skills/) is searched.
-/// If is_global is false (default), both local (.pabrik/skills/) and global paths
-/// are searched, local first.
-/// environment is required when is_global is true (or when global fallback is desired).
-///
-/// `cwd` is the SESSION's working directory — the repo whose `.pabrik/skills/`
-/// should win the local lookup. It is a separate argument because the process
-/// cwd is a different root: the server is routinely started from a worktree or
-/// from `~`, while the session runs in the user's checkout. Resolving local
-/// skills against the process cwd therefore silently reads the WRONG repo, and
-/// every project-local skill comes back not-found. `use_skill` already gets
-/// this right (skill_tools.zig passes the session cwd to
-/// `get_local_skills_path_for_dir`), so the two must agree — otherwise the
-/// agent is offered skills it can never read back. Pass null only when there
-/// is no session context; then the process cwd is used, as before.
-/// Returns allocated string with skill content (full file including frontmatter), or null if not found
-/// Caller owns the returned memory and must free it with allocator.free()
-pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, cwd: ?[]const u8, is_global: bool, environment: ?*const std.process.Environ.Map) ?[]const u8 {
-    // When is_global is false, try local path first (.pabrik/skills/)
-    if (!is_global) {
-        const local_dir: ?[]const u8 = if (cwd) |dir|
-            get_local_skills_path_for_dir(allocator, dir)
-        else
-            get_skills_dir_path(allocator, io);
-        defer if (local_dir) |p| allocator.free(p);
-        if (local_dir) |dir| {
-            if (parse_skill_from_path_at(allocator, io, skill_name, dir)) |content| {
-                return content;
-            }
-        }
-    }
-
-    // Try global path (~/.config/pabrik/skills/) if environment provided
-    if (environment) |env| {
-        if (get_global_skills_path_from_env(allocator, env)) |global_path| {
-            defer allocator.free(global_path);
-            if (parse_skill_from_path_at(allocator, io, skill_name, global_path)) |content| {
-                return content;
-            }
-        }
-    }
-
-    return null;
-}
-
-/// Parse a specific skill from a specific directory path
-/// Returns allocated string with skill content, or null if not found
-/// Caller owns the returned memory and must free it with allocator.free()
-fn parse_skill_from_path_at(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, dir_path: []const u8) ?[]const u8 {
-    const files = list_skill_files_in_dir(allocator, io, dir_path) orelse return null;
-    defer free_skill_files(allocator, files);
-
-    for (files) |file_path| {
-        const content = load_skills_from_path(allocator, io, file_path);
-        if (content.len == 0) {
-            allocator.free(content);
-            continue;
-        }
-
-        if (parseYamlFrontmatter(allocator, content)) |parsed| {
-            defer freeParsedFrontmatter(allocator, parsed);
-            if (std.mem.eql(u8, parsed.name, skill_name)) {
-                // Return the full content (including frontmatter)
-                return content;
-            }
-        }
-        allocator.free(content);
-    }
-
-    return null;
-}
-
-/// List all available skills from the skills directory
-/// Returns allocated array of SkillInfo structs
-/// Caller owns the returned memory and must free it with free_skills_list()
-pub fn list_skills(allocator: std.mem.Allocator, io: std.Io) []SkillInfo {
-    return list_skills_from_dir(allocator, io);
-}
-
-/// List all available skills from the skills directory
-/// Returns allocated array of SkillInfo structs
-/// Caller owns the returned memory and must free it with free_skills_list()
-pub fn list_skills_from_dir(allocator: std.mem.Allocator, io: std.Io) []SkillInfo {
-    const files = list_skill_files(allocator, io) orelse return &.{};
-    defer free_skill_files(allocator, files);
-
-    if (files.len == 0) return &.{};
-
-    // Collect skills with valid frontmatter
-    var skills_list: std.ArrayList(SkillInfo) = .empty;
-    defer skills_list.deinit(allocator);
-
-    for (files) |file_path| {
-        const content = load_skills_from_path(allocator, io, file_path);
-        if (content.len == 0) {
-            allocator.free(content);
-            continue;
-        }
-
-        if (parseYamlFrontmatter(allocator, content)) |parsed| {
-            const path_copy = allocator.dupe(u8, file_path) catch {
-                freeParsedFrontmatter(allocator, parsed);
-                allocator.free(content);
-                continue;
-            };
-            skills_list.append(allocator, .{
-                .name = parsed.name,
-                .description = parsed.description,
-                .path = path_copy,
-            }) catch {
-                freeParsedFrontmatter(allocator, parsed);
-                allocator.free(path_copy);
-                allocator.free(content);
-                continue;
-            };
-            // Note: parsed.name and parsed.description are now owned by skills_list
-            allocator.free(content);
-        } else {
-            allocator.free(content);
-        }
-    }
-
-    return skills_list.toOwnedSlice(allocator) catch &.{};
-}
-
-/// Free a skills array allocated by list_skills
-pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []const SkillInfo) void {
-    for (skills_list) |skill| {
-        allocator.free(skill.name);
-        allocator.free(skill.description);
-        allocator.free(skill.path);
-    }
-    allocator.free(skills_list);
-}
-
-/// Get global skills path using environment map (not std.posix.getenv)
-/// Linux: ~/.config/pabrik/skills/ or $XDG_CONFIG_HOME/pabrik/skills/
-/// macOS: ~/Library/Application Support/pabrik/skills/
-/// Windows: %APPDATA%/pabrik/skills/
-/// Returns allocated string that caller must free, or null if home/env not found
-pub fn get_global_skills_path_from_env(allocator: std.mem.Allocator, environment: *const std.process.Environ.Map) ?[]const u8 {
-    // Try XDG_CONFIG_HOME first
-    if (environment.get("XDG_CONFIG_HOME")) |xdg_config| {
-        return joinPath3(allocator, xdg_config, APP_NAME, "skills") catch return null;
-    }
-
-    // Fall back to platform-specific defaults
-    if (environment.get("HOME")) |home| {
-        // Linux/macOS: ~/.config/<APP>/skills. On macOS the convention
-        // is $HOME/Library/Application Support; keep the Unix-style
-        // fallback for now (separate task to detect macOS).
-        return joinPath4(allocator, home, ".config", APP_NAME, "skills") catch null;
-    }
-
-    return null;
-}
-
-/// Get local skills path (.pabrik/skills/) using io
-/// Returns allocated string that caller must free, or null if cwd unavailable
-///
-/// `helpers.getcwd`, not `realPath` — see `get_skills_dir_path` for why
-/// `std.Io.Dir.cwd().realPath` is dead on Linux. The `io` parameter is kept so
-/// the signature stays parallel with the rest of this file's io-taking helpers.
-pub fn get_local_skills_path_from_io(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
-    _ = io;
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = helpers.getcwd(&cwd_buf) orelse {
-        std.log.debug("Could not get current working directory", .{});
-        return null;
-    };
-
-    return joinPath(allocator, cwd, LOCAL_SKILLS_DIR) catch null;
-}
-
-/// Get local skills path for a specific directory
-/// Returns allocated string that caller must free, or null if path unavailable
-pub fn get_local_skills_path_for_dir(allocator: std.mem.Allocator, dir_path: []const u8) ?[]const u8 {
-    return joinPath(allocator, dir_path, LOCAL_SKILLS_DIR) catch null;
-}
-
-/// List all skill file paths in a specific directory
-/// Returns allocated array of file paths to SKILL.MD files inside skill folders
-/// Empty files are excluded from the list
-pub fn list_skill_files_in_dir(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) ?[][]const u8 {
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
-        std.log.debug("Could not open skills directory at {s}: {s}", .{ dir_path, @errorName(err) });
-        return null;
-    };
-    defer std.Io.Dir.close(dir, io);
-
-    var files: std.ArrayList([]const u8) = .empty;
-    errdefer {
-        for (files.items) |f| allocator.free(f);
-        files.deinit(allocator);
-    }
-
-    var iter = dir.iterate();
-    while (iter.next(io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
-
-        const skill_file_path = joinPath3(allocator, dir_path, entry.name, SKILL_FILE_NAME) catch continue;
-
-        // Check if SKILL.MD exists and is non-empty
-        const file = std.Io.Dir.cwd().openFile(io, skill_file_path, .{}) catch {
-            allocator.free(skill_file_path);
-            continue;
-        };
-        defer std.Io.File.close(file, io);
-
-        const stat = std.Io.File.stat(file, io) catch {
-            allocator.free(skill_file_path);
-            continue;
-        };
-
-        if (stat.size == 0) {
-            allocator.free(skill_file_path);
-            continue;
-        }
-
-        files.append(allocator, skill_file_path) catch {
-            allocator.free(skill_file_path);
-            continue;
-        };
-    }
-
-    return files.toOwnedSlice(allocator) catch null;
-}
-
-/// List all skills from a specific directory path
-/// Returns allocated array of SkillInfo structs
-/// Caller owns the returned memory and must free it with free_skills_list()
-pub fn list_skills_from_dir_path(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) []SkillInfo {
-    const files = list_skill_files_in_dir(allocator, io, dir_path) orelse return &[_]SkillInfo{};
-    defer free_skill_files(allocator, files);
-
-    if (files.len == 0) return &[_]SkillInfo{};
-
-    var skills_list: std.ArrayList(SkillInfo) = .empty;
-    defer skills_list.deinit(allocator);
-
-    for (files) |file_path| {
-        const content = load_skills_from_path(allocator, io, file_path);
-        if (content.len == 0) {
-            allocator.free(content);
-            continue;
-        }
-
-        if (parseYamlFrontmatter(allocator, content)) |parsed| {
-            const path_copy = allocator.dupe(u8, file_path) catch {
-                freeParsedFrontmatter(allocator, parsed);
-                allocator.free(content);
-                continue;
-            };
-            skills_list.append(allocator, .{
-                .name = parsed.name,
-                .description = parsed.description,
-                .path = path_copy,
-            }) catch {
-                freeParsedFrontmatter(allocator, parsed);
-                allocator.free(path_copy);
-                allocator.free(content);
-                continue;
-            };
-            allocator.free(content);
-        } else {
-            allocator.free(content);
-        }
-    }
-
-    return skills_list.toOwnedSlice(allocator) catch &[_]SkillInfo{};
-}
-
-
-
-// ---------------------------------------------------------------------------
-// The project-local tier must resolve against the CWD THE CALLER GIVES, not
-// the process cwd. `use_skill` resolves against the session cwd; when the eval
-// resolved against the process cwd instead, every project-local skill came back
-// "the skill body could not be read" and was recorded as needs_human about a
-// file that was on disk the whole time.
-// ---------------------------------------------------------------------------
-
-const scope_test_body =
-    \\---
-    \\name: local-scope-probe
-    \\description: "Project-local skill used only by the parse_skill scope test."
-    \\---
-    \\# Probe
-    \\
-    \\Body text.
-    \\
-;
-
-test "parse_skill resolves a project-local skill against the GIVEN cwd, not the process cwd" {
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    const root = "/tmp/pabrik-parse-skill-scope-test";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    // The repo the session is in. The test binary's cwd has no .pabrik/skills at
-    // all, so a process-cwd lookup cannot accidentally satisfy the assertion.
-    const session_repo = try std.fs.path.join(alloc, &.{ root, "repo" });
-    defer alloc.free(session_repo);
-    const skill_dir = try std.fs.path.join(alloc, &.{ session_repo, ".pabrik", "skills", "local-scope-probe" });
-    defer alloc.free(skill_dir);
-    try std.Io.Dir.cwd().createDirPath(io, skill_dir);
-    const skill_file = try std.fs.path.join(alloc, &.{ skill_dir, SKILL_FILE_NAME });
-    defer alloc.free(skill_file);
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = skill_file, .data = scope_test_body });
-
-    // A DIFFERENT repo that has no skill of that name. Passing it must miss —
-    // otherwise the argument is being ignored.
-    const other_repo = try std.fs.path.join(alloc, &.{ root, "other-repo" });
-    defer alloc.free(other_repo);
-    const other_dir = try std.fs.path.join(alloc, &.{ other_repo, ".pabrik", "skills", "unrelated" });
-    defer alloc.free(other_dir);
-    try std.Io.Dir.cwd().createDirPath(io, other_dir);
-
-    // Point the global tier at an empty root so it cannot answer either.
-    const xdg = try std.fs.path.join(alloc, &.{ root, "xdg" });
-    defer alloc.free(xdg);
-    const global_dir = try std.fs.path.join(alloc, &.{ xdg, "pabrik", "skills" });
-    defer alloc.free(global_dir);
-    try std.Io.Dir.cwd().createDirPath(io, global_dir);
-
-    var env = std.process.Environ.Map.init(alloc);
-    defer env.deinit();
-    try env.put("XDG_CONFIG_HOME", xdg);
-
-    // The regression: `cwd` = the session repo finds it, which the old
-    // process-cwd implementation could not do.
-    const found = parse_skill(alloc, io, "local-scope-probe", session_repo, false, &env);
-    try std.testing.expect(found != null);
-    defer alloc.free(found.?);
-    try std.testing.expect(std.mem.indexOf(u8, found.?, "# Probe") != null);
-
-    try std.testing.expect(parse_skill(alloc, io, "local-scope-probe", other_repo, false, &env) == null);
-    // Global-only ignores the repo root and this skill is not in it.
-    try std.testing.expect(parse_skill(alloc, io, "local-scope-probe", session_repo, true, &env) == null);
-    // Null cwd keeps the old process-cwd behaviour, which misses here.
-    try std.testing.expect(parse_skill(alloc, io, "local-scope-probe", null, false, &env) == null);
-}
-
-test "parse_skill prefers the session repo over the global tier" {
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    const root = "/tmp/pabrik-parse-skill-shadow-test";
-    std.Io.Dir.cwd().deleteTree(io, root) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
-
-    const seed = struct {
-        fn write(a: std.mem.Allocator, i: std.Io, skill_dir: []const u8, marker: []const u8) !void {
-            try std.Io.Dir.cwd().createDirPath(i, skill_dir);
-            const file = try std.fs.path.join(a, &.{ skill_dir, SKILL_FILE_NAME });
-            defer a.free(file);
-            const body = try std.fmt.allocPrint(a, "---\nname: shadow-probe\ndescription: d\n---\n{s}\n", .{marker});
-            defer a.free(body);
-            try std.Io.Dir.cwd().writeFile(i, .{ .sub_path = file, .data = body });
-        }
-    }.write;
-
-    const repo = try std.fs.path.join(alloc, &.{ root, "repo" });
-    defer alloc.free(repo);
-    const local_dir = try std.fs.path.join(alloc, &.{ repo, ".pabrik", "skills", "shadow-probe" });
-    defer alloc.free(local_dir);
-    try seed(alloc, io, local_dir, "LOCAL-WINS");
-
-    const xdg = try std.fs.path.join(alloc, &.{ root, "xdg" });
-    defer alloc.free(xdg);
-    const global_dir = try std.fs.path.join(alloc, &.{ xdg, "pabrik", "skills", "shadow-probe" });
-    defer alloc.free(global_dir);
-    try seed(alloc, io, global_dir, "GLOBAL-LOSES");
-
-    var env = std.process.Environ.Map.init(alloc);
-    defer env.deinit();
-    try env.put("XDG_CONFIG_HOME", xdg);
-
-    const found = parse_skill(alloc, io, "shadow-probe", repo, false, &env);
-    try std.testing.expect(found != null);
-    defer alloc.free(found.?);
-    try std.testing.expect(std.mem.indexOf(u8, found.?, "LOCAL-WINS") != null);
-}
-
-
-test "the process-cwd resolvers return a path (realPath is dead on Linux)" {
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    // Both of these used `std.Io.Dir.cwd().realPath(io, ..)`, which on Linux
-    // resolves AT_FDCWD via readlink("/proc/self/fd/-100") and always returns
-    // error.FileNotFound. The callers treat null as "no project-local skills",
-    // so the whole local tier vanished with no error anywhere.
-    const from_io = get_skills_dir_path(alloc, io);
-    try std.testing.expect(from_io != null);
-    defer alloc.free(from_io.?);
-
-    const local_from_io = get_local_skills_path_from_io(alloc, io);
-    try std.testing.expect(local_from_io != null);
-    defer alloc.free(local_from_io.?);
-
-    // Both must agree with the libc-backed sibling that never had the bug.
-    const libc = get_local_skills_path(alloc);
-    try std.testing.expect(libc != null);
-    defer alloc.free(libc.?);
-
-    try std.testing.expectEqualStrings(libc.?, from_io.?);
-    try std.testing.expectEqualStrings(libc.?, local_from_io.?);
-
-    // And the shape is <cwd>/.pabrik/skills, not something realPath-shaped.
-    try std.testing.expect(std.mem.endsWith(u8, from_io.?, "/.pabrik/skills"));
+test "materializeAssetDir refuses an empty bundle instead of making an empty dir" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    // `use_skill` returns `asset_dir: null` for a skill with no
+    // companions; there is no directory at all in that case, so this must
+    // not quietly create one.
+    try testing.expectError(error.NoAssets, materializeAssetDir(io, alloc, "single-file", &.{}));
 }
