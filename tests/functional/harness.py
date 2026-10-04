@@ -1040,6 +1040,41 @@ class FunctionalHarness:
         blocking call in the shutdown handler).
         """
         assert self.pid is not None
+
+        if os.name == "nt":
+            # Kill the TREE FIRST on Windows, before the graceful path.
+            #
+            # This ordering is the fix, and it is forced: `taskkill /T` walks
+            # the tree from a LIVE pid, so once nalar exits on its own there
+            # is no tree left to walk and its descendants are orphaned.
+            # `/test/shutdown` is exactly what makes nalar exit, and
+            # `_wait_dead` only knows about the DIRECT child -- so the old
+            # order was:
+            #
+            #   1. /test/shutdown  -> nalar exits (the common case, ~50ms)
+            #   2. _wait_dead      -> True, so `return`
+            #   3. _signal_group   -> NEVER REACHED
+            #
+            # Any worker nalar spawned therefore survived teardown, still
+            # holding the SQLite handle, and rmtree failed with
+            #
+            #   PermissionError: [WinError 32] ... .config\nalar\agent.db
+            #
+            # for as long as that worker lived, which is why the retry loop
+            # could not help. Measured across the three windows-2022 shards of
+            # run `37188944641`: 7 teardown ERRORs, all in
+            # `chat_row_context_menu_ui_test`, the module that starts agents.
+            #
+            # Cost: no graceful SQLite shutdown on Windows. Nothing observes
+            # it -- the tempdir is rmtree'd immediately after, so a hot
+            # journal or unflushed WAL is irrelevant -- and
+            # `graceful_shutdown_test.py` is already gated off win32. POSIX
+            # keeps the graceful path below, where `os.killpg` still reaches
+            # descendants after the group leader is gone.
+            self._signal_group(_SIGKILL)
+            self._wait_dead(2.0, "post-tree-kill")  # best-effort final wait
+            return
+
         # Use /test/shutdown for graceful exit; tolerate any failure.
         try:
             with urllib.request.urlopen(
