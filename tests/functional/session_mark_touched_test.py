@@ -22,7 +22,7 @@ from harness import FunctionalHarness
 
 
 def _db_val(harness: FunctionalHarness, session_id: str) -> str | None:
-    db_path = Path(harness.temp_dir) / ".config" / "nalar" / "agent.db"
+    db_path = Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         row = conn.execute(

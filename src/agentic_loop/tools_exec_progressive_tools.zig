@@ -16,7 +16,7 @@
 // Plan: docs/superpowers/plans/2026-09-12-progressive-tool-search.md
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const tools_equipped = @import("tools_equipped.zig");
 const llm_history = @import("llm_history.zig");
@@ -24,8 +24,8 @@ const progressive_catalog = @import("progressive_catalog.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const pmod = nalarcore.progressive_tools;
+const agent = pabrikcore.agent;
+const pmod = pabrikcore.progressive_tools;
 const wrapToolOutput = tools.wrapToolOutput;
 
 const MAX_DID_YOU_MEAN = 3;
@@ -44,7 +44,7 @@ fn loadInputs(ctx: ToolExecContext) !Inputs {
     // The live fetch-once MCP cache — the same source the workflow uses and
     // the same one `handle_mcp_tool` dispatches against. Never re-fetch from
     // the servers here.
-    const di = nalarcore.getSingleton() catch null;
+    const di = pabrikcore.getSingleton() catch null;
     const mcp: ?[]const agent.AgentTool = if (di) |d| d.getMcpToolsCached(ctx.allocator) else null;
 
     const equipped = try llm_history.getProgressiveTools(ctx.allocator, ctx.db, ctx.session_id);
@@ -327,7 +327,7 @@ pub fn execUseTool(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 // Adapter integration: the real registry + a real (in-memory) DB
 // ============================================================================
 
-const test_sqlite = nalarcore.sqlite;
+const test_sqlite = pabrikcore.sqlite;
 const Migration085 = @import("../migrations/migration.zig").Migration085AddSessionProgressiveTool;
 
 /// The `data.tools` rows of a rendered envelope result — the catalog rows

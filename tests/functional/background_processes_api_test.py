@@ -16,7 +16,7 @@ via PUT /api/llm/session/:id {"name": ...} (session_update.zig
 auto-creates via ensureSessionExists — same helper as
 background_command_completion_test.py::_create_session, no LLM profile
 needed). Bg rows are inserted via direct sqlite3 into the isolated
-HOME's agent.db (Path(harness.temp_dir)/.config/nalar/agent.db — WAL
+HOME's agent.db (Path(harness.temp_dir)/.config/pabrik/agent.db — WAL
 mode makes the concurrent open safe). The dead PID (999999999) can
 never be alive: it exceeds Linux's max PID so kill(pid, 0) returns
 ESRCH -> running == false. The live PID is the harness's own
@@ -47,7 +47,7 @@ DEAD_PID_2 = 999999998
 
 def _db_path(harness: FunctionalHarness) -> Path:
     """Agent DB inside the isolated tmpdir HOME (Linux layout)."""
-    return Path(harness.temp_dir) / ".config" / "nalar" / "agent.db"
+    return Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
 
 
 def _create_session(harness: FunctionalHarness, session_id: str) -> dict[str, Any]:
@@ -234,7 +234,7 @@ def test_log_missing_file_returns_not_found_marker(harness: FunctionalHarness) -
     _create_session(harness, session_id)
 
     _insert_bg_row(
-        harness, session_id, DEAD_PID, "sleep 5", "/tmp/nalar-bg-api-never-exists-4244.log"
+        harness, session_id, DEAD_PID, "sleep 5", "/tmp/pabrik-bg-api-never-exists-4244.log"
     )
 
     body = _get_log(harness, session_id, DEAD_PID)

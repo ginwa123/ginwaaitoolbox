@@ -1,4 +1,4 @@
-# nalar cross-platform line-ending policy.
+# pabrik cross-platform line-ending policy.
 #
 # Force LF (Unix) line endings for all source files. Without this,
 # Windows Git with `core.autocrlf=true` (the default) checks out

@@ -11,13 +11,13 @@
 //! Plan: docs/superpowers/plans/2026-07-29-create-kanban-task-tool.md (Task 5)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const create_kanban_task_mod = nalarcore.create_kanban_task;
+const agent = pabrikcore.agent;
+const create_kanban_task_mod = pabrikcore.create_kanban_task;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execCreateKanbanTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

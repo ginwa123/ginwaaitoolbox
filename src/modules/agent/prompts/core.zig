@@ -66,9 +66,9 @@ pub const MemoryToolRule =
     \\
     \\**These tools are NOT optional.** Persisting and recalling facts across sessions is a core part of doing this job well. Failing to call `load_memory` when prior context exists, or `save_memory` when a fact should persist, is a task failure.
     \\
-    \\These are **AGENT-MANAGED notes** (SQLite FTS5 index), distinct from the curated `.md` files in `~/.config/nalar/memories/` (auto-injected as `## Global Knowledge`). Use `save_memory` for short structured facts you'd otherwise re-ask; use the `.md` surface for hand-curated insights (architecture notes, project conventions).
+    \\These are **AGENT-MANAGED notes** (SQLite FTS5 index), distinct from the curated `.md` files in `~/.config/pabrik/memories/` (auto-injected as `## Global Knowledge`). Use `save_memory` for short structured facts you'd otherwise re-ask; use the `.md` surface for hand-curated insights (architecture notes, project conventions).
     \\
-    \\**SCOPE — PER WORKSPACE, NOT GLOBAL.** Notes are filed under the workspace THIS SESSION belongs to. `load_memory` searches only that workspace, and another workspace's `mem_<16-hex>` id comes back `not found`. The scope is derived from the session server-side — there is no `workspace_id` argument. So a preference you save here will NOT come back in a different workspace; if a fact must hold everywhere, put it in a `~/.config/nalar/memories/*.md` file instead.
+    \\**SCOPE — PER WORKSPACE, NOT GLOBAL.** Notes are filed under the workspace THIS SESSION belongs to. `load_memory` searches only that workspace, and another workspace's `mem_<16-hex>` id comes back `not found`. The scope is derived from the session server-side — there is no `workspace_id` argument. So a preference you save here will NOT come back in a different workspace; if a fact must hold everywhere, put it in a `~/.config/pabrik/memories/*.md` file instead.
     \\
     \\**TWO TOOLS (append-only — no edit, no delete):**
     \\- `save_memory({ content, tags? })` — APPENDS a new row with a fresh `mem_<16-hex>` id and `CURRENT_TIMESTAMP` timestamps. `content` must be 1 KiB – 1 MiB (empty/oversized rejected, no silent truncation). To correct a fact, save a NEW memory — never try to overwrite; recency + rank surface the latest row.
@@ -176,7 +176,7 @@ pub const SkillsToolRule =
     \\
     \\**The loop — two calls, and no skills are pre-listed in this prompt:**
     \\- `search_skills` — find installed skills by name or description
-    \\  (global `~/.config/nalar/skills/` + local `.nalar/skills/`).
+    \\  (global `~/.config/pabrik/skills/` + local `.pabrik/skills/`).
     \\  Nothing is pre-injected, so this call IS the discovery step. `query` is a
     \\  regex and results are PAGED: narrow with a pattern instead of pulling the
     \\  whole library in, then page with `offset` when `total` says there is
@@ -272,7 +272,7 @@ pub const SkillWriteToolRule =
     \\## Pitfalls — failure modes you actually hit. Never invented ones.
     \\```
     \\Skip sections that do not apply — a tight three-section skill beats a
-    \\padded six. One skill per concept. Prefer local (`.nalar/skills/`);
+    \\padded six. One skill per concept. Prefer local (`.pabrik/skills/`);
     \\pass `is_global: true` only when the procedure holds outside this repo.
     \\`edit_skill` takes the same arguments (`skill_name` for `name`) and
     \\accepts `description` alone or `content` alone to change just one.

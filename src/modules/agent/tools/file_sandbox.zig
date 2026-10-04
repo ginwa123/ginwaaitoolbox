@@ -22,8 +22,8 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 
 const testing = std.testing;
 
@@ -427,7 +427,7 @@ test "isAbsoluteFor: posix accepts /x and rejects x" {
 }
 
 test "isAbsoluteFor: posix rejects a Windows drive path" {
-    // A `C:\...` path handed to a Linux nalar is not a path on this host —
+    // A `C:\...` path handed to a Linux pabrik is not a path on this host —
     // treating it as absolute is how a "present" card becomes a 404.
     try testing.expect(!isAbsoluteFor("C:\\Users\\gilang\\Downloads\\r.html", .posix));
     try testing.expect(!isAbsoluteFor("\\\\?\\C:\\work", .posix));

@@ -1,17 +1,27 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const helpers = @import("helpers");
+const brand = helpers.brand_paths;
 
-/// Maximum size for NALAR.md file (100KB)
+/// Maximum size for PABRIK.md file (100KB)
 pub const MAX_AGENT_SIZE: usize = 100 * 1024;
 
 /// App name for config directory
-pub const APP_NAME = "nalar";
+pub const APP_NAME = "pabrik";
+
+/// Pre-rebrand app name. Still resolved so custom agent personas installed
+/// before the rename keep being discovered; see helpers/brand_paths.zig.
+pub const LEGACY_APP_NAME = brand.legacy_app_name;
 
 /// Local agents directory
-pub const LOCAL_AGENTS_DIR = ".nalar/agents";
+pub const LOCAL_AGENTS_DIR = ".pabrik/agents";
 
 /// Agents file name inside each agent folder
-pub const AGENT_FILE_NAME = "NALAR.md";
+pub const AGENT_FILE_NAME = "PABRIK.md";
+
+/// Pre-rebrand agent file name, still read so personas written before the
+/// rename are not silently dropped.
+pub const LEGACY_AGENT_FILE_NAME = brand.legacy_memory_file_name;
 
 /// Agent information structure
 pub const AgentInfo = struct {
@@ -101,7 +111,7 @@ pub fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedAgentFrontm
     allocator.free(fm.description);
 }
 
-/// Get the local agents directory path (.nalar/agents/)
+/// Get the local agents directory path (.pabrik/agents/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
 pub fn getLocalAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 {
     // Get current working directory using Io
@@ -112,7 +122,7 @@ pub fn getLocalAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 
     };
     const cwd = cwd_buf[0..cwd_len];
 
-    // Build path: .nalar/agents/
+    // Build path: .pabrik/agents/
     const path = std.fs.path.join(allocator, &[_][]const u8{
         cwd,
         LOCAL_AGENTS_DIR,
@@ -124,74 +134,65 @@ pub fn getLocalAgentsPath(allocator: std.mem.Allocator, io: std.Io) ?[]const u8 
     return path;
 }
 
-/// Get the global agents path following XDG standards
-/// Linux: ~/.config/nalar/agents/
-/// macOS: ~/Library/Application Support/nalar/agents/
-/// Windows: %APPDATA%/nalar/agents/
-/// Returns allocated string that caller must free, or null if home/env not found
-pub fn getGlobalAgentsPath(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) ?[]const u8 {
-    var config_dir: ?[]const u8 = null;
-    var needs_free: bool = false;
-
-    switch (builtin.os.tag) {
-        .windows => {
-            if (environment) |env| {
-                const appdata = env.get("APPDATA") orelse {
-                    std.log.debug("APPDATA environment variable not set", .{});
-                    return null;
-                };
-                config_dir = std.fs.path.join(allocator, &[_][]const u8{ appdata, APP_NAME }) catch null;
-                if (config_dir != null) needs_free = true;
-            } else {
-                std.log.debug("No environment provided", .{});
-                return null;
-            }
-        },
-        .macos => {
-            if (environment) |env| {
-                const home = env.get("HOME") orelse {
-                    std.log.debug("HOME environment variable not set", .{});
-                    return null;
-                };
-                config_dir = std.fs.path.join(allocator, &[_][]const u8{
-                    home, "Library", "Application Support", APP_NAME,
-                }) catch null;
-                if (config_dir != null) needs_free = true;
-            } else {
-                std.log.debug("No environment provided", .{});
-                return null;
-            }
-        },
-        else => { // Linux, FreeBSD, etc.
-            if (environment) |env| {
-                // XDG_CONFIG_HOME or default to ~/.config
-                if (env.get("XDG_CONFIG_HOME")) |xdg_config| {
-                    config_dir = std.fs.path.join(allocator, &[_][]const u8{ xdg_config, APP_NAME }) catch null;
-                    if (config_dir != null) needs_free = true;
-                } else if (env.get("HOME")) |home| {
-                    config_dir = std.fs.path.join(allocator, &[_][]const u8{ home, ".config", APP_NAME }) catch null;
-                    if (config_dir != null) needs_free = true;
-                }
-            } else {
-                std.log.debug("No environment provided", .{});
-                return null;
-            }
-        },
-    }
-
-    const dir = config_dir orelse return null;
-    defer if (needs_free) allocator.free(dir);
-
-    // Build full path: config_dir/agents
-    const path = std.fs.path.join(allocator, &[_][]const u8{
-        dir,
-        "agents",
-    }) catch {
-        std.log.debug("Could not build global agents path", .{});
+/// The platform's app directory (`%APPDATA%/<app>`, `~/Library/Application
+/// Support/<app>`, `$XDG_CONFIG_HOME/<app>`, `~/.config/<app>`).
+fn appDirFor(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map, app_name: []const u8) ?[]const u8 {
+    const env = environment orelse {
+        std.log.debug("No environment provided", .{});
         return null;
     };
+    return switch (builtin.os.tag) {
+        .windows => blk: {
+            const appdata = env.get("APPDATA") orelse {
+                std.log.debug("APPDATA environment variable not set", .{});
+                break :blk null;
+            };
+            break :blk std.fs.path.join(allocator, &[_][]const u8{ appdata, app_name }) catch null;
+        },
+        .macos => blk: {
+            const home = env.get("HOME") orelse {
+                std.log.debug("HOME environment variable not set", .{});
+                break :blk null;
+            };
+            break :blk std.fs.path.join(allocator, &[_][]const u8{
+                home, "Library", "Application Support", app_name,
+            }) catch null;
+        },
+        else => blk: { // Linux, FreeBSD, etc.
+            if (env.get("XDG_CONFIG_HOME")) |xdg_config| {
+                break :blk std.fs.path.join(allocator, &[_][]const u8{ xdg_config, app_name }) catch null;
+            }
+            const home = env.get("HOME") orelse {
+                std.log.debug("HOME environment variable not set", .{});
+                break :blk null;
+            };
+            break :blk std.fs.path.join(allocator, &[_][]const u8{ home, ".config", app_name }) catch null;
+        },
+    };
+}
 
-    return path;
+/// Get the global agents path following XDG standards
+/// Linux: ~/.config/pabrik/agents/
+/// macOS: ~/Library/Application Support/pabrik/agents/
+/// Windows: %APPDATA%/pabrik/agents/
+/// Returns allocated string that caller must free, or null if home/env not found
+///
+/// Falls back to the pre-rebrand directory when only that one exists, so
+/// personas installed before the rename stay discoverable.
+pub fn getGlobalAgentsPath(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) ?[]const u8 {
+    const current_dir = appDirFor(allocator, environment, APP_NAME) orelse return null;
+    const current = std.fs.path.join(allocator, &[_][]const u8{ current_dir, "agents" }) catch null;
+    if (current == null) return null;
+    allocator.free(current_dir);
+
+    const legacy_dir = appDirFor(allocator, environment, LEGACY_APP_NAME) orelse return current;
+    const legacy = std.fs.path.join(allocator, &[_][]const u8{ legacy_dir, "agents" }) catch {
+        allocator.free(legacy_dir);
+        return current;
+    };
+    allocator.free(legacy_dir);
+
+    return brand.choose(allocator, current.?, legacy);
 }
 
 /// Resolve the agents directory path by checking local first, then global
@@ -236,7 +237,7 @@ pub fn freeAgentsPath(allocator: std.mem.Allocator, path: []const u8) void {
 }
 
 /// List all agent files in the agents directory
-/// Returns allocated array of file paths to NALAR.md files inside agent folders
+/// Returns allocated array of file paths to PABRIK.md files inside agent folders
 /// Empty files are excluded from the list
 pub fn listAgentFiles(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map) ?[][]const u8 {
     const dir_path = resolveAgentsPath(allocator, io, environment) orelse return null;
@@ -262,10 +263,17 @@ pub fn listAgentFiles(allocator: std.mem.Allocator, io: std.Io, environment: ?*c
 
         const folder_name = entry.name;
 
-        // Build path to NALAR.md inside the folder
-        const agent_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, folder_name, AGENT_FILE_NAME }) catch continue;
+        // Build path to PABRIK.md inside the folder. A persona written before
+        // the rebrand still lives in NALAR.md, so probe both — dropping it
+        // would make every custom agent silently vanish from `list_agents`.
+        const current_file = std.fs.path.join(allocator, &[_][]const u8{ dir_path, folder_name, AGENT_FILE_NAME }) catch continue;
+        const legacy_file = std.fs.path.join(allocator, &[_][]const u8{ dir_path, folder_name, LEGACY_AGENT_FILE_NAME }) catch {
+            defer allocator.free(current_file);
+            continue;
+        };
+        const agent_file_path = brand.choose(allocator, current_file, legacy_file);
 
-        // Check if NALAR.md exists and is non-empty
+        // Check if PABRIK.md exists and is non-empty
         const file = std.Io.Dir.cwd().openFile(io, agent_file_path, .{}) catch {
             allocator.free(agent_file_path);
             continue;

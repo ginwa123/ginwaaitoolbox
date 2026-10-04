@@ -9,7 +9,7 @@
 //! `onEventSendLLMHistory`).
 //!
 //! ⛔  GATED: the endpoint is INERT unless the server was started with
-//! `NALAR_TEST_SSE_EMIT=1`. The functional UI harness sets that env var
+//! `PABRIK_TEST_SSE_EMIT=1`. The functional UI harness sets that env var
 //! for the booted binary; production / developer desktop runs never do,
 //! so the endpoint returns 404 there. This keeps the attack surface at
 //! "test harness only".
@@ -32,15 +32,16 @@
 //! deliberate: no information leak about the endpoint's existence).
 
 const std = @import("std");
-pub const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_workflow = nalarcore.ai_workflow;
+pub const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_workflow = pabrikcore.ai_workflow;
 
 /// The gate. Read once per call (cheap getenv) so a test can flip it
 /// mid-process in the future if needed; production binaries never set
 /// the var so the read is a single failed lookup.
 fn gateEnabled() bool {
-    const v = std.c.getenv("NALAR_TEST_SSE_EMIT") orelse return false;
+    const v = std.c.getenv("PABRIK_TEST_SSE_EMIT") orelse
+        std.c.getenv("NALAR_TEST_SSE_EMIT") orelse return false;
     return std.mem.eql(u8, std.mem.span(v), "1");
 }
 
@@ -89,7 +90,7 @@ pub fn emitLlmHandler(
         });
     }
 
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try std.fmt.allocPrint(allocator, "{{\"error\":\"singleton unavailable\"}}", .{}),
@@ -133,7 +134,7 @@ pub fn emitLlmHandler(
 
     const data_copy = try allocator.dupe(u8, buf.items);
 
-    const event = nalarcore.ai_mod.on_event_sent.SseEvent{
+    const event = pabrikcore.ai_mod.on_event_sent.SseEvent{
         .session_id = parsed.session_id,
         .data = data_copy,
         .event_type = "llm_chunk",
@@ -141,8 +142,8 @@ pub fn emitLlmHandler(
     // Same dual emit as the real emitters: per-session key + central
     // "llm" broadcast (the frontend's single global EventSource
     // subscribes to the central key and filters by session_id in JS).
-    event_bus.emit(nalarcore.ai_mod.on_event_sent.SseEvent, parsed.session_id, event);
-    event_bus.emit(nalarcore.ai_mod.on_event_sent.SseEvent, "llm", event);
+    event_bus.emit(pabrikcore.ai_mod.on_event_sent.SseEvent, parsed.session_id, event);
+    event_bus.emit(pabrikcore.ai_mod.on_event_sent.SseEvent, "llm", event);
 
     return res.jsonResponse(.{
         .status_code = 200,
@@ -154,11 +155,11 @@ pub fn emitLlmHandler(
 
 test "gate is off by default (no env var)" {
     // Note: this asserts the DEFAULT state. If the developer's shell
-    // exports NALAR_TEST_SSE_EMIT=1 the test would fail — that's
+    // exports PABRIK_TEST_SSE_EMIT=1 the test would fail — that's
     // intentional (the gate must be opt-in per-process).
     // We can't unset env vars portably in Zig 0.16 tests, so this test
     // only runs when the var is absent.
-    if (std.c.getenv("NALAR_TEST_SSE_EMIT") == null) {
+    if (std.c.getenv("PABRIK_TEST_SSE_EMIT") == null and std.c.getenv("NALAR_TEST_SSE_EMIT") == null) {
         try std.testing.expect(!gateEnabled());
     }
 }

@@ -1,5 +1,5 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;

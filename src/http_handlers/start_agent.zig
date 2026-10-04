@@ -43,10 +43,10 @@
 //! Plan: docs/superpowers/specs/2026-08-18-kanban-task-detail-start-agent.md
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
+const sqlite = pabrikcore.sqlite;
 const http_response = @import("http_response.zig");
 
 // =====================================================================
@@ -105,7 +105,7 @@ pub const StartAgentOutcome = union(enum) {
 pub fn startAgentUseCase(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.ContextIPCTui,
     task_id: []const u8,
 ) !StartAgentOutcome {
     // 1. Validate the task exists. `getWorkspaceItemTask` returns
@@ -203,7 +203,7 @@ pub fn startAgentUseCase(
 ///
 /// Thin orchestrator over `startAgentUseCase`:
 ///   1. validate `:task_id` path parameter (inline)
-///   2. resolve DB handle via `nalarcore.getSingleton`
+///   2. resolve DB handle via `pabrikcore.getSingleton`
 ///   3. `startAgentUseCase` (use-case)
 ///   4. map outcome to HTTP response (200 / 404 / 409 / 500)
 ///
@@ -226,7 +226,7 @@ pub fn startAgentHandler(
 
     // 2. Resolve the `ContextIPCTui` singleton (carries the DB handle
     //    + the Io group that `emit_run_agent` schedules onto).
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "singleton not initialized" }),
@@ -275,10 +275,10 @@ pub fn startAgentHandler(
 // =====================================================================
 //
 // Why this file uses static contract checks instead of spinning up a
-// live sqlite + nalarcore singleton: standing up an in-memory DB +
+// live sqlite + pabrikcore singleton: standing up an in-memory DB +
 // migrations + event-bus + `ContextIPCTui` to behavioural-test the
 // handler would duplicate the migration setup and pull in
-// `nalarcore.getSingleton()` (which depends on a live server, logger,
+// `pabrikcore.getSingleton()` (which depends on a live server, logger,
 // and event bus). The static checks below directly test the bug —
 // they fail if and only if the handler/useCase split, the no-
 // queue-message wire contract, or the status-code mapping is
@@ -353,7 +353,7 @@ test "start_agent handler gets the singleton for emit_run_agent" {
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
 
-    // The handler must call `nalarcore.getSingleton()` to obtain the
+    // The handler must call `pabrikcore.getSingleton()` to obtain the
     // initialized `ContextIPCTui` (which carries the Io group via
     // `di.group_emit_session_create`). Without this, the handler has
     // no way to schedule the LLM trigger on the main process's Io
@@ -364,7 +364,7 @@ test "start_agent handler gets the singleton for emit_run_agent" {
                 "   The Io-group-acquisition contract is broken: the\n" ++
                 "   handler cannot reach `di.group_emit_session_create.concurrent`\n" ++
                 "   to schedule the LLM trigger on the main process's Io\n" ++
-                "   runtime. Add a nalarcore.getSingleton() call and map\n" ++
+                "   runtime. Add a pabrikcore.getSingleton() call and map\n" ++
                 "   the error to 500.\n",
             .{HANDLER_PATH},
         );
@@ -589,14 +589,14 @@ test "startAgentUseCase is re-exported from http_handlers/mod.zig" {
     defer allocator.free(source);
 
     // The use-case must be reachable as
-    // `nalarcore.http_handlers.startAgentUseCase` for tests and
+    // `pabrikcore.http_handlers.startAgentUseCase` for tests and
     // other consumers (the project's convention — see
     // task_delete.zig's re-export of deleteTaskUseCase).
     if (std.mem.indexOf(u8, source, "pub const startAgentUseCase") == null) {
         std.debug.print(
             "\n!! {s} does not re-export startAgentUseCase !!\n" ++
                 "   Add: pub const startAgentUseCase = @import(\"start_agent.zig\").startAgentUseCase;\n" ++
-                "   so the use-case is reachable via nalarcore.http_handlers.startAgentUseCase.\n",
+                "   so the use-case is reachable via pabrikcore.http_handlers.startAgentUseCase.\n",
             .{MOD_PATH},
         );
         return error.StartAgentUseCaseReExportMissing;

@@ -22,12 +22,12 @@
 //!   (Chunk 2, Task 2.1)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../agentic_loop/kanban_model.zig");
-const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
-const llm_history = nalarcore.llm_history;
+const on_event_sent_kanban = pabrikcore.ai_mod.on_event_sent_kanban;
+const llm_history = pabrikcore.llm_history;
 
 /// Request body. `mode` is optional — absent defaults to "replace".
 const CopySpecBody = struct {
@@ -85,7 +85,7 @@ pub const CopySpecResult = []const u8;
 /// other kanban mutation endpoint.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: CopySpecInput,
 ) CopySpecError!CopySpecResult {
     if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
@@ -227,7 +227,7 @@ pub fn kanbanCopySpecHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Path params. `:workspace_id`, `:item_id`, `:source_item_id`.

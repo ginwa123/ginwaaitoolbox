@@ -2,7 +2,7 @@
 //!
 //! Add a new design element to a design page. Atomically writes
 //! the element's HTML body to disk (under
-//! `<workspace_item.path>/.nalar/design/<page>/<element>.html`) and
+//! `<workspace_item.path>/.pabrik/design/<page>/<element>.html`) and
 //! inserts the metadata row. Delegates to `design_model.addElement`.
 //!
 //! Body: `{name: string, type: "rectangle"|"ellipse"|"text"|"image"|"frame"|"group",
@@ -38,11 +38,11 @@
 //!   (Chunk 3, Task 3.3)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../agentic_loop/design_model.zig");
-const on_event_sent_design = nalarcore.ai_mod.on_event_sent_design;
+const on_event_sent_design = pabrikcore.ai_mod.on_event_sent_design;
 
 /// HTTP request body for element-create. Decoupled from the
 /// `AddElementInput` domain struct so the wire format can evolve
@@ -150,7 +150,7 @@ pub const CreateElementOutput = struct {
 ///   5. Return a heap-owned `DesignElement` for the response.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     io: std.Io,
     input: CreateElementInput,
 ) DesignElementCreateError!CreateElementOutput {
@@ -216,7 +216,7 @@ pub fn designElementsCreateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Validate path params + body presence + JSON shape.

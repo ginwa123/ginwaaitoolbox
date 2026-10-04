@@ -1,7 +1,7 @@
 // src/apps/desktop_app/cli.zig
 //
-// Command-line parser for nalar-desktop. Parses --port, --nalar-path,
-// --nalar-url, --window-size, --title, --user-agent, --icon,
+// Command-line parser for pabrik-desktop. Parses --port, --pabrik-path,
+// --pabrik-url, --window-size, --title, --user-agent, --icon,
 // --smoke-test, --help / -h.
 // Returns a Config struct with all the parameters. The caller is responsible
 // for calling `cfg.deinit(allocator)` to free heap-allocated strings.
@@ -14,20 +14,20 @@
 const std = @import("std");
 
 pub const Config = struct {
-    /// Port to bind nalar on. 0 = auto-pick a free port.
-    /// Ignored when `nalar_url` is set (connect mode).
+    /// Port to bind pabrik on. 0 = auto-pick a free port.
+    /// Ignored when `pabrik_url` is set (connect mode).
     port: u16 = 0,
-    /// Optional explicit path to the nalar binary.
-    /// Ignored when `nalar_url` is set (connect mode).
-    nalar_path: ?[]const u8 = null,
+    /// Optional explicit path to the pabrik binary.
+    /// Ignored when `pabrik_url` is set (connect mode).
+    pabrik_path: ?[]const u8 = null,
     /// If set, skip the spawn/healthcheck/asset-extraction path entirely
     /// and just point the webview at this URL. Useful for dev workflows
-    /// where you already have a nalar running and just want a window
-    /// wrapper (e.g. `--nalar-url http://127.0.0.1:8081` to attach to a
-    /// nalar you started by hand). `--port` and `--nalar-path` are ignored
+    /// where you already have a pabrik running and just want a window
+    /// wrapper (e.g. `--pabrik-url http://127.0.0.1:8081` to attach to a
+    /// pabrik you started by hand). `--port` and `--pabrik-path` are ignored
     /// in this mode.
-    nalar_url: ?[]const u8 = null,
-    /// Decoupled-service mode (added in 2026-07): when no `nalar` daemon
+    pabrik_url: ?[]const u8 = null,
+    /// Decoupled-service mode (added in 2026-07): when no `pabrik` daemon
     /// is running, refuse to auto-spawn one and surface an actionable
     /// error instead. Default: false (auto-spawn is the default).
     no_auto_start: bool = false,
@@ -40,8 +40,8 @@ pub const Config = struct {
     /// Window title. The default value is a string literal — do NOT free
     /// it. Heap-allocated titles (set via `--title`) MUST be freed by
     /// deinit(). See deinit() for the (slightly leaky) edge case when
-    /// the user passes `--title "Nalar"` (same as default).
-    title: []const u8 = "Nalar",
+    /// the user passes `--title "Pabrik"` (same as default).
+    title: []const u8 = "Pabrik",
     /// Optional User-Agent override.
     user_agent: ?[]const u8 = null,
     /// Optional path to a window icon.
@@ -72,14 +72,14 @@ pub const Config = struct {
     browser: bool = false,
 
     pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
-        if (self.nalar_path) |p| allocator.free(p);
-        if (self.nalar_url) |u| allocator.free(u);
+        if (self.pabrik_path) |p| allocator.free(p);
+        if (self.pabrik_url) |u| allocator.free(u);
         // title: free only if heap-allocated (i.e. user set --title with
         // a value different from the default literal). If the user passed
-        // `--title "Nalar"`, we treat the title as still the literal and
+        // `--title "Pabrik"`, we treat the title as still the literal and
         // skip the free — this is a small memory leak for that edge case
         // (the user is unlikely to type the default). For v1 this is fine.
-        if (!std.mem.eql(u8, self.title, "Nalar")) allocator.free(self.title);
+        if (!std.mem.eql(u8, self.title, "Pabrik")) allocator.free(self.title);
         if (self.user_agent) |ua| allocator.free(ua);
         if (self.icon_path) |ip| allocator.free(ip);
     }
@@ -97,24 +97,24 @@ pub const CliError = error{
 };
 
 const usage =
-    \\Usage: nalar-desktop [options]
+    \\Usage: pabrik-desktop [options]
     \\
     \\Two modes:
-    \\  Spawn mode (default): spawn nalar as a child process, wait for it
+    \\  Spawn mode (default): spawn pabrik as a child process, wait for it
     \\    to be healthy, then open the webview. Closing the window kills
-    \\    the spawned nalar. Uses --port and --nalar-path.
-    \\  Connect mode (--nalar-url): skip spawning; just open the webview at
-    \\    the given URL. Useful for attaching to a nalar you already have
-    \\    running. --port and --nalar-path are ignored in this mode.
+    \\    the spawned pabrik. Uses --port and --pabrik-path.
+    \\  Connect mode (--pabrik-url): skip spawning; just open the webview at
+    \\    the given URL. Useful for attaching to a pabrik you already have
+    \\    running. --port and --pabrik-path are ignored in this mode.
     \\
     \\Options:
-    \\  --port PORT              Port for nalar to bind on (default: 0 = auto-pick)
-    \\  --nalar-path PATH        Explicit path to nalar binary
-    \\  --nalar-url URL          Connect mode: point webview at this URL
+    \\  --port PORT              Port for pabrik to bind on (default: 0 = auto-pick)
+    \\  --pabrik-path PATH        Explicit path to pabrik binary
+    \\  --pabrik-url URL          Connect mode: point webview at this URL
     \\                            (e.g. http://127.0.0.1:8081) instead of
-    \\                            spawning a new nalar
+    \\                            spawning a new pabrik
     \\  --window-size WxH        Window size in pixels (default: 1280x800)
-    \\  --title TITLE            Window title (default: "Nalar")
+    \\  --title TITLE            Window title (default: "Pabrik")
     \\  --user-agent UA          User-Agent string for the webview
     \\  --icon PATH              Path to window icon
     \\  --smoke-test             Open, wait 2s, exit (for CI)
@@ -144,14 +144,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) CliError!Co
             i += 1;
             if (i >= args.len) return error.MissingValue;
             cfg.port = std.fmt.parseInt(u16, args[i], 10) catch return error.InvalidPort;
-        } else if (std.mem.eql(u8, arg, "--nalar-path")) {
+        } else if (std.mem.eql(u8, arg, "--pabrik-path")) {
             i += 1;
             if (i >= args.len) return error.MissingValue;
-            cfg.nalar_path = try allocator.dupe(u8, args[i]);
-        } else if (std.mem.eql(u8, arg, "--nalar-url")) {
+            cfg.pabrik_path = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--pabrik-url")) {
             i += 1;
             if (i >= args.len) return error.MissingValue;
-            cfg.nalar_url = try allocator.dupe(u8, args[i]);
+            cfg.pabrik_url = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--window-size")) {
             i += 1;
             if (i >= args.len) return error.MissingValue;
@@ -165,8 +165,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) CliError!Co
             if (i >= args.len) return error.MissingValue;
             // Free the previous title if it was heap-allocated (i.e. user
             // passed --title twice with a non-default value). If the previous
-            // value was the literal "Nalar", skip the free.
-            if (!std.mem.eql(u8, cfg.title, "Nalar")) allocator.free(cfg.title);
+            // value was the literal "Pabrik", skip the free.
+            if (!std.mem.eql(u8, cfg.title, "Pabrik")) allocator.free(cfg.title);
             cfg.title = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--user-agent")) {
             i += 1;
@@ -230,57 +230,57 @@ const testing = std.testing;
 
 test "parseArgs: defaults" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{"nalar-desktop"};
+    const args = [_][]const u8{"pabrik-desktop"};
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expectEqual(@as(u16, 0), cfg.port); // 0 = auto-pick
-    try testing.expect(cfg.nalar_path == null);
-    try testing.expect(cfg.nalar_url == null);
+    try testing.expect(cfg.pabrik_path == null);
+    try testing.expect(cfg.pabrik_url == null);
     try testing.expectEqual(@as(u32, 1280), cfg.window_width);
     try testing.expectEqual(@as(u32, 800), cfg.window_height);
-    try testing.expectEqualStrings("Nalar", cfg.title);
+    try testing.expectEqualStrings("Pabrik", cfg.title);
     try testing.expect(!cfg.smoke_test);
     try testing.expect(!cfg.enable_devtools);
 }
 
 test "parseArgs: --port" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--port", "9999" };
+    const args = [_][]const u8{ "pabrik-desktop", "--port", "9999" };
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expectEqual(@as(u16, 9999), cfg.port);
 }
 
-test "parseArgs: --nalar-path" {
+test "parseArgs: --pabrik-path" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--nalar-path", "/tmp/nalar" };
+    const args = [_][]const u8{ "pabrik-desktop", "--pabrik-path", "/tmp/pabrik" };
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
-    try testing.expect(cfg.nalar_path != null);
-    try testing.expectEqualStrings("/tmp/nalar", cfg.nalar_path.?);
+    try testing.expect(cfg.pabrik_path != null);
+    try testing.expectEqualStrings("/tmp/pabrik", cfg.pabrik_path.?);
 }
 
-test "parseArgs: --nalar-url switches to connect mode" {
+test "parseArgs: --pabrik-url switches to connect mode" {
     const allocator = testing.allocator;
     const args = [_][]const u8{
-        "nalar-desktop",
-        "--nalar-url",
+        "pabrik-desktop",
+        "--pabrik-url",
         "http://127.0.0.1:8081",
     };
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
-    try testing.expect(cfg.nalar_url != null);
-    try testing.expectEqualStrings("http://127.0.0.1:8081", cfg.nalar_url.?);
-    // --port and --nalar-path are ignored in connect mode but still parseable.
+    try testing.expect(cfg.pabrik_url != null);
+    try testing.expectEqualStrings("http://127.0.0.1:8081", cfg.pabrik_url.?);
+    // --port and --pabrik-path are ignored in connect mode but still parseable.
     // We just verify they default to null/0 here (the caller is responsible
-    // for honoring cfg.nalar_url and ignoring the other fields).
+    // for honoring cfg.pabrik_url and ignoring the other fields).
     try testing.expectEqual(@as(u16, 0), cfg.port);
-    try testing.expect(cfg.nalar_path == null);
+    try testing.expect(cfg.pabrik_path == null);
 }
 
 test "parseArgs: --window-size 1024x768" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--window-size", "1024x768" };
+    const args = [_][]const u8{ "pabrik-desktop", "--window-size", "1024x768" };
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expectEqual(@as(u32, 1024), cfg.window_width);
@@ -289,15 +289,15 @@ test "parseArgs: --window-size 1024x768" {
 
 test "parseArgs: --title" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--title", "My Nalar" };
+    const args = [_][]const u8{ "pabrik-desktop", "--title", "My Pabrik" };
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
-    try testing.expectEqualStrings("My Nalar", cfg.title);
+    try testing.expectEqualStrings("My Pabrik", cfg.title);
 }
 
 test "parseArgs: --smoke-test" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--smoke-test" };
+    const args = [_][]const u8{ "pabrik-desktop", "--smoke-test" };
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expect(cfg.smoke_test);
@@ -305,7 +305,7 @@ test "parseArgs: --smoke-test" {
 
 test "parseArgs: --devtools enables webview DevTools" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--devtools" };
+    const args = [_][]const u8{ "pabrik-desktop", "--devtools" };
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expect(cfg.enable_devtools);
@@ -313,7 +313,7 @@ test "parseArgs: --devtools enables webview DevTools" {
 
 test "parseArgs: --x11 forces X11 backend opt-in" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--x11" };
+    const args = [_][]const u8{ "pabrik-desktop", "--x11" };
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expect(cfg.force_x11);
@@ -321,7 +321,7 @@ test "parseArgs: --x11 forces X11 backend opt-in" {
 
 test "parseArgs: --x11 defaults to false" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{"nalar-desktop"};
+    const args = [_][]const u8{"pabrik-desktop"};
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expect(!cfg.force_x11);
@@ -329,7 +329,7 @@ test "parseArgs: --x11 defaults to false" {
 
 test "parseArgs: --browser opens in default browser instead of webview" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--browser" };
+    const args = [_][]const u8{ "pabrik-desktop", "--browser" };
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expect(cfg.browser);
@@ -337,7 +337,7 @@ test "parseArgs: --browser opens in default browser instead of webview" {
 
 test "parseArgs: browser defaults to false" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{"nalar-desktop"};
+    const args = [_][]const u8{"pabrik-desktop"};
     const cfg = try parse(allocator, &args);
     defer cfg.deinit(allocator);
     try testing.expect(!cfg.browser);
@@ -345,21 +345,21 @@ test "parseArgs: browser defaults to false" {
 
 test "parseArgs: --help prints usage and signals help" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--help" };
+    const args = [_][]const u8{ "pabrik-desktop", "--help" };
     const result = parse(allocator, &args);
     try testing.expectError(error.ShowHelp, result);
 }
 
 test "parseArgs: invalid port returns InvalidPort" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--port", "abc" };
+    const args = [_][]const u8{ "pabrik-desktop", "--port", "abc" };
     const result = parse(allocator, &args);
     try testing.expectError(error.InvalidPort, result);
 }
 
 test "parseArgs: --window-size without x returns InvalidSize" {
     const allocator = testing.allocator;
-    const args = [_][]const u8{ "nalar-desktop", "--window-size", "1024" };
+    const args = [_][]const u8{ "pabrik-desktop", "--window-size", "1024" };
     const result = parse(allocator, &args);
     try testing.expectError(error.InvalidSize, result);
 }

@@ -1,15 +1,15 @@
 """End-to-end smoke test for the FunctionalHarness.
 
-Boots a real nalar binary against an isolated tmpdir HOME, exercises
+Boots a real pabrik binary against an isolated tmpdir HOME, exercises
 the basic API surface, and verifies (a) the data lives in the tempdir
 and (b) the real $HOME is untouched after teardown.
 
-This is the ONLY test that requires a built nalar binary (the safety
+This is the ONLY test that requires a built pabrik binary (the safety
 tests run without one). It serves as the canary for the harness's
 end-to-end boot path before any per-feature suite lands.
 
 Run:
-    NALAR_BIN=/path/to/nalar pytest tests/functional/smoke_boot_test.py
+    PABRIK_BIN=/path/to/pabrik pytest tests/functional/smoke_boot_test.py
 """
 
 from __future__ import annotations
@@ -25,25 +25,25 @@ from harness import FunctionalHarness, is_safe_tmp
 
 
 @pytest.fixture(scope="module")
-def shared_harness(default_nalar_bin: Path):
-    """Boot nalar once for the whole module.
+def shared_harness(default_pabrik_bin: Path):
+    """Boot pabrik once for the whole module.
 
     Module-scoped because boot is ~3-5s (migration cascade + ready
     wait). Each test does its own API work on the same instance; no
     state is shared between tests because they make fresh API calls
     to a fresh workspace/item/etc.
 
-    The binary comes from the session-scoped `default_nalar_bin`
-    fixture, which already honours `$NALAR_BIN`, falls back to the
+    The binary comes from the session-scoped `default_pabrik_bin`
+    fixture, which already honours `$PABRIK_BIN`, falls back to the
     zig-out/bin candidates, and skips when there is nothing to boot.
     This module used to re-implement all of that and pull
-    `_resolve_nalar_bin` in via a bare `from conftest import ...` —
+    `_resolve_pabrik_bin` in via a bare `from conftest import ...` —
     which pytest resolves against the top-level `tests/conftest.py`
     (pytest.ini puts `tests` ahead of `tests/functional` on
     pythonpath), so the name was never there and every test in this
     module errored at setup with an ImportError.
     """
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         yield h
     finally:
@@ -97,13 +97,13 @@ def test_state_lives_in_temp_dir(
 ) -> None:
     """Real-data check: the agent.db is inside the tempdir, not the real HOME."""
     h = shared_harness
-    # The DB path is $HOME/.config/nalar/agent.db. With HOME=temp_dir,
-    # it must be at temp_dir/.config/nalar/agent.db.
-    db_path = h.temp_dir / ".config" / "nalar" / "agent.db"
+    # The DB path is $HOME/.config/pabrik/agent.db. With HOME=temp_dir,
+    # it must be at temp_dir/.config/pabrik/agent.db.
+    db_path = h.temp_dir / ".config" / "pabrik" / "agent.db"
     assert db_path.exists(), (
         f"agent.db not found at expected tempdir path {db_path}"
     )
-    # Real $HOME must NOT contain a nalar/agent.db newly created by
+    # Real $HOME must NOT contain a pabrik/agent.db newly created by
     # this test (the user may already have one — that's fine; we just
     # check the harness did not write to it).
     # The stat-based check is unreliable for "didn't write" claims;
@@ -154,8 +154,8 @@ def test_teardown_restores_home_and_keeps_orig_dir(
 # leaves 15× headroom for slow CI runners.
 
 
-def test_teardown_completes_within_3s(default_nalar_bin: Path) -> None:
-    """Functions fresh nalar → teardown must complete in <3s.
+def test_teardown_completes_within_3s(default_pabrik_bin: Path) -> None:
+    """Functions fresh pabrik → teardown must complete in <3s.
 
     Pre-fix, this test took ~10s (the harness waited the full SIGTERM
     + SIGKILL deadlines). If this regresses, the test suite will go
@@ -164,7 +164,7 @@ def test_teardown_completes_within_3s(default_nalar_bin: Path) -> None:
     """
     import time
 
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         # Drive a minimal API call so the binary is in a known state.
         assert h.health() is True

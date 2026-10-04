@@ -98,8 +98,8 @@ fn pickFirstExisting(candidates: []const []const u8) ?[]const u8 {
     return null;
 }
 
-/// Locate MSVC's C++ standard-library headers (used by nalar-desktop's
-/// nalar_webview.cpp on Windows). The headers ship with Visual Studio's
+/// Locate MSVC's C++ standard-library headers (used by pabrik-desktop's
+/// pabrik_webview.cpp on Windows). The headers ship with Visual Studio's
 /// Build Tools — specifically the `INCLUDE` env var that `vcvars64.bat`
 /// sets (e.g. `C:\Program Files (x86)\Microsoft Visual Studio\2022\
 /// BuildTools\VC\Tools\MSVC\14.x\include`). Without them, the .cpp shim's
@@ -157,7 +157,7 @@ fn hasMsvcCppStllib(b: *std.Build, io: std.Io) bool {
 }
 
 /// Locate the MSVC include dirs needed by `zig cc` when compiling
-/// `platform/windows/nalar_webview.cpp`. The .cpp includes `<wrl.h>`,
+/// `platform/windows/pabrik_webview.cpp`. The .cpp includes `<wrl.h>`,
 /// which transitively pulls in `<cstddef>` from the MSVC C++ stdlib;
 /// without `-isystem` flags pointing at the right places, `zig cc`
 /// fails with `fatal error: 'cstddef' file not found`.
@@ -464,7 +464,7 @@ fn firstSubdir(b: *std.Build, root: []const u8) ?[]const u8 {
 /// Pointing at the system libstdc++ headers avoids both.
 ///
 /// Resolution order (first hit wins):
-///   1. $NALAR_LIBSTDCXX_INCLUDE env var (escape hatch for any distro
+///   1. $PABRIK_LIBSTDCXX_INCLUDE env var (escape hatch for any distro
 ///      whose path doesn't match the defaults — just set it to
 ///      `/usr/include/c++/<X`>`).
 ///   2. Hardcoded distro defaults probed in order: 16, 15, 14, 13, 12,
@@ -512,7 +512,7 @@ fn findLibstdcxxInclude(b: *std.Build) ?[]const u8 {
 }
 
 /// Check that ALL WebView2 NuGet prerequisites sit next to
-/// nalar_webview.cpp. Returns null when complete; otherwise a
+/// pabrik_webview.cpp. Returns null when complete; otherwise a
 /// human-readable name of the first missing file (for the
 /// stub-fallback warning).
 ///
@@ -570,7 +570,7 @@ fn linkVendoredLua(b: *std.Build, module: *std.Build.Module) void {
 
 /// Link platform-specific system libraries + include paths for a Compile
 /// step based on the COMPILE'S OWN target (NOT the global default target).
-/// Every caller that produces a binary linked against nalarcore MUST
+/// Every caller that produces a binary linked against pabrikcore MUST
 /// call this — otherwise the cross-compile link line will miss the
 /// target's per-platform deps.
 ///
@@ -675,7 +675,7 @@ fn createPlatformExe(
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "nalarcore", .module = mod },
+                .{ .name = "pabrikcore", .module = mod },
                 .{ .name = "helpers", .module = helpers_mod },
             },
         }),
@@ -703,7 +703,7 @@ fn createPlatformExe(
 /// CI works around this in `.github/workflows/ci.yml` step
 /// `Test + build (single zig invocation, Windows)` by literally
 /// appending `C:\vcpkg\installed\x64-windows\bin;` to `$env:PATH`
-/// before the `zig build test nalar-desktop` line (see the comment
+/// before the `zig build test pabrik-desktop` line (see the comment
 /// block "vcpkg bin dir — libcurl.dll, libssl-3.dll, libcrypto-3.dll,
 /// sqlite3.dll live here and the test binary needs them at runtime.").
 /// Local dev boxes don't have that env setup, so without this fix the
@@ -744,7 +744,7 @@ fn prependVcpkgBinToPath(b: *std.Build, run: *std.Build.Step.Run) void {
 /// standard search order (exe dir first, then PATH). vcpkg does NOT add
 /// `C:\vcpkg\installed\x64-windows\bin\` to the system PATH, and
 /// prependVcpkgBinToPath only fixes zig build test processes -- not
-/// a user double-clicking `zig-out/bin/nalar-desktop.exe` in Explorer
+/// a user double-clicking `zig-out/bin/pabrik-desktop.exe` in Explorer
 /// (clean env, no vcpkg on PATH) vs running from a dev `cmd` where the
 /// user already exported vcpkg bin. Result: double-click dies with
 /// "libcurl.dll / sqlite3.dll not found" while cmd works.
@@ -950,9 +950,9 @@ pub fn build(b: *std.Build) void {
 
     // CLI flag: `-Drequire-real-webview` turns the no-op webview stub
     // fallback (see use_real_webview below) into a hard config-time error.
-    // CI passes this on the Windows nalar-desktop build so a runner without
+    // CI passes this on the Windows pabrik-desktop build so a runner without
     // MSVC + WebView2 NuGet staging fails loudly instead of shipping a
-    // nalar-desktop.exe whose webview_create() always returns NULL
+    // pabrik-desktop.exe whose webview_create() always returns NULL
     // (surface symptom: WebviewCreateFailed + evergreen-runtime prompt on a
     // machine that HAS the runtime — the binary is stub, not the runtime
     // missing). Dev boxes omit it and keep the warn-and-stub behavior.
@@ -998,7 +998,7 @@ pub fn build(b: *std.Build) void {
     // b.dependency(). See the kabelweb repo build.zig for
     // the full rationale.
 
-    const mod = b.addModule("nalarcore", .{
+    const mod = b.addModule("pabrikcore", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .imports = &.{
@@ -1006,7 +1006,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    mod.addImport("nalarcore", mod);
+    mod.addImport("pabrikcore", mod);
 
     // === Self-contained `databases` package (sqlite3 + openssl + libpq) ===
     // The package (ruangsql, github.com/ginwa123/ruangsql, pinned by
@@ -1239,13 +1239,13 @@ pub fn build(b: *std.Build) void {
     // they don't hit the link-emit step that checks for the system libs.
 
     const exe = b.addExecutable(.{
-        .name = "nalar",
+        .name = "pabrik",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "nalarcore", .module = mod },
+                .{ .name = "pabrikcore", .module = mod },
                 .{ .name = "helpers", .module = helpers_mod },
             },
         }),
@@ -1254,7 +1254,7 @@ pub fn build(b: *std.Build) void {
     // NOTE: there is no fetch-vendor-curl step anymore. kabelweb is an
     // external URL dependency — its own package + CI own the vendored
     // curl archive (see the kabelweb repo's scripts/build-vendor-curl.sh).
-    // nalar builds link system curl/ssl/crypto through the module graph
+    // pabrik builds link system curl/ssl/crypto through the module graph
     // (kabelweb's system probe), so no fetch is needed here.
 
     b.installArtifact(exe);
@@ -1289,7 +1289,7 @@ pub fn build(b: *std.Build) void {
     //
     // The functional tests (tests/functional/mcp_stdio_test.py) locate
     // this binary via harness.mcp_hello_world_bin() — same pattern as
-    // the nalar binary.
+    // the pabrik binary.
     const mcp_hello_world_dir = "src/apps/mcp_hello_world";
     const mcp_hello_world_step = b.step("mcp-hello-world", "Build the mcp-hello-world test MCP server");
 
@@ -1331,7 +1331,7 @@ pub fn build(b: *std.Build) void {
     // only adds the chmod on top.
     const wrapper_body =
         "#!/bin/sh\n" ++
-        \\# mcp-hello-world — nalar's MCP stdio self-test target.
+        \\# mcp-hello-world — pabrik's MCP stdio self-test target.
         \\# Auto-generated by build.zig. Invokes the compiled TypeScript
         \\# output (dist/index.js) via node. Resolves the install path
         \\# relative to this script so the binary works from anywhere.
@@ -1381,7 +1381,7 @@ pub fn build(b: *std.Build) void {
 
     // === mcp-http-hello-world: TypeScript test MCP server (Streamable HTTP) ===
     // Sibling of mcp-hello-world: same 3 tools, different transport.
-    // Self-test target for the nalar MCP Streamable HTTP client.
+    // Self-test target for the pabrik MCP Streamable HTTP client.
     // Built from src/apps/mcp_http_hello_world/index.ts (TypeScript +
     // @modelcontextprotocol/sdk + zod). The build chain mirrors the
     // mcp-hello-world chain: pnpm install → pnpm test → pnpm run build
@@ -1422,7 +1422,7 @@ pub fn build(b: *std.Build) void {
     // write the wrapper to .zig-cache, install it to bin/, chmod 0755.
     const http_wrapper_body =
         "#!/bin/sh\n" ++
-        \\# mcp-http-hello-world — nalar's MCP Streamable HTTP self-test target.
+        \\# mcp-http-hello-world — pabrik's MCP Streamable HTTP self-test target.
         \\# Auto-generated by build.zig. Invokes the compiled TypeScript
         \\# output (dist/index.js) via node. Resolves the install path
         \\# relative to this script so the binary works from anywhere.
@@ -1593,7 +1593,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     }
 
     // Hoisted so the webapp-rebuild path can also depend on it (fresh
-    // checkout → `zig build nalar-desktop` needs node_modules too).
+    // checkout → `zig build pabrik-desktop` needs node_modules too).
     // Declared unconditionally; the dependency edge is attached further
     // down, after webapp_rebuild_bun exists.
     const rebuild_install_cmd = b.addSystemCommand(&.{ "pnpm", "install", "--frozen-lockfile" });
@@ -1615,7 +1615,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // `b.addSystemCommand` caches based on (command string, cwd, watch
     // inputs) only — it does NOT watch webapp source files. So editing
     // src/apps/desktop/src/**/*.vue leaves the embedded webapp_assets.zig
-    // (and nalar-desktop binary) stale with respect to those edits.
+    // (and pabrik-desktop binary) stale with respect to those edits.
     //
     // An earlier attempt used `addDirectoryWatchInput` on src/, but that
     // caused cache invalidation on EVERY noop build — Vite's output isn't
@@ -1624,11 +1624,11 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     //
     // The workflow is now FRESH ASSETS BY DEFAULT:
     //
-    //     `zig build nalar-desktop` always runs
+    //     `zig build pabrik-desktop` always runs
     //       clean → `pnpm run build` → codegen → compile + link,
     //
     // so the embedded webapp matches the current .vue sources every
-    // time. Cost: every nalar-desktop build pays the vite build
+    // time. Cost: every pabrik-desktop build pays the vite build
     // (~10 s+) plus an exe relink (the generated webapp_assets.zig is
     // not byte-stable across vite runs). This is intentional — the
     // user asked for fresh assets over cache-friendliness.
@@ -1672,7 +1672,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // `pnpm install` via the node_modules_exists probe above, but that
     // only attaches to build_webapp_step. Attach the same install here
     // so a fresh checkout running straight into `zig build
-    // nalar-desktop` doesn't fail with "vite: not found" inside the
+    // pabrik-desktop` doesn't fail with "vite: not found" inside the
     // rebuild's pnpm run build. (The rebuild_install_cmd step is
     // declared next to install_cmd above.)
     if (!node_modules_exists) {
@@ -1733,20 +1733,20 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     codegen.addArg(b.pathJoin(&.{ "src", "apps", "desktop_app", "embedded", "webapp_assets.zig" }));
     codegen_step.dependOn(&codegen.step);
 
-    // === nalar-desktop (native webview wrapper) ===
+    // === pabrik-desktop (native webview wrapper) ===
     // Chunk 1: hello-world binary + build wiring. The real entry point lands
-    // in Chunk 8 (lifecycle wiring: parse CLI → spawn nalar → open webview).
+    // in Chunk 8 (lifecycle wiring: parse CLI → spawn pabrik → open webview).
     // Platform-specific deps (WebKitGTK, WKWebView, WebView2) are added in
     // Chunks 5-7 when the webview implementations land.
     const desktop_exe = b.addExecutable(.{
-        .name = "nalar-desktop",
+        .name = "pabrik-desktop",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/apps/desktop_app/main.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "nalarcore", .module = mod },
+                .{ .name = "pabrikcore", .module = mod },
                 .{ .name = "helpers", .module = helpers_mod },
             },
         }),
@@ -1891,7 +1891,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 if (cn < cflags.len) { cflags[cn] = b.fmt("-isystem{s}/backward", .{cxx}); cn += 1; }
             } else {
                 std.log.warn(
-                    "nalar-desktop: no /usr/include/c++/* found — falling back to zig's bundled libc++. " ++
+                    "pabrik-desktop: no /usr/include/c++/* found — falling back to zig's bundled libc++. " ++
                         "Expect <wint_t>/<errno>/<FP_NAN> typedef conflicts on hosts with a glibc <math.h>. " ++
                         "Install gcc-libs to silence this.",
                     .{},
@@ -1907,8 +1907,8 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             // the Linux branch above). webview.h auto-selects its
             // Cocoa/WKWebView backend on __APPLE__ — no WEBVIEW_COCOA
             // define needed. The old Objective-C++ shim
-            // (platform/macos/nalar_webview.mm) is deleted: it
-            // implemented the old nalar_webview_* C ABI which main.zig
+            // (platform/macos/pabrik_webview.mm) is deleted: it
+            // implemented the old pabrik_webview_* C ABI which main.zig
             // no longer calls (the webview-lib swap moved main.zig to
             // webview_create/webview_run directly).
             //
@@ -1958,8 +1958,8 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             // Windows webview: vendored webview/webview library (same as
             // the Linux + macOS branches above). webview.h auto-selects
             // its WebView2 backend on _WIN32 — no WEBVIEW_EDGE define
-            // needed. The old C++ shim (platform/windows/nalar_webview.cpp)
-            // implemented the old nalar_webview_* C ABI which main.zig
+            // needed. The old C++ shim (platform/windows/pabrik_webview.cpp)
+            // implemented the old pabrik_webview_* C ABI which main.zig
             // no longer calls (webview-lib swap moved main.zig to
             // webview_create/run directly). Its prerequisite gate
             // (MSVC C++ stdlib + WebView2 NuGet) was a separate concern;
@@ -1972,7 +1972,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             // Two gates: the MSVC C++ stdlib must be available, AND
             // the WebView2 NuGet headers must be staged next to the .cpp.
             // If either is missing, fall back to a stub that exports
-            // the symbols as no-ops so `zig build nalar-desktop` still
+            // the symbols as no-ops so `zig build pabrik-desktop` still
             // succeeds on dev boxes without MSVC + NuGet extraction.
             const use_real_webview = blk: {
                 // NOTE: -Dno-webapp-rebuild does NOT force the stub — it
@@ -1987,7 +1987,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 if (msvcVersionRoot(b) == null) break :blk false;
                 if (webview2MissingPrereq(b)) |missing| {
                     std.log.warn(
-                        "nalar-desktop: MSVC C++ toolchain found, but WebView2 prerequisite {s} is missing under " ++
+                        "pabrik-desktop: MSVC C++ toolchain found, but WebView2 prerequisite {s} is missing under " ++
                             "src/apps/desktop_app/platform/windows/ — using the no-op webview stub instead. " ++
                             "Extract build/native/include/* + runtimes/win-x64/native/WebView2Loader.dll from the " ++
                             "Microsoft.Web.WebView2 NuGet package there to enable the real webview.",
@@ -1999,7 +1999,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             };
             if (require_real_webview and !use_real_webview) {
                 std.log.err(
-                    "nalar-desktop: -Drequire-real-webview is set but the real webview/webview build is unavailable on this host " ++
+                    "pabrik-desktop: -Drequire-real-webview is set but the real webview/webview build is unavailable on this host " ++
                         "(missing MSVC C++ toolchain or WebView2 NuGet staging under src/apps/desktop_app/platform/windows/) — " ++
                         "refusing to build the no-op stub whose webview_create() always returns NULL. See the warnings above for the missing piece.",
                     .{},
@@ -2111,7 +2111,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             // in extraction.zig / subprocess.zig resolve at link time.
             desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
             desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
-            // WebView2Loader.lib lives next to nalar_webview.cpp in the
+            // WebView2Loader.lib lives next to pabrik_webview.cpp in the
             // old layout; webview.h includes <WebView2.h> from
             // src/apps/desktop_app/platform/windows/ (NuGet-staged
             // location). Add that dir to the include + library search
@@ -2226,7 +2226,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             });            // The import lib only records the dependency — at RUNTIME the
             // Windows loader resolves WebView2Loader.dll via the standard
             // search order (exe dir first). Install the NuGet-staged copy
-            // next to the exe so a fresh `zig-out/bin/nalar-desktop.exe`
+            // next to the exe so a fresh `zig-out/bin/pabrik-desktop.exe`
             // starts without requiring the DLL on PATH. Wired into
             // `desktop_install` after the switch (it doesn't exist yet
             // here).
@@ -2250,7 +2250,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 // The previous design (bf008b4d) called
                 // `std.process.exit(1)` here at config time — killing
                 // every `zig build` invocation (including `zig build
-                // test`, which doesn't need nalar-desktop at all) on a
+                // test`, which doesn't need pabrik-desktop at all) on a
                 // Windows dev box without MSVC + WebView2. That broke
                 // the test-only workflow on Windows.
                 //
@@ -2260,13 +2260,13 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 // webview_lib.zig; webview_create() returns NULL,
                 // main.zig's runWindow surfaces
                 // `error.WebviewCreateFailed`, and the user sees a
-                // clear log line. nalar-desktop.exe compiles + links +
+                // clear log line. pabrik-desktop.exe compiles + links +
                 // the `--smoke-test` path runs cleanly, but the window
                 // can't actually open (no WebView2 runtime).
                 //
                 // This matches Linux/macOS semantics: on Linux, a
                 // dev box without webkit2gtk-4.1 still produces a
-                // nalar-desktop binary that fails at runtime when it
+                // pabrik-desktop binary that fails at runtime when it
                 // tries to call webview_create; on macOS, the same with
                 // Cocoa/WebKit missing. The Windows path now matches.
                 //
@@ -2275,9 +2275,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 // stub is only for dev boxes without those
                 // prerequisites.
                 std.log.warn(
-                    "nalar-desktop: MSVC C++ toolchain and/or Microsoft.Web.WebView2 " ++
+                    "pabrik-desktop: MSVC C++ toolchain and/or Microsoft.Web.WebView2 " ++
                         "NuGet headers not found on this host — using no-op stub " ++
-                        "(nalar-desktop will build but cannot open a webview window). " ++
+                        "(pabrik-desktop will build but cannot open a webview window). " ++
                         "Install Visual Studio Build Tools + extract the " ++
                         "Microsoft.Web.WebView2 NuGet to get a real webview.",
                     .{},
@@ -2312,14 +2312,14 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // the dll install into `build:all` via desktop_install's edge.
     if (webview2_dll_install_step) |dll_step| desktop_install.step.dependOn(dll_step);
     // Windows: bundle vcpkg runtime DLLs (libcurl.dll, sqlite3.dll, ...)
-    // next to nalar-desktop.exe AND the nalar service exe so Explorer
+    // next to pabrik-desktop.exe AND the pabrik service exe so Explorer
     // double-click works with a clean PATH (see installVcpkgDlls doc).
     installVcpkgDlls(b, &desktop_install.step);
     installVcpkgDlls(b, b.getInstallStep());
     // Windows-only shipped webapp (persistent, no temp extraction):
     // copy src/apps/desktop/dist → zig-out/bin/html so the Windows
-    // release zip can bundle it and Install-Nalar.ps1 can install it to
-    // %LOCALAPPDATA%\nalar\html. The desktop (Windows-only, see
+    // release zip can bundle it and Install-Pabrik.ps1 can install it to
+    // %LOCALAPPDATA%\pabrik\html. The desktop (Windows-only, see
     // path_resolve.findInstalledWebapp) prefers that persistent dir and
     // only falls back to embedded-asset temp extraction when it is
     // missing (dev runs, broken installs). Linux/macOS ignore this dir
@@ -2353,7 +2353,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // Reuse the early `no_webapp_rebuild` value here; do not re-parse.
 
     // Make the desktop binary depend on the FRESH-ASSETS codegen chain:
-    // clean → `bun run build` → codegen. Every nalar-desktop build
+    // clean → `bun run build` → codegen. Every pabrik-desktop build
     // rebuilds the webapp from current sources and re-embeds it, so the
     // binary always matches the .vue files on disk (user-requested
     // behavior; see the "Webapp rebuild workflow" comment above for the
@@ -2391,30 +2391,30 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         }
     }
 
-    // `zig build nalar-desktop` alias — depends on:
-    //   - the install step (which includes `nalar` via b.installArtifact
-    //     above, so the nalar service binary that nalar-desktop would
+    // `zig build pabrik-desktop` alias — depends on:
+    //   - the install step (which includes `pabrik` via b.installArtifact
+    //     above, so the pabrik service binary that pabrik-desktop would
     //     auto-spawn ends up in zig-out/bin/)
-    //   - desktop_install (the nalar-desktop binary itself, captured
+    //   - desktop_install (the pabrik-desktop binary itself, captured
     //     separately because adding b.installArtifact(desktop_exe)
     //     directly to getInstallStep() would put it in the default
     //     `zig build` install path too — the comment at desktop_install
     //     explains why we don't want that).
-    // Without this, `zig build nalar-desktop` only produces the `nalar`
+    // Without this, `zig build pabrik-desktop` only produces the `pabrik`
     // binary — the desktop binary is skipped because it's only attached
     // to `build_all_step`. CI's "Verify desktop + service binaries (Linux)"
-    // step checks both exist after `zig build nalar-desktop`, so this
-    // would fail with "✗ zig-out/bin/nalar-desktop missing".
-    const build_nalar_desktop = b.step("nalar-desktop", "Build the nalar-desktop binary (and the nalar service binary it auto-spawns)");
-    build_nalar_desktop.dependOn(b.getInstallStep());
-    build_nalar_desktop.dependOn(&desktop_install.step);
+    // step checks both exist after `zig build pabrik-desktop`, so this
+    // would fail with "✗ zig-out/bin/pabrik-desktop missing".
+    const build_pabrik_desktop = b.step("pabrik-desktop", "Build the pabrik-desktop binary (and the pabrik service binary it auto-spawns)");
+    build_pabrik_desktop.dependOn(b.getInstallStep());
+    build_pabrik_desktop.dependOn(&desktop_install.step);
 
-    const run_desktop = b.step("run:desktop-app", "Run the nalar desktop wrapper");
+    const run_desktop = b.step("run:desktop-app", "Run the pabrik desktop wrapper");
     const run_desktop_cmd = b.addRunArtifact(desktop_exe);
     run_desktop.dependOn(&run_desktop_cmd.step);
     if (b.args) |args| run_desktop_cmd.addArgs(args);
 
-    const test_desktop = b.step("test:desktop-app", "Run nalar-desktop unit tests");
+    const test_desktop = b.step("test:desktop-app", "Run pabrik-desktop unit tests");
     const desktop_tests = b.addTest(.{
         .root_module = desktop_exe.root_module,
     });
@@ -2497,7 +2497,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // via the project's `kabelweb` module (libcurl-backed,
     // cross-platform per the kabelweb repo docs).
     //
-    // The CLI module is independent of `nalarcore`: it talks HTTP,
+    // The CLI module is independent of `pabrikcore`: it talks HTTP,
     // not SQLite, so importing `mod` would pull in the database +
     // SSE machinery we don't need. We build its executable directly
     // from `src/apps/cli/main.zig` and hand it the `kabelweb`
@@ -2510,7 +2510,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     cli_module.addImport("kabelweb", kabelweb_mod);
 
     const cli_exe = b.addExecutable(.{
-        .name = "nalarcli",
+        .name = "pabrikcli",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/apps/cli/src/main.zig"),
             .target = target,
@@ -2551,7 +2551,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     run_cli_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cli_cmd.addArgs(args);
 
-    // === nalarcli unit tests (`zig build test:cli`) ===
+    // === pabrikcli unit tests (`zig build test:cli`) ===
     // The CLI module re-exports test files via its `root.zig`, so a
     // single `b.addTest({ .root_module = cli_module })` step picks up
     // every `_test.zig` under `src/apps/cli/` without listing them.
@@ -2559,22 +2559,22 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const cli_tests = b.addTest(.{ .root_module = cli_module });
     cli_tests.root_module.linkSystemLibrary("c", .{});
     cli_tests.root_module.link_libc = true;
-    const test_cli = b.step("test:cli", "Run nalarcli unit tests");
+    const test_cli = b.step("test:cli", "Run pabrikcli unit tests");
     const run_cli_tests = b.addRunArtifact(cli_tests);
     // Windows: ensure vcpkg bin (libcurl.dll, …) is on PATH at test
     // runtime — see `prependVcpkgBinToPath` doc comment.
     prependVcpkgBinToPath(b, run_cli_tests);
     test_cli.dependOn(&run_cli_tests.step);
 
-    // === nalarcli install-only (`zig build install:cli`) ===
+    // === pabrikcli install-only (`zig build install:cli`) ===
     // Skips the full `build:all` dance — just installs the cli binary.
-    const install_cli_step = b.step("install:cli", "Install the nalarcli binary only");
+    const install_cli_step = b.step("install:cli", "Install the pabrikcli binary only");
     install_cli_step.dependOn(&cli_install.step);
 
     // =====================================================================
     // TUI executable (`src/apps/cli/src/tui_main.zig`) — an interactive,
     // streaming, Claude-Code-style chat client over the same backend
-    // endpoints as `nalarcli`. Powered by the from-scratch `tui` module
+    // endpoints as `pabrikcli`. Powered by the from-scratch `tui` module
     // (Bubble-Tea-style Model/update/view architecture) that lives at
     // `src/apps/cli/src/tui/`. Same libcurl transport via
     // `kabelweb_mod`; no new dependencies.
@@ -2584,11 +2584,11 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     });
     tui_module.addImport("kabelweb", kabelweb_mod);
     // Let the app model reach the transport helpers through the same
-    // import surface used by nalarcli.
+    // import surface used by pabrikcli.
     tui_module.addImport("cli", cli_module);
 
     const tui_exe = b.addExecutable(.{
-        .name = "nalar-tui",
+        .name = "pabrik-tui",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/apps/cli/src/tui_main.zig"),
             .target = target,
@@ -2612,25 +2612,25 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     run_tui_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_tui_cmd.addArgs(args);
 
-    // === nalar-tui unit tests (`zig build test:tui`) ===
+    // === pabrik-tui unit tests (`zig build test:tui`) ===
     // The tui module re-exports its test files via `tui/root.zig`, so a
     // single addTest on the module picks up every test in the tree.
     const tui_tests = b.addTest(.{ .root_module = tui_module });
     tui_tests.root_module.linkSystemLibrary("c", .{});
     tui_tests.root_module.link_libc = true;
-    const test_tui = b.step("test:tui", "Run nalar-tui unit tests");
+    const test_tui = b.step("test:tui", "Run pabrik-tui unit tests");
     const run_tui_tests = b.addRunArtifact(tui_tests);
     test_tui.dependOn(&run_tui_tests.step);
 
-    // === nalar-tui install-only (`zig build install:tui`) ===
-    const install_tui_step = b.step("install:tui", "Install the nalar-tui binary only");
+    // === pabrik-tui install-only (`zig build install:tui`) ===
+    const install_tui_step = b.step("install:tui", "Install the pabrik-tui binary only");
     install_tui_step.dependOn(&tui_install.step);
 
-    // === nalar-tui user-local install (`zig build install-tui`) ===
-    // Builds nalar-tui and copies it to the per-user bin directory:
-    //   Linux:   $HOME/.local/bin/nalar-tui
-    //   macOS:   $HOME/.local/bin/nalar-tui
-    //   Windows: %LOCALAPPDATA%\nalar\bin\nalar-tui.exe
+    // === pabrik-tui user-local install (`zig build install-tui`) ===
+    // Builds pabrik-tui and copies it to the per-user bin directory:
+    //   Linux:   $HOME/.local/bin/pabrik-tui
+    //   macOS:   $HOME/.local/bin/pabrik-tui
+    //   Windows: %LOCALAPPDATA%\pabrik\bin\pabrik-tui.exe
     //            (fallback: %APPDATA%, %USERPROFILE%, $HOME)
     // The copy is done by a small Zig helper (tools/install_tui.zig) so it
     // works without shell dependencies (no `cp`, no `sh`).
@@ -2644,11 +2644,11 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         }),
     });
     const install_tui_run = b.addRunArtifact(install_tui_tool);
-    const tui_bin_name = if (b.graph.host.result.os.tag == .windows) "nalar-tui.exe" else "nalar-tui";
+    const tui_bin_name = if (b.graph.host.result.os.tag == .windows) "pabrik-tui.exe" else "pabrik-tui";
     install_tui_run.addArg(b.pathJoin(&.{ b.install_path, "bin", tui_bin_name }));
     install_tui_run.step.dependOn(&tui_install.step);
 
-    const install_tui_user_step = b.step("install-tui", "Build nalar-tui and install to user bin (~/.local/bin on Linux/macOS, %LOCALAPPDATA%\\nalar\\bin on Windows)");
+    const install_tui_user_step = b.step("install-tui", "Build pabrik-tui and install to user bin (~/.local/bin on Linux/macOS, %LOCALAPPDATA%\\pabrik\\bin on Windows)");
     install_tui_user_step.dependOn(&install_tui_run.step);
 
     const run_step = b.step("run", "Run the app");
@@ -2696,7 +2696,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
 
     // Tests need a SEPARATE module (not `mod`) so we can attach native
     // platform deps without polluting `mod` for cross-compile consumers.
-    // The test module does self-import ("nalarcore" → itself) the same
+    // The test module does self-import ("pabrikcore" → itself) the same
     // way `mod` does, and imports kabelweb from the shared
     // module so test code can use the HTTP client.
     const test_target = target; // tests always run on the native host
@@ -2705,7 +2705,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .target = test_target,
         .optimize = optimize,
     });
-    mod_tests_module.addImport("nalarcore", mod_tests_module);
+    mod_tests_module.addImport("pabrikcore", mod_tests_module);
     mod_tests_module.addImport("kabelweb", kabelweb_mod);
     mod_tests_module.addImport("helpers", helpers_mod);
     // Same `databases` import as `mod` — tests that touch sqlite3 get
@@ -2760,7 +2760,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // sqlite3 comes from the external `databases` package (ruangsql) via
     // the module graph — no in-tree fetch step needed. (libcurl likewise:
     // kabelweb is an external URL dependency now — its own package + CI
-    // own the vendored curl archive, and nalar builds link system
+    // own the vendored curl archive, and pabrik builds link system
     // curl/ssl/crypto via the module graph. See the kabelweb repo.)
     test_step.dependOn(&run_mod_tests.step);
 
@@ -2834,7 +2834,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .abi = .gnu,
         .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
     });
-    const linux_exe = createPlatformExe(b, mod, helpers_mod, linux_target, optimize, "nalarcore-linux-x86_64");
+    const linux_exe = createPlatformExe(b, mod, helpers_mod, linux_target, optimize, "pabrikcore-linux-x86_64");
     linux_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     // libcurl is linked via kabelweb_mod's transitive deps
@@ -2853,9 +2853,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     });
     // NB: don't include `.exe` in the name — Zig 0.16's `addExecutable`
     // auto-appends `.exe` on Windows targets, so passing a name with `.exe`
-    // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
+    // already produces the doubled suffix `pabrikcore-windows-x86_64.exe.exe`
     // (which the CI yaml's verify step doesn't expect).
-    const windows_exe = createPlatformExe(b, mod, helpers_mod, windows_target, optimize, "nalarcore-windows-x86_64");
+    const windows_exe = createPlatformExe(b, mod, helpers_mod, windows_target, optimize, "pabrikcore-windows-x86_64");
     // libcurl is linked via kabelweb_mod's transitive deps (kabelweb
     // package owns its Windows/vcpkg wiring).
     windows_exe.root_module.link_libc = true;
@@ -2883,7 +2883,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .cpu_arch = .x86_64,
         .os_tag = .macos,
     });
-    const macos_exe = createPlatformExe(b, mod, helpers_mod, macos_target, optimize, "nalarcore-macos-x86_64");
+    const macos_exe = createPlatformExe(b, mod, helpers_mod, macos_target, optimize, "pabrikcore-macos-x86_64");
     // libcurl is linked via kabelweb_mod's transitive deps.
     macos_exe.root_module.link_libc = true;
     const install_macos = b.addInstallArtifact(macos_exe, .{});
@@ -2894,7 +2894,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .cpu_arch = .aarch64,
         .os_tag = .macos,
     });
-    const macos_arm_exe = createPlatformExe(b, mod, helpers_mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
+    const macos_arm_exe = createPlatformExe(b, mod, helpers_mod, macos_arm_target, optimize, "pabrikcore-macos-aarch64");
     // libcurl is linked via kabelweb_mod's transitive deps.
     macos_arm_exe.root_module.link_libc = true;
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
@@ -2902,7 +2902,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     _ = is_native_macos;
 
     const linux_system_step = b.step("install:linux:system", "Build for Linux x86_64 and install to system");
-    const linux_system_exe = createPlatformExe(b, mod, helpers_mod, target, optimize, "nalar");
+    const linux_system_exe = createPlatformExe(b, mod, helpers_mod, target, optimize, "pabrik");
     linux_system_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     // libcurl is linked via kabelweb_mod's transitive deps.
@@ -2912,8 +2912,8 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     linux_system_step.dependOn(&install_linux_system.step);
     const copy_to_system = b.addSystemCommand(&.{
         "cp",
-        "zig-out/bin/nalar",
-        "/usr/local/bin/nalar",
+        "zig-out/bin/pabrik",
+        "/usr/local/bin/pabrik",
     });
     copy_to_system.step.dependOn(&install_linux_system.step);
     linux_system_step.dependOn(&copy_to_system.step);
@@ -2921,24 +2921,24 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // =====================================================================
     // install:linux:app — Linux desktop launcher entry (GNOME/KDE search)
     //
-    // `zig build nalar-desktop` only drops `zig-out/bin/nalar-desktop`,
+    // `zig build pabrik-desktop` only drops `zig-out/bin/pabrik-desktop`,
     // which the launcher never indexes. The freedesktop launcher only
     // searches `*.desktop` files under `/usr/share/applications` (system)
     // or `~/.local/share/applications` (user). This step installs the
-    // system-wide entry so Super-key search finds Nalar:
+    // system-wide entry so Super-key search finds Pabrik:
     //
-    //   zig-out/bin/nalar-desktop        → /usr/local/bin/nalar-desktop
-    //   zig-out/bin/nalar (service)      → /usr/local/bin/nalar
-    //   packaging/linux/nalar.desktop    → /usr/share/applications/nalar.desktop
-    //   packaging/linux/nalar-browser.desktop → /usr/share/applications/nalar-browser.desktop
-    //   src/apps/desktop/public/favicon.ico → /usr/share/pixmaps/nalar.ico
+    //   zig-out/bin/pabrik-desktop        → /usr/local/bin/pabrik-desktop
+    //   zig-out/bin/pabrik (service)      → /usr/local/bin/pabrik
+    //   packaging/linux/pabrik.desktop    → /usr/share/applications/pabrik.desktop
+    //   packaging/linux/pabrik-browser.desktop → /usr/share/applications/pabrik-browser.desktop
+    //   src/apps/desktop/public/favicon.ico → /usr/share/pixmaps/pabrik.ico
     //
     // The service copy is REQUIRED, not optional: the desktop resolves
-    // its backend as `--nalar-path` → next-to-self → $PATH
-    // (src/apps/desktop_app/attach.zig). Without /usr/local/bin/nalar,
+    // its backend as `--pabrik-path` → next-to-self → $PATH
+    // (src/apps/desktop_app/attach.zig). Without /usr/local/bin/pabrik,
     // next-to-self misses, $PATH misses, auto-spawn returns
-    // NalarNotFound to stderr (invisible from a launcher click — "nothing
-    // happens"), and only a manually pre-started `nalar service` lets the
+    // PabrikNotFound to stderr (invisible from a launcher click — "nothing
+    // happens"), and only a manually pre-started `pabrik service` lets the
     // desktop attach. Installing both side-by-side restores one-click launch.
     //
     // Requires sudo (same as `install:linux:system` which writes to
@@ -2952,33 +2952,33 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // asks shell.qml's crash-only restart timer (1s) to respawn it fresh.
     // Non-Quickshell boxes don't have the process; the `|| true` no-ops.
     // =====================================================================
-    const linux_app_step = b.step("install:linux:app", "Build nalar-desktop and install launcher entry so it appears in GNOME/KDE search (requires sudo)");
+    const linux_app_step = b.step("install:linux:app", "Build pabrik-desktop and install launcher entry so it appears in GNOME/KDE search (requires sudo)");
     linux_app_step.dependOn(&desktop_install.step);
     linux_app_step.dependOn(b.getInstallStep());
     const copy_desktop_bin = b.addSystemCommand(&.{
         "cp",
-        "zig-out/bin/nalar-desktop",
-        "/usr/local/bin/nalar-desktop",
+        "zig-out/bin/pabrik-desktop",
+        "/usr/local/bin/pabrik-desktop",
     });
     copy_desktop_bin.step.dependOn(&desktop_install.step);
     linux_app_step.dependOn(&copy_desktop_bin.step);
-    const copy_nalar_svc = b.addSystemCommand(&.{
+    const copy_pabrik_svc = b.addSystemCommand(&.{
         "cp",
-        "zig-out/bin/nalar",
-        "/usr/local/bin/nalar",
+        "zig-out/bin/pabrik",
+        "/usr/local/bin/pabrik",
     });
-    copy_nalar_svc.step.dependOn(b.getInstallStep());
-    linux_app_step.dependOn(&copy_nalar_svc.step);
+    copy_pabrik_svc.step.dependOn(b.getInstallStep());
+    linux_app_step.dependOn(&copy_pabrik_svc.step);
     const install_desktop_file = b.addSystemCommand(&.{
         "/bin/sh", "-c",
-        "mkdir -p /usr/share/applications && cp packaging/linux/nalar.desktop /usr/share/applications/nalar.desktop && chmod 644 /usr/share/applications/nalar.desktop && cp packaging/linux/nalar-browser.desktop /usr/share/applications/nalar-browser.desktop && chmod 644 /usr/share/applications/nalar-browser.desktop",
+        "mkdir -p /usr/share/applications && cp packaging/linux/pabrik.desktop /usr/share/applications/pabrik.desktop && chmod 644 /usr/share/applications/pabrik.desktop && cp packaging/linux/pabrik-browser.desktop /usr/share/applications/pabrik-browser.desktop && chmod 644 /usr/share/applications/pabrik-browser.desktop",
     });
     install_desktop_file.step.dependOn(&copy_desktop_bin.step);
-    install_desktop_file.step.dependOn(&copy_nalar_svc.step);
+    install_desktop_file.step.dependOn(&copy_pabrik_svc.step);
     linux_app_step.dependOn(&install_desktop_file.step);
     const install_desktop_icon = b.addSystemCommand(&.{
         "/bin/sh", "-c",
-        "mkdir -p /usr/share/pixmaps && cp src/apps/desktop/public/favicon.ico /usr/share/pixmaps/nalar.ico && chmod 644 /usr/share/pixmaps/nalar.ico",
+        "mkdir -p /usr/share/pixmaps && cp src/apps/desktop/public/favicon.ico /usr/share/pixmaps/pabrik.ico && chmod 644 /usr/share/pixmaps/pabrik.ico",
     });
     install_desktop_icon.step.dependOn(&install_desktop_file.step);
     linux_app_step.dependOn(&install_desktop_icon.step);
@@ -2994,23 +2994,23 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     //
     // Windows-only (invoking on Linux/macOS fails at the powershell spawn
     // with a clear error — the step still configures cleanly everywhere).
-    // Builds both binaries, then runs packaging/windows/Install-Nalar.ps1
+    // Builds both binaries, then runs packaging/windows/Install-Pabrik.ps1
     // with -SourceDir zig-out/bin. The script copies
-    // nalar-desktop.exe + nalar.exe + *.dll (vcpkg runtimes +
-    // WebView2Loader.dll via installVcpkgDlls) to %LOCALAPPDATA%\nalar\bin
-    // and creates Nalar.lnk in the per-user Start Menu — Win-key search
+    // pabrik-desktop.exe + pabrik.exe + *.dll (vcpkg runtimes +
+    // WebView2Loader.dll via installVcpkgDlls) to %LOCALAPPDATA%\pabrik\bin
+    // and creates Pabrik.lnk in the per-user Start Menu — Win-key search
     // finds it. All user-local: no Program Files, no HKLM, no admin.
     //
     // The service exe ships alongside for the same reason as Linux (see
-    // above): the desktop auto-spawns `nalar.exe` next to itself, and a
+    // above): the desktop auto-spawns `pabrik.exe` next to itself, and a
     // lone desktop exe silently fails to start its backend.
     // =====================================================================
-    const windows_app_step = b.step("install:windows:app", "Build nalar-desktop + service and install user-local with Start Menu shortcut (Windows-only, no admin)");
+    const windows_app_step = b.step("install:windows:app", "Build pabrik-desktop + service and install user-local with Start Menu shortcut (Windows-only, no admin)");
     windows_app_step.dependOn(&desktop_install.step);
     windows_app_step.dependOn(b.getInstallStep());
     const run_windows_app_install = b.addSystemCommand(&.{
         "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", "packaging/windows/Install-Nalar.ps1",
+        "-File", "packaging/windows/Install-Pabrik.ps1",
         "-SourceDir", "zig-out/bin",
     });
     run_windows_app_install.step.dependOn(&desktop_install.step);
@@ -3023,23 +3023,23 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // macOS-only at runtime (invoking on Linux/Windows fails at the sh
     // spawn with a clear error — the step still configures cleanly
     // everywhere). Builds both binaries, then runs
-    // packaging/macos/install-nalar-app.sh with zig-out/bin: assembles
-    // ~/Applications/Nalar.app (Contents/MacOS/{nalar-desktop,nalar} +
+    // packaging/macos/install-pabrik-app.sh with zig-out/bin: assembles
+    // ~/Applications/Pabrik.app (Contents/MacOS/{pabrik-desktop,pabrik} +
     // Info.plist), clears quarantine and ad-hoc signs (best-effort).
     // All user-local: never /Applications, no sudo. Spotlight indexes
-    // ~/Applications, so Win-key-equivalent (Cmd+Space) finds "Nalar".
+    // ~/Applications, so Win-key-equivalent (Cmd+Space) finds "Pabrik".
     //
     // The service binary ships inside the bundle for the same reason as
-    // Linux/Windows (see above): the desktop auto-spawns `nalar` next to
+    // Linux/Windows (see above): the desktop auto-spawns `pabrik` next to
     // itself, and a lone desktop binary silently fails its backend.
     // No custom icon in v1 (only favicon.ico exists; .icns needs macOS
     // iconutil) — the bundle still indexes by name.
     // =====================================================================
-    const macos_app_step = b.step("install:macos:app", "Build nalar-desktop + service and install Nalar.app to ~/Applications (macOS-only, no sudo)");
+    const macos_app_step = b.step("install:macos:app", "Build pabrik-desktop + service and install Pabrik.app to ~/Applications (macOS-only, no sudo)");
     macos_app_step.dependOn(&desktop_install.step);
     macos_app_step.dependOn(b.getInstallStep());
     const run_macos_app_install = b.addSystemCommand(&.{
-        "/bin/sh", "packaging/macos/install-nalar-app.sh", "zig-out/bin",
+        "/bin/sh", "packaging/macos/install-pabrik-app.sh", "zig-out/bin",
     });
     run_macos_app_install.step.dependOn(&desktop_install.step);
     run_macos_app_install.step.dependOn(b.getInstallStep());
@@ -3047,15 +3047,15 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
 
     const dev_optimize: std.builtin.OptimizeMode = .Debug;
 
-    const dev_linux_system_step = b.step("install:dev:linux:system", "Build nalar-dev (debug) for Linux x86_64 and install to system");
+    const dev_linux_system_step = b.step("install:dev:linux:system", "Build pabrik-dev (debug) for Linux x86_64 and install to system");
     const dev_exe = b.addExecutable(.{
-        .name = "nalar-dev",
+        .name = "pabrik-dev",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = dev_optimize,
             .imports = &.{
-                .{ .name = "nalarcore", .module = mod },
+                .{ .name = "pabrikcore", .module = mod },
                 .{ .name = "helpers", .module = helpers_mod },
             },
         }),
@@ -3070,8 +3070,8 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     dev_linux_system_step.dependOn(&install_dev.step);
     const copy_dev_to_system = b.addSystemCommand(&.{
         "cp",
-        "zig-out/bin/nalar-dev",
-        "/usr/local/bin/nalar-dev",
+        "zig-out/bin/pabrik-dev",
+        "/usr/local/bin/pabrik-dev",
     });
     copy_dev_to_system.step.dependOn(&install_dev.step);
     dev_linux_system_step.dependOn(&copy_dev_to_system.step);
@@ -3079,11 +3079,11 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // =====================================================================
     // Functional tests (Python+pytest) — see tests/functional/README.md.
     //
-    // Booting a real nalar against an isolated tmpdir HOME. The harness
+    // Booting a real pabrik against an isolated tmpdir HOME. The harness
     // enforces a "never delete real $HOME" invariant via is_safe_tmp().
     //
     // Dependencies:
-    //   1. install:linux:system  — produces zig-out/bin/nalar
+    //   1. install:linux:system  — produces zig-out/bin/pabrik
     //   2. python3 venv at .venv-func  — installs requirements.txt once
     //
     // Skips silently if `python3` is missing on PATH (CI images all
@@ -3092,15 +3092,18 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // =====================================================================
     const python_exe = b.option([]const u8, "python", "Path to python3 binary (default: 'python3')") orelse "python3";
     // Venv location override (2026-08-25): CI relocates the venv OUTSIDE
-    // the workspace via NALAR_FUNC_VENV_DIR because self-hosted runners
+    // the workspace via PABRIK_FUNC_VENV_DIR because self-hosted runners
     // `git clean` the workspace between runs — a workspace-relative
     // .venv-func is recreated + pip-installed from scratch on every run.
-    // Pointing it at ~/.cache/nalar-ci-venv lets actions/cache persist it.
+    // Pointing it at ~/.cache/pabrik-ci-venv lets actions/cache persist it.
     // Unset (the default) keeps the historical `.venv-func` behavior for
     // local developers. NOTE: this must be read at CONFIG time so the
     // literal path can be baked into the addSystemCommand argv below.
-    const venv_dir_raw = b.graph.environ_map.get("NALAR_FUNC_VENV_DIR") orelse ".venv-func";
-    // Normalize Windows mixed separators (runner.temp is C:\...\ _temp + "/nalar-ci-venv" → "C:\...\ _temp/nalar-ci-venv").
+    // Both spellings are accepted: CI sets this at configure time, so a
+    // rename without the fallback would silently drop the cached venv.
+    const venv_dir_raw = b.graph.environ_map.get("PABRIK_FUNC_VENV_DIR") orelse
+        b.graph.environ_map.get("NALAR_FUNC_VENV_DIR") orelse ".venv-func";
+    // Normalize Windows mixed separators (runner.temp is C:\...\ _temp + "/pabrik-ci-venv" → "C:\...\ _temp/pabrik-ci-venv").
     // Use forward slashes internally; Python on Windows handles both.
     const venv_dir = blk: {
         const dup = b.allocator.dupe(u8, venv_dir_raw) catch unreachable;
@@ -3204,8 +3207,8 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     run_functional.step.dependOn(&install_requirements.step);
     run_functional.step.dependOn(&python_probe.step);
     // Depend on the top-level `install` step (copies binary to
-    // zig-out/bin/nalar) rather than `install:linux:system` which
-    // additionally tries to `cp` to /usr/local/bin/nalar and fails
+    // zig-out/bin/pabrik) rather than `install:linux:system` which
+    // additionally tries to `cp` to /usr/local/bin/pabrik and fails
     // on systems without write perms to /usr/local.
     run_functional.step.dependOn(b.getInstallStep());
     // Depend on the mcp-http-hello-world build step so the HTTP
@@ -3215,19 +3218,19 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // already in the default install via line ~1116.)
     run_functional.step.dependOn(mcp_http_hello_world_step);
 
-    const functional_test_step = b.step("functional-test", "Run functional tests against a real nalar with isolated tmpdir data");
+    const functional_test_step = b.step("functional-test", "Run functional tests against a real pabrik with isolated tmpdir data");
     functional_test_step.dependOn(&run_functional.step);
 
     // =====================================================================
     // Functional UI tests (Python+Playwright) — see tests/functional_ui/README.md.
     //
-    // Boots a real nalar backend + Vite dev server against isolated
+    // Boots a real pabrik backend + Vite dev server against isolated
     // tempdirs, then drives the running web app with Playwright Python.
     // Inherits isolation guarantees from the API-only functional suite
     // (``is_safe_tmp``, captured ``temp_dir``, ``ORIG_HOME`` snapshot).
     //
     // Dependencies:
-    //   1. install:linux:system  — produces zig-out/bin/nalar
+    //   1. install:linux:system  — produces zig-out/bin/pabrik
     //   2. python3 venv at .venv-func — installs requirements.txt + playwright
     //   3. playwright install chromium — one-time browser download (~150 MB)
     //
@@ -3261,7 +3264,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // Depend on the same binary install as the API suite.
     run_functional_ui.step.dependOn(b.getInstallStep());
 
-    const functional_test_ui_step = b.step("functional-test-ui", "Run UI functional tests (Playwright Python) against nalar + Vite dev server");
+    const functional_test_ui_step = b.step("functional-test-ui", "Run UI functional tests (Playwright Python) against pabrik + Vite dev server");
     functional_test_ui_step.dependOn(&run_functional_ui.step);
 
     // =====================================================================
@@ -3274,7 +3277,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     //   * one venv build + one `pip install -r` per suite (build.zig
     //     already shared the venv DIR, but each step still re-ran pip)
     //   * one `playwright install chromium` (~150 MB download) per suite
-    //   * one full `zig build install` walk for the nalar binary
+    //   * one full `zig build install` walk for the pabrik binary
     //   * one report to read, and no single verdict for "the functional
     //     suites"
     //
@@ -3333,11 +3336,11 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     //
     //   [zig build success]
     //
-    //     ✓ nalar service binary  →  zig-out/bin/nalarcore-linux-x86_64
-    //     ✓ nalar desktop binary  →  zig-out/bin/nalar-desktop
+    //     ✓ pabrik service binary  →  zig-out/bin/pabrikcore-linux-x86_64
+    //     ✓ pabrik desktop binary  →  zig-out/bin/pabrik-desktop
     //
-    //     Run with:  ./zig-out/bin/nalarcore-linux-x86_64 service start --port 8080
-    //                ./zig-out/bin/nalar-desktop --devtools
+    //     Run with:  ./zig-out/bin/pabrikcore-linux-x86_64 service start --port 8080
+    //                ./zig-out/bin/pabrik-desktop --devtools
     //
     // The simplest reliable banner is static text. We tried a `[ -x ... ]`
     // check on the installed binary paths, but Zig's `InstallArtifact`
@@ -3349,33 +3352,33 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // text is always right; the user's actual binary locations are
     // deterministic from the build config.
     // Host-aware binary name (replaces the previous hardcoded
-    // `nalarcore-linux-x86_64`). `zig build` on a macOS host should
-    // produce `nalarcore-macos-aarch64` (or `...-x86_64` for Intel),
-    // on a Windows host should produce `nalarcore-windows-x86_64.exe`,
+    // `pabrikcore-linux-x86_64`). `zig build` on a macOS host should
+    // produce `pabrikcore-macos-aarch64` (or `...-x86_64` for Intel),
+    // on a Windows host should produce `pabrikcore-windows-x86_64.exe`,
     // etc. Cross-compile artifacts remain available via explicit
     // `zig build install:<target>` (linux / macos / macos-arm / windows).
     const host_binary_name = switch (b.graph.host.result.os.tag) {
-        .linux => "nalarcore-linux-x86_64",
+        .linux => "pabrikcore-linux-x86_64",
         .macos => if (b.graph.host.result.cpu.arch == .aarch64)
-            "nalarcore-macos-aarch64"
+            "pabrikcore-macos-aarch64"
         else
-            "nalarcore-macos-x86_64",
-        .windows => "nalarcore-windows-x86_64.exe",
-        else => "nalarcore-unknown",
+            "pabrikcore-macos-x86_64",
+        .windows => "pabrikcore-windows-x86_64.exe",
+        else => "pabrikcore-unknown",
     };
     const desktop_binary_name = switch (b.graph.host.result.os.tag) {
-        .windows => "nalar-desktop.exe",
-        else => "nalar-desktop",
+        .windows => "pabrik-desktop.exe",
+        else => "pabrik-desktop",
     };
     const cli_binary_name = switch (b.graph.host.result.os.tag) {
-        .windows => "nalarcli.exe",
-        else => "nalarcli",
+        .windows => "pabrikcli.exe",
+        else => "pabrikcli",
     };
 
     // Build the banner script with host-specific binary names spliced in
     // via std.fmt.allocPrint. The script is a heredoc body; binary names
     // come from the const declarations above. On exotic hosts
-    // (`host_binary_name` = "nalarcore-unknown") the banner still prints
+    // (`host_binary_name` = "pabrikcore-unknown") the banner still prints
     // correctly — the user just sees the placeholder name.
     //
     // Note: std.fmt.comptimePrint would be cleaner, but `b.graph.host`
@@ -3408,9 +3411,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             \\echo.
             \\echo [zig build success]
             \\echo.
-            \\echo   nalar service binary  ---^> zig-out\\bin\\{s}
-            \\echo   nalar desktop binary  ---^> zig-out\\bin\\{s}
-            \\echo   nalarcli binary       ---^> zig-out\\bin\\{s}
+            \\echo   pabrik service binary  ---^> zig-out\\bin\\{s}
+            \\echo   pabrik desktop binary  ---^> zig-out\\bin\\{s}
+            \\echo   pabrikcli binary       ---^> zig-out\\bin\\{s}
             \\echo.
             \\echo   (If a binary is missing, run "rmdir /s /q zig-out && zig build"
             \\echo    to force a fresh install -- the cache sometimes hides
@@ -3440,9 +3443,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             \\echo ""
             \\echo "[zig build success]"
             \\echo ""
-            \\echo "  nalar service binary  →  $D/{s}"
-            \\echo "  nalar desktop binary  →  $D/{s}"
-            \\echo "  nalarcli binary       →  $D/{s}"
+            \\echo "  pabrik service binary  →  $D/{s}"
+            \\echo "  pabrik desktop binary  →  $D/{s}"
+            \\echo "  pabrikcli binary       →  $D/{s}"
             \\echo ""
             \\echo '  (If a binary is missing, run "rm -rf $D && zig build"'
             \\echo "   to force a fresh install — the cache sometimes hides"
@@ -3466,23 +3469,23 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     }
 
     const build_banner = b.addSystemCommand(banner_args);
-    const build_all_step = b.step("build:all", "Build nalar service + nalar-desktop, with end-of-build summary");
+    const build_all_step = b.step("build:all", "Build pabrik service + pabrik-desktop, with end-of-build summary");
     // The binaries live on different top-level install steps:
-    //   - host-specific nalarcore binary → install:<host> (Linux / macOS-arm / macOS / Windows)
-    //   - nalar-desktop                   → install (native target, includes
+    //   - host-specific pabrikcore binary → install:<host> (Linux / macOS-arm / macOS / Windows)
+    //   - pabrik-desktop                   → install (native target, includes
     //                                                  b.installArtifact(desktop_exe))
-    //   - nalarcli                        → cli_install (manual addInstallArtifact;
+    //   - pabrikcli                        → cli_install (manual addInstallArtifact;
     //                                                  see note above `cli_install`
     //                                                  for why we don't use the
     //                                                  default `install` step)
     //
     // `zig build` (the default) picks the install step matching the HOST
-    // — so a macOS host gets `nalarcore-macos-aarch64`, a Linux host gets
-    // `nalarcore-linux-x86_64`, a Windows host gets
-    // `nalarcore-windows-x86_64.exe`. Cross-compile to other targets is
+    // — so a macOS host gets `pabrikcore-macos-aarch64`, a Linux host gets
+    // `pabrikcore-linux-x86_64`, a Windows host gets
+    // `pabrikcore-windows-x86_64.exe`. Cross-compile to other targets is
     // still available via explicit `zig build install:<target>`.
     //
-    // The native `nalar` binary is also in `install`. We want all in
+    // The native `pabrik` binary is also in `install`. We want all in
     // one command, so depend on the inner install steps (not just the
     // outer top-level wrappers). Depending on the outer wrappers would
     // race against cache-hit skipping: when the binary's source hasn't
@@ -3504,7 +3507,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     build_all_step.dependOn(host_install_step);
     build_all_step.dependOn(&desktop_install.step);
     build_all_step.dependOn(&cli_install.step);
-    // nalar-tui is POSIX-only: src/apps/cli/src/tui/terminal.zig passes
+    // pabrik-tui is POSIX-only: src/apps/cli/src/tui/terminal.zig passes
     // integer fds (std.posix.STDIN_FILENO) where Windows' fd_t is
     // *anyopaque, so it cannot compile on Windows. Skip it in
     // `build:all` there so `zig build` stays green; explicit

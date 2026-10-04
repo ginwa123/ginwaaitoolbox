@@ -2,7 +2,7 @@
 //!
 //! One row per design page (e.g. "Login", "Dashboard"). Pages belong
 //! to a `design` workspace item. Element HTML bodies live on disk
-//! under `<workspace_item.path>/.nalar/design/<page_name>/<element>.html`.
+//! under `<workspace_item.path>/.pabrik/design/<page_name>/<element>.html`.
 //!
 //! Schema: Migration 055 (`create_design_pages`) + 056
 //! (`upgrade_design_pages_to_file_model`) + 066 (1:1 chat pairing via

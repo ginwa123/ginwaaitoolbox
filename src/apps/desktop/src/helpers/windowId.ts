@@ -11,7 +11,7 @@
  * duplicated; such a duplicate shares the tab list with its source. That
  * is a benign outcome, not a corruption, so it is not defended against.
  */
-const STORAGE_KEY = 'nalar-window-id'
+const STORAGE_KEY = 'pabrik-window-id'
 
 let cached: string | null = null
 

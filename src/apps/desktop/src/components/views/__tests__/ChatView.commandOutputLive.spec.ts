@@ -90,7 +90,7 @@ function installApiMocks(): void {
     current: '',
     status: '',
   })
-  vi.spyOn(api, 'getNalarConfig').mockResolvedValue({ profiles: {} })
+  vi.spyOn(api, 'getPabrikConfig').mockResolvedValue({ profiles: {} })
 }
 
 async function mountChatView(processingState: Ref<Record<string, boolean>>): Promise<VueWrapper> {

@@ -6,7 +6,7 @@
 //!   2. Verify the parent `workspace_items.id = item_id` has
 //!      `item_type = 'kanban'`. Reject otherwise.
 //!   3. INSERT into `workspace_item_tasks` via
-//!      `nalarcore.ai_mod.llm_history.createWorkspaceItemTask` with
+//!      `pabrikcore.ai_mod.llm_history.createWorkspaceItemTask` with
 //!      `task_type = 'standard'` (every kanban task is a standard task
 //!      whose PARENT has `item_type='kanban'`; the schema has no
 //!      `task_type='kanban'`).
@@ -33,8 +33,8 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 const tags_validation = @import("../../../http_handlers/tags_validation.zig");
@@ -235,7 +235,7 @@ pub const create_kanban_task_tool = AgentTool{
 //
 // Mirrors `task_create.zig::createStandardTask` (HTTP handler) but
 // runs directly in the agent tool process — no HTTP round-trip. Reads
-// and writes DB directly via the `nalarcore.ai_mod.*` helpers, the
+// and writes DB directly via the `pabrikcore.ai_mod.*` helpers, the
 // same pattern used by `kanban_list` / `kanban_move_task`.
 
 /// Success payload for `create_kanban_task`. Keys mirror the old
@@ -576,7 +576,7 @@ pub fn executeKanbanTaskToJSON(
     defer allocator.free(task_id);
 
     // 8. INSERT task row.
-    const task = nalarcore.ai_mod.llm_history.createWorkspaceItemTask(
+    const task = pabrikcore.ai_mod.llm_history.createWorkspaceItemTask(
         allocator,
         db,
         task_id,
@@ -638,7 +638,7 @@ pub fn executeKanbanTaskToJSON(
     //     `task_create.zig:467-469`. Fire-and-forget; without it
     //     the new card would show "awaiting review" until the user
     //     manually interacts with it.
-    nalarcore.ai_mod.llm_history.updateTaskLastHumanTouchedAt(
+    pabrikcore.ai_mod.llm_history.updateTaskLastHumanTouchedAt(
         allocator,
         db,
         task_id,
@@ -756,7 +756,7 @@ pub fn executeKanbanTaskToJSON(
             break :blk "0";
         };
         const profile: []const u8 = input.selected_profile_model orelse "";
-        nalarcore.ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+        pabrikcore.ai_mod.on_event_sent.onEventSendSessions(allocator, .{
             .action = "created",
             .id = task_id,
             .name = trimmed_name,
@@ -771,7 +771,7 @@ pub fn executeKanbanTaskToJSON(
             std.log.warn("create_kanban_task: session_created SSE emit failed (non-fatal): {s}", .{@errorName(err)});
         };
     }
-    nalarcore.ai_mod.on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
+    pabrikcore.ai_mod.on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
         .action = "created",
         .workspace_id = input.workspace_id,
         .item_id = input.item_id,
@@ -2072,7 +2072,7 @@ test "tools_equipped imports create_kanban_task module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "const kanban_create_task_tool = nalarcore.create_kanban_task;")) {
+    if (!contains(source, "const kanban_create_task_tool = pabrikcore.create_kanban_task;")) {
         std.debug.print(
             "\n!! tools_equipped.zig does not bind create_kanban_task module !!\n",
             .{},
@@ -2126,7 +2126,7 @@ test "UNIFIED_TOOL_REGISTRY contains create_kanban_task entry" {
     }
 }
 
-test "nalarcore root.zig exposes create_kanban_task module" {
+test "pabrikcore root.zig exposes create_kanban_task module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, "src/root.zig");
     defer allocator.free(source);
@@ -2135,7 +2135,7 @@ test "nalarcore root.zig exposes create_kanban_task module" {
             "\n!! root.zig does not expose create_kanban_task as a top-level module !!\n",
             .{},
         );
-        return error.NalarcoreExportMissing;
+        return error.PabrikcoreExportMissing;
     }
 }
 

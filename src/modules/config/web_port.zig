@@ -132,7 +132,7 @@ test "web_port: different seeds spread across the range" {
 }
 
 // ---------------------------------------------------------------------------
-// Static contracts (repo convention — see nalar_config_put_test.zig
+// Static contracts (repo convention — see pabrik_config_put_test.zig
 // "registered in test_runner.zig").
 // ---------------------------------------------------------------------------
 

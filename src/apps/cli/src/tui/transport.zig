@@ -1,4 +1,4 @@
-//! Transport: HTTP glue between the TUI and the nalar backend.
+//! Transport: HTTP glue between the TUI and the pabrik backend.
 //!
 //! Sole user of `custom_http_client` inside the tui module. Wraps:
 //!   - POST /api/llm/session          (queue a chat message)

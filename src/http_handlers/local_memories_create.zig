@@ -24,22 +24,22 @@
 //!   - `500` + `no cwd available` substring checks
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const memories_mod = nalarcore.memories;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const memories_mod = pabrikcore.memories;
 const http_response = @import("http_response.zig");
 
 /// JSON request body for `POST /api/local-memories`.
 ///
 /// `cwd` is optional in the body — when omitted, the handler falls
-/// back to the nalar server's own CWD via `io.realPath` (matches
+/// back to the pabrik server's own CWD via `io.realPath` (matches
 /// the skill-detail handler's behavior). `name` and `content` are
 /// required. `name` must end in `.md`, with no path separators or
 /// `..` segments (see `memories.isValidMemoryName`).
 const CreateLocalMemoryBody = struct {
     name: []const u8,
     content: []const u8,
-    /// Optional. When omitted, falls back to the nalar server's CWD.
+    /// Optional. When omitted, falls back to the pabrik server's CWD.
     cwd: ?[]const u8 = null,
 };
 

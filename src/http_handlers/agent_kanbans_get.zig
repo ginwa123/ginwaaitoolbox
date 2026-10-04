@@ -27,8 +27,8 @@
 //! `testing.allocator` MUST free the slices themselves (see tests).
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// Wire shape for a knowledge row in the GET response.
@@ -108,7 +108,7 @@ pub const AgentKanbansGetOutput = struct {
 /// works under both the request arena and `testing.allocator`.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: AgentKanbansGetInput,
 ) AgentKanbansGetError!AgentKanbansGetOutput {
     if (input.workspace_id.len == 0 or input.item_id.len == 0) {
@@ -262,7 +262,7 @@ pub fn agentKanbansGetHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
@@ -313,7 +313,7 @@ pub fn agentKanbansGetHandler(
 //   4. NotConfigured: kanban without an agent_kanbans row
 //   5. Happy path: config + knowledges DESC + tools enabled ASC + prompts
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
 

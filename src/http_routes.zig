@@ -1,6 +1,6 @@
 // src/http_routes.zig
 //
-// Every HTTP route nalar serves, in the ONE place they are registered.
+// Every HTTP route pabrik serves, in the ONE place they are registered.
 //
 // Why this is not inline in `main`: the table is ~490 lines of
 // `authed.get("/api/...", handler)` calls, and burying it between the
@@ -31,20 +31,20 @@
 // repoint their path constant — do not delete the assertion.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
 
 /// The `gs.router.group("")` handle. Every `/api` route registers here so
 /// it picks up `authMiddleware`.
 const Group = gserverz.router.Group;
 const testing = std.testing;
 
-/// Register every route nalar serves on `gs`. Call this exactly once, after
+/// Register every route pabrik serves on `gs`. Call this exactly once, after
 /// `GinwaServer.init` and before `listen()`.
 pub fn registerAll(gs: *gserverz.GinwaServer) !void {
     // Opt-in `--auth`: all `/api` routes registered via `authed` run
-    // `authMiddleware` (401 when no valid `nalar_session` cookie).
+    // `authMiddleware` (401 when no valid `pabrik_session` cookie).
     // Auth endpoints themselves stay on `gs.router` (unprotected) and
     // are registered BEFORE any `:param` routes to avoid matchRoute
     // shadowing (`/api/auth/login` is a literal that must precede
@@ -187,7 +187,7 @@ fn registerStreamRoutes(authed: *Group, gs: *gserverz.GinwaServer) !void {
     // registered one EventSource per family. See
     // src/http_handlers/unified_events_sse.zig.
     try gs.router.sse("/api/events", ai_mod.http_handlers.unifiedEventsStreamHandler);
-    // Test-only SSE emit (dev_sse_emit.zig) — gated by NALAR_TEST_SSE_EMIT=1,
+    // Test-only SSE emit (dev_sse_emit.zig) — gated by PABRIK_TEST_SSE_EMIT=1,
     // 404 when off. Functional UI tests use it to drive the chatview's
     // SSE streaming path without a real LLM.
     try authed.post("/api/dev/sse/emit_llm", ai_mod.http_handlers.devSseEmitLlmHandler);
@@ -224,9 +224,9 @@ fn registerMemoryRoutes(authed: *Group) !void {
     try authed.put("/api/memories/:name", ai_mod.http_handlers.memoryUpdateHandler);
     try authed.delete("/api/memories/:name", ai_mod.http_handlers.memoryDeleteHandler);
 
-    // Local Memories routes — scoped to <cwd>/.nalar/memories/. The
+    // Local Memories routes — scoped to <cwd>/.pabrik/memories/. The
     // `cwd` is provided in the request body (POST/PUT) or query
-    // string (GET/DELETE); handlers fall back to the nalar server's
+    // string (GET/DELETE); handlers fall back to the pabrik server's
     // own CWD via `io.realPath` when no explicit cwd is provided.
     try authed.get("/api/local-memories", ai_mod.http_handlers.localMemoriesListHandler);
     try authed.get("/api/local-memories/:name", ai_mod.http_handlers.localMemoryDetailHandler);
@@ -236,10 +236,21 @@ fn registerMemoryRoutes(authed: *Group) !void {
 }
 
 fn registerConfigRoutes(authed: *Group) !void {
-    // Nalar config routes (reads/writes config.json as nalar.json mapping)
-    try authed.get("/api/config/nalar", ai_mod.http_handlers.nalarConfigGetHandler);
-    try authed.put("/api/config/nalar", ai_mod.http_handlers.nalarConfigPutHandler);
-    try authed.delete("/api/config/nalar/profiles/:name", ai_mod.http_handlers.nalarConfigProfileDeleteHandler);
+    // Pabrik config routes (reads/writes config.json as pabrik.json mapping)
+    try authed.get("/api/config/pabrik", ai_mod.http_handlers.pabrikConfigGetHandler);
+    try authed.put("/api/config/pabrik", ai_mod.http_handlers.pabrikConfigPutHandler);
+    try authed.delete("/api/config/pabrik/profiles/:name", ai_mod.http_handlers.pabrikConfigProfileDeleteHandler);
+
+    // DEPRECATED aliases: the same three handlers under their pre-rebrand
+    // paths. They exist because the desktop webapp is served BY this server,
+    // so a cached bundle from the previous release can legitimately still be
+    // talking to the new one — and because the mobile client may not have been
+    // updated yet. Safe to register alongside the current paths: `/api/config/`
+    // has no `:param` sibling, so matchRoute's first-hit walk cannot shadow
+    // either name here.
+    try authed.get("/api/config/nalar", ai_mod.http_handlers.pabrikConfigGetHandler);
+    try authed.put("/api/config/nalar", ai_mod.http_handlers.pabrikConfigPutHandler);
+    try authed.delete("/api/config/nalar/profiles/:name", ai_mod.http_handlers.pabrikConfigProfileDeleteHandler);
 
     // OS notification test endpoint — fires a real OS notification so
     // the user can verify their system can display them.
@@ -269,7 +280,7 @@ fn registerConfigRoutes(authed: *Group) !void {
 
     // Frontend error log endpoints — capture unhandled JS exceptions,
     // unhandled promise rejections, and existing console.error / console.warn
-    // calls from the nalar-desktop webapp. See
+    // calls from the pabrik-desktop webapp. See
     // docs/plans/2026-07-17-frontend-error-logs-design.md.
     try authed.post("/api/logs", ai_mod.http_handlers.frontendLogPostHandler);
     try authed.get("/api/logs", ai_mod.http_handlers.frontendLogGetHandler);
@@ -519,7 +530,7 @@ fn registerKanbanRoutes(authed: *Group) !void {
     // kanban-task attachment endpoints (POST + GET wildcard). Task
     // images now live inline on `workspace_item_tasks.image_urls` as
     // `||`-delimited base64 data URLs — no upload path, no broken
-    // `*` wildcard GET route, no `<path>/.nalar/attachments/<task>/`
+    // `*` wildcard GET route, no `<path>/.pabrik/attachments/<task>/`
     // clutter on disk. The frontend reads each image via
     // `<img :src="task.imageUrls[i]">`.
     try authed.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);

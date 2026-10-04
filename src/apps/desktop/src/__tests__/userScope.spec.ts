@@ -34,12 +34,12 @@ describe('userScopedKey', () => {
 
   it('returns the key unchanged when there is no identity (auth off)', () => {
     // No identity => unscoped => the auth-off path needs no migration.
-    expect(userScopedKey('nalar-workspaces:v1')).toBe('nalar-workspaces:v1')
+    expect(userScopedKey('pabrik-workspaces:v1')).toBe('pabrik-workspaces:v1')
   })
 
   it('namespaces the key by user id once an identity is set', () => {
     setCurrentUserId('user_a')
-    expect(userScopedKey('nalar-workspaces:v1')).toBe('nalar-workspaces:v1::u:user_a')
+    expect(userScopedKey('pabrik-workspaces:v1')).toBe('pabrik-workspaces:v1::u:user_a')
   })
 
   it('gives two users different physical keys for the same logical key', () => {
@@ -60,9 +60,9 @@ describe('userScopedKey', () => {
 
   it('round-trips the user id out of a scoped key', () => {
     setCurrentUserId('user_a')
-    const scoped = userScopedKey('nalar-tabs:v1:win1')
+    const scoped = userScopedKey('pabrik-tabs:v1:win1')
     expect(userIdFromScopedKey(scoped)).toBe('user_a')
-    expect(userIdFromScopedKey('nalar-tabs:v1:win1')).toBeNull()
+    expect(userIdFromScopedKey('pabrik-tabs:v1:win1')).toBeNull()
   })
 
   it('marks a key from another user as foreign', () => {
@@ -95,24 +95,24 @@ describe('purgeForeignScopedKeys', () => {
   it("removes the previous user's scoped keys and keeps the current user's", () => {
     // A was signed in and cached data.
     setCurrentUserId('user_a')
-    localStorage.setItem(userScopedKey('nalar-workspaces:v1'), '["A private"]')
+    localStorage.setItem(userScopedKey('pabrik-workspaces:v1'), '["A private"]')
     localStorage.setItem(userScopedKey('active-chat-id'), 'chat-a')
 
     // B signs in: the scope flips, then the purge runs.
     setCurrentUserId('user_b')
-    localStorage.setItem(userScopedKey('nalar-workspaces:v1'), '["B private"]')
+    localStorage.setItem(userScopedKey('pabrik-workspaces:v1'), '["B private"]')
     const removed = purgeForeignScopedKeys()
 
     expect(removed).toBe(2)
-    expect(localStorage.getItem('nalar-workspaces:v1::u:user_a')).toBeNull()
+    expect(localStorage.getItem('pabrik-workspaces:v1::u:user_a')).toBeNull()
     expect(localStorage.getItem('active-chat-id::u:user_a')).toBeNull()
     // B's own cache survives.
-    expect(localStorage.getItem('nalar-workspaces:v1::u:user_b')).toBe('["B private"]')
+    expect(localStorage.getItem('pabrik-workspaces:v1::u:user_b')).toBe('["B private"]')
   })
 
   it('never touches unscoped keys or the auth cache', () => {
     localStorage.setItem('sidebar-width', '280')
-    localStorage.setItem('nalar-auth-me:v1', '{"status":200}')
+    localStorage.setItem('pabrik-auth-me:v1', '{"status":200}')
     setCurrentUserId('user_a')
     localStorage.setItem(userScopedKey('active-chat-id'), 'chat-a')
 
@@ -120,20 +120,20 @@ describe('purgeForeignScopedKeys', () => {
     purgeForeignScopedKeys()
 
     expect(localStorage.getItem('sidebar-width')).toBe('280')
-    expect(localStorage.getItem('nalar-auth-me:v1')).toBe('{"status":200}')
+    expect(localStorage.getItem('pabrik-auth-me:v1')).toBe('{"status":200}')
   })
 
   it('purges every scoped key when the identity is cleared (logout)', () => {
     setCurrentUserId('user_a')
-    localStorage.setItem(userScopedKey('nalar-workspaces:v1'), '["A"]')
-    localStorage.setItem(userScopedKey('nalar-tabs:v1:win1'), '[]')
+    localStorage.setItem(userScopedKey('pabrik-workspaces:v1'), '["A"]')
+    localStorage.setItem(userScopedKey('pabrik-tabs:v1:win1'), '[]')
 
     setCurrentUserId(null)
     const removed = purgeForeignScopedKeys()
 
     expect(removed).toBe(2)
-    expect(localStorage.getItem('nalar-workspaces:v1::u:user_a')).toBeNull()
-    expect(localStorage.getItem('nalar-tabs:v1:win1::u:user_a')).toBeNull()
+    expect(localStorage.getItem('pabrik-workspaces:v1::u:user_a')).toBeNull()
+    expect(localStorage.getItem('pabrik-tabs:v1:win1::u:user_a')).toBeNull()
   })
 
   it('is a no-op when there is nothing foreign', () => {

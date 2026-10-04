@@ -1,7 +1,7 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const testing = std.testing;
 
 pub const QueuedMessage = struct {

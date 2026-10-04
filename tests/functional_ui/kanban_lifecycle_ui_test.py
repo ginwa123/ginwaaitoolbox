@@ -3,7 +3,7 @@
 This is the FIRST test that exercises real Vue components via
 Playwright. It does the following:
 
-  1. Boot a fresh nalar + Vite via the ``ui_harness`` fixture.
+  1. Boot a fresh pabrik + Vite via the ``ui_harness`` fixture.
   2. Pre-create a workspace + kanban via the backend's HTTP API
      (so we don't have to drive the full onboarding UI yet).
   3. Open the kanban in a real browser at

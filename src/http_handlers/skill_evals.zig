@@ -18,10 +18,10 @@
 //! set to status codes.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const skill_evals_db = nalarcore.skill_evals_db;
-const skill_eval_events = nalarcore.skill_eval_events;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const skill_evals_db = pabrikcore.skill_evals_db;
+const skill_eval_events = pabrikcore.skill_eval_events;
 
 pub const SkillEvalsError = error{
     Internal,
@@ -98,7 +98,7 @@ fn runsUseCase(
     session_id: []const u8,
     limit: u32,
 ) SkillEvalsError![]const u8 {
-    const di = nalarcore.getSingleton() catch return error.Internal;
+    const di = pabrikcore.getSingleton() catch return error.Internal;
 
     const runs = skill_evals_db.listRuns(allocator, di.db, .{
         .run_id = run_id,
@@ -165,7 +165,7 @@ fn summaryUseCase(
     allocator: std.mem.Allocator,
     session_id: []const u8,
 ) SkillEvalsError![]const u8 {
-    const di = nalarcore.getSingleton() catch return error.Internal;
+    const di = pabrikcore.getSingleton() catch return error.Internal;
 
     const counts = skill_evals_db.verdictCounts(allocator, di.db, session_id) catch return error.Internal;
     defer skill_evals_db.freeVerdictCounts(allocator, counts);
@@ -223,7 +223,7 @@ fn applyUseCase(
 ) SkillEvalsError![]const u8 {
     if (result_id.len == 0) return error.MissingResultId;
 
-    const di = nalarcore.getSingleton() catch return error.Internal;
+    const di = pabrikcore.getSingleton() catch return error.Internal;
     const db = di.db;
 
     const row = (skill_evals_db.readResultById(allocator, db, result_id) catch return error.Internal) orelse
@@ -271,7 +271,7 @@ fn applyUseCase(
 /// after the claim is recorded; a failure here must not fail the apply.
 fn emitApplied(
     allocator: std.mem.Allocator,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.ContextIPCTui,
     result_id: []const u8,
 ) void {
     skill_eval_events.emitSkillEvalEvent(allocator, di.event_bus, .{
@@ -291,15 +291,15 @@ fn emitApplied(
 fn readCurrentSkillHash(
     allocator: std.mem.Allocator,
     io: std.Io,
-    di: *nalarcore.ContextIPCTui,
+    di: *pabrikcore.ContextIPCTui,
     skill_name: []const u8,
     session_id: []const u8,
 ) !?[]u8 {
-    const session_repo = try nalarcore.workspace_scope.sessionCwd(allocator, di.db, session_id);
+    const session_repo = try pabrikcore.workspace_scope.sessionCwd(allocator, di.db, session_id);
     defer if (session_repo) |p| allocator.free(p);
 
-    const body = nalarcore.skill_mod.parse_skill(allocator, io, skill_name, session_repo, false, di.environment) orelse
-        nalarcore.skill_mod.parse_skill(allocator, io, skill_name, session_repo, true, di.environment) orelse
+    const body = pabrikcore.skill_mod.parse_skill(allocator, io, skill_name, session_repo, false, di.environment) orelse
+        pabrikcore.skill_mod.parse_skill(allocator, io, skill_name, session_repo, true, di.environment) orelse
         return null;
     defer allocator.free(body);
     var buf: [64]u8 = undefined;
@@ -339,7 +339,7 @@ fn errorResponse(
     };
     return res.jsonResponse(.{
         .status_code = status,
-        .data = try nalarcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        .data = try pabrikcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
     });
 }
 

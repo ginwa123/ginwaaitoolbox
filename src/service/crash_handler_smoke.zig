@@ -5,13 +5,13 @@
 // production crash
 // handler actually runs when a SIGSEGV is delivered.
 //
-// NOT compiled into the production nalar binary — it's a sibling that
+// NOT compiled into the production pabrik binary — it's a sibling that
 // lives in src/ for code-review visibility but is only built when the
 // user runs the smoke script (which does `zig build-exe` directly).
 
 const std = @import("std");
 const builtin = @import("builtin");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const helpers = @import("helpers");
 
 /// This file is the ROOT of the standalone smoke build, so it is also the
@@ -20,7 +20,7 @@ const helpers = @import("helpers");
 /// desktop_app/main.zig` carry the same decl for the shipped binaries;
 /// here it proves the declaration is legal and that std's
 /// `@hasDecl(root.debug, "handleSegfault")` dispatch finds it.
-pub const debug = nalarcore.crash_handler.root_debug;
+pub const debug = pabrikcore.crash_handler.root_debug;
 
 /// Runtime-opaque base so the compiler cannot prove the load is safe
 /// and fold it to `undefined` (a comptime-known address turns the
@@ -48,8 +48,8 @@ pub fn main(init: std.process.Init) !void {
     const signal_arg: []const u8 = args_iter.next() orelse "SEGV";
 
     // Use the production crash_handler module — this is what we're verifying.
-    nalarcore.crash_handler.setCrashLogPath(log_path_arg);
-    nalarcore.crash_handler.installCrashHandlers();
+    pabrikcore.crash_handler.setCrashLogPath(log_path_arg);
+    pabrikcore.crash_handler.installCrashHandlers();
 
     // Give the signal handler a moment to be installed before we trip it.
     // On POSIX, `helpers.nanosleep` (libc `nanosleep` exposed via

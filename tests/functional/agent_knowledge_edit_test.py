@@ -1,7 +1,7 @@
 """Functional tests for the Agent Knowledge EDIT flow (PR #291).
 
 Exercises the PATCH /api/agents/:agent_id/knowledge/:knowledge_id
-endpoint against a REAL nalar binary + REAL SQLite, replaying the
+endpoint against a REAL pabrik binary + REAL SQLite, replaying the
 EXACT JSON bodies the frontend edit dialog sends.
 
   Plan: docs/superpowers/plans/2026-08-22-agent-mode-ui-ux.md

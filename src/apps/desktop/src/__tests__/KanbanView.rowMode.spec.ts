@@ -6,7 +6,7 @@
  * links restore it (repo rule: "Every View Switch Must Update the Browser
  * URL"). `columns` is the default and is stripped from the URL.
  *
- * Precedence: URL (deep link) → localStorage (`nalar-kanban-layout`) →
+ * Precedence: URL (deep link) → localStorage (`pabrik-kanban-layout`) →
  * `columns`.
  *
  * The router is mocked with the `vi.hoisted` pair used by
@@ -218,14 +218,14 @@ describe('KanbanView row mode', () => {
   // ─── localStorage precedence ─────────────────────────────────────────────
 
   it('uses the stored preference when the URL has no ?layout=', () => {
-    localStorage.setItem('nalar-kanban-layout', 'rows')
+    localStorage.setItem('pabrik-kanban-layout', 'rows')
     const mounted = mountKanbanView()
     wrapper = mounted.wrapper
     expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-rows"]`).exists()).toBe(true)
   })
 
   it('the URL wins over the stored preference', () => {
-    localStorage.setItem('nalar-kanban-layout', 'rows')
+    localStorage.setItem('pabrik-kanban-layout', 'rows')
     const mounted = mountKanbanView({ layout: 'columns' })
     wrapper = mounted.wrapper
     expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-columns"]`).exists()).toBe(true)
@@ -237,7 +237,7 @@ describe('KanbanView row mode', () => {
     wrapper = mounted.wrapper
     await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-layout-rows"]`).trigger('click')
     await nextTick()
-    expect(localStorage.getItem('nalar-kanban-layout')).toBe('rows')
+    expect(localStorage.getItem('pabrik-kanban-layout')).toBe('rows')
   })
 
   // ─── Sibling-param preservation (the ?sorts= watcher regression) ─────────
@@ -379,12 +379,12 @@ describe('KanbanView row mode', () => {
 
     expect(wrapper.find('[data-testid="kanban-row-group-col_1-rows"]').exists()).toBe(false)
     expect(
-      JSON.parse(localStorage.getItem(`nalar-kanban-row-collapsed:${ITEM_ID}`) ?? '[]'),
+      JSON.parse(localStorage.getItem(`pabrik-kanban-row-collapsed:${ITEM_ID}`) ?? '[]'),
     ).toEqual(['col_1'])
   })
 
   it('restores collapsed groups from localStorage on mount', () => {
-    localStorage.setItem(`nalar-kanban-row-collapsed:${ITEM_ID}`, JSON.stringify(['col_1']))
+    localStorage.setItem(`pabrik-kanban-row-collapsed:${ITEM_ID}`, JSON.stringify(['col_1']))
     const mounted = mountKanbanView(
       { layout: 'rows' },
       { item: makeItem({ tasks: [makeTask({ id: 't1' })] }) },
@@ -394,7 +394,7 @@ describe('KanbanView row mode', () => {
   })
 
   it('expanding a collapsed group removes it from localStorage', async () => {
-    localStorage.setItem(`nalar-kanban-row-collapsed:${ITEM_ID}`, JSON.stringify(['col_1']))
+    localStorage.setItem(`pabrik-kanban-row-collapsed:${ITEM_ID}`, JSON.stringify(['col_1']))
     const mounted = mountKanbanView({ layout: 'rows' })
     wrapper = mounted.wrapper
 
@@ -402,7 +402,7 @@ describe('KanbanView row mode', () => {
     await nextTick()
 
     expect(
-      JSON.parse(localStorage.getItem(`nalar-kanban-row-collapsed:${ITEM_ID}`) ?? '[]'),
+      JSON.parse(localStorage.getItem(`pabrik-kanban-row-collapsed:${ITEM_ID}`) ?? '[]'),
     ).toEqual([])
   })
 
@@ -561,7 +561,7 @@ describe('KanbanView row mode', () => {
       .find(`[data-testid="kanban-view-${ITEM_ID}-density-toggle"]`)
       .trigger('click')
     await nextTick()
-    expect(localStorage.getItem('nalar-kanban-row-density')).toBe('compact')
+    expect(localStorage.getItem('pabrik-kanban-row-density')).toBe('compact')
     first.wrapper.unmount()
 
     // Remount with no `?layout=` density hint — the stored value wins.

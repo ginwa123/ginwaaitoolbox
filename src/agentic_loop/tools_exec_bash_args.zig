@@ -1,7 +1,7 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const tool_models = nalarcore.tool_models;
+const tool_models = pabrikcore.tool_models;
 
 /// Lenient argument parser for the bash + pwsh tools.
 ///

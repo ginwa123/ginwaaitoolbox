@@ -1,9 +1,9 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const SseEvent = @import("sse.zig").SseEvent;
 
-const sqlite = nalarcore.sqlite;
-const event_bus_mod = nalarcore.event_bus;
+const sqlite = pabrikcore.sqlite;
+const event_bus_mod = pabrikcore.event_bus;
 const testing = std.testing;
 
 pub const DeleteQueueMessagesInput = struct {

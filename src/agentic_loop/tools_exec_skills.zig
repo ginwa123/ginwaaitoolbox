@@ -11,15 +11,15 @@
 // engine is under `src/agentic_loop/` and `src/modules/` must not import it.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const skills_search = @import("skills_search.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const SkillSaveInfo = tools.SkillSaveInfo;
-const agent = nalarcore.agent;
-const skill_tools_mod = nalarcore.skill_tools;
+const agent = pabrikcore.agent;
+const skill_tools_mod = pabrikcore.skill_tools;
 const wrapToolOutput = tools.wrapToolOutput;
 
 /// Turn a JSON parse failure into a message the model can act on.

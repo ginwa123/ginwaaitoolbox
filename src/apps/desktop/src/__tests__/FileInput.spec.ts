@@ -196,9 +196,9 @@ describe('FileInput — @ autocomplete on select keeps the @ symbol', () => {
 })
 
 /**
- * Paste-image regression tests (WebKitGTK + nalar-desktop bug).
+ * Paste-image regression tests (WebKitGTK + pabrik-desktop bug).
  *
- * Bug: in nalar-desktop (WebKitGTK 4.1 on Linux), the `<textarea>` paste event
+ * Bug: in pabrik-desktop (WebKitGTK 4.1 on Linux), the `<textarea>` paste event
  * delivers a `clipboardData` object but `clipboardData.items` is empty even
  * when the system clipboard contains an image. The previous behavior was
  * to silently no-op in this case, so screenshots pasted into the chat

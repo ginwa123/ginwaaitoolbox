@@ -1,9 +1,9 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalar_core = @import("nalarcore");
-const gserverz = nalar_core.gserverz;
-const pr_provider = nalar_core.pr_provider;
-const pr_cli = nalar_core.pr_cli;
+const pabrik_core = @import("pabrikcore");
+const gserverz = pabrik_core.gserverz;
+const pr_provider = pabrik_core.pr_provider;
+const pr_cli = pabrik_core.pr_cli;
 const run_captured = @import("helpers").run_captured;
 
 /// The `gh` binary. See `git_pr_status.zig` for the shared constants.
@@ -200,7 +200,7 @@ pub fn gitPrCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     const allocator = ctx.allocator;
 
     // Parse JSON body using the Leaky variant — see memory
-    // nalar-http-handler-thin-wrapper-pattern.md. No `defer parsed.deinit()`
+    // pabrik-http-handler-thin-wrapper-pattern.md. No `defer parsed.deinit()`
     // because the per-request arena reaps the parsed value (memory
     // custom-http-server-per-request-arena).
     const Body = struct {
@@ -366,7 +366,7 @@ fn freeCreateResult(a: std.mem.Allocator, res: CreatePullRequestResult) void {
 }
 
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/git_pr_create.zig";
@@ -569,7 +569,7 @@ test "create: a missing CLI names glab, not gh" {
     var fx = try Fixture.init(a);
     defer fx.deinit();
 
-    const res = try createPullRequestUseCaseWith(a, std.testing.io, "/nalar/definitely/not/glab", .gitlab, fx.root, "main", "T", "B");
+    const res = try createPullRequestUseCaseWith(a, std.testing.io, "/pabrik/definitely/not/glab", .gitlab, fx.root, "main", "T", "B");
     defer freeCreateResult(a, res);
     try testing.expectEqual(GhStatus.gh_failed, res.status);
     try testing.expect(std.mem.indexOf(u8, res.stderr, "glab") != null);

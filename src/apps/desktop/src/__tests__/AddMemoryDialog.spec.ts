@@ -1,6 +1,6 @@
 /**
  * Tests for AddMemoryDialog — the modal that creates a new LOCAL
- * memory file (at `<cwd>/.nalar/memories/<name>.md`). Mirrors
+ * memory file (at `<cwd>/.pabrik/memories/<name>.md`). Mirrors
  * AddItemDialog.spec.ts's structure: covers the open/close
  * lifecycle, the name + content inputs, the folder picker
  * (defaults from the cwd prop but can be changed by the user),
@@ -200,7 +200,7 @@ describe('AddMemoryDialog — create event', () => {
       memory: {
         name: 'foo.md',
         title: 'Foo',
-        path: `${TEST_CWD}/.nalar/memories/foo.md`,
+        path: `${TEST_CWD}/.pabrik/memories/foo.md`,
         size: 10,
       },
     })
@@ -292,7 +292,7 @@ describe('AddMemoryDialog — create event', () => {
       memory: {
         name: 'foo.md',
         title: 'Foo',
-        path: `${TEST_CWD}/.nalar/memories/foo.md`,
+        path: `${TEST_CWD}/.pabrik/memories/foo.md`,
         size: 5,
       },
     })
@@ -326,7 +326,7 @@ describe('AddMemoryDialog — create event', () => {
     expect(wrapper.emitted('create')?.[0]).toEqual([
       'foo.md',
       'My memory body',
-      `${TEST_CWD}/.nalar/memories/foo.md`,
+      `${TEST_CWD}/.pabrik/memories/foo.md`,
     ])
     expect(wrapper.emitted('close')).toBeTruthy()
   })
@@ -443,7 +443,7 @@ describe('AddMemoryDialog — folder picker', () => {
       memory: {
         name: 'foo.md',
         title: 'Foo',
-        path: '/opt/projects/.nalar/memories/foo.md',
+        path: '/opt/projects/.pabrik/memories/foo.md',
         size: 5,
       },
     })

@@ -1,8 +1,8 @@
 const std = @import("std");
-const tree1_mod = @import("nalarcore");
+const tree1_mod = @import("pabrikcore");
 const agent = tree1_mod.agent;
 const sqlite = tree1_mod.sqlite;
-const loggermod = @import("nalarcore").loggermod;
+const loggermod = @import("pabrikcore").loggermod;
 const models = @import("models.zig");
 const gserverz = tree1_mod.gserverz;
 const llm_history = @import("llm_history.zig");
@@ -743,7 +743,7 @@ pub fn sendStreamToolCallDelta(
 // input.reasoning_content before passing them to the payload struct.
 
 const testing_oes = std.testing;
-const nalarcore_oes = tree1_mod;
+const pabrikcore_oes = tree1_mod;
 const text_normalize = @import("helpers").text_normalize;
 const ON_EVENT_SENT_PATH = "src/agentic_loop/on_event_sent.zig";
 

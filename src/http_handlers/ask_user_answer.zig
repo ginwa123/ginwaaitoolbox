@@ -23,11 +23,11 @@
 //! the stored status. Only genuinely bad input is a 400/403/404.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const http_response = @import("http_response.zig");
-const gserverz = nalarcore.gserverz;
-const ask_user_mod = nalarcore.ask_user;
-const ask_user_pending = nalarcore.ask_user_pending;
+const gserverz = pabrikcore.gserverz;
+const ask_user_mod = pabrikcore.ask_user;
+const ask_user_pending = pabrikcore.ask_user_pending;
 const wrapToolOutput = @import("../agentic_loop/tools_wrap_output.zig").wrapToolOutput;
 
 pub const AnswerError = error{
@@ -111,7 +111,7 @@ pub fn validateAnswerShape(answer: []const u8, multi_select: bool, skip: bool) A
 pub const ResolveInput = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
     question_id: []const u8,
     answer: []const u8,
@@ -192,7 +192,7 @@ pub fn askUserAnswerHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
 
     const session_id = req.params.get("session_id") orelse {
         return res.jsonResponse(.{
@@ -353,7 +353,7 @@ pub fn askUserAnswerHandler(
 /// remove, so a transient DB error must not trade it for a stuck session.
 fn remainingQuestions(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) usize {
     var rows = db.query(
@@ -384,7 +384,7 @@ const testing = std.testing;
 
 fn insertQuestionRow(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     id: []const u8,
     session: []const u8,
     status: []const u8,
@@ -396,7 +396,7 @@ fn insertQuestionRow(
     , &.{ id, session, id, status });
 }
 
-fn pendingQuestionSchema(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend) !void {
+fn pendingQuestionSchema(allocator: std.mem.Allocator, db: *pabrikcore.sqlite.SqliteBackend) !void {
     try db.exec(allocator,
         \\CREATE TABLE session_pending_question (
         \\    id TEXT PRIMARY KEY,
@@ -417,7 +417,7 @@ test "remainingQuestions: counts only THIS session's still-pending questions" {
     const allocator = testing.allocator;
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     defer db.deinit();
     try db.init(threaded.io(), ":memory:");
     try pendingQuestionSchema(allocator, &db);
@@ -453,7 +453,7 @@ test "remainingQuestions: an unreadable table reports 0 so a resume still happen
     const allocator = testing.allocator;
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     defer db.deinit();
     try db.init(threaded.io(), ":memory:");
     // No session_pending_question table at all. Reporting 0 keeps the

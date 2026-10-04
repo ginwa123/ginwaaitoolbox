@@ -44,7 +44,7 @@ const assets = [_]extraction.AssetEntry{
     .{ .path = "/assets/app.js", .content = "console.log(1)", .mime = "application/javascript" },
 };
 
-export fn nalar_desktop_cross_compile_check() callconv(.c) void {
+export fn pabrik_desktop_cross_compile_check() callconv(.c) void {
     // Persistent content-addressed dir: `persistentBaseDir` (env + per-OS
     // path joining), the staging/marker publish, `renameAbsolute`'s
     // POSIX-vs-Win32 branches and `pathExistsAbs`'s per-OS existence check.
@@ -53,7 +53,7 @@ export fn nalar_desktop_cross_compile_check() callconv(.c) void {
 
     const in_base = extraction.ensurePersistentIn(
         std.heap.page_allocator,
-        "/tmp/nalar-xcheck",
+        "/tmp/pabrik-xcheck",
         &assets,
     ) catch return;
     std.heap.page_allocator.free(in_base);

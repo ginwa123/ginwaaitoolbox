@@ -13,7 +13,7 @@
  * "Using default (top-level config)". That misled the user into thinking
  * the top-level was used when the active profile was actually applied.
  *
- * The fix: ChatView loads `active_profile` from getNalarConfig() alongside
+ * The fix: ChatView loads `active_profile` from getPabrikConfig() alongside
  * `profiles`. The chip displays the effective profile (per-session selection
  * or active profile, falling back to "Default" only when neither exists).
  * The tooltip reflects the actual cascade; the picker shows ✓ on the
@@ -66,7 +66,7 @@ function makeStubClient(initial: SseState): SseClient {
 // ─── mocks ────────────────────────────────────────────────────────────────
 //
 // Per-test overrides via setup() so each test can change
-// getNalarConfig / getSession responses without re-mounting the global
+// getPabrikConfig / getSession responses without re-mounting the global
 // vi.mock() harness.
 
 function installChatViewMocks(opts: {
@@ -101,14 +101,14 @@ function installChatViewMocks(opts: {
   )
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({ is_git_repo: false } as any)
-  vi.spyOn(api, 'getNalarConfig').mockResolvedValue(opts.config ?? { profiles: {} })
+  vi.spyOn(api, 'getPabrikConfig').mockResolvedValue(opts.config ?? { profiles: {} })
 }
 
 // ─── mount helper ────────────────────────────────────────────────────────
 //
 // Mounts ChatView with the provided sessionId. Returns the wrapper plus
 // resolved refs once the component is mounted and the initial
-// async data (getNalarConfig + getSession) has resolved.
+// async data (getPabrikConfig + getSession) has resolved.
 async function mountChatViewWithSession(sessionId: string) {
   const processingState = ref<Record<string, boolean>>({})
 

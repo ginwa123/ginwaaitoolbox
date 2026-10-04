@@ -194,7 +194,7 @@ const handleToggle = (next: boolean) => {
 </template>
 
 <style scoped>
-/* Code token colors — mirrors the `nalar-dark` monaco theme in
+/* Code token colors — mirrors the `pabrik-dark` monaco theme in
  * CodeEditor.vue so write output matches read output and DiffView.
  * Scoped to this component; no light-palette hardcodes (dark transcript theme). */
 .tok-plain {

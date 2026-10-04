@@ -1,13 +1,13 @@
-"""Functional tests for nalar-tui cwd fix.
+"""Functional tests for pabrik-tui cwd fix.
 
-Regression for "theres a mismatch cwd, when using nalar-tui"
+Regression for "theres a mismatch cwd, when using pabrik-tui"
 (task_1788360732549_2). The TUI was hardcoding cwd_session="" so the
-backend fell back to createSandbox → ~/.local/share/nalar/data/apps/<session_id>
+backend fell back to createSandbox → ~/.local/share/pabrik/data/apps/<session_id>
 (empty). The agent then listed the sandbox instead of the shell's cwd.
 
 Contract:
   POST /api/llm/session with cwd_session="/tmp/my-proj" → worker.workingDirectory == "/tmp/my-proj"
-  POST /api/llm/session with cwd_session="" → worker.workingDirectory contains ".local/share/nalar/data/apps"
+  POST /api/llm/session with cwd_session="" → worker.workingDirectory contains ".local/share/pabrik/data/apps"
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def _read_session_cwd(harness: FunctionalHarness, session_id: str) -> str | None
     """Read sessions.cwd straight from the SQLite DB."""
     import sqlite3
 
-    db_path = harness.temp_dir / ".config" / "nalar" / "agent.db"
+    db_path = harness.temp_dir / ".config" / "pabrik" / "agent.db"
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
@@ -75,7 +75,7 @@ def test_tui_cwd_reaches_backend_as_working_directory(
 ) -> None:
     """POST with cwd_session='/tmp/my-proj' → sessions.cwd == that path.
 
-    This is what nalar-tui now does: it captures the shell's cwd via
+    This is what pabrik-tui now does: it captures the shell's cwd via
     realPath and sends it as cwd_session. The backend's session_create
     useCase must honor it (effective_cwd = cwd_session when non-empty).
     We check sessions.cwd (persisted) rather than worker (ephemeral —
@@ -89,7 +89,7 @@ def test_tui_cwd_reaches_backend_as_working_directory(
     # TUI would report on every platform.
     cwd = os.path.realpath(str(harness.temp_dir / "my-proj"))
 
-    # POST like nalar-tui does (via transport.postSend → buildSendBody)
+    # POST like pabrik-tui does (via transport.postSend → buildSendBody)
     harness.http(
         "POST",
         "/api/llm/session",
@@ -120,7 +120,7 @@ def test_tui_empty_cwd_falls_back_to_sandbox(
     """POST with cwd_session='' → sessions.cwd is sandbox path.
 
     Empty cwd is the sentinel for "no override" — backend falls back to
-    createSandbox → ~/.local/share/nalar/data/apps/<session_id>.
+    createSandbox → ~/.local/share/pabrik/data/apps/<session_id>.
     This preserves backward compat for callers that intentionally want sandbox.
     """
     session_id = "tui-cwd-test-002"
@@ -143,11 +143,11 @@ def test_tui_empty_cwd_falls_back_to_sandbox(
     got = _wait_for_session_cwd(harness, session_id, timeout_s=5.0)
     assert got is not None, f"sessions row for {session_id!r} never appeared within 5s"
     # Windows joins the sandbox with backslashes
-    # (C:\...\nalar-func-XXX\.local\share\nalar\data\apps\<session>);
+    # (C:\...\pabrik-func-XXX\.local\share\pabrik\data\apps\<session>);
     # POSIX uses forward slashes. Normalize before asserting so the
     # same contract holds on both.
     normalized = got.replace("\\", "/")
-    assert ".local/share/nalar/data/apps" in normalized or "/tmp" in normalized, (
+    assert ".local/share/pabrik/data/apps" in normalized or "/tmp" in normalized, (
         f"empty cwd_session should fall back to sandbox (or /tmp). Got {got!r}"
     )
     # Must NOT be the explicit cwd the sibling test sends. Each test gets

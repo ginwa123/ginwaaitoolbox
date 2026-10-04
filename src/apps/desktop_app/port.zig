@@ -3,7 +3,7 @@
 // Free-port allocator. Binds to 127.0.0.1:0, lets the kernel pick an ephemeral
 // port, reads it back, and returns the port. The probe socket is closed
 // before returning, which creates a small race window — callers that need a
-// held reservation should wrap this in their own protocol (e.g. spawn nalar
+// held reservation should wrap this in their own protocol (e.g. spawn pabrik
 // immediately after this returns).
 //
 // Zig 0.16 API notes (see test file for the same list):
@@ -63,7 +63,7 @@ pub fn isFree(allocator: std.mem.Allocator, io: std.Io, port: u16) bool {
 // Tests for the free-port allocator. The allocator binds to 127.0.0.1:0, lets
 // the kernel pick an ephemeral port, reads it back, and returns it. There's a
 // small race window between closing our probe socket and the caller binding —
-// this is acceptable for v1 (the race window is microseconds; nalar binds
+// this is acceptable for v1 (the race window is microseconds; pabrik binds
 // almost immediately).
 //
 // Zig 0.16 API notes:

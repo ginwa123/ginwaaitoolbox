@@ -49,7 +49,7 @@ Run (the frontend is served from THIS worktree — that is the code under test;
 the backend binary can come from anywhere, since no backend code changed):
 
     zig build
-    NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \\
+    PABRIK_BIN=./zig-out/bin/pabrikcore-linux-x86_64 \\
         python3 -m pytest tests/functional_ui/chatview_at_bottom_stick_ui_test.py -v
 
 Ports: the UI harness reserves (5173, 8081) and picks both the backend and the
@@ -96,7 +96,7 @@ SLACK_PX = 24
 @pytest.fixture(autouse=True)
 def _arm_sse_emit_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Arm the test-only SSE emit gate BEFORE the harness boots."""
-    monkeypatch.setenv("NALAR_TEST_SSE_EMIT", "1")
+    monkeypatch.setenv("PABRIK_TEST_SSE_EMIT", "1")
 
 
 # ─── Reading the two rulers from a real browser ──────────────────────────────
@@ -208,7 +208,7 @@ def _seed_session(
     large model correction when the head is first measured, which moves the
     reader on its own and fails assertions for reasons unrelated to the stick.
     """
-    seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+    seed = DbSeed(h.temp_dir / ".config" / "pabrik" / "agent.db")
     tall_until = int(TURN_COUNT * 0.6) if mixed else TURN_COUNT
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, f"At-bottom stick {TURN_COUNT}")

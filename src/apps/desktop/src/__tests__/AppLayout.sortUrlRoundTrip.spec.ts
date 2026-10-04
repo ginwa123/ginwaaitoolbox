@@ -226,7 +226,7 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     // Tab mode off is the ONLY remaining caller of the savedSortsParam
     // contract: with tabs on, the board tab carries its own ?sorts= and the
     // chat closes back onto it (see AppLayout.tabs.spec.ts).
-    localStorage.setItem('nalar-tabs-enabled', 'false')
+    localStorage.setItem('pabrik-tabs-enabled', 'false')
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [{
@@ -273,7 +273,7 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
   })
 
   it('tab mode off: does NOT set sorts= when no snapshot was taken (snapshot empty)', async () => {
-    localStorage.setItem('nalar-tabs-enabled', 'false')
+    localStorage.setItem('pabrik-tabs-enabled', 'false')
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [{

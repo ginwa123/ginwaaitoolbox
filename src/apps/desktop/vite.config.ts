@@ -8,7 +8,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 // Allow overriding the backend proxy target via VITE_API_PROXY_TARGET.
-// Default is the dev nalar on :8081 (for `pnpm dev` / `bun run dev`).
+// Default is the dev pabrik on :8081 (for `pnpm dev` / `bun run dev`).
 // Tests set this to the harness's chosen port (e.g. 8080 or 8082) so the
 // dev server points at a fixture against an isolated tmpdir HOME.
 // See tests/functional_ui/README.md for the full test harness story.
@@ -41,7 +41,7 @@ export default defineConfig({
         target: apiProxyTarget, // Override-able via VITE_API_PROXY_TARGET env var
         changeOrigin: true,
         // WS for the right-sidebar terminal (/api/terminal/ws). Prod is
-        // same-origin (nalar serves the webapp itself); dev needs this
+        // same-origin (pabrik serves the webapp itself); dev needs this
         // or the socket falls back to REST polling.
         ws: true,
         // We take over writing the downstream response ourselves so

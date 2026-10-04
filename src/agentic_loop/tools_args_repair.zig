@@ -191,7 +191,7 @@ fn escapeLetterForControl(c: u8) ?u8 {
 /// `escapeRawBackslashes` only rewrites backslashes JSON rejects. It
 /// deliberately leaves `\n`, `\t`, `\r` and `\f` alone, because a
 /// multi-line `new_str` genuinely needs them. That leaves one hole: the
-/// reported path contains `.config\nalar`, where `\n` is a legal escape
+/// reported path contains `.config\pabrik`, where `\n` is a legal escape
 /// but the model meant a separator. The arguments then parse, and the
 /// path silently becomes `…\.config<LF>alar` — a different file, with no
 /// error anywhere to explain it.
@@ -230,6 +230,12 @@ fn parsesAsJson(raw: []const u8) bool {
 // The reported failure: a real Windows path, unescaped by the model.
 // ---------------------------------------------------------------------------
 
+// The path below is kept in its ORIGINAL pre-rebrand spelling: it is a
+// byte-exact copy of what the user reported, and its letters are load-bearing.
+// The test turns on `\n` being a LEGAL JSON escape (so the repaired value
+// decodes to an embedded newline that step 2 must re-expand) while `\a` is an
+// illegal one. Rebranding the path to `pabrik` would flip both, and the step-2
+// assertion below would silently stop testing anything.
 test "reported Windows path round-trips: raw backslashes in, real path out" {
     const raw =
         \\{"path":"C:\Users\gilang.trisetya\.config\nalar\.worktrees\sb02\internal\domain\sales_invoice\test.go","old_str":"a","new_str":"b"}

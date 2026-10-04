@@ -6,8 +6,8 @@ the sidebar, which is a `router.replace` inside a live SPA — a completely
 different code path. This drives the real click.
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \\
-        /tmp/nalar-ui-venv/bin/python -m pytest -s \\
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \\
+        /tmp/pabrik-ui-venv/bin/python -m pytest -s \\
         tests/functional_ui/document_page_click_test.py -v
 """
 
@@ -19,7 +19,7 @@ BODY = "Message {i} with enough text to give the bubble real height in a real la
 
 
 def _seed_db_path(h):
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _seed_session(h, session_id: str, workspace_id: str, count: int = 12) -> None:

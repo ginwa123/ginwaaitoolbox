@@ -21,7 +21,7 @@ export interface KanbanColumn {
    * `KanbanColumn` interface in `api/index.ts` so test fixtures
    * that import this type see the same shape. Optional for
    * backwards compat with legacy column literals in test files
-   * (see nalar-frontend-task-literal-typing-rule).
+   * (see pabrik-frontend-task-literal-typing-rule).
    */
   description?: string | null
   position: number
@@ -66,14 +66,14 @@ export interface WorkspaceItem {
   // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
   // `item_type === 'kanban'` items. Optional so legacy literals
   // (5+ test files construct WorkspaceItem without this field) keep
-  // type-checking — see the nalar-frontend-task-literal-typing-rule
+  // type-checking — see the pabrik-frontend-task-literal-typing-rule
   // memory.
   kanban_columns?: KanbanColumn[]
   // NEW (Chunk 6 of design-mode-redesign plan). Populated for
   // `item_type === 'design'` items when the active page is open.
   // Optional so legacy literals (5+ test files construct WorkspaceItem
   // without this field) keep type-checking — see the
-  // nalar-frontend-task-literal-typing-rule memory.
+  // pabrik-frontend-task-literal-typing-rule memory.
   design_elements?: DesignElement[]
 }
 
@@ -146,7 +146,7 @@ export interface Task {
   // docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md).
   // Both optional so legacy task literals (8+ test files construct
   // Task without these fields) keep type-checking — see the
-  // nalar-frontend-task-literal-typing-rule memory.
+  // pabrik-frontend-task-literal-typing-rule memory.
   is_pinned?: boolean
   pinned_position?: number
   // NEW (Chunk 4 of workspace-item-kanban plan). Populated for
@@ -162,7 +162,7 @@ export interface Task {
   // a UI affordance but won't affect runtime behavior for tasks
   // without a session. Optional + string ('0'/'1')
   // to match the session API shape and to keep legacy task
-  // literals type-checking (see nalar-frontend-task-literal-typing-rule).
+  // literals type-checking (see pabrik-frontend-task-literal-typing-rule).
   is_auto_retry_until_stop?: string
   // NEW (kanban-task-notification-icon feature, plan
   // docs/plans/2026-07-26-kanban-task-notification-icon.md).
@@ -232,12 +232,12 @@ export interface Task {
 }
 
 // localStorage keys for state persistence
-const STORAGE_KEY_WORKSPACE_EXPANDED = 'nalar-workspace-expanded'
-const STORAGE_KEY_WORKSPACE_ITEM_EXPANDED = 'nalar-workspace-item-expanded'
-const STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED = 'nalar-workspace-item-tasks-expanded'
+const STORAGE_KEY_WORKSPACE_EXPANDED = 'pabrik-workspace-expanded'
+const STORAGE_KEY_WORKSPACE_ITEM_EXPANDED = 'pabrik-workspace-item-expanded'
+const STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED = 'pabrik-workspace-item-tasks-expanded'
 // Persisted header-dropdown selection (plan:
 // docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
-const STORAGE_KEY_ACTIVE_WORKSPACE = 'nalar-active-workspace'
+const STORAGE_KEY_ACTIVE_WORKSPACE = 'pabrik-active-workspace'
 
 // Kanban task tags normalization (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md).
@@ -1724,7 +1724,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
    * Create a new design workspace item and select it.
    *
    * `path` is REQUIRED — design elements live as HTML files at
-   * `<path>/.nalar/design/<page>/<element>.html`. The backend's
+   * `<path>/.pabrik/design/<page>/<element>.html`. The backend's
    * `POST /api/workspaces/:wid/items/design` rejects an empty
    * `path` with 400 (PathRequired), and the model's `addElement`
    * rejects `path IS NULL` with `ItemPathMissing` on first use.

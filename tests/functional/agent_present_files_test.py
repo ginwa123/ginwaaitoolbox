@@ -1,6 +1,6 @@
 """Functional tests for the `present_files` download endpoint.
 
-Exercises GET /api/files/download against a REAL nalar binary + REAL
+Exercises GET /api/files/download against a REAL pabrik binary + REAL
 SQLite, replaying the EXACT query strings the PresentFiles.vue card
 emits (see `fileDownloadUrl` in src/apps/desktop/src/api/index.ts).
 
@@ -58,7 +58,7 @@ JPG_BODY = bytes([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]) + b"fake-jpeg-payload-123
 
 def _db_path(harness: FunctionalHarness) -> Path:
     """Agent DB inside the isolated tmpdir HOME (Linux layout)."""
-    return Path(harness.temp_dir) / ".config" / "nalar" / "agent.db"
+    return Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
 
 
 def _create_session(harness: FunctionalHarness, session_id: str) -> dict[str, Any]:

@@ -1,8 +1,8 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
-const logger_mod = nalarcore.loggermod;
+const sqlite = pabrikcore.sqlite;
+const logger_mod = pabrikcore.loggermod;
 const helpers = @import("helpers");
 const testing = std.testing;
 

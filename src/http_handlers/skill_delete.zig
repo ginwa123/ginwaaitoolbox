@@ -1,7 +1,7 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const skill_mod = nalarcore.skill_mod;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const skill_mod = pabrikcore.skill_mod;
 
 /// Response structure for skill delete endpoint
 pub const SkillDeleteResponse = struct {
@@ -12,10 +12,10 @@ pub const SkillDeleteResponse = struct {
 };
 
 /// DELETE /api/skills?name=...&is_global=...&cwd=...
-/// Deletes a skill from either global (~/.config/nalar/skills/) or local (.nalar/skills/) directory
+/// Deletes a skill from either global (~/.config/pabrik/skills/) or local (.pabrik/skills/) directory
 pub fn skillDeleteHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const environment = di.environment;
 
     // Get query parameters

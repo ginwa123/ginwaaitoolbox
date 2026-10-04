@@ -12,8 +12,8 @@
 
 const std = @import("std");
 const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
-const gserverz = nalarcore.gserverz;
+const pabrikcore = mod.pabrikcore;
+const gserverz = pabrikcore.gserverz;
 const http_response = mod.http_response;
 const auth_common = @import("auth_common.zig");
 
@@ -56,7 +56,7 @@ pub const WorkspaceGetData = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     id: []const u8,
     owner: []const u8,
 ) WorkspaceGetResult {
@@ -130,7 +130,7 @@ pub fn workspaceGetHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const id = req.params.get("id") orelse "";

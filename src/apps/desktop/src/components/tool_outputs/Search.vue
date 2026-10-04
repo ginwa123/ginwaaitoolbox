@@ -285,7 +285,7 @@ const tokensForSnippet = (snippet: string, filePath: string): Token[] => {
 </template>
 
 <style scoped>
-/* Code token colors — mirrors the `nalar-dark` monaco theme in
+/* Code token colors — mirrors the `pabrik-dark` monaco theme in
  * CodeEditor.vue so search output matches ReadFile and DiffView.
  * Scoped to this component; no light-palette hardcodes (dark transcript theme). */
 .tok-plain {

@@ -1,7 +1,7 @@
 const std = @import("std");
 const mod = @import("mod.zig");
-const nalarcore = mod.nalarcore;
-const sqlite_mod = nalarcore.sqlite;
+const pabrikcore = mod.pabrikcore;
+const sqlite_mod = pabrikcore.sqlite;
 const helpers = @import("helpers");
 
 pub const SqliteBackend = sqlite_mod.SqliteBackend;
@@ -1279,7 +1279,7 @@ pub const Migration055AddDesignPages = struct {
 // file layout:
 //   - Pages become metadata-only (width/height/x/y/position) with NO
 //     html column. The per-page folder at
-//     `<workspace_item.path>/.nalar/design/<page_name>/` holds the
+//     `<workspace_item.path>/.pabrik/design/<page_name>/` holds the
 //     element files.
 //   - Each element is a positioned HTML snippet in the new
 //     `design_page_elements` table; the html body lives at the
@@ -1640,7 +1640,7 @@ pub const MigrationManager = struct {
 /// `definition` is provided by the caller who already knows the
 /// full DDL line.)
 pub fn addColumnIfMissing(
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     allocator: std.mem.Allocator,
     table: []const u8,
     column: []const u8,
@@ -1684,7 +1684,7 @@ pub fn addColumnIfMissing(
 /// no-op for fresh-DB users while still removing the column for
 /// legacy users who do have it.
 pub fn dropColumnIfExists(
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     allocator: std.mem.Allocator,
     table: []const u8,
     column: []const u8,
@@ -1738,7 +1738,7 @@ pub fn dropColumnIfExists(
 ///     index renames separately via `DROP INDEX IF EXISTS old_name;
 ///     CREATE INDEX IF NOT EXISTS new_name ON table(new_name);`.
 pub fn renameColumnIfExists(
-    db: nalarcore.database.DbOrTx,
+    db: pabrikcore.database.DbOrTx,
     allocator: std.mem.Allocator,
     table: []const u8,
     old_column: []const u8,
@@ -1934,7 +1934,7 @@ pub const allMigrations: []const Migration = &.{
     // Migration 077 — `users` + `user_companies` + `user_company_members`
     // + additive `workspaces.user_id` + `sessions.user_id` + default
     // `user_system` user + backfill. Sub-project 1 of 4 (foundation for
-    // multi-user / multi-tenant nalar). Plan:
+    // multi-user / multi-tenant pabrik). Plan:
     // docs/superpowers/plans/2026-08-21-users-rbac-foundation.md. Task:
     // task_1787199963946_1.
     .{ .version = Migration077AddUsersAndRbacSchema.version, .name = Migration077AddUsersAndRbacSchema.name, .up = Migration077AddUsersAndRbacSchema.up },
@@ -2175,7 +2175,7 @@ pub const Migration060RebackfillCreatedIso = struct {
 ///
 /// The backfill runs every time the migration runs, so production
 /// users with stale NULL rows (from earlier broken trigger-based
-/// attempts) get them fixed on the next nalar restart.
+/// attempts) get them fixed on the next pabrik restart.
 pub const Migration059AddCreatedIso = struct {
     pub const version: u32 = 59;
     pub const name = "add_llm_history_created_iso";
@@ -2348,7 +2348,7 @@ pub const Migration061FixCreatedIsoYear = struct {
 /// instead of raw `ALTER TABLE` so fresh-DB installs that re-play
 /// the canonical schema (already declaring `description` in their
 /// CREATE TABLE) don't crash on "duplicate column". See project
-/// memory `nalar-fresh-db-migration-cascade`.
+/// memory `pabrik-fresh-db-migration-cascade`.
 ///
 /// Note: this migration is at version 62 because PR #99
 /// (`Migration061FixCreatedIsoYear`) shipped on main before this
@@ -2494,7 +2494,7 @@ pub const Migration064AddFrontendLogs = struct {
 /// Schema (nullable INTEGER, no DEFAULT): NULL is the canonical
 /// "never touched" state. The `addColumnIfMissing` helper handles both
 /// upgrade-from-v1 and fresh-DB-already-declares-it paths gracefully
-/// (see memory `nalar-data-and-routines.md` §"Migration #009-#052
+/// (see memory `pabrik-data-and-routines.md` §"Migration #009-#052
 /// fresh-DB cascade is fragile" for the failure mode this avoids).
 ///
 /// Comparison happens against `sessions.updated_at` in the kanban
@@ -2769,7 +2769,7 @@ pub const Migration067AddTaskTags = struct {
 /// declared in an assistant message's `tool_calls` array to have a
 /// matching `role=tool` message in the next conversation payload, or
 /// the API rejects with "Invalid function ID". If the agent crashes
-/// mid-execution (long bash command, spawn_sub_agent dies, nalar
+/// mid-execution (long bash command, spawn_sub_agent dies, pabrik
 /// process SIGKILL'd, network hang), the assistant message is
 /// already in the DB but the per-tool result rows aren't — every
 /// subsequent LLM call fails.
@@ -2880,7 +2880,7 @@ pub fn registerAllMigrations(manager: *MigrationManager) !void {
 ///
 /// Until now, the only way to attach an image to a kanban task was the
 /// filesystem-backed attachment endpoint (`POST /api/workspaces/tasks/:id/attachments`),
-/// which writes the file to `<workspace_item.path>/.nalar/attachments/<task_id>/<n>.<ext>`
+/// which writes the file to `<workspace_item.path>/.pabrik/attachments/<task_id>/<n>.<ext>`
 /// and serves it back via a broken `GET /...attachments/*` wildcard route
 /// (the custom router doesn't actually handle `*` — see
 /// `src/modules/custom_http_server/src/router.zig::matchPathWithParams`).
@@ -3638,7 +3638,7 @@ pub const Migration070AddAgentMemories = struct {
 // impl + tests in one file (project convention).
 // `std` is already in scope from line 1; only the local aliases need adding.
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const Migration078 = Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 
 
@@ -4490,7 +4490,7 @@ pub const Migration076CreateSessionPlan = struct {
 //
 // What this migration creates
 // ────────────────────────────
-// The schema foundation for multi-user / multi-tenant nalar — sub-project 1 of 4.
+// The schema foundation for multi-user / multi-tenant pabrik — sub-project 1 of 4.
 //   1. `users` (id, email, name, password_hash, role, is_active,
     //      created_at, updated_at, last_login_at) — identity table.
     //   2. `user_companies` (id, name, slug, description, is_active,
@@ -4932,7 +4932,7 @@ pub const Migration081CreateAgentKanbans = struct {
 ///
 /// The `addColumnIfMissing` helper handles both upgrade-from-v1
 /// and fresh-DB-already-declares-it paths gracefully (see memory
-/// `nalar-data-and-routines.md` "Migration #009-#052 fresh-DB
+/// `pabrik-data-and-routines.md` "Migration #009-#052 fresh-DB
 /// cascade is fragile" for the failure mode this avoids).
 ///
 /// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
@@ -5176,7 +5176,7 @@ pub const Migration088AddSessionPendingQuestion = struct {
 // ============================================================================
 //
 // One row per active login cookie: token_hash (SHA-256 of the opaque
-// `nalar_session` cookie value) -> user_id + expiry. `users` (Migration
+// `pabrik_session` cookie value) -> user_id + expiry. `users` (Migration
 // 077) tells us who exists; this table tells us who is currently logged
 // in, on which device, until when.
 //
@@ -9132,7 +9132,7 @@ test "migration 059: is idempotent on a re-run (column + triggers + index)" {
 // `getCompactedMessages`.
 //
 // Migration 060 unconditionally re-runs the v2 backfill UPDATE so
-// production users get a fix on the next nalar restart without
+// production users get a fix on the next pabrik restart without
 // having to nuke their `agent.db`.
 //
 // This file verifies:
@@ -9473,13 +9473,13 @@ test "migration 061: handles mixed NULL + wrong-year + correct rows in one pass"
 //   3. Be safe for fresh-DB installs that already declare the column
 //      in their canonical CREATE TABLE — use `addColumnIfMissing`
 //      so the helper handles both fresh-DB and upgrade-from-v1 paths
-//      gracefully (see memory `nalar-fresh-db-migration-cascade`).
+//      gracefully (see memory `pabrik-fresh-db-migration-cascade`).
 //
 // Plan: docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md
 //   (Chunk 1, Task 1.1)
 
 const Migration062 = Migration062AddTaskDescription;
-const createWorkspaceItemTask = @import("nalarcore").ai_mod.llm_history.createWorkspaceItemTask;
+const createWorkspaceItemTask = @import("pabrikcore").ai_mod.llm_history.createWorkspaceItemTask;
 
 const TestCtx062 = struct {
     db: sqlite.SqliteBackend,
@@ -10069,7 +10069,7 @@ test "Migration063 last_finish_reason is NULL on existing rows" {
 // Plan: docs/superpowers/plans/2026-07-16-session-auto-retry-until-stop.md
 //   (Chunk 1, Task 1.3)
 
-const llm_history = nalarcore.llm_history;
+const llm_history = pabrikcore.llm_history;
 
 const TestCtx063rt = struct {
     db: sqlite.SqliteBackend,
@@ -10400,7 +10400,7 @@ test "Migration063 is idempotent (re-running up() does not error)" {
 //   2. Be idempotent on re-run (re-running must not crash with
 //      "duplicate column name" — see the project's hard-fought
 //      knowledge about fresh-DB migration cascades in
-//      `nalar-data-and-routines.md` §"Migration #009-#052 fresh-DB
+//      `pabrik-data-and-routines.md` §"Migration #009-#052 fresh-DB
 //      cascade is fragile").
 //   3. Be safe for fresh-DB installs that already declare the column
 //      in their canonical CREATE TABLE — use `addColumnIfMissing` so
@@ -10521,7 +10521,7 @@ test "Migration065 is idempotent on a fresh-DB install where the canonical schem
     // already includes `last_human_touched_at INTEGER`. The migration
     // must be a no-op (NOT a "duplicate column" crash). This is the
     // same fresh-DB-vs-upgrade split that bit Migration 020 / 052 —
-    // see project memory `nalar-data-and-routines.md` §"Migration
+    // see project memory `pabrik-data-and-routines.md` §"Migration
     // #009-#052 fresh-DB cascade is fragile".
     try ctx.db.exec(alloc, "DROP TABLE workspace_item_tasks", &.{});
     try ctx.db.exec(alloc,
@@ -10646,7 +10646,7 @@ test "Migration065 stamps a value when set after the migration" {
 //      needed).
 //   3. Be idempotent on re-run (re-running must not crash with
 //      "duplicate column" or "index already exists" — see project
-//      memory `nalar-data-and-routines.md` §"Migration #009-#052
+//      memory `pabrik-data-and-routines.md` §"Migration #009-#052
 //      fresh-DB cascade is fragile").
 //   4. Be safe for fresh-DB installs that already declare the column
 //      in their canonical CREATE TABLE — `addColumnIfMissing` handles
@@ -11113,7 +11113,7 @@ test "Migration067 is idempotent on a fresh-DB install where the canonical schem
     // already includes `tags TEXT`. The migration must be a no-op
     // (NOT a "duplicate column" crash). Mirrors the fresh-DB-vs-
     // upgrade split that hit Migration 020 / 052 — see project memory
-    // `nalar-data-and-routines.md` §"Migration #009-#052 fresh-DB
+    // `pabrik-data-and-routines.md` §"Migration #009-#052 fresh-DB
     // cascade is fragile".
     try ctx.db.exec(alloc, "DROP TABLE workspace_item_tasks", &.{});
     try ctx.db.exec(alloc,
@@ -12171,7 +12171,7 @@ test "Migration071 is registered in allMigrations" {
 // the caller passes null (matches the description / tags / image_urls
 // pattern).
 
-const createWorkspaceItemTask_fromMigration071 = @import("nalarcore").ai_mod.llm_history.createWorkspaceItemTask;
+const createWorkspaceItemTask_fromMigration071 = @import("pabrikcore").ai_mod.llm_history.createWorkspaceItemTask;
 
 test "createWorkspaceItemTask: cwd = '/home/me/proj-A' round-trips verbatim" {
     const alloc = testing.allocator;
@@ -13717,7 +13717,7 @@ test "Migration075: per-table column count is preserved (rename doesn't drop or 
 //
 // Why this file exists
 // ────────────────────
-// Migration 077 lays the schema foundation for multi-user / multi-tenant nalar:
+// Migration 077 lays the schema foundation for multi-user / multi-tenant pabrik:
 //   - `users` table (id, email, name, password_hash, role, is_active,
 //     created_at, updated_at, last_login_at)
 //   - `user_companies` table (id, name, slug, description, is_active,
@@ -14192,7 +14192,7 @@ test "Migration077 is registered in allMigrations" {
 //   2. Be idempotent on re-run (re-running must not crash with
 //      "duplicate column name" — see the project's hard-fought
 //      knowledge about fresh-DB migration cascades in
-//      `nalar-data-and-routines.md` §"Migration #009-#052 fresh-DB
+//      `pabrik-data-and-routines.md` §"Migration #009-#052 fresh-DB
 //      cascade is fragile").
 //   3. Be safe for fresh-DB installs that already declare the column
 //      in their canonical CREATE TABLE — use `addColumnIfMissing` so

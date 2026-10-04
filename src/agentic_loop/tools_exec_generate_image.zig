@@ -14,13 +14,13 @@
 //! Plan: docs/superpowers/plans/2026-08-14-generate-image-tool.md
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const generate_image_mod = nalarcore.generate_image;
+const agent = pabrikcore.agent;
+const generate_image_mod = pabrikcore.generate_image;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execGenerateImage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

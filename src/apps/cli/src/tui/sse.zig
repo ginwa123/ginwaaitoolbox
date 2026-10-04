@@ -1,4 +1,4 @@
-//! Minimal SSE frame parser for the nalar event stream.
+//! Minimal SSE frame parser for the pabrik event stream.
 //!
 //! The backend emits frames like:
 //!

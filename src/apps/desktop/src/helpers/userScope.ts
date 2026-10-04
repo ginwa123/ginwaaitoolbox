@@ -18,7 +18,7 @@
  *   await before reading a key.
  *
  * Why a suffix and not a prefix: existing keys are already namespaced by
- * feature (`nalar-workspaces:v1`, `active-chat-id`), and a suffix keeps the
+ * feature (`pabrik-workspaces:v1`, `active-chat-id`), and a suffix keeps the
  * feature prefix readable in devtools while making the user boundary
  * unambiguous. It also means a legacy (unscoped) key can never collide with a
  * scoped one.

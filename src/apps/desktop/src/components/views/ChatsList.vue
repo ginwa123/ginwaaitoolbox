@@ -702,7 +702,7 @@ const restoreActiveFromUrl = () => {
   if (current.kind === 'chat' && current.sessionId) {
     // Fresh-tab title: a deep link never left-clicks, so
     // activeChatName is empty/stale and the browser tab would read
-    // plain "Nalar". The name is usually already in this list —
+    // plain "Pabrik". The name is usually already in this list —
     // fall back to a single-session fetch past page 1.
     const match = navItems.value.find((i) => i.id === current.sessionId)
     if (match && match.name && match.name !== 'New Chat') {

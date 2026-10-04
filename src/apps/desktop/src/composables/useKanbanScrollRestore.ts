@@ -27,7 +27,7 @@ import { onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
  *     scroll (max <= 0).
  *   - **On `scrollend`** (fast path, ~100 ms after the user stops
  *     scrolling — supported in all modern browsers including the
- *     nalar Electron 27+ runtime): writes the current offset
+ *     pabrik Electron 27+ runtime): writes the current offset
  *     synchronously and cancels any pending debounced write.
  *   - **On `scroll`** (fallback path for environments without
  *     `scrollend`): schedules a debounced 250 ms write via

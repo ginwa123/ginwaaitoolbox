@@ -1,10 +1,10 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const llm_history = nalarcore.llm_history;
-const workspace_scope = nalarcore.workspace_scope;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const llm_history = pabrikcore.llm_history;
+const workspace_scope = pabrikcore.workspace_scope;
 const helpers = @import("helpers");
 const sanitize = helpers.sanitize_control_chars;
 

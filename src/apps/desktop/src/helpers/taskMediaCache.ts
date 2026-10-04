@@ -34,7 +34,7 @@ export interface CachedTaskMedia {
 
 import { userScopedKey } from './userScope'
 
-const TASK_MEDIA_CACHE_KEY = 'nalar-task-media:v1'
+const TASK_MEDIA_CACHE_KEY = 'pabrik-task-media:v1'
 // Largest single-task payload we'll persist (~1.5MB serialized — a
 // phone-photo base64 can exceed this; skipping it only loses the
 // instant paint, never correctness).

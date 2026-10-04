@@ -35,9 +35,9 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const agent_memories = nalarcore.agent_memories;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const agent_memories = pabrikcore.agent_memories;
 
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
@@ -179,7 +179,7 @@ pub const save_memory_tool = AgentTool{
         \\  belongs to, and only sessions in that same workspace can ever recall it. There is no
         \\  `workspace_id` parameter — the scope is derived from the session, never from your
         \\  arguments. Facts that must outlive this workspace (a user preference) belong in
-        \\  `~/.config/nalar/memories/*.md`, which stays global.
+        \\  `~/.config/pabrik/memories/*.md`, which stays global.
         ,
         .parameters = .{
             .type = "object",
@@ -398,7 +398,7 @@ pub const load_memory_tool_system_prompt =
     \\persist, counts as a task failure.
     \\
     \\These are AGENT-managed notes — distinct from the curated `.md` files in
-    \\`~/.config/nalar/memories/` (auto-injected as `## Global Knowledge`).
+    \\`~/.config/pabrik/memories/` (auto-injected as `## Global Knowledge`).
     \\- `save_memory` → short structured facts you'd otherwise re-ask or re-derive.
     \\  Every call APPENDS a new timestamped row — there is no edit and no
     \\  delete. To correct a fact, save a new memory.
@@ -415,7 +415,7 @@ pub const load_memory_tool_system_prompt =
     \\Consequence: a preference you save here will NOT come back in a different
     \\workspace. That is deliberate. If a fact must be true everywhere (a user
     \\preference, a machine-wide convention), it belongs in a `.md` file under
-    \\`~/.config/nalar/memories/`, not in `save_memory`.
+    \\`~/.config/pabrik/memories/`, not in `save_memory`.
     \\
     \\### Reference
     \\
@@ -478,7 +478,7 @@ pub const load_memory_tool = AgentTool{
         \\
         \\Context anti-bloat: by default, only `"snippet"` is returned — NOT the raw content. Pass `with_content=true` when you need the full body of a hit (capped at 2 KiB per row). The default `limit` is 10 (hard cap 50), so the worst-case response is ~6 KiB snippets-only or ~100 KiB with content. The by-id path always returns full content.
         \\
-        \\SCOPE — PER WORKSPACE, NOT GLOBAL: results are limited to notes saved in the workspace THIS SESSION belongs to (Migration 095). A `mem_<16-hex>` id belonging to another workspace returns `not found`, exactly like an id that never existed. There is no `workspace_id` parameter and no way to reach another workspace from here. The response echoes the `workspace_id` it was scoped to. If a fact must hold across every workspace, write it to a `.md` file under `~/.config/nalar/memories/` instead of `save_memory`.
+        \\SCOPE — PER WORKSPACE, NOT GLOBAL: results are limited to notes saved in the workspace THIS SESSION belongs to (Migration 095). A `mem_<16-hex>` id belonging to another workspace returns `not found`, exactly like an id that never existed. There is no `workspace_id` parameter and no way to reach another workspace from here. The response echoes the `workspace_id` it was scoped to. If a fact must hold across every workspace, write it to a `.md` file under `~/.config/pabrik/memories/` instead of `save_memory`.
         \\
         \\MULTI-WORD QUERIES ARE JOINED WITH OR. `query="preferred model"` matches memories that mention EITHER "preferred" OR "model" (not just memories with the literal substring "preferred model"). This is the natural recall semantics — for a more precise search, use a single keyword. The query matches against both the content AND the tags column.
         \\
@@ -1021,7 +1021,7 @@ test "save_memory_tool: round-trips tag list through storage" {
 // REGRESSION: tags as a single STRING (the new wire format, 2026-08-06)
 //
 // The LLM tool schema declares `tags` as a string. The LLM faithfully
-// sends it as a string (e.g. "demo|tool-test|nalar"). The parser
+// sends it as a string (e.g. "demo|tool-test|pabrik"). The parser
 // previously expected tags as `[]const []const u8` (JSON array), so
 // every string-form failed with "UnexpectedToken". The fix accepts
 // the string form: split on `||` at the boundary, pass array to
@@ -1037,7 +1037,7 @@ test "save_memory_tool: tags wire format is a string (parses without UnexpectedT
     // tags is a STRING with `|` separator. The stale `id` field is
     // ignored (append-only) via `ignore_unknown_fields`.
     const llm_arguments =
-        \\{"content":"Demo note","tags":"demo|tool-test|nalar","id":"test-bug-string"}
+        \\{"content":"Demo note","tags":"demo|tool-test|pabrik","id":"test-bug-string"}
     ;
 
     const parsed = std.json.parseFromSlice(
@@ -1054,7 +1054,7 @@ test "save_memory_tool: tags wire format is a string (parses without UnexpectedT
     // The parser must succeed without "UnexpectedToken" (and the stale
     // `id` field is ignored — append-only always mints a fresh id).
     try testing.expect(parsed.value.content.len > 0);
-    try testing.expectEqualStrings("demo|tool-test|nalar", parsed.value.tags);
+    try testing.expectEqualStrings("demo|tool-test|pabrik", parsed.value.tags);
 
     // The string form must be passed through to storage correctly
     // (split on || at the wire boundary, joined back to || in DB).
@@ -1070,7 +1070,7 @@ test "save_memory_tool: tags wire format is a string (parses without UnexpectedT
     defer row.deinit(alloc);
     // After splitTagsString + joinTags, the `|` separator is normalized
     // to `||` (the documented storage convention).
-    try testing.expectEqualStrings("demo||tool-test||nalar", row.values[0]);
+    try testing.expectEqualStrings("demo||tool-test||pabrik", row.values[0]);
 }
 
 test "save_memory_tool: single tag (no separator) round-trips" {
@@ -1134,7 +1134,7 @@ test "save_memory_tool: splitTagsString accepts ||, |, comma, and space separato
 
     // | separator (the LLM tried this in the bug session).
     {
-        const out = try splitTagsString(alloc, "demo|tool-test|nalar");
+        const out = try splitTagsString(alloc, "demo|tool-test|pabrik");
         defer alloc.free(out);
         try testing.expectEqual(@as(usize, 3), out.len);
         try testing.expectEqualStrings("demo", out[0]);
@@ -1149,7 +1149,7 @@ test "save_memory_tool: splitTagsString accepts ||, |, comma, and space separato
 
     // space separator (also tried by the LLM).
     {
-        const out = try splitTagsString(alloc, "demo tool-test nalar");
+        const out = try splitTagsString(alloc, "demo tool-test pabrik");
         defer alloc.free(out);
         try testing.expectEqual(@as(usize, 3), out.len);
     }

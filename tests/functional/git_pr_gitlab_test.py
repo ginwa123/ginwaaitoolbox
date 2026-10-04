@@ -63,7 +63,7 @@ def fake_forge_clis() -> Iterator[Path]:
     `<bindir>/glab.payload` to control what the fake prints; leave the file
     absent and it prints nothing (which the handlers treat as a failure).
     """
-    base = Path(tempfile.mkdtemp(prefix="nalar-fake-forge-"))
+    base = Path(tempfile.mkdtemp(prefix="pabrik-fake-forge-"))
     bindir = base / "bin"
     bindir.mkdir(parents=True)
     for name in ("gh", "glab"):

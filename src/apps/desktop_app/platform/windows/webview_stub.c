@@ -19,13 +19,13 @@
 // integrate vcpkg + install ripgrep (Windows)` steps run) used to
 // trip `std.process.exit(1)` at build-config time and kill every
 // zig build invocation — including `zig build test`, which doesn't
-// need nalar-desktop at all.
+// need pabrik-desktop at all.
 //
 // This stub replaces that hard-exit with a no-op implementation of
 // the 16-symbol webview C ABI declared in src/apps/desktop_app/
-// webview_lib.zig. With the stub, `zig build nalar-desktop` and
+// webview_lib.zig. With the stub, `zig build pabrik-desktop` and
 // `zig build` (default) succeed on a Windows host WITHOUT MSVC +
-// WebView2 — producing a nalar-desktop.exe that loads + parses CLI +
+// WebView2 — producing a pabrik-desktop.exe that loads + parses CLI +
 // extracts the embedded webapp assets (the `--smoke-test` path)
 // cleanly, but cannot actually open a webview window because every
 // API call returns a no-op. main.zig's `runWindow` calls
@@ -34,11 +34,11 @@
 // "Webview error: WebviewCreateFailed" log line.
 //
 // This is the same honest-but-broken behavior the pre-PR-354
-// `platform/windows/nalar_webview_stub.cpp` provided for the OLD
-// nalar_webview_* C ABI that the webview-lib swap removed. The
+// `platform/windows/pabrik_webview_stub.cpp` provided for the OLD
+// pabrik_webview_* C ABI that the webview-lib swap removed. The
 // difference: this stub implements the NEW webview/webview 0.12.0
 // C API (webview_create / webview_run / webview_destroy / ...),
-// not the old nalar_webview_create / _run / _destroy ABI. The
+// not the old pabrik_webview_create / _run / _destroy ABI. The
 // signatures below are 1:1 with vendor/webview/webview.h so the
 // static-contract test in webview_lib.zig ("binding matches
 // vendored webview.h C API signatures") still passes.
@@ -76,7 +76,7 @@ typedef enum {
 // Every function is a no-op: webview_create returns NULL (signals
 // "no webview available" to main.zig's runWindow), the rest return
 // WEBVIEW_ERROR_OK / NULL without touching any state. This matches
-// the original nalar_webview_stub.cpp contract: the desktop binary
+// the original pabrik_webview_stub.cpp contract: the desktop binary
 // compiles + links + the --smoke-test path runs cleanly, but
 // opening a real webview window returns error.WebviewCreateFailed.
 

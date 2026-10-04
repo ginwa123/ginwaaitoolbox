@@ -140,7 +140,7 @@ describe('ChatView stacking containment — document overlay must cover the chat
       git_worktree_cwd: '',
     } as never)
     vi.spyOn(api, 'getGitStatus').mockResolvedValue({ is_git_repo: false } as never)
-    vi.spyOn(api, 'getNalarConfig').mockResolvedValue({ profiles: {} } as never)
+    vi.spyOn(api, 'getPabrikConfig').mockResolvedValue({ profiles: {} } as never)
 
     const sse = {
       close: vi.fn(),

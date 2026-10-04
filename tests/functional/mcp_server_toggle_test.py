@@ -28,7 +28,7 @@ What THIS module covers (wire round-trip, no LLM call):
       (backend accepts it; rebuild may omit the key on next write).
 
 Run:
-    NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=$(pwd)/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/mcp_server_toggle_test.py -v
 """
 
@@ -46,20 +46,20 @@ def _platform_config_dir(home: Path) -> Path:
     """Mirror `LlmConfig.getDefaultConfigDir` (Config.zig) per-OS layout."""
     system = platform.system()
     if system == "Darwin":
-        return home / "Library" / "Application Support" / "nalar"
+        return home / "Library" / "Application Support" / "pabrik"
     if system == "Windows":
         appdata = sys.platform == "win32" and __import__("os").environ.get("APPDATA")
         if appdata and appdata.startswith(str(home)):
-            return Path(appdata) / "nalar"
-        return home / "AppData" / "Roaming" / "nalar"
-    return home / ".config" / "nalar"
+            return Path(appdata) / "pabrik"
+        return home / "AppData" / "Roaming" / "pabrik"
+    return home / ".config" / "pabrik"
 
 
 def test_disabled_stdio_server_round_trips_enabled_false() -> None:
     """PUT disabled stdio server → GET returns enabled:false (wire + disk)."""
     harness = FunctionalHarness.boot(stub_llm_profile=True)
     try:
-        initial = harness.http("GET", "/api/config/nalar", expect=200).json()
+        initial = harness.http("GET", "/api/config/pabrik", expect=200).json()
 
         # EXACT frontend serializer shape for a disabled stdio server:
         # {command, ...} + enabled:false only when disabled.
@@ -72,9 +72,9 @@ def test_disabled_stdio_server_round_trips_enabled_false() -> None:
                 },
             },
         }
-        harness.http("PUT", "/api/config/nalar", json_body=put_body, expect=200)
+        harness.http("PUT", "/api/config/pabrik", json_body=put_body, expect=200)
 
-        got = harness.http("GET", "/api/config/nalar", expect=200).json()
+        got = harness.http("GET", "/api/config/pabrik", expect=200).json()
         servers = got.get("mcp_servers") or {}
         assert "toggled_off" in servers, (
             f"disabled server missing after PUT: {list(servers.keys())}"
@@ -110,12 +110,12 @@ def test_flip_disabled_to_enabled_omits_key() -> None:
     """
     harness = FunctionalHarness.boot(stub_llm_profile=True)
     try:
-        initial = harness.http("GET", "/api/config/nalar", expect=200).json()
+        initial = harness.http("GET", "/api/config/pabrik", expect=200).json()
 
         # 1. Disable.
         harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 **initial,
                 "mcp_servers": {
@@ -124,14 +124,14 @@ def test_flip_disabled_to_enabled_omits_key() -> None:
             },
             expect=200,
         )
-        disabled = harness.http("GET", "/api/config/nalar", expect=200).json()
+        disabled = harness.http("GET", "/api/config/pabrik", expect=200).json()
         assert (disabled.get("mcp_servers") or {}).get("flip", {}).get("enabled") is False
 
         # 2. Re-enable with the EXACT frontend shape (omit `enabled`).
-        enabled_base = harness.http("GET", "/api/config/nalar", expect=200).json()
+        enabled_base = harness.http("GET", "/api/config/pabrik", expect=200).json()
         harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 **enabled_base,
                 "mcp_servers": {
@@ -140,7 +140,7 @@ def test_flip_disabled_to_enabled_omits_key() -> None:
             },
             expect=200,
         )
-        got = harness.http("GET", "/api/config/nalar", expect=200).json()
+        got = harness.http("GET", "/api/config/pabrik", expect=200).json()
         servers = got.get("mcp_servers") or {}
         assert "flip" in servers, "server dropped by enable-flip PUT"
         assert servers["flip"].get("command") == "/bin/true"
@@ -157,10 +157,10 @@ def test_disabled_sibling_preserved_and_explicit_true_tolerated() -> None:
     """Disabled + enabled siblings coexist; explicit true parses as enabled."""
     harness = FunctionalHarness.boot(stub_llm_profile=True)
     try:
-        initial = harness.http("GET", "/api/config/nalar", expect=200).json()
+        initial = harness.http("GET", "/api/config/pabrik", expect=200).json()
         harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 **initial,
                 "mcp_servers": {
@@ -170,7 +170,7 @@ def test_disabled_sibling_preserved_and_explicit_true_tolerated() -> None:
             },
             expect=200,
         )
-        got = harness.http("GET", "/api/config/nalar", expect=200).json()
+        got = harness.http("GET", "/api/config/pabrik", expect=200).json()
         servers = got.get("mcp_servers") or {}
         assert set(servers.keys()) == {"off", "on"}, (
             f"sibling servers not preserved: {list(servers.keys())}"
@@ -185,7 +185,7 @@ def test_disabled_sibling_preserved_and_explicit_true_tolerated() -> None:
         # Toggle only "off" → "on" must not clobber the sibling.
         harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 **got,
                 "mcp_servers": {
@@ -195,7 +195,7 @@ def test_disabled_sibling_preserved_and_explicit_true_tolerated() -> None:
             },
             expect=200,
         )
-        got2 = harness.http("GET", "/api/config/nalar", expect=200).json()
+        got2 = harness.http("GET", "/api/config/pabrik", expect=200).json()
         servers2 = got2.get("mcp_servers") or {}
         assert set(servers2.keys()) == {"off", "on"}, (
             f"sibling dropped by toggle PUT: {list(servers2.keys())}"

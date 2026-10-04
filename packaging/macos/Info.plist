@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.nalar.desktop</string>
+    <string>com.pabrik.desktop</string>
     <key>CFBundleName</key>
-    <string>Nalar</string>
+    <string>Pabrik</string>
     <key>CFBundleDisplayName</key>
-    <string>Nalar</string>
+    <string>Pabrik</string>
     <key>CFBundleExecutable</key>
-    <string>nalar-desktop</string>
+    <string>pabrik-desktop</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>

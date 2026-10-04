@@ -13,7 +13,7 @@
 //   - owns the GTK window + main loop when created with window=null
 //
 // The library is compiled as C++ by build.zig (zig c++ on Linux,
-// clang++ for macos target, etc.) and linked into nalar-desktop.
+// clang++ for macos target, etc.) and linked into pabrik-desktop.
 //
 // Threading: webview_run() blocks the calling thread on the platform
 // main loop (GTK main loop on Linux). Call it from the main thread and
@@ -275,9 +275,9 @@ fn setEnvIfUnset(key: [*:0]const u8, value: [*:0]const u8) bool {
 
 test "setEnvIfUnset sets the variable on first call and reports true" {
     // Use a per-test unique name so concurrent test runs in the same
-    // process don't collide. NALAR_TEST_SETENV_FRESH_VAR is unlikely to
+    // process don't collide. PABRIK_TEST_SETENV_FRESH_VAR is unlikely to
     // exist in the wild.
-    const key = "NALAR_TEST_SETENV_FRESH_VAR";
+    const key = "PABRIK_TEST_SETENV_FRESH_VAR";
     // Defensive: clear any leftover from a prior failed run.
     _ = unsetenv(key);
     try testing.expect(std.c.getenv(key) == null);
@@ -291,7 +291,7 @@ test "setEnvIfUnset sets the variable on first call and reports true" {
 }
 
 test "setEnvIfUnset preserves existing user override and reports false" {
-    const key = "NALAR_TEST_SETENV_PRESERVE_VAR";
+    const key = "PABRIK_TEST_SETENV_PRESERVE_VAR";
     // Seed: user has explicitly set the variable to "0" (a hypothetical
     // opt-out). setEnvIfUnset must not change it.
     try testing.expectEqual(@as(c_int, 0), setenv(key, "0", 1));

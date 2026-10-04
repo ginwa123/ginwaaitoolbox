@@ -23,9 +23,9 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
 const llm_history = ai_mod.llm_history;
 
 /// Default page size when the client doesn't pass `limit`.
@@ -130,7 +130,7 @@ fn parseInput(query: anytype) TasksListInput {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     io: std.Io,
     input: TasksListInput,
 ) TasksListError!TasksListResult {
@@ -276,7 +276,7 @@ pub fn tasksListHandler(
     const allocator = ctx.allocator;
     const io = ctx.io;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const item_id = req.params.get("item_id") orelse "";
@@ -322,7 +322,7 @@ pub fn tasksListHandler(
 /// path column is NULL — caller treats empty as "no badge".
 fn fetchWorkspaceItemPath(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) ![]u8 {
     var rows = db.query(
@@ -404,7 +404,7 @@ fn resolveGitBranch(
 // ───────────────────────────────────────────────
 // Standing up an in-process sqlite DB + migrations + event bus to
 // behavioural-test the handler would duplicate the migration setup
-// and pull in `nalarcore.getSingleton()` (which depends on a live
+// and pull in `pabrikcore.getSingleton()` (which depends on a live
 // `ContextIPCTui` with a server, logger, and event bus). The static
 // checks below directly test the bug — they fail if and only if the
 // pagination contract is removed or routed back to the old path.

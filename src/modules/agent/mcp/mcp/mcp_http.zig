@@ -497,7 +497,7 @@ pub const HttpRegistry = struct {
     }
 
     // Process-global singleton. Mirrors `mcp_stdio.StdioRegistry.global`.
-    // Lives for the whole nalar process; cleaned up via the shutdown
+    // Lives for the whole pabrik process; cleaned up via the shutdown
     // hook in main.zig (deinitGlobal).
     var global_registry: ?HttpRegistry = null;
     var global_init_mutex: std.atomic.Mutex = .unlocked;

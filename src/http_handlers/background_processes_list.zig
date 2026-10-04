@@ -17,8 +17,8 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const process_status = @import("helpers").process_status;
 
 pub const BackgroundProcessesListError = error{
@@ -53,7 +53,7 @@ pub const BackgroundProcessesListResult = []const u8; // pre-serialized JSON
 
 pub fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) BackgroundProcessesListError!BackgroundProcessesListResult {
     if (session_id.len == 0) return error.MissingSessionId;
@@ -138,7 +138,7 @@ pub fn backgroundProcessesListHandler(
         });
     }
 
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }),
@@ -175,7 +175,7 @@ const testing = std.testing;
 const migration = @import("../migrations/migration.zig");
 
 const TestCtx = struct {
-    db: nalarcore.sqlite.SqliteBackend,
+    db: pabrikcore.sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
 };
 
@@ -184,7 +184,7 @@ fn setupDb() !TestCtx {
     errdefer threaded.deinit();
     const io = threaded.io();
 
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
@@ -202,7 +202,7 @@ fn teardownDb(ctx: *TestCtx) void {
 }
 
 fn insertBgRow(
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
     pid: u32,
     command: []const u8,

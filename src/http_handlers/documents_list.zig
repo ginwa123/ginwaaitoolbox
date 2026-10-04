@@ -11,8 +11,8 @@
 //! row from another workspace.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const documents_store = @import("../agentic_loop/documents_store.zig");
 
@@ -38,7 +38,7 @@ pub const DocumentsListOutput = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: DocumentsListInput,
 ) DocumentsListError!DocumentsListOutput {
     if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
@@ -56,7 +56,7 @@ pub fn documentsListHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
@@ -84,7 +84,7 @@ pub fn documentsListHandler(
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const testing = std.testing;
 const migration = @import("../migrations/migration.zig");
 

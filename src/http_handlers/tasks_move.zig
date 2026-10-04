@@ -16,11 +16,11 @@
 //!   (Chunk 3, Task 3.7)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../agentic_loop/kanban_model.zig");
-const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
+const on_event_sent_kanban = pabrikcore.ai_mod.on_event_sent_kanban;
 
 /// Request body for task-move.
 const MoveTaskBody = struct {
@@ -64,7 +64,7 @@ pub const TasksMoveResult = []const u8; // pre-serialized JSON
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: TasksMoveInput,
 ) TasksMoveError!TasksMoveResult {
     if (input.item_id.len == 0) return error.ItemIdRequired;
@@ -108,7 +108,7 @@ fn useCase(
     // orange "awaiting review" dot to the green "reviewed" checkmark
     // the moment the drop fires. Fire-and-forget: a failed stamp
     // doesn't fail the move (the move is already committed).
-    nalarcore.ai_mod.llm_history.updateTaskLastHumanTouchedAt(
+    pabrikcore.ai_mod.llm_history.updateTaskLastHumanTouchedAt(
         allocator,
         db,
         input.task_id,
@@ -138,7 +138,7 @@ pub fn tasksMoveHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const item_id = req.params.get("item_id") orelse "";

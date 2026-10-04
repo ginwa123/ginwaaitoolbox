@@ -29,7 +29,7 @@ describe('KanbanTaskDetailDialog — profile picker', () => {
 
   beforeEach(() => {
     setActivePinia(createPinia())
-    vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
+    vi.spyOn(api, 'getPabrikConfig').mockResolvedValue({
       profiles: {
         '900r1bu': { model: 'MiniMax-M3', base_url: 'https://api.minimax.io/v1' },
       },
@@ -199,8 +199,8 @@ describe('KanbanTaskDetailDialog — profile picker', () => {
     expect(payload.selectedProfile).toBe('')
   })
 
-  it('handles api.getNalarConfig failure gracefully (no profiles)', async () => {
-    vi.spyOn(api, 'getNalarConfig').mockRejectedValue(new Error('boom'))
+  it('handles api.getPabrikConfig failure gracefully (no profiles)', async () => {
+    vi.spyOn(api, 'getPabrikConfig').mockRejectedValue(new Error('boom'))
     mountDialog()
     await flushPromises()
     const btn = findInDom<HTMLButtonElement>(

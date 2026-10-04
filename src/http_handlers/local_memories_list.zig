@@ -1,6 +1,6 @@
 //! `GET /api/local-memories?cwd=...` — list `.md` memory files in
-//! `<cwd>/.nalar/memories/`. The `cwd` query param is optional —
-//! when omitted, the handler falls back to the nalar server's own
+//! `<cwd>/.pabrik/memories/`. The `cwd` query param is optional —
+//! when omitted, the handler falls back to the pabrik server's own
 //! CWD via `io.realPath`.
 //!
 //! Returns JSON: `{"memories":[{"name":"...","title":"...","path":"...","size":N}]}`
@@ -20,10 +20,10 @@
 //!   - `500` + `no cwd available` substring checks
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const memories_mod = nalarcore.memories;
-const list_memory_mod = nalarcore.list_memory_tool;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const memories_mod = pabrikcore.memories;
+const list_memory_mod = pabrikcore.list_memory_tool;
 const http_response = @import("http_response.zig");
 
 /// Domain-level error set for `useCase`. The only failure mode is
@@ -136,7 +136,7 @@ pub fn localMemoriesListHandler(
 // 
 //   - The handler resolves the local memories directory from the
 //     request (body `cwd` for POST/PUT, query `cwd` for GET/DELETE),
-//     falling back to the nalar server's CWD via `io.realPath`.
+//     falling back to the pabrik server's CWD via `io.realPath`.
 //   - 500 is returned when the local directory cannot be resolved
 //     (no cwd available from the request and from `io`).
 //   - POST uses `parseFromSliceLeaky` (not `parseFromSlice`)
@@ -151,7 +151,7 @@ pub fn localMemoriesListHandler(
 // Why static checks (not behavioural tests)
 // ──────────────────────────────────────────
 // Standing up a full HTTP request/response against a real or
-// in-memory `GinwaServer` requires the `nalarcore` singleton, the
+// in-memory `GinwaServer` requires the `pabrikcore` singleton, the
 // Io runtime, the SQLite DB, and a real `*const std.process.Environ.Map`.
 // We use the same source-substring pattern as `memories_crud_test.zig`,
 // `routines_run_test.zig`, and `task_create_routines_test.zig` for
@@ -200,7 +200,7 @@ test "local_memories_list resolves cwd from query or io" {
         std.debug.print(
             "\n!! {s} does not call get_local_memories_path_for_dir !!\n" ++
                 "   The list handler must resolve the local memories dir from the\n" ++
-                "   query (?cwd=...) or fall back to the nalar server's CWD.\n",
+                "   query (?cwd=...) or fall back to the pabrik server's CWD.\n",
             .{LIST_PATH},
         );
         return error.QueryCwdResolverMissing;

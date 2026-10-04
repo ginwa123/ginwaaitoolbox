@@ -1,13 +1,18 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const helpers = @import("helpers");
+const brand = helpers.brand_paths;
 
 /// Maximum size for skills.md file (100KB)
 const MAX_SKILLS_SIZE: usize = 100 * 1024;
 
 /// App name for config directory
-const APP_NAME = "nalar";
+const APP_NAME = "pabrik";
+
+/// Pre-rebrand app name. Still resolved so globally-installed skills from an
+/// earlier version keep loading; see helpers/brand_paths.zig.
+const LEGACY_APP_NAME = brand.legacy_app_name;
 
 /// Cross-platform `/`-separator path concat. See memories.zig's `joinPath`
 /// for the rationale — `std.fs.path.join` produces OS-native separators
@@ -56,7 +61,7 @@ fn joinPath4(allocator: std.mem.Allocator, a: []const u8, b: []const u8, c: []co
 }
 
 /// Local skills directory
-const LOCAL_SKILLS_DIR = ".nalar/skills";
+const LOCAL_SKILLS_DIR = ".pabrik/skills";
 
 /// Skills file name inside each skill folder
 const SKILL_FILE_NAME = "SKILL.MD";
@@ -143,7 +148,7 @@ fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) vo
     allocator.free(fm.description);
 }
 
-/// Get the local skills directory path (.nalar/skills/)
+/// Get the local skills directory path (.pabrik/skills/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
 ///
 /// The cwd comes from `helpers.getcwd`, NOT `std.Io.Dir.cwd().realPath(io, ..)`:
@@ -160,7 +165,7 @@ pub fn get_skills_dir_path(allocator: std.mem.Allocator, io: std.Io) ?[]const u8
         return null;
     };
 
-    // Build path: <cwd>/.nalar/skills/ — see joinPath for why we don't
+    // Build path: <cwd>/.pabrik/skills/ — see joinPath for why we don't
     // use std.fs.path.join (it produces `\` separators on Windows).
     const path = joinPath(allocator, cwd, LOCAL_SKILLS_DIR) catch {
         std.log.debug("Could not build local skills directory path", .{});
@@ -235,7 +240,7 @@ pub fn free_skill_files(allocator: std.mem.Allocator, files: [][]const u8) void 
     allocator.free(files);
 }
 
-/// Get the local skills path (.nalar/skills/)
+/// Get the local skills path (.pabrik/skills/)
 /// Returns allocated string that caller must free, or null if cwd unavailable
 pub fn get_local_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
     // Get current working directory
@@ -248,7 +253,7 @@ pub fn get_local_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
         return null;
     };
 
-    // Build path: <cwd>/.nalar/skills/ — see joinPath for the rationale.
+    // Build path: <cwd>/.pabrik/skills/ — see joinPath for the rationale.
     const dir_path = joinPath(allocator, cwd, LOCAL_SKILLS_DIR) catch {
         std.log.debug("Could not build local skills path", .{});
         return null;
@@ -258,9 +263,9 @@ pub fn get_local_skills_path(allocator: std.mem.Allocator) ?[]const u8 {
 }
 
 /// Get the global skills path following XDG standards
-/// Linux: ~/.config/nalar/skills/
-/// macOS: ~/Library/Application Support/nalar/skills/
-/// Windows: %APPDATA%/nalar/skills/
+/// Linux: ~/.config/pabrik/skills/
+/// macOS: ~/Library/Application Support/pabrik/skills/
+/// Windows: %APPDATA%/pabrik/skills/
 /// Returns allocated string that caller must free, or null if home/env not found
 pub fn get_global_skills_path(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) ?[]const u8 {
     // Use environment map if provided
@@ -342,12 +347,12 @@ pub fn load_skills_from_path(allocator: std.mem.Allocator, io: std.Io, path: []c
 }
 
 /// Parse a specific skill from the skills directory by name
-/// If is_global is true, ONLY the global path (~/.config/nalar/skills/) is searched.
-/// If is_global is false (default), both local (.nalar/skills/) and global paths
+/// If is_global is true, ONLY the global path (~/.config/pabrik/skills/) is searched.
+/// If is_global is false (default), both local (.pabrik/skills/) and global paths
 /// are searched, local first.
 /// environment is required when is_global is true (or when global fallback is desired).
 ///
-/// `cwd` is the SESSION's working directory — the repo whose `.nalar/skills/`
+/// `cwd` is the SESSION's working directory — the repo whose `.pabrik/skills/`
 /// should win the local lookup. It is a separate argument because the process
 /// cwd is a different root: the server is routinely started from a worktree or
 /// from `~`, while the session runs in the user's checkout. Resolving local
@@ -360,7 +365,7 @@ pub fn load_skills_from_path(allocator: std.mem.Allocator, io: std.Io, path: []c
 /// Returns allocated string with skill content (full file including frontmatter), or null if not found
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const u8, cwd: ?[]const u8, is_global: bool, environment: ?*const std.process.Environ.Map) ?[]const u8 {
-    // When is_global is false, try local path first (.nalar/skills/)
+    // When is_global is false, try local path first (.pabrik/skills/)
     if (!is_global) {
         const local_dir: ?[]const u8 = if (cwd) |dir|
             get_local_skills_path_for_dir(allocator, dir)
@@ -374,7 +379,7 @@ pub fn parse_skill(allocator: std.mem.Allocator, io: std.Io, skill_name: []const
         }
     }
 
-    // Try global path (~/.config/nalar/skills/) if environment provided
+    // Try global path (~/.config/pabrik/skills/) if environment provided
     if (environment) |env| {
         if (get_global_skills_path_from_env(allocator, env)) |global_path| {
             defer allocator.free(global_path);
@@ -478,14 +483,16 @@ pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []const Skill
 }
 
 /// Get global skills path using environment map (not std.posix.getenv)
-/// Linux: ~/.config/nalar/skills/ or $XDG_CONFIG_HOME/nalar/skills/
-/// macOS: ~/Library/Application Support/nalar/skills/
-/// Windows: %APPDATA%/nalar/skills/
+/// Linux: ~/.config/pabrik/skills/ or $XDG_CONFIG_HOME/pabrik/skills/
+/// macOS: ~/Library/Application Support/pabrik/skills/
+/// Windows: %APPDATA%/pabrik/skills/
 /// Returns allocated string that caller must free, or null if home/env not found
 pub fn get_global_skills_path_from_env(allocator: std.mem.Allocator, environment: *const std.process.Environ.Map) ?[]const u8 {
     // Try XDG_CONFIG_HOME first
     if (environment.get("XDG_CONFIG_HOME")) |xdg_config| {
-        return joinPath3(allocator, xdg_config, APP_NAME, "skills") catch return null;
+        const current = joinPath3(allocator, xdg_config, APP_NAME, "skills") catch return null;
+        const legacy = joinPath3(allocator, xdg_config, LEGACY_APP_NAME, "skills") catch return current;
+        return brand.choose(allocator, current, legacy);
     }
 
     // Fall back to platform-specific defaults
@@ -493,13 +500,15 @@ pub fn get_global_skills_path_from_env(allocator: std.mem.Allocator, environment
         // Linux/macOS: ~/.config/<APP>/skills. On macOS the convention
         // is $HOME/Library/Application Support; keep the Unix-style
         // fallback for now (separate task to detect macOS).
-        return joinPath4(allocator, home, ".config", APP_NAME, "skills") catch null;
+        const current = joinPath4(allocator, home, ".config", APP_NAME, "skills") catch return null;
+        const legacy = joinPath4(allocator, home, ".config", LEGACY_APP_NAME, "skills") catch return current;
+        return brand.choose(allocator, current, legacy);
     }
 
     return null;
 }
 
-/// Get local skills path (.nalar/skills/) using io
+/// Get local skills path (.pabrik/skills/) using io
 /// Returns allocated string that caller must free, or null if cwd unavailable
 ///
 /// `helpers.getcwd`, not `realPath` — see `get_skills_dir_path` for why
@@ -639,15 +648,15 @@ test "parse_skill resolves a project-local skill against the GIVEN cwd, not the 
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const root = "/tmp/nalar-parse-skill-scope-test";
+    const root = "/tmp/pabrik-parse-skill-scope-test";
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
 
-    // The repo the session is in. The test binary's cwd has no .nalar/skills at
+    // The repo the session is in. The test binary's cwd has no .pabrik/skills at
     // all, so a process-cwd lookup cannot accidentally satisfy the assertion.
     const session_repo = try std.fs.path.join(alloc, &.{ root, "repo" });
     defer alloc.free(session_repo);
-    const skill_dir = try std.fs.path.join(alloc, &.{ session_repo, ".nalar", "skills", "local-scope-probe" });
+    const skill_dir = try std.fs.path.join(alloc, &.{ session_repo, ".pabrik", "skills", "local-scope-probe" });
     defer alloc.free(skill_dir);
     try std.Io.Dir.cwd().createDirPath(io, skill_dir);
     const skill_file = try std.fs.path.join(alloc, &.{ skill_dir, SKILL_FILE_NAME });
@@ -658,14 +667,14 @@ test "parse_skill resolves a project-local skill against the GIVEN cwd, not the 
     // otherwise the argument is being ignored.
     const other_repo = try std.fs.path.join(alloc, &.{ root, "other-repo" });
     defer alloc.free(other_repo);
-    const other_dir = try std.fs.path.join(alloc, &.{ other_repo, ".nalar", "skills", "unrelated" });
+    const other_dir = try std.fs.path.join(alloc, &.{ other_repo, ".pabrik", "skills", "unrelated" });
     defer alloc.free(other_dir);
     try std.Io.Dir.cwd().createDirPath(io, other_dir);
 
     // Point the global tier at an empty root so it cannot answer either.
     const xdg = try std.fs.path.join(alloc, &.{ root, "xdg" });
     defer alloc.free(xdg);
-    const global_dir = try std.fs.path.join(alloc, &.{ xdg, "nalar", "skills" });
+    const global_dir = try std.fs.path.join(alloc, &.{ xdg, "pabrik", "skills" });
     defer alloc.free(global_dir);
     try std.Io.Dir.cwd().createDirPath(io, global_dir);
 
@@ -691,7 +700,7 @@ test "parse_skill prefers the session repo over the global tier" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const root = "/tmp/nalar-parse-skill-shadow-test";
+    const root = "/tmp/pabrik-parse-skill-shadow-test";
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
 
@@ -708,13 +717,13 @@ test "parse_skill prefers the session repo over the global tier" {
 
     const repo = try std.fs.path.join(alloc, &.{ root, "repo" });
     defer alloc.free(repo);
-    const local_dir = try std.fs.path.join(alloc, &.{ repo, ".nalar", "skills", "shadow-probe" });
+    const local_dir = try std.fs.path.join(alloc, &.{ repo, ".pabrik", "skills", "shadow-probe" });
     defer alloc.free(local_dir);
     try seed(alloc, io, local_dir, "LOCAL-WINS");
 
     const xdg = try std.fs.path.join(alloc, &.{ root, "xdg" });
     defer alloc.free(xdg);
-    const global_dir = try std.fs.path.join(alloc, &.{ xdg, "nalar", "skills", "shadow-probe" });
+    const global_dir = try std.fs.path.join(alloc, &.{ xdg, "pabrik", "skills", "shadow-probe" });
     defer alloc.free(global_dir);
     try seed(alloc, io, global_dir, "GLOBAL-LOSES");
 
@@ -753,6 +762,6 @@ test "the process-cwd resolvers return a path (realPath is dead on Linux)" {
     try std.testing.expectEqualStrings(libc.?, from_io.?);
     try std.testing.expectEqualStrings(libc.?, local_from_io.?);
 
-    // And the shape is <cwd>/.nalar/skills, not something realPath-shaped.
-    try std.testing.expect(std.mem.endsWith(u8, from_io.?, "/.nalar/skills"));
+    // And the shape is <cwd>/.pabrik/skills, not something realPath-shaped.
+    try std.testing.expect(std.mem.endsWith(u8, from_io.?, "/.pabrik/skills"));
 }

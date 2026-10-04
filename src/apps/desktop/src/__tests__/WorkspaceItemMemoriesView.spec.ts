@@ -59,8 +59,8 @@ describe('WorkspaceItemMemoriesView', () => {
   it('renders list of memories after fetch', async () => {
     mockList.mockResolvedValue({
       memories: [
-        { name: 'rule-a.md', title: 'Rule A', path: '/tmp/proj/.nalar/memories/rule-a.md', size: 256 },
-        { name: 'rule-b.md', title: 'Rule B', path: '/tmp/proj/.nalar/memories/rule-b.md', size: 1024 },
+        { name: 'rule-a.md', title: 'Rule A', path: '/tmp/proj/.pabrik/memories/rule-a.md', size: 256 },
+        { name: 'rule-b.md', title: 'Rule B', path: '/tmp/proj/.pabrik/memories/rule-b.md', size: 1024 },
       ],
     })
     const w = mount(WorkspaceItemMemoriesView, {
@@ -82,7 +82,7 @@ describe('WorkspaceItemMemoriesView', () => {
     wrapper = w
     await flushPromises()
     expect(document.body.textContent).toContain('/home/u/proj')
-    expect(document.body.textContent).toContain('.nalar/memories')
+    expect(document.body.textContent).toContain('.pabrik/memories')
   })
 
   it('does not call API when cwd is empty', async () => {
@@ -111,14 +111,14 @@ describe('WorkspaceItemMemoriesView', () => {
   it('renders detail panel after selecting a memory', async () => {
     mockList.mockResolvedValue({
       memories: [
-        { name: 'rule.md', title: 'My Rule', path: '/p/.nalar/memories/rule.md', size: 100 },
+        { name: 'rule.md', title: 'My Rule', path: '/p/.pabrik/memories/rule.md', size: 100 },
       ],
     })
     mockGetDetail.mockResolvedValue({
       memory: {
         name: 'rule.md',
         title: 'My Rule',
-        path: '/p/.nalar/memories/rule.md',
+        path: '/p/.pabrik/memories/rule.md',
         size: 100,
         content: '# My Rule\n\nbody',
       },

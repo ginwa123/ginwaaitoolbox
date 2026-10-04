@@ -14,8 +14,8 @@
 //! Task: task_1789505553300_1
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 const helpers = @import("helpers");
@@ -93,7 +93,7 @@ fn isKnownTool(tool_name: []const u8) bool {
 /// unconfigured→configured flow to a single click.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: ToolCreateInput,
 ) ToolCreateError!ToolCreateOutput {
     if (input.routine_id.len == 0) return error.RoutineIdRequired;
@@ -175,7 +175,7 @@ pub fn agentRoutineToolsCreateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const routine_id = req.params.get("routine_id") orelse "";
@@ -232,7 +232,7 @@ pub fn agentRoutineToolsCreateHandler(
 //   3. DuplicateTool: re-INSERTing the same (routine_id, tool_name)
 //   4. Happy path: row is inserted with enabled=1
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration087CreateAgentRoutines = @import("../migrations/migration.zig").Migration087CreateAgentRoutines;
 

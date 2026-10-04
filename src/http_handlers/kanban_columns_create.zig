@@ -28,11 +28,11 @@
 //!   (Chunk 3, Task 3.4)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../agentic_loop/kanban_model.zig");
-const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
+const on_event_sent_kanban = pabrikcore.ai_mod.on_event_sent_kanban;
 
 /// HTTP request body for column-create. Decoupled from the
 /// `CreateColumnInput` domain struct so the wire format can evolve
@@ -129,7 +129,7 @@ pub const CreateColumnOutput = struct {
 /// with `errdefer` / `defer` for non-arena safety.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: CreateColumnInput,
 ) KanbanColumnCreateError!CreateColumnOutput {
     // 1. Validate. These are business rules: an empty `item_id`
@@ -233,7 +233,7 @@ pub fn kanbanColumnsCreateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Validate path params + body presence + JSON shape.
@@ -376,7 +376,7 @@ test "kanban_columns_create handler parses body with parseFromSliceLeaky" {
 
     // The handler must use `parseFromSliceLeaky` (per-request arena
     // owns the memory — no explicit deinit needed). See project
-    // memory `nalar-http-handler-thin-wrapper-pattern`.
+    // memory `pabrik-http-handler-thin-wrapper-pattern`.
     if (std.mem.indexOf(u8, source, "parseFromSliceLeaky") == null) {
         std.debug.print(
             "\n!! {s} does not use parseFromSliceLeaky !!\n" ++

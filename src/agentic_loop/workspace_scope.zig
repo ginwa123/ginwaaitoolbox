@@ -1,6 +1,6 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 
 /// Resolve which workspace a chat session belongs to.
 ///

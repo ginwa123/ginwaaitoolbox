@@ -14,9 +14,9 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const design_model = nalarcore.ai_mod.design_model;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const design_model = pabrikcore.ai_mod.design_model;
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 
@@ -524,8 +524,8 @@ test "tools_equipped.zig imports update_design_element module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "const update_design_element_mod = nalarcore.update_design_element;")) {
-        std.debug.print("!! tools_equipped.zig does not bind update_design_element_mod = nalarcore.update_design_element !!\n", .{});
+    if (!contains(source, "const update_design_element_mod = pabrikcore.update_design_element;")) {
+        std.debug.print("!! tools_equipped.zig does not bind update_design_element_mod = pabrikcore.update_design_element !!\n", .{});
         return error.UpdateElementModBindingMissing;
     }
 }
@@ -582,7 +582,7 @@ test "root.zig exposes update_design_element module" {
     defer allocator.free(source);
     if (!contains(source, "pub const update_design_element = @import(\"modules/agent/tools/update_design_element.zig\");")) {
         std.debug.print("!! root.zig does not expose update_design_element as a top-level module !!\n", .{});
-        return error.NalarcoreExportMissing;
+        return error.PabrikcoreExportMissing;
     }
 }
 

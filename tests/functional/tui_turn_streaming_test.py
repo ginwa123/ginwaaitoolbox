@@ -1,4 +1,4 @@
-"""Functional regression for "the second turn never shows up in nalar-tui".
+"""Functional regression for "the second turn never shows up in pabrik-tui".
 
 User report (2026-09-13): the first exchange renders fine, but a *second*
 message in the same session produces nothing in the TUI, even though the reply
@@ -122,14 +122,14 @@ class _Backend:
 
 def _binary() -> str:
     for cand in (
-        os.environ.get("NALAR_TUI_BIN"),
-        "zig-out/bin/nalar-tui",
-        "zig-out/bin/nalar-tui.exe",
-        shutil.which("nalar-tui"),
+        os.environ.get("PABRIK_TUI_BIN"),
+        "zig-out/bin/pabrik-tui",
+        "zig-out/bin/pabrik-tui.exe",
+        shutil.which("pabrik-tui"),
     ):
         if cand and os.path.exists(cand):
             return cand
-    pytest.skip("nalar-tui not built — run `zig build install:tui` (or set NALAR_TUI_BIN)")
+    pytest.skip("pabrik-tui not built — run `zig build install:tui` (or set PABRIK_TUI_BIN)")
 
 
 class _Tui:

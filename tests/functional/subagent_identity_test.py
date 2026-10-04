@@ -6,7 +6,7 @@ sessions.sub_agent_name + parent_session_id. The messages endpoint
 exposes both so DB inspection and the UI show who actually ran
 (e.g. "implementator") instead of only the parent profile.
 
-Wire contract over HTTP (harness boots a fresh nalar per test):
+Wire contract over HTTP (harness boots a fresh pabrik per test):
 
   - GET /api/llm/session/:id/messages includes sub_agent_name and
     parent_session_id keys (null/empty for main sessions).

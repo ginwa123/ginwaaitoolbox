@@ -57,7 +57,7 @@ export interface LayerTreeNode {
 //
 // which silently passes in `bunx vitest run` but FAILS the strict
 // type-check in `bun run build`. See
-// `.nalar/memories/nalar-frontend-patterns.md` §"bun run build is
+// `.pabrik/memories/pabrik-frontend-patterns.md` §"bun run build is
 // the type-check" for the bun/Node vue-tsc split.
 defineOptions({ name: 'LayerRow' })
 

@@ -19,8 +19,8 @@
 //! Task: task_1789032258828_0.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const fire = @import("../ai_workflow/tui/routines/fire.zig");
 const model = @import("../ai_workflow/tui/routines/model.zig");
@@ -53,7 +53,7 @@ pub fn workspaceRoutinesRunHandler(ctx: gserverz.HttpContext, req: gserverz.Http
     }
     const item_id = req.params.get("item_id") orelse "";
 
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "singleton not initialized" }),

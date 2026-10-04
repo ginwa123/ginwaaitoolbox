@@ -1,8 +1,8 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 
@@ -136,10 +136,10 @@ pub fn findColumnsByName(
     workspace_item_id: []const u8,
     name_query: []const u8,
 ) ![]ColumnMatch {
-    const cols = nalarcore.ai_mod.kanban_model.listColumns(allocator, db, workspace_item_id) catch {
+    const cols = pabrikcore.ai_mod.kanban_model.listColumns(allocator, db, workspace_item_id) catch {
         return &[_]ColumnMatch{};
     };
-    defer nalarcore.ai_mod.kanban_model.freeColumns(allocator, cols);
+    defer pabrikcore.ai_mod.kanban_model.freeColumns(allocator, cols);
 
     const query_trimmed = std.mem.trim(u8, name_query, " \t\r\n");
     var lower_buf: [256]u8 = undefined;
@@ -322,7 +322,7 @@ pub fn executeKanbanMoveTaskToJSON(
 
     // 3. Call kanban_model.moveTask — this handles the sibling
     //    renumber atomically.
-    nalarcore.ai_mod.kanban_model.moveTask(
+    pabrikcore.ai_mod.kanban_model.moveTask(
         allocator,
         db,
         input.item_id,
@@ -348,7 +348,7 @@ pub fn executeKanbanMoveTaskToJSON(
     //     LLM tool path. Drag-and-drop worked (HTTP handler
     //     emits), AI-agent moves did not. Adding this single call
     //     closes the gap.
-    nalarcore.ai_mod.on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
+    pabrikcore.ai_mod.on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
         .action = "moved",
         .workspace_id = input.workspace_id,
         .item_id = input.item_id,
@@ -447,7 +447,7 @@ pub const KanbanMoveOutput = struct {
 
 const testing = std.testing;
 const kanban_move_task = @import("kanban_move_task.zig");
-const kanban_model = nalarcore.ai_mod.kanban_model;
+const kanban_model = pabrikcore.ai_mod.kanban_model;
 const text_normalize = @import("helpers").text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/kanban_move_task.zig";
@@ -587,10 +587,10 @@ test "kanban_move_task.zig emits a kanban_task SSE event on success" {
     const source = try readSource(allocator, TOOL_PATH);
     defer allocator.free(source);
 
-    // 1. Must reference the on_event_sent_kanban module via nalarcore.
-    if (!contains(source, "nalarcore.ai_mod.on_event_sent_kanban")) {
+    // 1. Must reference the on_event_sent_kanban module via pabrikcore.
+    if (!contains(source, "pabrikcore.ai_mod.on_event_sent_kanban")) {
         std.debug.print(
-            "!! kanban_move_task.zig does not reference nalarcore.ai_mod.on_event_sent_kanban !!\n" ++
+            "!! kanban_move_task.zig does not reference pabrikcore.ai_mod.on_event_sent_kanban !!\n" ++
                 "   The SSE emit on the LLM tool path is missing.\n" ++
                 "   See docs/superpowers/plans/2026-06-29-kanban-move-task-sse-emit.md\n",
             .{},
@@ -644,8 +644,8 @@ test "tools_equipped.zig imports kanban_move_task module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "const kanban_move_task_mod = nalarcore.kanban_move_task;")) {
-        std.debug.print("!! tools_equipped.zig does not bind kanban_move_task_mod = nalarcore.kanban_move_task !!\n", .{});
+    if (!contains(source, "const kanban_move_task_mod = pabrikcore.kanban_move_task;")) {
+        std.debug.print("!! tools_equipped.zig does not bind kanban_move_task_mod = pabrikcore.kanban_move_task !!\n", .{});
         return error.KanbanMoveTaskModBindingMissing;
     }
 }
@@ -696,13 +696,13 @@ test "allAgentTools comptime list contains kanban_move_task tool def" {
     }
 }
 
-test "nalarcore root.zig exposes kanban_move_task module" {
+test "pabrikcore root.zig exposes kanban_move_task module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, "src/root.zig");
     defer allocator.free(source);
     if (!contains(source, "pub const kanban_move_task = @import(\"modules/agent/tools/kanban_move_task.zig\");")) {
         std.debug.print("!! root.zig does not expose kanban_move_task as a top-level module !!\n", .{});
-        return error.NalarcoreExportMissing;
+        return error.PabrikcoreExportMissing;
     }
 }
 

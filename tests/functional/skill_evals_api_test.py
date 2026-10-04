@@ -38,8 +38,8 @@ from harness import FunctionalHarness
 
 
 @pytest.fixture
-def evals_harness(default_nalar_bin: Any) -> Any:
-    h = FunctionalHarness.boot(default_nalar_bin)
+def evals_harness(default_pabrik_bin: Any) -> Any:
+    h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         yield h
     finally:

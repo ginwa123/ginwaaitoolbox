@@ -1,12 +1,12 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const present_files_mod = nalarcore.ai_mod.present_files;
-const file_sandbox = nalarcore.ai_mod.file_sandbox;
+const agent = pabrikcore.agent;
+const present_files_mod = pabrikcore.ai_mod.present_files;
+const file_sandbox = pabrikcore.ai_mod.file_sandbox;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execPresentFiles(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -110,7 +110,7 @@ const testing = std.testing;
 /// working directory" and "outside it" are real paths on every CI OS.
 const ExecEnv = struct {
     threaded: std.Io.Threaded,
-    db: nalarcore.sqlite.SqliteBackend,
+    db: pabrikcore.sqlite.SqliteBackend,
     inside: std.testing.TmpDir,
     outside: std.testing.TmpDir,
     inside_abs: []const u8,
@@ -188,7 +188,7 @@ fn realPathOf(allocator: std.mem.Allocator, dir: std.Io.Dir) ![]u8 {
 fn setupExecEnv(allocator: std.mem.Allocator) !ExecEnv {
     var threaded = std.Io.Threaded.init(allocator, .{});
     errdefer threaded.deinit();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(threaded.io(), ":memory:");
     // Only the two columns the sandbox root resolver reads; nullable, like

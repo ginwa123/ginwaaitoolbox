@@ -203,8 +203,8 @@ describe('useWorkspacesStore.init()', () => {
   })
 
   it('restores expanded state from localStorage for workspaces and items', async () => {
-    localStorage.setItem('nalar-workspace-expanded', JSON.stringify(['ws_1']))
-    localStorage.setItem('nalar-workspace-item-expanded', JSON.stringify(['item_1a']))
+    localStorage.setItem('pabrik-workspace-expanded', JSON.stringify(['ws_1']))
+    localStorage.setItem('pabrik-workspace-item-expanded', JSON.stringify(['item_1a']))
 
     getWorkspacesMock.mockResolvedValueOnce({
       workspaces: [{ id: 'ws_1', name: 'W1', icon: '📁' }],

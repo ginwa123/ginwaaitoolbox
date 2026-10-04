@@ -1,6 +1,6 @@
 # Agent Tools
 
-This document lists the agent tools that the nalar LLM can call.
+This document lists the agent tools that the pabrik LLM can call.
 
 ## `present_files`
 

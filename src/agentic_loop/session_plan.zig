@@ -22,7 +22,7 @@
 
 const std = @import("std");
 const testing = std.testing;
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const migration = @import("../migrations/migration.zig");
 
 /// One row in `session_plan`. All string fields are allocator-owned and

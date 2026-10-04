@@ -1,15 +1,15 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const logger_mod = nalarcore.loggermod;
-const config_mod = nalarcore.config;
-const ai_workflow = nalarcore.ai_mod;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const logger_mod = pabrikcore.loggermod;
+const config_mod = pabrikcore.config;
+const ai_workflow = pabrikcore.ai_mod;
 
 /// Startup handler - queries worker table and starts a thread for each worker
 /// Called once during app initialization to bootstrap workers from database
 pub fn startup(
     allocator: std.mem.Allocator,
-    ctxTui: *nalarcore.ContextIPCTui,
+    ctxTui: *pabrikcore.ContextIPCTui,
 ) !void {
     const sqlite_db = ctxTui.db;
     const logger = ctxTui.logger;

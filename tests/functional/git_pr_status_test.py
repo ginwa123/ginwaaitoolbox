@@ -1,6 +1,6 @@
 """Functional wire tests for GET /api/git/pr/status.
 
-Exercises the endpoint the `nalarcli pr-status` command calls
+Exercises the endpoint the `pabrikcli pr-status` command calls
 (`gh pr view` wrapper returning open/merged/closed):
 
   1. Missing path → 400 (route is registered, validator runs).
@@ -103,7 +103,7 @@ def test_non_repo_path_is_404(
 
 
 def test_happy_path_via_fake_gh(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """A fake `gh` on PATH proves the 200 wire shape end-to-end.
 
@@ -111,7 +111,7 @@ def test_happy_path_via_fake_gh(
     a tmpdir bin with an executable `gh` stub makes the backend's
     `gh pr view --json ...` spawn return canned JSON without network.
     The harness must boot AFTER the PATH patch, so this test takes
-    `default_nalar_bin` and boots its own harness instead of the
+    `default_pabrik_bin` and boots its own harness instead of the
     function-scoped `harness` fixture.
     """
     bindir = tmp_path / "fakebin"
@@ -141,7 +141,7 @@ def test_happy_path_via_fake_gh(
     fake_gh.chmod(fake_gh.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h2.http(
             "GET",
@@ -161,7 +161,7 @@ def test_happy_path_via_fake_gh(
 
 
 def test_open_pr_with_null_dates_is_200(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """An OPEN PR's `gh` payload carries `"mergedAt":null,"closedAt":null`.
 
@@ -196,7 +196,7 @@ def test_open_pr_with_null_dates_is_200(
     fake_gh.chmod(fake_gh.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h2.http(
             "GET",
@@ -216,7 +216,7 @@ def test_open_pr_with_null_dates_is_200(
 
 
 def test_fetch_failure_surfaces_gh_stderr(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """A failing `gh` must surface its stderr in the 502 body.
 
@@ -235,7 +235,7 @@ def test_fetch_failure_surfaces_gh_stderr(
     fake_gh.chmod(fake_gh.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h2.http(
             "GET",

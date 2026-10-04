@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
-import McpServersSection from '../components/nalar/McpServersSection.vue'
+import McpServersSection from '../components/pabrik/McpServersSection.vue'
 import type { McpServer } from '../api'
 
 const baseServer: McpServer = {

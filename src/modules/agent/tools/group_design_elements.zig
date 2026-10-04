@@ -11,9 +11,9 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const design_model = nalarcore.ai_mod.design_model;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const design_model = pabrikcore.ai_mod.design_model;
 const helpers = @import("helpers");
 const sanitizeControlChars = helpers.sanitize_control_chars;
 
@@ -442,8 +442,8 @@ test "tools_equipped.zig imports group_design_elements module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (!contains(source, "const group_design_elements_mod = nalarcore.group_design_elements;")) {
-        std.debug.print("!! tools_equipped.zig does not bind group_design_elements_mod = nalarcore.group_design_elements !!\n", .{});
+    if (!contains(source, "const group_design_elements_mod = pabrikcore.group_design_elements;")) {
+        std.debug.print("!! tools_equipped.zig does not bind group_design_elements_mod = pabrikcore.group_design_elements !!\n", .{});
         return error.GroupElementsModBindingMissing;
     }
 }
@@ -507,7 +507,7 @@ test "root.zig exposes group_design_elements module" {
     defer allocator.free(source);
     if (!contains(source, "pub const group_design_elements = @import(\"modules/agent/tools/group_design_elements.zig\");")) {
         std.debug.print("!! root.zig does not expose group_design_elements as a top-level module !!\n", .{});
-        return error.NalarcoreExportMissing;
+        return error.PabrikcoreExportMissing;
     }
 }
 

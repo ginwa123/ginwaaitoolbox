@@ -2,7 +2,7 @@
 # scripts/design-mode-smoke.sh
 #
 # Smoke test for the design-mode v6 redesign (Chunks 1-9).
-# Boots a fresh `nalar` against an isolated $HOME on port 8080
+# Boots a fresh `pabrik` against an isolated $HOME on port 8080
 # (port 8081 is reserved for the always-running dev process — see
 # project memory "Mandatory: Dont ever kill the process port 8081")
 # and exercises the full element CRUD + lifecycle against the
@@ -28,45 +28,45 @@
 set -u
 
 # --- config ---
-: "${NALAR_BIN:=zig-out/bin/nalar}"
-: "${NALAR_PORT:=8080}"                 # 8080 per project memory rule
+: "${PABRIK_BIN:=zig-out/bin/pabrik}"
+: "${PABRIK_PORT:=8080}"                 # 8080 per project memory rule
 : "${READY_TIMEOUT_S:=30}"
 : "${HTTP_TIMEOUT_S:=5}"
 
-if [ ! -x "$NALAR_BIN" ]; then
-  echo "✗ NALAR_BIN not executable: '$NALAR_BIN'" >&2
+if [ ! -x "$PABRIK_BIN" ]; then
+  echo "✗ PABRIK_BIN not executable: '$PABRIK_BIN'" >&2
   exit 1
 fi
 
 # Sanity: refuse to clobber the protected dev port.
-if [ "$NALAR_PORT" = "8081" ]; then
-  echo "✗ port 8081 is reserved for the always-running dev nalar" >&2
+if [ "$PABRIK_PORT" = "8081" ]; then
+  echo "✗ port 8081 is reserved for the always-running dev pabrik" >&2
   exit 1
 fi
 
-# Verify no other nalar is already listening on our port (so we don't
+# Verify no other pabrik is already listening on our port (so we don't
 # kill it when we run our cleanup trap).
-EXISTING=$(ss -tln 2>/dev/null | awk '{print $4}' | grep -E "[:.]${NALAR_PORT}\$" || true)
+EXISTING=$(ss -tln 2>/dev/null | awk '{print $4}' | grep -E "[:.]${PABRIK_PORT}\$" || true)
 if [ -n "$EXISTING" ]; then
-  echo "✗ port $NALAR_PORT already has a listener: $EXISTING" >&2
+  echo "✗ port $PABRIK_PORT already has a listener: $EXISTING" >&2
   exit 1
 fi
 
 # Isolate $HOME so config.json + agent.db live in a tempdir (matches
 # ci-smoke-test.sh's pattern; keeps the smoke test idempotent and
 # dev-DB-isolated).
-export HOME="$(mktemp -d -t nalar-design-smoke-home.XXXXXX)"
-SMOKE_LOG="$(mktemp -t nalar-design-smoke.XXXXXX.log)"
+export HOME="$(mktemp -d -t pabrik-design-smoke-home.XXXXXX)"
+SMOKE_LOG="$(mktemp -t pabrik-design-smoke.XXXXXX.log)"
 
 # Assertion counter — logged for the final summary.
 STEP=0
 
 cleanup() {
   local ec=$?
-  if [ -n "${NALAR_PID:-}" ] && kill -0 "$NALAR_PID" 2>/dev/null; then
-    kill -TERM "$NALAR_PID" 2>/dev/null || true
+  if [ -n "${PABRIK_PID:-}" ] && kill -0 "$PABRIK_PID" 2>/dev/null; then
+    kill -TERM "$PABRIK_PID" 2>/dev/null || true
     sleep 0.2
-    kill -KILL "$NALAR_PID" 2>/dev/null || true
+    kill -KILL "$PABRIK_PID" 2>/dev/null || true
   fi
   rm -rf "$HOME" 2>/dev/null || true
   # Keep the log only on failure so a passing run leaves no trace.
@@ -92,24 +92,24 @@ assert_eq() {
     echo "  ✓ $label"
   else
     echo "  ✗ $label: expected '$expected', got '$actual'" >&2
-    echo "--- nalar log tail ---" >&2
+    echo "--- pabrik log tail ---" >&2
     tail -n 30 "$SMOKE_LOG" >&2 || true
     exit 1
   fi
 }
 
 # --- boot ---
-echo "→ booting: HOME=$HOME PORT=$NALAR_PORT BIN=$NALAR_BIN"
+echo "→ booting: HOME=$HOME PORT=$PABRIK_PORT BIN=$PABRIK_BIN"
 
-"$NALAR_BIN" --port "$NALAR_PORT" >"$SMOKE_LOG" 2>&1 &
-NALAR_PID=$!
-echo "→ nalar pid=$NALAR_PID"
+"$PABRIK_BIN" --port "$PABRIK_PORT" >"$SMOKE_LOG" 2>&1 &
+PABRIK_PID=$!
+echo "→ pabrik pid=$PABRIK_PID"
 
 # Wait for readiness.
 DEADLINE=$(( $(date +%s) + READY_TIMEOUT_S ))
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  if ! kill -0 "$NALAR_PID" 2>/dev/null; then
-    echo "✗ nalar (pid=$NALAR_PID) exited before becoming ready" >&2
+  if ! kill -0 "$PABRIK_PID" 2>/dev/null; then
+    echo "✗ pabrik (pid=$PABRIK_PID) exited before becoming ready" >&2
     echo "--- log ---" >&2; cat "$SMOKE_LOG" >&2
     exit 1
   fi
@@ -124,7 +124,7 @@ grep -q "Agent is ready to serve!" "$SMOKE_LOG" || {
   exit 1
 }
 
-BASE="http://127.0.0.1:${NALAR_PORT}"
+BASE="http://127.0.0.1:${PABRIK_PORT}"
 
 # Helper: HTTP request, returns body; status code goes to $STATUS.
 req() {
@@ -306,7 +306,7 @@ SHUTDOWN_BODY=$(curl -fsS -X POST --max-time "$HTTP_TIMEOUT_S" "${BASE}/test/shu
 }
 SHUTDOWN_DEADLINE=$(( $(date +%s) + 5 ))
 while [ "$(date +%s)" -lt "$SHUTDOWN_DEADLINE" ]; do
-  if ! kill -0 "$NALAR_PID" 2>/dev/null; then break; fi
+  if ! kill -0 "$PABRIK_PID" 2>/dev/null; then break; fi
   sleep 0.2
 done
 # If still alive, the trap's SIGTERM will reap it.

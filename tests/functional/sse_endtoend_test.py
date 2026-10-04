@@ -214,13 +214,13 @@ def test_kanban_add_column_emits_event(harness: FunctionalHarness) -> None:
         response.close()
 
 
-# ─── Test 5: SSE client disconnect does not crash nalar ───────────────
+# ─── Test 5: SSE client disconnect does not crash pabrik ───────────────
 
 
 def test_sse_drops_quietly_when_client_closes(
     harness: FunctionalHarness,
 ) -> None:
-    """Open SSE, close it, nalar does not crash. Subsequent API call works."""
+    """Open SSE, close it, pabrik does not crash. Subsequent API call works."""
     response, thread, events_q, stop = _open_sse(harness, "workers")
     # Wait briefly to ensure the SSE connection is registered.
     time.sleep(0.2)

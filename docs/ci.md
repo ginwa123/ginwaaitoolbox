@@ -125,7 +125,7 @@ each changed file to stderr. Two pattern lists:
   Gradle/AGP files. A CI-only diff is the case people forget: skipping the
   build because the diff is "only .github" means a typo'd `runs-on:` ships
   unbuilt.
-- **DOC ONLY** — `*.md`, `docs/**`, `LICENSE*`, `.nalar/**`,
+- **DOC ONLY** — `*.md`, `docs/**`, `LICENSE*`, `.pabrik/**`,
   `.github/ISSUE_TEMPLATE/**`, `*.svg`/`*.png`/`*.jpg`, `.gitignore`,
   `.gitattributes`. Deliberately narrow: `*.txt` is *not* here, because
   `tests/functional/requirements.txt` decides which pytest plugins exist.
@@ -220,7 +220,7 @@ sequence and produces the artifact native to its image:
      `.vcpkg-running.lock`, so parallel installs fail.
 3. Caches (see below).
 4. `zig build test --summary all -Dno-webapp-rebuild`, then per-OS
-   `zig build nalar-desktop`:
+   `zig build pabrik-desktop`:
    - Linux additionally runs `zig build check:desktop-cross` — compiling the
      desktop app's Windows and macOS branches *from Linux*. A per-OS branch is
      otherwise only ever compiled on its own OS's runner, which is the only
@@ -238,10 +238,10 @@ sequence and produces the artifact native to its image:
    - `scripts/ci-smoke-test.sh` on port 18080 — boots the service binary
      against an isolated temp `HOME` (so all 54 migrations run from a fresh
      DB), hits `/health` and `/api/workspaces`, and shuts down cleanly.
-   - `nalar-desktop --smoke-test` — exercises the webview's asset-extraction
+   - `pabrik-desktop --smoke-test` — exercises the webview's asset-extraction
      path without opening a window.
 7. Binary publish — each cell stages its binaries under target-triple names
-   (`nalar-<target>`, `nalar-desktop-<target>`). On merges to `main` (and
+   (`pabrik-<target>`, `pabrik-desktop-<target>`). On merges to `main` (and
    manual dispatch) they are published as assets on the rolling `ci-latest`
    GitHub Release. **PR builds stage only — nothing is stored.**
 
@@ -303,7 +303,7 @@ Two properties are load-bearing:
    green over a third of the suite it never ran.
 
 The contract is two environment variables on the pytest step:
-`NALAR_FUNC_SHARD_TOTAL` and `NALAR_FUNC_SHARD_INDEX` (zero-based). Nothing
+`PABRIK_FUNC_SHARD_TOTAL` and `PABRIK_FUNC_SHARD_INDEX` (zero-based). Nothing
 reaches `build.zig`: `b.addSystemCommand` inherits the parent environment, so
 `zig build functional-test-all` forwards them to the pytest process it spawns
 and the invocation stays the one the local dev loop uses. A local run with
@@ -311,7 +311,7 @@ neither variable set runs the whole suite, unchanged.
 
 **No `-n auto`.** pytest-xdist is the obvious way to make this faster and it
 is wrong here: the port picker binds a probe socket, closes it, and hands the
-number to the nalar child, which binds tens of ms later. That gap is the
+number to the pabrik child, which binds tens of ms later. That gap is the
 documented reason the random range lives at 20k-32k, and widening it does not
 help when N workers draw from it simultaneously. Under `-n` the suite trades
 a deterministic ~15 min for intermittent `BindFailed` at boot.
@@ -354,13 +354,13 @@ defensive layers (see `tests/functional/harness.py` for the banner comment):
 1. **`is_safe_tmp(path, orig_home)` allow-list validator** — runs before every
    `shutil.rmtree`. Returns True only if the path starts with `/tmp/`,
    `/private/tmp/`, `/private/var/folders/`, or `tempfile.gettempdir() + "/"`,
-   AND contains `nalar-func-`, AND does not resolve to the real `$HOME`.
+   AND contains `pabrik-func-`, AND does not resolve to the real `$HOME`.
 2. **Captured `Path` attribute** — `temp_dir` is set once at boot;
    `teardown()` rmtree's THIS attribute, never `os.environ["HOME"]`.
 3. **`ORIG_HOME` snapshot + restore** — captured before `os.environ["HOME"]`
    is shadowed, restored as the first step of teardown.
 
-`NALAR_FUNCTIONAL_DRY_RUN=1` skips the rmtree and prints what would have
+`PABRIK_FUNCTIONAL_DRY_RUN=1` skips the rmtree and prints what would have
 been deleted — useful for paranoia-debugging.
 
 If a CI run ever deletes the runner's real `$HOME`, that is a P0 incident in
@@ -373,7 +373,7 @@ Two `ubuntu-24.04` jobs, side by side with the backends rather than under
 them:
 
 - **`android-apk`** — `:app:assembleDebug`, staged as
-  `Nalar-android-debug.apk` and published to `ci-latest`. Debug-signed
+  `Pabrik-android-debug.apk` and published to `ci-latest`. Debug-signed
   because no release keystore is committed and none is configured; `-debug`
   in the asset name is the disclosure.
 - **`android-test`** — the emulator suite (ten scenarios on the real
@@ -387,7 +387,7 @@ them:
 
 `android-apk` runs `tools/navgraph/build.py --check`, and `android-test`
 re-checks the same two files from `navgraph_contract_test.py`. Both fail if
-`navgraph.html` / `navgraph.json` no longer match `NalarNavGraph.kt`, so
+`navgraph.html` / `navgraph.json` no longer match `PabrikNavGraph.kt`, so
 **any** edit to the nav graph — including one that only shifts lines, which is
 most of them — has to be followed by:
 
@@ -444,36 +444,36 @@ hit", 2026-08-23). Releases do not count against that quota, so every green
 
 Assets (names carry the zig target triple):
 
-  nalar-x86_64-linux-gnu          + nalar-desktop-x86_64-linux-gnu
-  nalar-aarch64-macos             + nalar-desktop-aarch64-macos
-  nalar-desktop-x86_64-windows-gnu.zip   (self-contained: both exes, every
+  pabrik-x86_64-linux-gnu          + pabrik-desktop-x86_64-linux-gnu
+  pabrik-aarch64-macos             + pabrik-desktop-aarch64-macos
+  pabrik-desktop-x86_64-windows-gnu.zip   (self-contained: both exes, every
                                           runtime DLL, WebView2Loader.dll,
-                                          html/ and Install-Nalar.ps1)
+                                          html/ and Install-Pabrik.ps1)
 
-macOS also ships `Nalar-aarch64-macos.zip` holding `Nalar.app`, and Android
-ships `Nalar-android-debug.apk`.
+macOS also ships `Pabrik-aarch64-macos.zip` holding `Pabrik.app`, and Android
+ships `Pabrik-android-debug.apk`.
 
 Or via the `gh` CLI:
 
 ```bash
 gh release download ci-latest --repo ginwa123/ginwaaitoolbox \
-  --pattern 'nalar-desktop-x86_64-linux-gnu'
+  --pattern 'pabrik-desktop-x86_64-linux-gnu'
 ```
 
 The release is marked prerelease and not-latest so it never shadows real
 versioned releases; each main merge replaces the assets in place, so
 `ci-latest` always tracks the newest green build. PR builds never publish.
 
-Install with `sudo scripts/install-nalar-desktop.sh` after downloading (the
+Install with `sudo scripts/install-pabrik-desktop.sh` after downloading (the
 script handles `chmod +x` and copying to `/usr/local/bin/`).
 
 ## Running the same checks locally
 
 ```bash
 zig build test --summary all                    # the backend test suite
-zig build nalar-desktop --summary all           # produce both binaries
+zig build pabrik-desktop --summary all           # produce both binaries
 zig build check:desktop-cross --summary all     # Linux-only cross-compile check
-./zig-out/bin/nalar-desktop --smoke-test        # desktop asset-extraction smoke
+./zig-out/bin/pabrik-desktop --smoke-test        # desktop asset-extraction smoke
 ./scripts/ci-smoke-test.sh                      # boots the service end-to-end
 zig build functional-test                       # pytest suites
 zig build functional-test-ui                    # Playwright suites
@@ -486,7 +486,7 @@ python src/apps/android_mobile/tools/navgraph/build.py --check   # the navgraph 
 Run ONE shard of the functional suite exactly as CI does:
 
 ```bash
-NALAR_FUNC_SHARD_TOTAL=3 NALAR_FUNC_SHARD_INDEX=1 zig build functional-test-all
+PABRIK_FUNC_SHARD_TOTAL=3 PABRIK_FUNC_SHARD_INDEX=1 zig build functional-test-all
 ```
 
 Local webapp deps: `cd src/apps/desktop && pnpm install --frozen-lockfile`

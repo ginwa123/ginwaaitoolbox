@@ -21,8 +21,8 @@
 //! Plan: docs/superpowers/plans/2026-07-29-design-right-click-group-menu.md (Chunk 5)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../agentic_loop/design_model.zig");
 
@@ -68,7 +68,7 @@ pub fn designElementsReorderHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Validate path params + body presence.
@@ -189,7 +189,7 @@ pub fn designElementsReorderHandler(
 // Plan: docs/superpowers/plans/2026-07-29-design-right-click-group-menu.md (Chunk 5)
 
 const testing = std.testing;
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 
 const design_elements_reorder = @This();
 

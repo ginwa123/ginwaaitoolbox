@@ -2,7 +2,7 @@
 
 Each test:
 
-1. Boots a fresh nalar + Vite via the ``ui_harness`` fixture.
+1. Boots a fresh pabrik + Vite via the ``ui_harness`` fixture.
 2. Creates a workspace + agent via the API (fast, deterministic).
 3. Drives a headless Chromium at
    ``<vite_url>/app?view=workspace&workspaceId=<ws>&itemId=<agent>``

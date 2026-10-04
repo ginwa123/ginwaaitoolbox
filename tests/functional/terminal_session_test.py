@@ -192,7 +192,7 @@ def test_create_validation(harness: FunctionalHarness) -> None:
     created = _create(harness, cwd="", expect=201)
     assert created.get("id"), f"expected a session id: {created!r}"
     harness.http("DELETE", f"/api/terminal/sessions/{created['id']}", expect=200)
-    _create(harness, cwd="/tmp/nalar-terminal-never-exists-9d2c41", expect=404)
+    _create(harness, cwd="/tmp/pabrik-terminal-never-exists-9d2c41", expect=404)
 
     r = harness.http("POST", "/api/terminal/sessions", expect=400)
     assert "error" in r.json()

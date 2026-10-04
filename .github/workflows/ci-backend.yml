@@ -234,7 +234,7 @@ jobs:
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
           # coreutils provides `timeout`, `stat -c%s`, and other GNU
           # utilities not in stock macOS. The "Smoke test: desktop binary"
-          # step calls `timeout 10 ./zig-out/bin/nalar-desktop --smoke-test`
+          # step calls `timeout 10 ./zig-out/bin/pabrik-desktop --smoke-test`
           # which fails with exit 127 ("command not found") on stock macOS
           # without coreutils installed. brew installs the binaries as
           # `gtimeout`, but the gnubin directory provides them as `timeout`
@@ -380,8 +380,8 @@ jobs:
         #   3. ripgrep, which the image already ships
         run: |
           # WebView2 NuGet. The .h and .dll get extracted into
-          # `src/apps/desktop_app/platform/windows/` for nalar-desktop
-          # to include at build time. The nalar.exe service binary
+          # `src/apps/desktop_app/platform/windows/` for pabrik-desktop
+          # to include at build time. The pabrik.exe service binary
           # does not need WebView2.
           #
           # We download the .nupkg directly from nuget.org's v3
@@ -649,7 +649,7 @@ jobs:
             exit 1
           }
 
-          # WebView2 — only needed for nalar-desktop. Same flat
+          # WebView2 — only needed for pabrik-desktop. Same flat
           # Test-Path pattern: no foreach, no hashtable iteration.
           $wv2 = "src\apps\desktop_app\platform\windows"
           if (Test-Path "$wv2\WebView2.h") {
@@ -710,7 +710,7 @@ jobs:
       - name: Cache pnpm store
         # Every backend cell runs a full `pnpm install`: Linux and macOS
         # through the webapp-rebuild chain inside `zig build
-        # nalar-desktop`, Windows through the "Build webapp dist" step.
+        # pabrik-desktop`, Windows through the "Build webapp dist" step.
         # The three self-hosted cells shared one $HOME, so whichever cell
         # ran first warmed the store for the others for free. Each
         # GitHub-hosted job gets a fresh $HOME, so without this step the
@@ -744,8 +744,8 @@ jobs:
           path: |
             .zig-cache
             src/modules/databases/vendor
-          # PERF (2026-08-25): `zig-out` (~90 MB nalar + ~34 MB
-          # nalar-desktop per cell) and
+          # PERF (2026-08-25): `zig-out` (~90 MB pabrik + ~34 MB
+          # pabrik-desktop per cell) and
           # `src/apps/desktop_app/embedded/webapp_assets.zig` were
           # dropped from this cache. zig-out is pure build OUTPUT — the
           # install step regenerates it from .zig-cache in seconds;
@@ -833,13 +833,13 @@ jobs:
           restore-keys: |
             v1-zig-global-${{ inputs.os }}-
 
-      - name: Test (zig build test only — no nalar-desktop install)
+      - name: Test (zig build test only — no pabrik-desktop install)
         # Cold-cache ceiling for the whole compile-and-run pass. A
         # from-scratch Windows cell has to build the vcpkg ports and the full
         # test binary first, which is the slowest thing this cell does.
         timeout-minutes: 60
-        # This step is split from the nalar-desktop install that follows it.
-        # `zig build nalar-desktop` chains `pnpm install` + `pnpm run build`
+        # This step is split from the pabrik-desktop install that follows it.
+        # `zig build pabrik-desktop` chains `pnpm install` + `pnpm run build`
         # (vite + vue-tsc) with a zig LLVM link; running the test binary's
         # compile in the same pass roughly doubles peak RSS and buries the
         # compile log under the webapp build log. Splitting costs one extra
@@ -864,7 +864,7 @@ jobs:
           # `-Dno-webapp-rebuild` skips the webapp-rebuild chain
           # (`pnpm install` + `pnpm run build` + codegen). The Linux and
           # macOS cells always do the full rebuild via the
-          # "Install nalar + nalar-desktop (single zig invocation,
+          # "Install pabrik + pabrik-desktop (single zig invocation,
           # non-Windows)" step below.
           #
           # We use Debug mode (the default) on purpose — ReleaseSafe
@@ -874,7 +874,7 @@ jobs:
           # marked unused). Debug mode silently ignores that warning,
           # so the test build succeeds on Windows. The trade-off:
           # Debug binaries are bigger and slower, but the test step
-          # ONLY runs the test binary, not nalar.exe.
+          # ONLY runs the test binary, not pabrik.exe.
           zig build test --summary all -Dno-webapp-rebuild
 
       - name: Cross-target compile check (desktop app per-OS branches)
@@ -897,8 +897,8 @@ jobs:
         run: |
           zig build check:desktop-cross --summary all
 
-      - name: Install nalar + nalar-desktop (single zig invocation, non-Windows)
-        # Linux + macOS run the merged `test nalar-desktop` step that
+      - name: Install pabrik + pabrik-desktop (single zig invocation, non-Windows)
+        # Linux + macOS run the merged `test pabrik-desktop` step that
         # this branch split off for Windows. Both binaries come out of a
         # single dep-graph walk, webapp rebuild included. The Windows cell
         # skips this step entirely (the `runner.os == 'Windows'` guard)
@@ -911,11 +911,11 @@ jobs:
           # caches, or the cache is written and never read. Set per-step
           # because the `runner` context is unavailable at job level.
           npm_config_store_dir: ${{ runner.temp }}/pnpm-store
-        run: zig build nalar-desktop --summary all
+        run: zig build pabrik-desktop --summary all
 
       - name: Build webapp dist (Windows)
         # Windows self-builds its shipped UI -- no Linux dependency, no cache.
-        # Background: `zig build nalar-desktop` chains pnpm install + vite +
+        # Background: `zig build pabrik-desktop` chains pnpm install + vite +
         # vue-tsc + zig LLVM link CONCURRENTLY, which is a multi-GB peak and
         # a miserable log to debug -- hence -Dno-webapp-rebuild on the
         # install step below. Run alone, vite fits comfortably: no
@@ -952,13 +952,13 @@ jobs:
             || { echo "vite build produced no dist/index.html" >&2; exit 1; }
           echo "ok dist/ built, html/ will install alongside the exes"
 
-      - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
-        # Cold-cache ceiling: vcpkg ports + nalar.exe + nalar-desktop.exe from
+      - name: Install pabrik + pabrik-desktop (Windows, webapp-rebuild disabled)
+        # Cold-cache ceiling: vcpkg ports + pabrik.exe + pabrik-desktop.exe from
         # scratch. Well inside a healthy runner, and short of the default 6 h
         # cap so a genuinely wedged job releases the machine quickly.
         timeout-minutes: 45
         # Windows-only twin of the previous step. Same goal — produce
-        # zig-out/bin/nalar + zig-out/bin/nalar-desktop for the smoke
+        # zig-out/bin/pabrik + zig-out/bin/pabrik-desktop for the smoke
         # test + artifact publish — but with the webapp-rebuild chain
         # turned off via `--no-webapp-rebuild` (the custom CLI flag
         # build.zig exposes for exactly this case). The webapp bundle itself
@@ -987,15 +987,15 @@ jobs:
           # no-op stub (whose webview_create() always returns NULL ->
           # WebviewCreateFailed even with the evergreen runtime installed).
           # The stub fallback exists for dev boxes; CI must never ship it.
-          zig build nalar-desktop --summary all -Dno-webapp-rebuild -Drequire-real-webview
+          zig build pabrik-desktop --summary all -Dno-webapp-rebuild -Drequire-real-webview
 
       - name: Verify desktop + service binaries (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -u
-          # Both binaries must exist (install-nalar-desktop.sh installs both).
-          for bin in zig-out/bin/nalar zig-out/bin/nalar-desktop; do
+          # Both binaries must exist (install-pabrik-desktop.sh installs both).
+          for bin in zig-out/bin/pabrik zig-out/bin/pabrik-desktop; do
             if [[ ! -f "$bin" ]]; then
               echo "✗ $bin missing" >&2
               exit 1
@@ -1006,9 +1006,9 @@ jobs:
             file "$bin" | grep -q "ELF 64-bit LSB executable, x86-64" \
               || { echo "✗ $bin: not an x86-64 ELF"; exit 1; }
           done
-          # nalar-desktop must dynamically link webkit2gtk-4.1 (the webview runtime)
-          if ! ldd zig-out/bin/nalar-desktop | grep -q webkit2gtk-4.1; then
-            echo "✗ nalar-desktop missing webkit2gtk-4.1 link"; exit 1
+          # pabrik-desktop must dynamically link webkit2gtk-4.1 (the webview runtime)
+          if ! ldd zig-out/bin/pabrik-desktop | grep -q webkit2gtk-4.1; then
+            echo "✗ pabrik-desktop missing webkit2gtk-4.1 link"; exit 1
           fi
           echo "✓ all link deps present (webkit2gtk-4.1, gtk-3, libsoup-3.0, glib-2.0)"
 
@@ -1017,7 +1017,7 @@ jobs:
         shell: bash
         run: |
           set -u
-          for bin in zig-out/bin/nalar zig-out/bin/nalar-desktop; do
+          for bin in zig-out/bin/pabrik zig-out/bin/pabrik-desktop; do
             if [[ ! -f "$bin" ]]; then
               echo "✗ $bin missing" >&2
               exit 1
@@ -1034,12 +1034,12 @@ jobs:
           done
           # macOS uses Cocoa + WebKit frameworks (NOT webkit2gtk-4.1 like
           # Linux). Check via otool -L for the WebKit framework, which is
-          # what platform/macos/nalar_webview.mm links via linkFramework.
-          if ! otool -L zig-out/bin/nalar-desktop | grep -q WebKit.framework; then
-            echo "✗ nalar-desktop missing WebKit.framework link"; exit 1
+          # what platform/macos/pabrik_webview.mm links via linkFramework.
+          if ! otool -L zig-out/bin/pabrik-desktop | grep -q WebKit.framework; then
+            echo "✗ pabrik-desktop missing WebKit.framework link"; exit 1
           fi
-          if ! otool -L zig-out/bin/nalar-desktop | grep -q AppKit.framework; then
-            echo "✗ nalar-desktop missing AppKit.framework link"; exit 1
+          if ! otool -L zig-out/bin/pabrik-desktop | grep -q AppKit.framework; then
+            echo "✗ pabrik-desktop missing AppKit.framework link"; exit 1
           fi
           echo "✓ all link deps present (WebKit.framework, AppKit.framework)"
 
@@ -1047,11 +1047,11 @@ jobs:
         # Windows twin of the Linux + macOS verify steps above.
         # Same shape — confirm both binaries exist + are valid PE32+
         # x86_64 executables. The link-deps check is intentionally
-        # skipped on Windows: nalar-desktop's webview is implemented
+        # skipped on Windows: pabrik-desktop's webview is implemented
         # via static + dynamic-link WebView2Loader.dll (vcpkg-installed),
         # and the only definitive runtime check is the
         # "Smoke test: desktop binary (Windows)" step below — which
-        # runs `nalar-desktop.exe --smoke-test` and confirms it parses
+        # runs `pabrik-desktop.exe --smoke-test` and confirms it parses
         # CLI + extracts embedded webapp assets + exits 0.
         #
         # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
@@ -1062,8 +1062,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Both binaries must exist (install-nalar-desktop.sh installs both).
-          foreach ($bin in @('nalar', 'nalar-desktop')) {
+          # Both binaries must exist (install-pabrik-desktop.sh installs both).
+          foreach ($bin in @('pabrik', 'pabrik-desktop')) {
             $path = "zig-out\bin\$bin.exe"
             if (-not (Test-Path -LiteralPath $path)) {
               Write-Error "✗ $path missing"
@@ -1084,9 +1084,9 @@ jobs:
           # pe-format#machine-types. Not checked here; the desktop
           # smoke test below (which loads + invokes the binary) is the
           # definitive runtime sanity check.
-          $mz = [System.IO.File]::ReadAllBytes("zig-out\bin/nalar.exe")
+          $mz = [System.IO.File]::ReadAllBytes("zig-out\bin/pabrik.exe")
           if ($mz.Length -lt 2 -or $mz[0] -ne 0x4D -or $mz[1] -ne 0x5A) {
-            Write-Error "✗ nalar.exe: not a valid PE (MZ) binary"
+            Write-Error "✗ pabrik.exe: not a valid PE (MZ) binary"
             exit 1
           }
           Write-Host "✓ all binaries present + valid PE32+ x86_64"
@@ -1094,7 +1094,7 @@ jobs:
       - name: "Smoke test: criteria pass"
         if: inputs.target_step != '__SKIP__'
         shell: bash
-        # "Criteria pass" smoke test — boots the freshly-built nalar
+        # "Criteria pass" smoke test — boots the freshly-built pabrik
         # binary, waits for the "Agent is ready to serve!" line
         # (emitted by src/main.zig:380 after DB migrations, event
         # bus wiring, HTTP listener start, SSE manager, and AI
@@ -1110,14 +1110,14 @@ jobs:
         #
         # Port 18080 avoids collision with the project-required dev
         # ports (8080/8081). The smoke test isolates HOME to a tempdir
-        # so each CI run boots nalar from a "fresh install" state —
+        # so each CI run boots pabrik from a "fresh install" state —
         # auto-creates config.json and runs all 54 DB migrations from
         # scratch. This is what catches the class of fresh-DB bugs
         # surfaced by the migration fixes in this PR (see migration.zig
         # and migration_009_test.zig for the canonical regression).
         run: |
           set -u
-          # On Windows runners, MinGW-built nalar.exe dlopens the
+          # On Windows runners, MinGW-built pabrik.exe dlopens the
           # api-ms-win-crt-* UCRT forwarder DLLs by exact filename.
           # Windows 11 ships them in C:\Windows\System32\downlevel\
           # (not in System32\) and MinGW's dlopen doesn't understand
@@ -1131,18 +1131,18 @@ jobs:
           # the build.zig host_binary_name switch (build.zig:1223) drops the
           # suffix. Probe for both shapes so the criterion check works on
           # either platform.
-          if [ -x "zig-out/bin/nalar" ]; then
-            NALAR_BIN="./zig-out/bin/nalar"
-          elif [ -x "zig-out/bin/nalar.exe" ]; then
-            NALAR_BIN="./zig-out/bin/nalar.exe"
-          elif [ -x "zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')" ]; then
-            NALAR_BIN="./zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')"
+          if [ -x "zig-out/bin/pabrik" ]; then
+            PABRIK_BIN="./zig-out/bin/pabrik"
+          elif [ -x "zig-out/bin/pabrik.exe" ]; then
+            PABRIK_BIN="./zig-out/bin/pabrik.exe"
+          elif [ -x "zig-out/bin/$(ls zig-out/bin/pabrikcore-* 2>/dev/null | head -n1 | sed 's:.*/::')" ]; then
+            PABRIK_BIN="./zig-out/bin/$(ls zig-out/bin/pabrikcore-* 2>/dev/null | head -n1 | sed 's:.*/::')"
           else
-            echo "✗ smoke test: no nalar binary to test" >&2
+            echo "✗ smoke test: no pabrik binary to test" >&2
             exit 1
           fi
-          echo "→ smoke test: using $NALAR_BIN"
-          NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
+          echo "→ smoke test: using $PABRIK_BIN"
+          PABRIK_BIN="$PABRIK_BIN" PABRIK_PORT=18080 bash scripts/ci-smoke-test.sh
 
       - name: "Smoke test: desktop binary"
         # --smoke-test (wired in commit 4644101c) extracts the embedded webapp
@@ -1161,7 +1161,7 @@ jobs:
         shell: bash
         run: |
           set -u
-          DESKTOP_BIN="./zig-out/bin/nalar-desktop"
+          DESKTOP_BIN="./zig-out/bin/pabrik-desktop"
           [[ -x "$DESKTOP_BIN.exe" ]] && DESKTOP_BIN="$DESKTOP_BIN.exe"
           if [[ ! -x "$DESKTOP_BIN" ]]; then
             echo "✗ smoke test: $DESKTOP_BIN missing" >&2
@@ -1176,10 +1176,10 @@ jobs:
           fi
           grep -q "smoke:" /tmp/desktop-smoke.log \
             || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
-          echo "✓ nalar-desktop --smoke-test passed"
+          echo "✓ pabrik-desktop --smoke-test passed"
 
       - name: Verify desktop uses bundled html/ (Windows)
-        # WINDOWS-ONLY. Guarantees nalar-desktop.exe actually selects the
+        # WINDOWS-ONLY. Guarantees pabrik-desktop.exe actually selects the
         # shipped html/ sitting beside it as its webview dir -- not the
         # embedded stub (which is empty under -Dno-webapp-rebuild).
         # --smoke-test resolves through the same findInstalledWebapp() the
@@ -1192,7 +1192,7 @@ jobs:
         shell: bash
         run: |
           set -u
-          DESKTOP_BIN="./zig-out/bin/nalar-desktop"
+          DESKTOP_BIN="./zig-out/bin/pabrik-desktop"
           [[ -x "$DESKTOP_BIN.exe" ]] && DESKTOP_BIN="$DESKTOP_BIN.exe"
           timeout 30 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-html-check.log 2>&1
           rc=$?
@@ -1212,9 +1212,9 @@ jobs:
         #
         # Instead each cell renames its two binaries to carry the
         # zig target triple into a per-run staging dir:
-        #   nalar-x86_64-linux-gnu, nalar-desktop-x86_64-linux-gnu,
-        #   nalar-aarch64-macos,    nalar-desktop-aarch64-macos,
-        #   nalar-x86_64-windows-gnu.exe, nalar-desktop-x86_64-windows-gnu.exe
+        #   pabrik-x86_64-linux-gnu, pabrik-desktop-x86_64-linux-gnu,
+        #   pabrik-aarch64-macos,    pabrik-desktop-aarch64-macos,
+        #   pabrik-x86_64-windows-gnu.exe, pabrik-desktop-x86_64-windows-gnu.exe
         # The triple suffix keeps the 3 cells from colliding when they all
         # publish to the SAME shared release (see the next step).
         #
@@ -1230,7 +1230,7 @@ jobs:
           stage="bin-stage-$TARGET"
           mkdir -p "$stage"
           staged=0
-          for bin in nalar nalar-desktop; do
+          for bin in pabrik pabrik-desktop; do
             src="zig-out/bin/$bin"
             if [ -f "$src" ]; then
               dst="$stage/$bin-$TARGET"
@@ -1249,12 +1249,12 @@ jobs:
             exit 1
           fi
 
-      - name: Bundle macOS Nalar.app into a zip
-        # macOS cell only: assemble Nalar.app with the SAME script the
+      - name: Bundle macOS Pabrik.app into a zip
+        # macOS cell only: assemble Pabrik.app with the SAME script the
         # local `install:macos:app` step uses (dest = staging dir, not
         # ~/Applications), then ditto-zip it. ditto (macOS inbox)
         # preserves bundle bits where plain zip can break codesign.
-        # Bare nalar-*/nalar-desktop-* assets stay untouched -- the
+        # Bare pabrik-*/pabrik-desktop-* assets stay untouched -- the
         # .app zip is an extra asset, published by the step below.
         if: runner.os == 'macOS'
         shell: bash
@@ -1263,15 +1263,15 @@ jobs:
         run: |
           set -euo pipefail
           stage="bin-stage-$TARGET"
-          packaging/macos/install-nalar-app.sh zig-out/bin "$stage/Nalar.app"
-          (cd "$stage" && ditto -c -k --keepParent Nalar.app "Nalar-$TARGET.zip")
-          echo "packaged $stage/Nalar-$TARGET.zip"
+          packaging/macos/install-pabrik-app.sh zig-out/bin "$stage/Pabrik.app"
+          (cd "$stage" && ditto -c -k --keepParent Pabrik.app "Pabrik-$TARGET.zip")
+          echo "packaged $stage/Pabrik-$TARGET.zip"
 
       - name: Bundle Windows exes + DLLs into one zip
-        # nalar-desktop auto-spawns the nalar service binary sitting next
+        # pabrik-desktop auto-spawns the pabrik service binary sitting next
         # to itself (path_resolve.zig next-to-self lookup for plain
-        # `nalar.exe`, PATH fallback), so both must ship TOGETHER: one
-        # self-contained .zip holding nalar-desktop.exe + nalar.exe +
+        # `pabrik.exe`, PATH fallback), so both must ship TOGETHER: one
+        # self-contained .zip holding pabrik-desktop.exe + pabrik.exe +
         # every runtime DLL (libcurl/sqlite3/... via build.zig
         # installVcpkgDlls + WebView2Loader.dll). Inside the zip the exes
         # carry their plain names (triple suffix stripped) so the
@@ -1299,30 +1299,30 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $stage = "bin-stage-$env:TARGET"
-          $desktop = Get-ChildItem "$stage/nalar-desktop-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          $service = Get-ChildItem "$stage/nalar-*.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike 'nalar-desktop-*' } | Select-Object -First 1
+          $desktop = Get-ChildItem "$stage/pabrik-desktop-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $service = Get-ChildItem "$stage/pabrik-*.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike 'pabrik-desktop-*' } | Select-Object -First 1
           if (-not $desktop) { Write-Error "no staged desktop exe in $stage"; exit 1 }
           if (-not $service) { Write-Error "no staged service exe in $stage"; exit 1 }
           $tmp = Join-Path $stage "bundle"
           New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-          Copy-Item $desktop.FullName (Join-Path $tmp "nalar-desktop.exe")
-          Copy-Item $service.FullName (Join-Path $tmp "nalar.exe")
+          Copy-Item $desktop.FullName (Join-Path $tmp "pabrik-desktop.exe")
+          Copy-Item $service.FullName (Join-Path $tmp "pabrik.exe")
           $dlls = Get-ChildItem "zig-out/bin/*.dll" -ErrorAction SilentlyContinue
           foreach ($dll in $dlls) { Copy-Item $dll.FullName $tmp }
           # Setup script: makes the zip a setup package. The user extracts
           # and runs `powershell -ExecutionPolicy Bypass -File
-          # Install-Nalar.ps1` for a user-local install (LOCALAPPDATA, no
+          # Install-Pabrik.ps1` for a user-local install (LOCALAPPDATA, no
           # admin) + Start Menu shortcut. Fail loud if the script is
           # missing from the checkout -- a zip without setup is a regression.
-          $setupSrc = "packaging/windows/Install-Nalar.ps1"
+          $setupSrc = "packaging/windows/Install-Pabrik.ps1"
           if (-not (Test-Path $setupSrc)) { Write-Error "setup script missing at $setupSrc -- checkout incomplete?"; exit 1 }
-          Copy-Item -Force $setupSrc (Join-Path $tmp "Install-Nalar.ps1")
-          Write-Host "ok Install-Nalar.ps1 bundled"
+          Copy-Item -Force $setupSrc (Join-Path $tmp "Install-Pabrik.ps1")
+          Write-Host "ok Install-Pabrik.ps1 bundled"
           # Shipped webapp (Windows-only persistent static dir). build.zig
           # installs src/apps/desktop/dist to zig-out/bin/html when
           # dist/index.html exists at configure time; the zip carries it
-          # as html/ and Install-Nalar.ps1 installs it to
-          # %LOCALAPPDATA%\nalar\html. The desktop prefers that dir and
+          # as html/ and Install-Pabrik.ps1 installs it to
+          # %LOCALAPPDATA%\pabrik\html. The desktop prefers that dir and
           # only falls back to embedded-asset temp extraction when missing.
           # HARD GATE: Windows never ships without html/. build.zig installs
           # src/apps/desktop/dist to zig-out/bin/html (alongside the exes);
@@ -1386,7 +1386,7 @@ jobs:
           } else {
             Write-Warning "fixedCabUrl not set -- zip ships WITHOUT embedded WebView2 runtime (evergreen install needed)"
           }
-          $zip = Join-Path $stage "nalar-desktop-$env:TARGET.zip"
+          $zip = Join-Path $stage "pabrik-desktop-$env:TARGET.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
           Compress-Archive -Path (Join-Path $tmp "*") -DestinationPath $zip
           Remove-Item $tmp -Recurse -Force

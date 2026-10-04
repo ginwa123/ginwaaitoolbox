@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Smoke test: Criteria pass for the nalar agent.
+# Smoke test: Criteria pass for the pabrik agent.
 #
-# Verifies that a fresh nalar binary:
+# Verifies that a fresh pabrik binary:
 #   1. Starts without crashing
 #   2. Emits "Agent is ready to serve!" (src/main.zig:380) within 30s
 #   3. Serves /health with {"status":"ok",...}
 #   4. Serves /api/workspaces with HTTP 200
 #   5. Shuts down cleanly when /test/shutdown is POSTed
 #
-# Designed to be run on a CI runner (or locally) where no nalar is
+# Designed to be run on a CI runner (or locally) where no pabrik is
 # already running. Uses port 18080 to avoid collision with the dev ports
 # (8080, 8081). Uses an isolated $HOME so the smoke test DB doesn't
 # interfere with a developer's local one.
@@ -21,28 +21,28 @@
 # `shutdown(sock, SHUT_RDWR)` to wake the listen loop's blocked accept
 # call, so the graceful path is fast on both POSIX and Winsock.
 #
-# Designed to be sourced (`. /tmp/nalar-smoke-test.sh`) from another
-# script that has already resolved $NALAR_BIN and $NALAR_PORT.
+# Designed to be sourced (`. /tmp/pabrik-smoke-test.sh`) from another
+# script that has already resolved $PABRIK_BIN and $PABRIK_PORT.
 
 set -u
 
-if [ -z "${NALAR_BIN:-}" ] || [ ! -x "$NALAR_BIN" ]; then
-  echo "✗ smoke test: NALAR_BIN is unset or not executable: '$NALAR_BIN'" >&2
+if [ -z "${PABRIK_BIN:-}" ] || [ ! -x "$PABRIK_BIN" ]; then
+  echo "✗ smoke test: PABRIK_BIN is unset or not executable: '$PABRIK_BIN'" >&2
   exit 1
 fi
 
-: "${NALAR_PORT:=18080}"
+: "${PABRIK_PORT:=18080}"
 
 # Isolate HOME so config.json + agent.db live in a tempdir.
-export HOME="$(mktemp -d -t nalar-smoke-home.XXXXXX)"
-SMOKE_LOG="$(mktemp -t nalar-smoke.XXXXXX.log)"
+export HOME="$(mktemp -d -t pabrik-smoke-home.XXXXXX)"
+SMOKE_LOG="$(mktemp -t pabrik-smoke.XXXXXX.log)"
 
 cleanup() {
   local ec=$?
-  if [ -n "${NALAR_PID:-}" ] && kill -0 "$NALAR_PID" 2>/dev/null; then
-    kill -TERM "$NALAR_PID" 2>/dev/null || true
+  if [ -n "${PABRIK_PID:-}" ] && kill -0 "$PABRIK_PID" 2>/dev/null; then
+    kill -TERM "$PABRIK_PID" 2>/dev/null || true
     sleep 0.2
-    kill -KILL "$NALAR_PID" 2>/dev/null || true
+    kill -KILL "$PABRIK_PID" 2>/dev/null || true
   fi
   rm -rf "$HOME" 2>/dev/null || true
   rm -f "$SMOKE_LOG" 2>/dev/null || true
@@ -50,18 +50,18 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "→ smoke test: HOME=$HOME PORT=$NALAR_PORT BIN=$NALAR_BIN"
+echo "→ smoke test: HOME=$HOME PORT=$PABRIK_PORT BIN=$PABRIK_BIN"
 
 # Boot the binary in the background, capture combined stdout+stderr.
-"$NALAR_BIN" --port "$NALAR_PORT" >"$SMOKE_LOG" 2>&1 &
-NALAR_PID=$!
-echo "→ nalar pid=$NALAR_PID"
+"$PABRIK_BIN" --port "$PABRIK_PORT" >"$SMOKE_LOG" 2>&1 &
+PABRIK_PID=$!
+echo "→ pabrik pid=$PABRIK_PID"
 
 # Step 1: wait up to 30s for the "Agent is ready to serve!" line.
 READY_DEADLINE=$(( $(date +%s) + 30 ))
 while [ "$(date +%s)" -lt "$READY_DEADLINE" ]; do
-  if ! kill -0 "$NALAR_PID" 2>/dev/null; then
-    echo "✗ nalar (pid=$NALAR_PID) exited before becoming ready" >&2
+  if ! kill -0 "$PABRIK_PID" 2>/dev/null; then
+    echo "✗ pabrik (pid=$PABRIK_PID) exited before becoming ready" >&2
     echo "--- log output ---" >&2
     cat "$SMOKE_LOG" >&2
     echo "--- end log ---" >&2
@@ -82,7 +82,7 @@ if ! grep -q "Agent is ready to serve!" "$SMOKE_LOG"; then
 fi
 
 # Step 2: GET /health — expect JSON {"status":"ok",...}
-HEALTH_BODY="$(curl -fsS --max-time 5 "http://127.0.0.1:${NALAR_PORT}/health" 2>&1)" || {
+HEALTH_BODY="$(curl -fsS --max-time 5 "http://127.0.0.1:${PABRIK_PORT}/health" 2>&1)" || {
   echo "✗ /health request failed: $HEALTH_BODY" >&2
   exit 1;
 }
@@ -95,7 +95,7 @@ case "$HEALTH_BODY" in
 esac
 
 # Step 3: GET /api/workspaces — expect HTTP 200 (no body assertions)
-WORKSPACES_STATUS="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${NALAR_PORT}/api/workspaces" 2>&1)" || {
+WORKSPACES_STATUS="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${PABRIK_PORT}/api/workspaces" 2>&1)" || {
   echo "✗ /api/workspaces request failed: $WORKSPACES_STATUS" >&2
   exit 1;
 }
@@ -107,7 +107,7 @@ else
 fi
 
 # Step 4: POST /test/shutdown — expect {"message":"Server shutdown initiated"}
-SHUTDOWN_BODY="$(curl -fsS -X POST --max-time 5 "http://127.0.0.1:${NALAR_PORT}/test/shutdown" 2>&1)" || {
+SHUTDOWN_BODY="$(curl -fsS -X POST --max-time 5 "http://127.0.0.1:${PABRIK_PORT}/test/shutdown" 2>&1)" || {
   echo "✗ /test/shutdown request failed: $SHUTDOWN_BODY" >&2
   exit 1;
 }
@@ -139,10 +139,10 @@ esac
 SHUTDOWN_DEADLINE=$(( $(date +%s) + 5 ))
 EXITED=false
 while [ "$(date +%s)" -lt "$SHUTDOWN_DEADLINE" ]; do
-  if ! kill -0 "$NALAR_PID" 2>/dev/null; then
-    wait "$NALAR_PID" 2>/dev/null
+  if ! kill -0 "$PABRIK_PID" 2>/dev/null; then
+    wait "$PABRIK_PID" 2>/dev/null
     EXIT_CODE=$?
-    echo "✓ step 5/5a: nalar exited gracefully (code=$EXIT_CODE)"
+    echo "✓ step 5/5a: pabrik exited gracefully (code=$EXIT_CODE)"
     EXITED=true
     break
   fi
@@ -155,13 +155,13 @@ if [ "$EXITED" != "true" ]; then
   # (forceful exit, no signal mechanism). Either way the
   # criterion "process responds to shutdown requests" is met.
   echo "→ step 5/5b: graceful shutdown did not reap process in time; sending SIGTERM"
-  kill -TERM "$NALAR_PID" 2>/dev/null || true
+  kill -TERM "$PABRIK_PID" 2>/dev/null || true
   TERM_DEADLINE=$(( $(date +%s) + 5 ))
   while [ "$(date +%s)" -lt "$TERM_DEADLINE" ]; do
-    if ! kill -0 "$NALAR_PID" 2>/dev/null; then
-      wait "$NALAR_PID" 2>/dev/null
+    if ! kill -0 "$PABRIK_PID" 2>/dev/null; then
+      wait "$PABRIK_PID" 2>/dev/null
       EXIT_CODE=$?
-      echo "✓ step 5/5c: nalar exited on SIGTERM (code=$EXIT_CODE)"
+      echo "✓ step 5/5c: pabrik exited on SIGTERM (code=$EXIT_CODE)"
       EXITED=true
       break
     fi
@@ -169,11 +169,11 @@ if [ "$EXITED" != "true" ]; then
   done
 fi
 if [ "$EXITED" != "true" ]; then
-  echo "✗ nalar did not exit after graceful shutdown + SIGTERM" >&2
+  echo "✗ pabrik did not exit after graceful shutdown + SIGTERM" >&2
   echo "--- log output ---" >&2
   cat "$SMOKE_LOG" >&2
   echo "--- end log ---" >&2
-  kill -KILL "$NALAR_PID" 2>/dev/null || true
+  kill -KILL "$PABRIK_PID" 2>/dev/null || true
   exit 1
 fi
 

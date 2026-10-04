@@ -1,7 +1,7 @@
 .{
-    .name = .nalarcore,
+    .name = .pabrikcore,
     .version = "0.0.0",
-    .fingerprint = 0x288cfd2ff6c19f4c,
+    .fingerprint = 0x3c325c50dfa3ce66,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Self-contained sqlite3 / openssl / libpq package (ruangsql).

@@ -1,10 +1,10 @@
-//! `nalar-tui` — interactive streaming chat TUI for the nalar backend.
+//! `pabrik-tui` — interactive streaming chat TUI for the pabrik backend.
 //!
 //! Usage:
-//!   nalar-tui [--server <url>] [--session <id>] [--profile <name>]
+//!   pabrik-tui [--server <url>] [--session <id>] [--profile <name>]
 //!
-//! Flags mirror `nalarcli`; env vars NALARCLI_SERVER / NALARCLI_SESSION_ID /
-//! NALARCLI_PROFILE are honored as fallbacks.
+//! Flags mirror `pabrikcli`; env vars PABRIKCLI_SERVER / PABRIKCLI_SESSION_ID /
+//! PABRIKCLI_PROFILE are honored as fallbacks.
 
 const std = @import("std");
 const tui = @import("tui");
@@ -13,10 +13,10 @@ const transport = tui.transport;
 
 fn usage() []const u8 {
     return
-    \\nalar-tui — interactive chat TUI for the nalar backend.
+    \\pabrik-tui — interactive chat TUI for the pabrik backend.
     \\
     \\Usage:
-    \\  nalar-tui [flags]
+    \\  pabrik-tui [flags]
     \\
     \\Flags:
     \\  --server <url>     Backend URL (default http://localhost:8081)
@@ -73,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, a, "--profile")) {
             i += 1;
             if (i >= argv.len) return fail("--profile requires a value");
-            profile = argv[i]; // accepted for parity with nalarcli; sent as "" in v1
+            profile = argv[i]; // accepted for parity with pabrikcli; sent as "" in v1
         } else if (std.mem.eql(u8, a, "--cwd")) {
             i += 1;
             if (i >= argv.len) return fail("--cwd requires a value");
@@ -83,19 +83,19 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Env fallbacks (same names as nalarcli).
+    // Env fallbacks (same names as pabrikcli).
     if (cfg.session_id == null) {
-        if (env.get("NALARCLI_SESSION_ID")) |v| {
+        if (env.get("PABRIKCLI_SESSION_ID") orelse env.get("NALARCLI_SESSION_ID")) |v| {
             if (v.len > 0) cfg.session_id = v;
         }
     }
 
-    // Resolve cwd: --cwd flag > NALARCLI_CWD env > OS cwd > "" (sandbox fallback).
-    // Priority mirrors nalarcli's --cwd handling but auto-detects OS cwd when
+    // Resolve cwd: --cwd flag > PABRIKCLI_CWD env > OS cwd > "" (sandbox fallback).
+    // Priority mirrors pabrikcli's --cwd handling but auto-detects OS cwd when
     // no explicit value is given — the TUI's project is the shell's cwd.
     if (flag_cwd) |v| {
         cfg.cwd = v;
-    } else if (env.get("NALARCLI_CWD")) |v| {
+    } else if (env.get("PABRIKCLI_CWD") orelse env.get("NALARCLI_CWD")) |v| {
         if (v.len > 0) cfg.cwd = v;
     } else {
         // Capture OS cwd via realPathFile with ".". On failure (e.g., cwd deleted),
@@ -133,9 +133,9 @@ pub fn main(init: std.process.Init) !void {
     // On exit, tell the user which session to resume.
     var buf: [256]u8 = undefined;
     const msg_text = if (app.session_id) |sid|
-        std.fmt.bufPrint(&buf, "\nnalar-tui: session saved as {s} (resume with --session {s})\n", .{ sid, sid }) catch ""
+        std.fmt.bufPrint(&buf, "\npabrik-tui: session saved as {s} (resume with --session {s})\n", .{ sid, sid }) catch ""
     else
-        "\nnalar-tui: bye\n";
+        "\npabrik-tui: bye\n";
     printOut(io, msg_text);
 }
 

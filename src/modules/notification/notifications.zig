@@ -40,7 +40,7 @@ pub fn buildCommand(allocator: std.mem.Allocator, title: []const u8, body: []con
     switch (builtin.os.tag) {
         .linux => {
             try args.append(allocator, try allocator.dupe(u8, "notify-send"));
-            try args.append(allocator, try allocator.dupe(u8, "--app-name=nalar"));
+            try args.append(allocator, try allocator.dupe(u8, "--app-name=pabrik"));
             try args.append(allocator, try allocator.dupe(u8, title));
             try args.append(allocator, truncated);
         },
@@ -283,7 +283,7 @@ test "buildCommand on Linux returns notify-send as the first arg" {
     }
     try testing.expect(cmd.len >= 4);
     try testing.expectEqualStrings("notify-send", cmd[0]);
-    try testing.expectEqualStrings("--app-name=nalar", cmd[1]);
+    try testing.expectEqualStrings("--app-name=pabrik", cmd[1]);
     try testing.expectEqualStrings("Title", cmd[2]);
     try testing.expectEqualStrings("Body text", cmd[3]);
 }

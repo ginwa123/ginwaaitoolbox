@@ -35,13 +35,13 @@
 //! `ThreadResult.deinit` below safe to run unconditionally.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const sqlite = nalarcore.sqlite;
-const logger_mod = nalarcore.loggermod;
-const llm_history = nalarcore.llm_history;
+const sqlite = pabrikcore.sqlite;
+const logger_mod = pabrikcore.loggermod;
+const llm_history = pabrikcore.llm_history;
 const ai_workflow = @import("workflow.zig");
-const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
+const spawn_sub_agent_tool = pabrikcore.spawn_sub_agent;
 // The main-agent-only membership list lives with `ask_user` so the parse-time
 // check here and `tool_eligibility.zig`'s strip can never disagree.
 const main_agent_only = @import("../modules/agent/tools/ask_user.zig");
@@ -276,9 +276,9 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     ) catch {
         failSubAgent(args_ptr, std.fmt.allocPrint(
             args_ptr.allocator,
-            "Agent Nalar System error, the actual error is ->>>> Failed to create session_id for '{s}'\n",
+            "Agent Pabrik System error, the actual error is ->>>> Failed to create session_id for '{s}'\n",
             .{args_ptr.agent_name},
-        ) catch "Agent Nalar System error, the actual error is ->>>> Failed to create session_id", elapsedMs(args_ptr));
+        ) catch "Agent Pabrik System error, the actual error is ->>>> Failed to create session_id", elapsedMs(args_ptr));
         args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{args_ptr.agent_name});
         return;
     };
@@ -291,9 +291,9 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         const session_id_copy = args_ptr.allocator.dupe(u8, sess_id) catch {
             failSubAgent(args_ptr, std.fmt.allocPrint(
                 args_ptr.allocator,
-                "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id for '{s}'\n",
+                "Agent Pabrik System error, the actual error is ->>>> Failed to copy session_id for '{s}'\n",
                 .{args_ptr.agent_name},
-            ) catch "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id", elapsedMs(args_ptr));
+            ) catch "Agent Pabrik System error, the actual error is ->>>> Failed to copy session_id", elapsedMs(args_ptr));
             args_ptr.logger.errFmt("Failed to copy session_id for '{s}'", .{args_ptr.agent_name});
             return;
         };
@@ -311,7 +311,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         .elapsed_ms = elapsedMs(args_ptr),
     });
 
-    const di = nalarcore.getSingleton() catch unreachable;
+    const di = pabrikcore.getSingleton() catch unreachable;
 
     const is_sub_agent = std.mem.indexOf(u8, sess_id, "subagent") != null;
     args_ptr.logger.debugFmt("Calling workflow.runAgenticMultiStep for '{s}'", .{args_ptr.agent_name});
@@ -323,7 +323,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         .logger = di.logger,
         .event_bus = di.event_bus,
         .active_loops = di.active_loops,
-        // Live DI handle: re-read inside the workflow loop so NalarSettings
+        // Live DI handle: re-read inside the workflow loop so PabrikSettings
         // changes take effect per iteration.
         .di = di,
         .environment = di.environment,
@@ -360,17 +360,17 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         const err_name: []const u8 = @errorName(err);
         const diagnostic: []const u8 = if (std.mem.eql(u8, err_name, "TooManyRetries"))
             std.fmt.allocPrint(args_ptr.allocator,
-                \\[Agent Nalar System error] sub-agent workflow halted after TooManyRetries (10+ consecutive failures).
+                \\[Agent Pabrik System error] sub-agent workflow halted after TooManyRetries (10+ consecutive failures).
                 \\This typically indicates a network connectivity issue to the LLM API endpoint,
                 \\API rate limit exceeded, authentication/authorization failure, or upstream
                 \\service unavailability. The sub-agent's session logs contain the full chain
                 \\of errors at each retry attempt — review them before retrying.
             , .{}) catch
-                "Agent Nalar System error, the actual error is ->>>> TooManyRetries\n"
+                "Agent Pabrik System error, the actual error is ->>>> TooManyRetries\n"
         else
             std.fmt.allocPrint(
                 args_ptr.allocator,
-                "Agent Nalar System error, the actual error is ->>>> {s}\n",
+                "Agent Pabrik System error, the actual error is ->>>> {s}\n",
                 .{err_name},
             ) catch "Failed to format error message";
         setError(args_ptr, diagnostic);
@@ -396,9 +396,9 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     const latest_msg_result = llm_history.getLatestMessage(sub_agent_allocator, args_ptr.sqlite_db, sess_id) catch |err| {
         failSubAgent(args_ptr, std.fmt.allocPrint(
             args_ptr.allocator,
-            "Agent Nalar System error, the actual error is ->>>> getLatestMessage: {s}\n",
+            "Agent Pabrik System error, the actual error is ->>>> getLatestMessage: {s}\n",
             .{@errorName(err)},
-        ) catch "Agent Nalar System error, the actual error is ->>>> getLatestMessage failed", elapsedMs(args_ptr));
+        ) catch "Agent Pabrik System error, the actual error is ->>>> getLatestMessage failed", elapsedMs(args_ptr));
         args_ptr.logger.errFmt("getLatestMessage error for '{s}': {s}", .{ sess_id, @errorName(err) });
         return;
     };
@@ -407,7 +407,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         var mutable_msg = msg;
         if (mutable_msg.response_content.len > 0) {
             const response_copy = args_ptr.allocator.dupe(u8, mutable_msg.response_content) catch {
-                failSubAgent(args_ptr, "Agent Nalar System error, the actual error is ->>>> Failed to copy response: OutOfMemory\n", elapsedMs(args_ptr));
+                failSubAgent(args_ptr, "Agent Pabrik System error, the actual error is ->>>> Failed to copy response: OutOfMemory\n", elapsedMs(args_ptr));
                 mutable_msg.deinit(args_ptr.allocator);
                 return;
             };
@@ -429,13 +429,13 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
             // Finished without producing any assistant text. Treated as a
             // failure so the row flips from running to failed instead of
             // hanging as running until the user navigates away.
-            setError(args_ptr, "Agent Nalar System error, the actual error is ->>>> Sub-agent completed but produced empty response content\n");
+            setError(args_ptr, "Agent Pabrik System error, the actual error is ->>>> Sub-agent completed but produced empty response content\n");
             failSubAgentAlreadySet(args_ptr, sess_id, elapsedMs(args_ptr));
         }
         mutable_msg.deinit(args_ptr.allocator);
     } else {
         // No message row at all — same UX treatment as the empty branch.
-        setError(args_ptr, "Agent Nalar System error, the actual error is ->>>> Sub-agent completed but no message found in database\n");
+        setError(args_ptr, "Agent Pabrik System error, the actual error is ->>>> Sub-agent completed but no message found in database\n");
         failSubAgentAlreadySet(args_ptr, sess_id, elapsedMs(args_ptr));
     }
 
@@ -632,7 +632,7 @@ test "validateJobs accepts a well-formed batch at any size up to the cap" {
 
 test "runBatch enforces the cap before touching the singleton" {
     // The point of the ordering: policy is checked first, so an oversized batch
-    // fails without ever reaching `nalarcore.getSingleton()` (which is
+    // fails without ever reaching `pabrikcore.getSingleton()` (which is
     // `unreachable` in a unit test). If the cap were checked after the launch
     // loop this test would crash rather than return an error.
     const alloc = testing.allocator;

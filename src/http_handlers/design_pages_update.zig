@@ -44,8 +44,8 @@
 //!   (Chunk 1 — extend the patch body with optional `name`)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../agentic_loop/design_model.zig");
 
@@ -128,7 +128,7 @@ pub const UpdatePageOutput = struct {
 /// non-arena safety.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: UpdatePageInput,
 ) DesignPageUpdateError!UpdatePageOutput {
     if (input.page_id.len == 0) return error.PageIdRequired;
@@ -164,7 +164,7 @@ pub fn designPagesUpdateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Validate path params + body presence + JSON shape.

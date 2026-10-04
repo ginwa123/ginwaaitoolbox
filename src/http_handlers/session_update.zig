@@ -1,5 +1,5 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
+const root_mod = @import("pabrikcore");
 const gserverz = root_mod.gserverz;
 const llm_history = root_mod.llm_history;
 const http_response = @import("http_response.zig");

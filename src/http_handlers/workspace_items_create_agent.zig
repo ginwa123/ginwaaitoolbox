@@ -32,8 +32,8 @@
 //! Defaults: docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
@@ -102,7 +102,7 @@ pub const WorkspaceItemsCreateAgentResult = []const u8; // pre-serialized JSON
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: WorkspaceItemsCreateAgentInput,
 ) WorkspaceItemsCreateAgentError!WorkspaceItemsCreateAgentResult {
     if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
@@ -196,7 +196,7 @@ fn useCase(
 /// failure (returns 0).
 fn readInsertedPosition(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) i64 {
     var q = db.query(
@@ -223,14 +223,14 @@ pub fn workspaceItemsCreateAgentHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
     // Live config.json `tools` checklist — seeds the fresh agent's
     // allowlist instead of the defaults when set (plan
     // 2026-09-22-tools-menu). `getLlmConfig` is the established
     // hot-path accessor; the slice stays valid for the synchronous
     // useCase below (only swapped on the next config PUT).
-    const config_tools = nalarcore.getLlmConfig(di).tools;
+    const config_tools = pabrikcore.getLlmConfig(di).tools;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
     if (workspace_id.len == 0) {
@@ -314,7 +314,7 @@ pub fn workspaceItemsCreateAgentHandler(
 //   3. Position assignment: first agent at position 0, second at 1
 //   4. Atomicity: failed agents INSERT rolls back workspace_items
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 
 const TestCtx = struct {

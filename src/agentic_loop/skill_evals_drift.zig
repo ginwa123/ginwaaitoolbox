@@ -148,7 +148,7 @@ fn looksLikePath(token: []const u8) bool {
 /// True when a segment is a bare file extension (`.ts`) rather than a real
 /// name. The length bound is what separates the two: the longest extension in
 /// everyday use is four characters, while every dot-directory a repo actually
-/// contains (`.github`, `.zig-cache`, `.nalar`, `.claude`) is longer than that.
+/// contains (`.github`, `.zig-cache`, `.pabrik`, `.claude`) is longer than that.
 /// Without a bound, `.github` would read as an extension.
 fn isBareExtension(seg: []const u8) bool {
     if (seg.len < 2 or seg.len > 5) return false;
@@ -748,7 +748,7 @@ test "stripLineSuffix handles a huge line number and a trailing colon" {
 test "a dot-directory path keeps its leading dot instead of being reported as rot" {
     const alloc = testing.allocator;
     // Both of these exist in this tree. Trimming the leading `.` turned them
-    // into `github/workflows/ci.yml` and `nalar/skills`, which stat to nothing
+    // into `github/workflows/ci.yml` and `pabrik/skills`, which stat to nothing
     // and were recorded as "this path does not exist any more" -- a lie about
     // files that are present. Asserted on the EXTRACTED token rather than only
     // on missing_count, so a change that quietly stopped checking dotfiles
@@ -758,7 +758,7 @@ test "a dot-directory path keeps its leading dot instead of being reported as ro
         \\name: dotpath
         \\description: dotpath
         \\---
-        \\See .github/workflows/ci.yml:210 and .nalar/skills for the details.
+        \\See .github/workflows/ci.yml:210 and .pabrik/skills for the details.
     ;
     const paths = try extractPaths(alloc, body);
     defer freePaths(alloc, paths);
@@ -766,7 +766,7 @@ test "a dot-directory path keeps its leading dot instead of being reported as ro
     var saw_github = false;
     for (paths) |p| {
         try testing.expect(!std.mem.eql(u8, p, "github/workflows/ci.yml"));
-        try testing.expect(!std.mem.eql(u8, p, "nalar/skills"));
+        try testing.expect(!std.mem.eql(u8, p, "pabrik/skills"));
         if (std.mem.eql(u8, p, ".github/workflows/ci.yml")) saw_github = true;
     }
     try testing.expect(saw_github);
@@ -827,7 +827,7 @@ test "isProsePlaceholder spares every real dot-directory this repo contains" {
     for ([_][]const u8{
         ".github/workflows/ci.yml",
         ".zig-cache/tmp",
-        ".nalar/hooks/register_hook.lua",
+        ".pabrik/hooks/register_hook.lua",
         "src/apps/desktop",
         "src/agentic_loop/skill_evals_drift.zig",
         // An absolute path splits into an empty first segment plus ordinary

@@ -24,9 +24,9 @@
 //!   (Chunk 2, Task 2.1)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const gserverz = pabrikcore.gserverz;
 const design_model = @import("../agentic_loop/design_model.zig");
 const http_response = @import("http_response.zig");
 
@@ -118,7 +118,7 @@ pub fn designElementsMoveBatchHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Validate the page_id path param. Empty → 400.

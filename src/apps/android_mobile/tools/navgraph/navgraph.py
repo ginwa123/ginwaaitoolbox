@@ -2,10 +2,10 @@
 
 The point of this module is that **nothing here is hand-maintained**. Every
 destination, route, deep link, argument and navigation edge is read out of
-`NalarNavGraph.kt` and `AndroidManifest.xml`, so the audit cannot drift away
+`PabrikNavGraph.kt` and `AndroidManifest.xml`, so the audit cannot drift away
 from the app the way a hand-written diagram does. A destination added to the
 `NavHost` shows up in the rendered graph whether or not anyone remembers to
-update a spec, and a route constant deleted from `NalarRoutes` disappears on
+update a spec, and a route constant deleted from `PabrikRoutes` disappears on
 the next run.
 
 ### Why the source is *read as text* rather than compiled
@@ -66,8 +66,8 @@ ANDROID_PROJECT = Path("src") / "apps" / "android_mobile"
 #: Where every navigation decision is made: the routes, the `NavHost`, every
 #: `navigate()` call site, and the one back helper they all go through.
 NAV_GRAPH_SOURCE = (
-    ANDROID_PROJECT / "app" / "src" / "main" / "java" / "com" / "nalar" / "mobile"
-    / "network" / "NalarNavGraph.kt"
+    ANDROID_PROJECT / "app" / "src" / "main" / "java" / "com" / "pabrik" / "mobile"
+    / "network" / "PabrikNavGraph.kt"
 )
 
 #: Deep links are declared twice — once in the nav graph and once as an intent
@@ -213,10 +213,10 @@ def _first_quote_from(masked: str, offset: int, limit: int = 400) -> int:
 # --------------------------------------------------------------------------------------
 
 #: `chat/${UriEncoding.encode(sessionId)}` and `network/record/$recordId` both
-#: collapse to one `{name}` form. Both spellings appear in `NalarRoutes` — one
+#: collapse to one `{name}` form. Both spellings appear in `PabrikRoutes` — one
 #: builder per route — and both have to land on the same template as the
 #: `const val` they produce, which is what lets the extractor match
-#: `navigate(NalarRoutes.chat(id))` to the `chat/{sessionId}` destination with
+#: `navigate(PabrikRoutes.chat(id))` to the `chat/{sessionId}` destination with
 #: no hand-written alias table that could itself go stale.
 _TEMPLATE_INTERPOLATION = re.compile(r"\$\{([^}]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
@@ -241,18 +241,18 @@ def normalise_template(text: str) -> str:
 
 _CONST_VAL = re.compile(r"const\s+val\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*String\s*)?=\s*")
 _ROUTE_FUN = re.compile(r"fun\s+([a-z][A-Za-z0-9_]*)\s*\([^)]*\)\s*:\s*String\s*=\s*")
-_ROUTES_OBJECT = re.compile(r"object\s+NalarRoutes\s*\{")
+_ROUTES_OBJECT = re.compile(r"object\s+PabrikRoutes\s*\{")
 
 _COMPOSABLE = re.compile(r"(?<![\w.])composable\s*\(")
 _NAVIGATE = re.compile(r"(?<![\w])navigate\s*\(")
-_NAV_ARGUMENT = re.compile(r"navArgument\s*\(\s*NalarRoutes\.([A-Za-z_][A-Za-z0-9_]*)")
+_NAV_ARGUMENT = re.compile(r"navArgument\s*\(\s*PabrikRoutes\.([A-Za-z_][A-Za-z0-9_]*)")
 _NAV_DEEP_LINK = re.compile(r"navDeepLink\s*\{\s*uriPattern\s*=\s*")
-_POP_UP_TO = re.compile(r"popUpTo\s*\(\s*NalarRoutes\.([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{([^}]*)\}")
+_POP_UP_TO = re.compile(r"popUpTo\s*\(\s*PabrikRoutes\.([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{([^}]*)\}")
 _LAUNCH_SINGLE_TOP = re.compile(r"launchSingleTop\s*=\s*true")
 _BACK_HANDLER = re.compile(r"(?<![\w.])BackHandler\s*[\({]")
 _RAW_POP = re.compile(r"(?<![\w.])(popBackStack|navigateUp)\s*\(")
 _NAV_HOST = re.compile(r"NavHost\s*\(")
-_NAV_HOST_START_DEST = re.compile(r"startDestination\s*=\s*NalarRoutes\.([A-Za-z_][A-Za-z0-9_]*)")
+_NAV_HOST_START_DEST = re.compile(r"startDestination\s*=\s*PabrikRoutes\.([A-Za-z_][A-Za-z0-9_]*)")
 
 _VAL_DECL = re.compile(
     r"(?m)^[ \t]*(?:private\s+|internal\s+|public\s+)?val\s+([A-Za-z_][A-Za-z0-9_]*)"
@@ -270,7 +270,7 @@ _TOP_LEVEL_FUN = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
 _TARGET_EXPR = re.compile(
-    r"\s*(NalarRoutes\.[A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)"
+    r"\s*(PabrikRoutes\.[A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)"
 )
 _SCREEN_CALL = re.compile(r"(?<![\w.])([A-Z][A-Za-z0-9_]*)\s*\(")
 _ON_BACK = re.compile(r"\bonBack\s*=\s*(goBack\b|\{\s*goBack\(\))")
@@ -303,7 +303,7 @@ _NON_SCREENS = frozenset(
 
 @dataclass(frozen=True)
 class RouteConstant:
-    """One `const val` — or one builder `fun` — in `object NalarRoutes`."""
+    """One `const val` — or one builder `fun` — in `object PabrikRoutes`."""
 
     name: str
     value: str
@@ -350,7 +350,7 @@ class Destination:
     route: str  # route-constant name, e.g. "CHAT"
     template: str  # the pattern it matches, e.g. "chat/{sessionId}"
     arguments: tuple[str, ...]  # declared `navArgument` constants
-    deep_links: tuple[str, ...]  # `nalar://…` patterns
+    deep_links: tuple[str, ...]  # `pabrik://…` patterns
     screens: tuple[str, ...]  # the composables this destination *is*
     composables: tuple[str, ...]  # everything the body references
     back_affordances: tuple[str, ...]  # how a back leaves this destination
@@ -485,7 +485,7 @@ def _routes_object_span(masked: str) -> tuple[int, int] | None:
 def _extract_routes(
     source: str, masked: str
 ) -> list[RouteConstant]:
-    """Every `const val` and builder `fun` in `object NalarRoutes`.
+    """Every `const val` and builder `fun` in `object PabrikRoutes`.
 
     Constrained to the object body so a `const val` elsewhere in the file cannot
     become a phantom route.
@@ -532,7 +532,7 @@ def _extract_routes(
                 kind="route",
                 # A builder is a second *spelling* of a route the constants
                 # already declare, not a route of its own. It is kept because
-                # `navigate(NalarRoutes.recordDetail(id))` names its target
+                # `navigate(PabrikRoutes.recordDetail(id))` names its target
                 # through the builder, and dropping it would leave that edge
                 # unresolvable.
                 synthetic=True,
@@ -656,8 +656,8 @@ def _extract_destinations(
 
     for index, (args_open, args_close, body_close) in enumerate(spans):
         args_text = masked[args_open : args_close + 1]
-        named = re.search(r"\broute\s*=\s*NalarRoutes\.([A-Za-z_][A-Za-z0-9_]*)", args_text)
-        positional = re.search(r"NalarRoutes\.([A-Za-z_][A-Za-z0-9_]*)", args_text)
+        named = re.search(r"\broute\s*=\s*PabrikRoutes\.([A-Za-z_][A-Za-z0-9_]*)", args_text)
+        positional = re.search(r"PabrikRoutes\.([A-Za-z_][A-Za-z0-9_]*)", args_text)
         route_name = (named or positional).group(1) if (named or positional) else None
         if route_name is None or route_name not in by_name:
             continue
@@ -707,7 +707,7 @@ def _extract_destinations(
 def _resolve_target(
     args_text: str, constants: Sequence[RouteConstant]
 ) -> tuple[str, str, bool]:
-    """`NalarRoutes.chat(id)` → `("chat/{sessionId}", via, True)`.
+    """`PabrikRoutes.chat(id)` → `("chat/{sessionId}", via, True)`.
 
     Resolution goes through the route table, never a hand-written alias, so a
     builder renamed to build something else surfaces as an *unresolved* target
@@ -717,7 +717,7 @@ def _resolve_target(
     if match is None:
         return "", args_text.strip(), False
     via = " ".join(match.group(1).split())
-    name = via[len("NalarRoutes.") :].split("(", 1)[0]
+    name = via[len("PabrikRoutes.") :].split("(", 1)[0]
     constant = _route_index(constants).get(name)
     if constant is None:
         return "", via, False
@@ -814,7 +814,7 @@ def _val_declaration_spans(masked: str) -> list[tuple[str, int, int]]:
     """`(name, start, end)` for every `val`.
 
     A navigation is rarely written where it happens. `val openInspector: () ->
-    Unit = { navController.navigate(NalarRoutes.NETWORK) }` sits above the
+    Unit = { navController.navigate(PabrikRoutes.NETWORK) }` sits above the
     `NavHost` and is *triggered* from whichever screen receives it, so the
     lambda's span is what lets the edge be re-sourced to that screen instead of
     to an anonymous "graph".
@@ -877,7 +877,7 @@ def _statement_end(masked: str, start: int, limit: int = 8000) -> int:
 def _is_composable_declaration(masked: str, name: str, offset: int) -> bool:
     """Whether `name` is the `@Composable fun` the whole graph lives inside.
 
-    Every navigation in this file is lexically inside `NalarNavGraph`, so
+    Every navigation in this file is lexically inside `PabrikNavGraph`, so
     using it as a scope label would label all of them the same useless thing.
     """
     for match in _TOP_LEVEL_FUN.finditer(masked):
@@ -1031,7 +1031,7 @@ def _extract_back_edges(
 
 
 def _extract_deep_link_edges(destinations: Sequence[Destination], nav_file: str) -> list[Edge]:
-    """One `deep-link` edge per `nalar://…` pattern, from a synthetic entry node."""
+    """One `deep-link` edge per `pabrik://…` pattern, from a synthetic entry node."""
     return [
         Edge(
             source="__deeplink__",
@@ -1070,7 +1070,7 @@ def _extract_raw_back_calls(
 
 
 def _extract_manifest(path: Path) -> dict[str, int]:
-    """`nalar://<host>` hosts the manifest actually claims, with their lines.
+    """`pabrik://<host>` hosts the manifest actually claims, with their lines.
 
     A `navDeepLink` with no matching `<data>` is the failure mode this tool
     exists to make visible: the graph looks deep-linkable, `adb shell am start`
@@ -1082,7 +1082,7 @@ def _extract_manifest(path: Path) -> dict[str, int]:
         r"<data\b[^>]*android:scheme\s*=\s*\"([^\"]+)\"[^>]*android:host\s*=\s*\"([^\"]+)\"",
         text,
     ):
-        if match.group(1) == "nalar":
+        if match.group(1) == "pabrik":
             hosts[match.group(2)] = line_of(text, match.start())
     return hosts
 
@@ -1155,7 +1155,7 @@ class Finding:
 
 
 def _host_of(pattern: str) -> str | None:
-    match = re.match(r"nalar://([^/]+)", pattern)
+    match = re.match(r"pabrik://([^/]+)", pattern)
     return match.group(1) if match else None
 
 
@@ -1224,7 +1224,7 @@ def audit(graph: NavGraph) -> list[Finding]:
                     "error",
                     "`%s` is not claimed by the manifest" % pattern,
                     "`navDeepLink` declares %s, but AndroidManifest.xml has no "
-                    "<data android:scheme=\"nalar\" android:host=\"%s\">. "
+                    "<data android:scheme=\"pabrik\" android:host=\"%s\">. "
                     "`adb shell am start -a android.intent.action.VIEW -d %s` resolves to no "
                     "activity, and it does so silently." % (pattern, host, pattern),
                     destination.template,
@@ -1247,7 +1247,7 @@ def audit(graph: NavGraph) -> list[Finding]:
             Finding(
                 "manifest_host_without_route",
                 "warn",
-                "manifest claims `nalar://%s` with no route behind it" % host,
+                "manifest claims `pabrik://%s` with no route behind it" % host,
                 "%s:%d registers an intent filter for host `%s`, but no `composable(...)` "
                 "declares a `navDeepLink` for it. The link opens the app and then lands on "
                 "whatever the graph does with an unmatched destination." % (graph.manifest_file, line, host),
@@ -1271,7 +1271,7 @@ def audit(graph: NavGraph) -> list[Finding]:
                     "no_back_affordance",
                     "error",
                     "`%s` is deep-linkable with no way back" % destination.template,
-                    "A destination reached only by `nalar://` sits alone on the back stack, "
+                    "A destination reached only by `pabrik://` sits alone on the back stack, "
                     "and `updateOnBackPressedCallbackEnabled` leaves the system Back callback "
                     "disabled at that depth. Without an `onBack = goBack` or a `BackHandler`, "
                     "the reader's only way out is leaving the app.",
@@ -1323,7 +1323,7 @@ def audit(graph: NavGraph) -> list[Finding]:
             Finding(
                 "route_constant_unused",
                 "warn",
-                "`NalarRoutes.%s` is never a destination" % constant.name,
+                "`PabrikRoutes.%s` is never a destination" % constant.name,
                 "`%s` is declared but no `composable(...)` uses it. Either the screen is gone "
                 "and the constant outlived it, or the screen was never wired." % constant.value,
                 "graph",
@@ -1372,7 +1372,7 @@ def audit(graph: NavGraph) -> list[Finding]:
                 "The navigation target is the destination it is triggered from, and nothing "
                 "is popped — so repeating %s stacks another copy of the same screen every "
                 "time. The app's own precedent for switching is "
-                "`popUpTo(NalarRoutes.SHELL) { inclusive = false }` with `launchSingleTop`."
+                "`popUpTo(PabrikRoutes.SHELL) { inclusive = false }` with `launchSingleTop`."
                 % edge.trigger,
                 edge.label,
                 edge.sites[0] if edge.sites else None,

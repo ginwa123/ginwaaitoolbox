@@ -11,7 +11,7 @@
 //!      error printing)
 //!
 //! The underlying libcurl-backed transport is cross-platform
-//! (Linux/macOS/Windows) per `kabelweb repo docs-client-NALAR.md`.
+//! (Linux/macOS/Windows) per `kabelweb repo docs-client-PABRIK.md`.
 
 const std = @import("std");
 const custom_http_client = @import("kabelweb").client;

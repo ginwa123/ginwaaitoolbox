@@ -47,8 +47,8 @@ import { userScopedKey } from '../helpers/userScope'
 import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 import { useSseBus } from '../helpers/sseBus'
 
-const ENABLED_KEY = 'nalar-tabs-enabled'
-const LIST_PREFIX = 'nalar-tabs:v1:'
+const ENABLED_KEY = 'pabrik-tabs-enabled'
+const LIST_PREFIX = 'pabrik-tabs:v1:'
 
 export interface OpenTabInput {
   path?: string

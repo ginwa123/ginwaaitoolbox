@@ -61,7 +61,7 @@ describe('useWorkspacesStore active workspace selection', () => {
 
     expect(store.activeWorkspaceId).toBe('ws_b')
     expect(store.activeWorkspace?.id).toBe('ws_b')
-    expect(localStorageStub.getItem('nalar-active-workspace')).toBe('ws_b')
+    expect(localStorageStub.getItem('pabrik-active-workspace')).toBe('ws_b')
   })
 
   it('setActiveWorkspace ignores unknown ids once the list is loaded', () => {
@@ -71,7 +71,7 @@ describe('useWorkspacesStore active workspace selection', () => {
     store.setActiveWorkspace('ws_missing')
 
     expect(store.activeWorkspaceId).toBeNull()
-    expect(localStorageStub.getItem('nalar-active-workspace')).toBeNull()
+    expect(localStorageStub.getItem('pabrik-active-workspace')).toBeNull()
   })
 
   it('clears an active item + task that belong to a DIFFERENT workspace', () => {
@@ -101,7 +101,7 @@ describe('useWorkspacesStore active workspace selection', () => {
 
   it('getter precedence: explicit selection wins over everything', () => {
     const store = useWorkspacesStore()
-    localStorageStub.setItem('nalar-active-workspace', 'ws_b')
+    localStorageStub.setItem('pabrik-active-workspace', 'ws_b')
     seed(store, [ws('ws_a', 'A'), ws('ws_b', 'B'), ws('ws_c', 'C')])
 
     store.setActiveWorkspace('ws_a')
@@ -111,7 +111,7 @@ describe('useWorkspacesStore active workspace selection', () => {
 
   it('getter precedence: persisted choice beats item-derived', () => {
     const store = useWorkspacesStore()
-    localStorageStub.setItem('nalar-active-workspace', 'ws_b')
+    localStorageStub.setItem('pabrik-active-workspace', 'ws_b')
     seed(store, [ws('ws_a', 'A', [item('item_a')]), ws('ws_b', 'B')])
     store.setActiveWorkspaceItem('item_a')
 
@@ -135,7 +135,7 @@ describe('useWorkspacesStore active workspace selection', () => {
 
   it('ignores a stale persisted id whose workspace no longer exists', () => {
     const store = useWorkspacesStore()
-    localStorageStub.setItem('nalar-active-workspace', 'ws_deleted')
+    localStorageStub.setItem('pabrik-active-workspace', 'ws_deleted')
     seed(store, [ws('ws_a', 'A')])
 
     expect(store.activeWorkspace?.id).toBe('ws_a')
@@ -152,7 +152,7 @@ describe('useWorkspacesStore active workspace selection', () => {
     await store.removeWorkspace('ws_a')
 
     expect(store.activeWorkspaceId).toBeNull()
-    expect(localStorageStub.getItem('nalar-active-workspace')).toBeNull()
+    expect(localStorageStub.getItem('pabrik-active-workspace')).toBeNull()
     // Getter falls back down the precedence chain to the next workspace.
     expect(store.activeWorkspace?.id).toBe('ws_b')
     expect(deleteMock).toHaveBeenCalledWith('ws_a')

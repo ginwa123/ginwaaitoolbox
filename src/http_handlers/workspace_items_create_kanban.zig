@@ -27,12 +27,12 @@
 //!   (Chunk 3)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../agentic_loop/kanban_model.zig");
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
-const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
+const on_event_sent_kanban = pabrikcore.ai_mod.on_event_sent_kanban;
 const helpers = @import("helpers");
 
 /// Request body for the kanban-item create endpoint.
@@ -114,7 +114,7 @@ pub const WorkspaceItemsCreateKanbanResult = []const u8; // pre-serialized JSON
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: WorkspaceItemsCreateKanbanInput,
 ) WorkspaceItemsCreateKanbanError!WorkspaceItemsCreateKanbanResult {
     if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
@@ -263,14 +263,14 @@ pub fn workspaceItemsCreateKanbanHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
     // Live config.json `tools` checklist — seeds the fresh board's
     // allowlist instead of the defaults when set (plan
     // 2026-09-22-tools-menu). `getLlmConfig` is the established
     // hot-path accessor; the slice stays valid for the synchronous
     // useCase below (only swapped on the next config PUT).
-    const config_tools = nalarcore.getLlmConfig(di).tools;
+    const config_tools = pabrikcore.getLlmConfig(di).tools;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
     if (workspace_id.len == 0) {
@@ -363,7 +363,7 @@ pub fn workspaceItemsCreateKanbanHandler(
 /// in a dedicated function with `var q = db.query(...) catch`).
 fn readInsertedPosition(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) i64 {
     var q = db.query(
@@ -446,7 +446,7 @@ test "create_kanban handler parses name from JSON body" {
 
     // The handler must use `parseFromSliceLeaky` (NOT the non-leaky
     // variant — see project memory
-    // `nalar-http-handler-thin-wrapper-pattern`). The parsed body's
+    // `pabrik-http-handler-thin-wrapper-pattern`). The parsed body's
     // `.name` field must then be referenced (extracted from the
     // struct for use in the SQL INSERT).
     if (std.mem.indexOf(u8, source, "parseFromSliceLeaky") == null) {

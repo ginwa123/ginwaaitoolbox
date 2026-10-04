@@ -21,12 +21,12 @@
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
-        android:icon="@drawable/ic_nalar"
-        android:label="Nalar"
-        android:roundIcon="@drawable/ic_nalar"
+        android:icon="@drawable/ic_pabrik"
+        android:label="Pabrik"
+        android:roundIcon="@drawable/ic_pabrik"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false"
-        android:theme="@style/Theme.Nalar">
+        android:theme="@style/Theme.Pabrik">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -35,22 +35,22 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- `adb shell am start -a android.intent.action.VIEW -d nalar://network` -->
+            <!-- `adb shell am start -a android.intent.action.VIEW -d pabrik://network` -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="nalar" android:host="network" />
+                <data android:scheme="pabrik" android:host="network" />
             </intent-filter>
             <!-- A deep link is only reachable if the manifest claims the host.
-                 Without this filter `nalar://chat/{sessionId}` matches no
+                 Without this filter `pabrik://chat/{sessionId}` matches no
                  activity and silently does nothing, while the nav graph's
                  `navDeepLink` looks like it works. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="nalar" android:host="chat" />
+                <data android:scheme="pabrik" android:host="chat" />
             </intent-filter>
         </activity>
 

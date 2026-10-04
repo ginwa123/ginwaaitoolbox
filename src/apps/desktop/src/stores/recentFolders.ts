@@ -7,7 +7,7 @@
  * entries (pinned entries are exempt from the cap), and sorted by
  * `pinned desc, lastUsedAt desc`.
  *
- * Persistence: localStorage key `nalar-folder-picker-recent:v1`. The `:v1`
+ * Persistence: localStorage key `pabrik-folder-picker-recent:v1`. The `:v1`
  * suffix lets us bump the schema later without nuking user data. Writes
  * are debounced 200ms (matches the pattern in `useDesignHistory.ts`'s
  * `useDebounceFn`).
@@ -19,7 +19,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-const STORAGE_KEY = 'nalar-folder-picker-recent:v1'
+const STORAGE_KEY = 'pabrik-folder-picker-recent:v1'
 const CAP = 12
 const WRITE_DEBOUNCE_MS = 200
 

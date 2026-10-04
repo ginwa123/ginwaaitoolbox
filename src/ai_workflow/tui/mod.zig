@@ -1,12 +1,12 @@
-//! Thin re-export surface for the `tui` module (mounted as `nalarcore.ai_mod.*`).
+//! Thin re-export surface for the `tui` module (mounted as `pabrikcore.ai_mod.*`).
 //!
 //! As of 2026-09-11, the agent loop lives at `src/agentic_loop/` and the
 //! HTTP handlers at `src/http_handlers/` (both flattened from
 //! `src/ai_workflow/tui/`).
-//! This `mod.zig` re-exports it so existing call sites (`nalarcore.ai_mod.*`)
+//! This `mod.zig` re-exports it so existing call sites (`pabrikcore.ai_mod.*`)
 //! keep working unchanged.
 
-pub const nalarcore = @import("nalarcore");
+pub const pabrikcore = @import("pabrikcore");
 pub const models = @import("../../agentic_loop/models.zig");
 pub const http_handlers = @import("../../http_handlers/mod.zig");
 pub const ai_workflow = @import("../../agentic_loop/workflow.zig");
@@ -25,7 +25,7 @@ pub const delete_worker = @import("../../agentic_loop/delete_worker.zig");
 // Background-command completion queue (bg-completion Task 1+2) — pure log
 // helpers + completion envelope, consumed by the
 // schedulers/cleanup_stale_background_process.zig cron via
-// `nalarcore.ai_mod.background_process` (same routing pattern as
+// `pabrikcore.ai_mod.background_process` (same routing pattern as
 // delete_worker above: never @import the file directly from the
 // scheduler, or the exe module ends up owning it twice).
 pub const background_process = @import("../../agentic_loop/background_process.zig");
@@ -54,9 +54,9 @@ pub const workspace_items = llm_history;
 pub const workspace_item_tasks = llm_history;
 
 // Re-export session->client mapping functions from root
-pub const registerSessionClient = @import("nalarcore").registerSessionClient;
-pub const unregisterSessionClient = @import("nalarcore").unregisterSessionClient;
-pub const getClientIdForSession = @import("nalarcore").getClientIdForSession;
-pub const getListClientsForSession = @import("nalarcore").getListClientsForSession;
-pub const getSessionIdForClient = @import("nalarcore").getSessionIdForClient;
-pub const handleClientDisconnect = @import("nalarcore").handleClientDisconnect;
+pub const registerSessionClient = @import("pabrikcore").registerSessionClient;
+pub const unregisterSessionClient = @import("pabrikcore").unregisterSessionClient;
+pub const getClientIdForSession = @import("pabrikcore").getClientIdForSession;
+pub const getListClientsForSession = @import("pabrikcore").getListClientsForSession;
+pub const getSessionIdForClient = @import("pabrikcore").getSessionIdForClient;
+pub const handleClientDisconnect = @import("pabrikcore").handleClientDisconnect;

@@ -39,9 +39,9 @@
 //!   - Validation substrings for level/kind/message
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const sqlite = pabrikcore.sqlite;
 const http_response = @import("http_response.zig");
 
 /// JSON request body for `POST /api/logs`.
@@ -249,7 +249,7 @@ pub fn frontendLogPostHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Server not initialized" }),
@@ -401,7 +401,7 @@ fn microsecondsNow() i64 {
 // ────────────────────
 // The handler is a thin wrapper over the SQL insert + dedup-update
 // in `src/migrations/migration.zig`'s `logs` table (Migration 063).
-// Standing up a real `GinwaServer` + nalarcore singleton + Io +
+// Standing up a real `GinwaServer` + pabrikcore singleton + Io +
 // SQLite + env to exercise the HTTP path is the same burden as the
 // memories / routines test files documented — too much integration
 // infra for a single endpoint. We follow the project's
@@ -640,7 +640,7 @@ fn setupDbWithLogs() !struct {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    try nalarcore.migrations_mod.migration.Migration064AddFrontendLogs.up(&db, alloc);
+    try pabrikcore.migrations_mod.migration.Migration064AddFrontendLogs.up(&db, alloc);
     // Production DBs also run Migration 075, which renames
     // `logs.created_at` → `logs.created_at_nano`. Mirror that rename
     // here so these tests exercise the post-rename schema the live

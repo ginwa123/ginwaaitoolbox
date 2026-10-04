@@ -46,7 +46,7 @@ What this does NOT prove
        one is already running — and the harness's stub LLM profile points at a
        dead port, so a run dies instantly and every turn ends up RUNNING
        instead of QUEUED. Holding a worker open needs a live LLM endpoint, and
-       nalar reads its profile at boot, so it cannot be swapped in from a
+       pabrik reads its profile at boot, so it cannot be swapped in from a
        fixture. The queue path is covered instead by
        `src/apps/desktop/src/__tests__/ChatView.sendScrollsToBottom.spec.ts`
        (which pins the `queue_queued` branch to the same re-arm the send uses)
@@ -61,7 +61,7 @@ Run (the frontend is served from THIS worktree — that is the code under test;
 the backend binary can come from anywhere, since no backend code changed):
 
     zig build
-    NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \\
+    PABRIK_BIN=./zig-out/bin/pabrikcore-linux-x86_64 \\
         python3 -m pytest tests/functional_ui/chatview_send_scrolls_to_bottom_ui_test.py -v
 
 Environment notes found the hard way here, both pre-existing and both the
@@ -108,7 +108,7 @@ ECHO_INDEX = 9001
 @pytest.fixture(autouse=True)
 def _arm_sse_emit_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Arm the test-only SSE emit gate BEFORE the harness boots."""
-    monkeypatch.setenv("NALAR_TEST_SSE_EMIT", "1")
+    monkeypatch.setenv("PABRIK_TEST_SSE_EMIT", "1")
 
 
 # ─── The scroller ────────────────────────────────────────────────────────────
@@ -276,7 +276,7 @@ def _wait_parked_at_bottom(page, *, what: str) -> dict:
 
 
 def _seed_session(h, session_id: str, count: int = TURN_COUNT) -> None:
-    seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+    seed = DbSeed(h.temp_dir / ".config" / "pabrik" / "agent.db")
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, f"Send-scroll {count}")
         stamps = DbSeed.baseline_timestamps(count=count, interval_seconds=30)

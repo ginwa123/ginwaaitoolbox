@@ -22,12 +22,12 @@ post-replace swaps output):
     still 201 with a deny-all hook installed (hooks only wrap tool
     dispatch, nothing else).
   * PATH CONVENTION — the hook resolves under the isolated HOME's
-    config dir (<tmp>/.config/nalar/hooks/register_hook.lua).
+    config dir (<tmp>/.config/pabrik/hooks/register_hook.lua).
   * EXAMPLE VALIDITY — the shipped examples/hooks/register_hook.lua
     parses as Lua (via system lua5.4 when available, skipped otherwise).
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/hooks_lua_test.py -v
 """
 
@@ -61,10 +61,10 @@ def _config_dir(harness: FunctionalHarness) -> Path:
 
     td = harness.temp_dir
     if sys.platform == "darwin":
-        return td / "Library" / "Application Support" / "nalar"
+        return td / "Library" / "Application Support" / "pabrik"
     if sys.platform == "win32":
-        return td / "AppData" / "Roaming" / "nalar"
-    return td / ".config" / "nalar"
+        return td / "AppData" / "Roaming" / "pabrik"
+    return td / ".config" / "pabrik"
 
 
 def _hooks_dir(harness: FunctionalHarness) -> Path:

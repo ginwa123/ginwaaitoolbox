@@ -23,7 +23,7 @@
 //! Spec: docs/superpowers/specs/2026-08-15-agent-mode-design.md (D1, D2)
 
 const std = @import("std");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 
 /// Resolve the enabled tool names for the agent bound to
 /// `workspace_item_id`. Returns an owned slice of `[]const u8`; caller
@@ -82,7 +82,7 @@ pub fn agentToolsAllowed(
 const testing = std.testing;
 // Use a fresh alias for the test section to avoid duplicate-struct-
 // member shadowing (file-level `const sqlite` already exists).
-const test_sqlite = @import("nalarcore").sqlite;
+const test_sqlite = @import("pabrikcore").sqlite;
 const Migration076 = @import("../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 
 const TestCtx = struct {

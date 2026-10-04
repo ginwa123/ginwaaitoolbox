@@ -274,9 +274,9 @@ const handleNativeFileSelect = (event: Event) => {
 // filters out non-text items from `clipboardData.items`. The paste event
 // still fires with `clipboardData` present but `items` and `files` empty,
 // so the loop below silently no-ops and the screenshot the user pasted
-// vanishes. nalar-desktop uses WebKitGTK on Linux, which is why the same
+// vanishes. pabrik-desktop uses WebKitGTK on Linux, which is why the same
 // `FileInput` code works in `bun dev` (Chrome) but not in
-// `nalar-desktop` (WebKitGTK).
+// `pabrik-desktop` (WebKitGTK).
 //
 // The fix: after the sync `clipboardData.items` loop, if no files were
 // attached AND `navigator.clipboard.read()` is available, use the async

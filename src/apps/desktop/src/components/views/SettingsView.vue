@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import NalarSettings from '../NalarSettings.vue'
+import PabrikSettings from '../PabrikSettings.vue'
 import SkillsSettings from '../preview/SkillsSettings.vue'
 import MemoriesSettings from '../memory/MemoriesSettings.vue'
 
 const router = useRouter()
 
 // Settings sidebar state
-const activeSettingsTab = ref('nalar')
+const activeSettingsTab = ref('pabrik')
 
 // Notification state
 const notification = ref<{ message: string; type: 'success' | 'error' } | null>(null)
@@ -70,14 +70,14 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
       <!-- Settings Menu -->
       <nav class="flex-1 py-4 px-3 overflow-y-auto">
         <button
-          @click="setSettingsTab('nalar')"
+          @click="setSettingsTab('pabrik')"
           class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-body font-medium transition-all duration-200 mb-1"
-          :style="activeSettingsTab === 'nalar'
+          :style="activeSettingsTab === 'pabrik'
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
           <span class="text-title-sm">🤖</span>
-          <span>Nalar</span>
+          <span>Pabrik</span>
         </button>
 
         <button
@@ -106,9 +106,9 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
 
     <!-- Settings Content -->
     <main class="flex-1 flex flex-col overflow-hidden">
-      <!-- Nalar Tab Content -->
-      <div v-if="activeSettingsTab === 'nalar'" class="flex-1 overflow-y-auto p-6">
-        <NalarSettings @notification="handleNotification" />
+      <!-- Pabrik Tab Content -->
+      <div v-if="activeSettingsTab === 'pabrik'" class="flex-1 overflow-y-auto p-6">
+        <PabrikSettings @notification="handleNotification" />
       </div>
 
       <!-- Skills Tab Content -->

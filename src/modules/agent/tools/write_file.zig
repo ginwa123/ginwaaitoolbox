@@ -1487,7 +1487,7 @@ test "writeFile: create_with_dir succeeds for a file in the drive root on Window
     // tests above assert `parentDirToCreate` directly with no I/O at all,
     // and the static-contract test below pins that the tool delegates to
     // `std.fs.path.dirname` rather than re-deriving a parent by scanning.
-    const probe = "C:\\nalar_wf_probe.txt";
+    const probe = "C:\\pabrik_wf_probe.txt";
     std.Io.Dir.cwd().deleteFile(std.testing.io, probe) catch {};
     if (std.Io.Dir.cwd().createFile(std.testing.io, probe, .{})) |probe_file| {
         // `std.Io.File.close(value, io)` — the exact form the helpers above
@@ -1506,7 +1506,7 @@ test "writeFile: create_with_dir succeeds for a file in the drive root on Window
     // reinterpret it unsigned first and keep the low 32 bits.
     const now_ns = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds;
     const unique = @as(u32, @truncate(@as(u96, @bitCast(now_ns))));
-    const target = try std.fmt.allocPrint(std.testing.allocator, "C:\\nalar_wf_test_{d}.txt", .{unique});
+    const target = try std.fmt.allocPrint(std.testing.allocator, "C:\\pabrik_wf_test_{d}.txt", .{unique});
     defer std.testing.allocator.free(target);
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, target) catch {};
 

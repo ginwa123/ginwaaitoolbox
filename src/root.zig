@@ -127,7 +127,7 @@ pub const ContextIPCTui = struct {
 
     /// Opt-in auth enforcement, set from `--auth` CLI flag.
     /// When false, all endpoints are open (legacy single-user mode).
-    /// When true, API + static + ws/sse require a valid `nalar_session` cookie.
+    /// When true, API + static + ws/sse require a valid `pabrik_session` cookie.
     auth_enabled: bool = false,
 
     /// Process-global MCP stdio registry, cached here so every call site
@@ -144,7 +144,7 @@ pub const ContextIPCTui = struct {
     /// here; every later run (new session, queued message, retry) reads
     /// the snapshot instead of doing `tools/list` I/O again.
     /// `mcp_tools_init=false` means never-fetched-or-cleared → the next
-    /// workflow run must fetch. Mutation sites (PUT /api/config/nalar,
+    /// workflow run must fetch. Mutation sites (PUT /api/config/pabrik,
     /// add_mcp_server) only `clearMcpToolsCache()` — the next workflow
     /// run pays the one fetch. Guarded by a spinlock (Zig 0.16 has no
     /// `std.Thread.Mutex`); helpers are io-free so workflow + HTTP
@@ -382,7 +382,7 @@ pub const ContextIPCTui = struct {
     }
 
     /// Lazy-invalidate: free + mark uninitialized. The next workflow run
-    /// does the one refetch. Called from PUT /api/config/nalar and
+    /// does the one refetch. Called from PUT /api/config/pabrik and
     /// add_mcp_server after their `setLlmConfig` swap.
     pub fn clearMcpToolsCache(self: *ContextIPCTui) void {
         mcpToolsLock(&self.mcp_tools_lock);
@@ -727,7 +727,7 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
     }
 }
 
-// Module exports - these are available via @import("nalarcore")
+// Module exports - these are available via @import("pabrikcore")
 // it should import from folder modules only
 pub const agent = @import("modules/agent/Agent.zig");
 pub const llm_models = @import("modules/agent/LLMModels.zig");
@@ -737,7 +737,7 @@ pub const prompt = @import("modules/agent/prompts.zig");
 // dependency declared in build.zig (mod.addImport("databases", databases_mod)).
 pub const sqlite = @import("databases").sqlite;
 // Unified interface — prefer this over `sqlite` in new code:
-//   const database = nalarcore.database; var db: database.Db = .{};
+//   const database = pabrikcore.database; var db: database.Db = .{};
 // App-controlled via root `-Ddb_used` (default sqlite).
 // `Db` IS `SqliteBackend` when sqlite-only, so existing
 // `*sqlite.SqliteBackend` signatures keep compiling during migration.
@@ -930,12 +930,12 @@ pub const config = @import("modules/config/Config.zig");
 pub const parse_thinking = @import("modules/config/parse_thinking.zig");
 // Per-user LLM config store for opt-in `--auth` mode
 // (users.config_json, Migration 092). Re-exported so HTTP handlers
-// reach it via `nalarcore.user_config_store` without a direct
+// reach it via `pabrikcore.user_config_store` without a direct
 // cross-module @import duplicating the file.
 pub const user_config_store = @import("modules/config/UserConfigStore.zig");
 // Plan 2026-09-10-web-launch-toggle: random loopback port picker for
 // browser mode (`--port 0` resolution). Re-exported here so the exe
-// module (src/main.zig) reaches it via `nalarcore.web_port` instead of
+// module (src/main.zig) reaches it via `pabrikcore.web_port` instead of
 // a direct cross-module @import (which would duplicate the file across
 // modules — see the cleanup_stale_worker precedent in main.zig).
 pub const web_port = @import("modules/config/web_port.zig");
@@ -963,12 +963,12 @@ pub const semantic_search = @import("modules/agent/tools/semantic_search.zig");
 pub const text_replace_tool = @import("modules/agent/tools/text_replace.zig");
 pub const cronjob = @import("modules/cronjob/mod.zig");
 
-// Decoupled nalar-service (Chunk 3) — re-export the service plumbing so
-// main.zig and other internal callers can `@import("nalarcore").service_*`.
-// Each of these is the same module surfaced under `nalarcore.service.*`
+// Decoupled pabrik-service (Chunk 3) — re-export the service plumbing so
+// main.zig and other internal callers can `@import("pabrikcore").service_*`.
+// Each of these is the same module surfaced under `pabrikcore.service.*`
 // (see `src/service/mod.zig`); the top-level aliases here are kept for
 // backward compat with existing call sites that reach through
-// `nalarcore.state_file`, etc. directly.
+// `pabrikcore.state_file`, etc. directly.
 pub const service = @import("service/mod.zig");
 pub const state_file = service.state_file;
 pub const daemon = service.daemon;
@@ -987,7 +987,7 @@ pub const http_routes = @import("http_routes.zig");
 // `pub const helpers = ...` was removed: `helpers` is now its own
 // Zig module (see `b.createModule` in build.zig) wired in via
 // `mod.addImport("helpers", helpers_mod)`. Source files inside
-// nalarcore use `@import("helpers")` (not a relative path) to
+// pabrikcore use `@import("helpers")` (not a relative path) to
 // reach it.
 pub const kerjabot_get_session = @import("agentic_loop/llm_history.zig");
 pub const kerjabot_create_session = @import("agentic_loop/llm_history.zig");

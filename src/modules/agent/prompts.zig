@@ -26,7 +26,7 @@ pub const Classification = prompts.Classification;
 pub const Execution = prompts.Execution;
 pub const Escalation = prompts.Escalation;
 pub const MemoryPrompt = prompts.MemoryPrompt;
-pub const NalarMdAutoUpdate = prompts.NalarMdAutoUpdate;
+pub const PabrikMdAutoUpdate = prompts.PabrikMdAutoUpdate;
 pub const GitPrompt = prompts.GitPrompt;
 pub const GlobalMemorySystem = prompts.GlobalMemorySystem;
 pub const LocalMemorySystem = prompts.LocalMemorySystem;
@@ -104,9 +104,9 @@ test "build_agent_prompt loads memory files into Global Knowledge section" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-main-prompt-test";
-    const memories_dir = "/tmp/nalar-main-prompt-test/.config/nalar/memories";
-    const file_path = "/tmp/nalar-main-prompt-test/.config/nalar/memories/regression-test-rule.md";
+    const tmp_home = "/tmp/pabrik-main-prompt-test";
+    const memories_dir = "/tmp/pabrik-main-prompt-test/.config/pabrik/memories";
+    const file_path = "/tmp/pabrik-main-prompt-test/.config/pabrik/memories/regression-test-rule.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
@@ -165,8 +165,8 @@ test "build_agent_prompt omits Available Skills section when search_skills tool 
 
     // Set up a HOME with a real skill, so the test confirms the GATING,
     // not just the "no skill found" path.
-    const tmp_home = "/tmp/nalar-prompt-test-skills-gated";
-    const global_skill_dir = "/tmp/nalar-prompt-test-skills-gated/.config/nalar/skills/test-gated-skill";
+    const tmp_home = "/tmp/pabrik-prompt-test-skills-gated";
+    const global_skill_dir = "/tmp/pabrik-prompt-test-skills-gated/.config/pabrik/skills/test-gated-skill";
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
 
@@ -174,7 +174,7 @@ test "build_agent_prompt omits Available Skills section when search_skills tool 
     {
         const f = try std.Io.Dir.createFileAbsolute(
             io,
-            "/tmp/nalar-prompt-test-skills-gated/.config/nalar/skills/test-gated-skill/SKILL.MD",
+            "/tmp/pabrik-prompt-test-skills-gated/.config/pabrik/skills/test-gated-skill/SKILL.MD",
             .{},
         );
         defer std.Io.File.close(f, io);
@@ -244,16 +244,16 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
     try std.testing.expect(!contains(prompt, "## Available Skills"));
 }
 
-// build_agent_prompt — Local Knowledge section (<cwd>/.nalar/memories/*.md)
+// build_agent_prompt — Local Knowledge section (<cwd>/.pabrik/memories/*.md)
 // -------------------------------------------------------------------------
 
-test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memories" {
+test "build_agent_prompt injects Local Knowledge section from <cwd>/.pabrik/memories" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-prompt-test-local-knowledge";
-    const local_dir = "/tmp/nalar-prompt-test-local-knowledge/.nalar/memories";
-    const file_path = "/tmp/nalar-prompt-test-local-knowledge/.nalar/memories/project-rule.md";
+    const tmp_cwd = "/tmp/pabrik-prompt-test-local-knowledge";
+    const local_dir = "/tmp/pabrik-prompt-test-local-knowledge/.pabrik/memories";
+    const file_path = "/tmp/pabrik-prompt-test-local-knowledge/.pabrik/memories/project-rule.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
@@ -300,7 +300,7 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
     try std.testing.expect(contains(prompt, "Always run `zig build test:ai_workflow:tui`"));
     try std.testing.expect(contains(prompt, "Fixes without tests regress"));
     // Preamble tells the model where the files came from
-    try std.testing.expect(contains(prompt, "auto-loaded from `<cwd>/.nalar/memories/`"));
+    try std.testing.expect(contains(prompt, "auto-loaded from `<cwd>/.pabrik/memories/`"));
 }
 
 // build_agent_prompt — Memory paths are rendered alongside filenames
@@ -312,15 +312,15 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
 // The agent uses this path verbatim when calling `read_file` /
 // `write_file` / `text_replace` / `remove_file` — reconstructing the path
 // from the basename alone is brittle (would require the agent to know
-// `~/.config/nalar/memories` / `<cwd>/.nalar/memories` exists).
+// `~/.config/pabrik/memories` / `<cwd>/.pabrik/memories` exists).
 
 test "build_agent_prompt Global Knowledge section emits each memory's absolute path" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-prompt-test-global-knowledge-path";
-    const memories_dir = "/tmp/nalar-prompt-test-global-knowledge-path/.config/nalar/memories";
-    const file_path = "/tmp/nalar-prompt-test-global-knowledge-path/.config/nalar/memories/path-test-rule.md";
+    const tmp_home = "/tmp/pabrik-prompt-test-global-knowledge-path";
+    const memories_dir = "/tmp/pabrik-prompt-test-global-knowledge-path/.config/pabrik/memories";
+    const file_path = "/tmp/pabrik-prompt-test-global-knowledge-path/.config/pabrik/memories/path-test-rule.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
@@ -366,9 +366,9 @@ test "build_agent_prompt Local Knowledge section emits each memory's absolute pa
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-prompt-test-local-knowledge-path";
-    const local_dir = "/tmp/nalar-prompt-test-local-knowledge-path/.nalar/memories";
-    const file_path = "/tmp/nalar-prompt-test-local-knowledge-path/.nalar/memories/local-path-rule.md";
+    const tmp_cwd = "/tmp/pabrik-prompt-test-local-knowledge-path";
+    const local_dir = "/tmp/pabrik-prompt-test-local-knowledge-path/.pabrik/memories";
+    const file_path = "/tmp/pabrik-prompt-test-local-knowledge-path/.pabrik/memories/local-path-rule.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
@@ -408,14 +408,14 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
     const io = std.testing.io;
 
     // Set up a HOME with a global memory
-    const tmp_home = "/tmp/nalar-prompt-test-local-and-global-home";
-    const global_dir = "/tmp/nalar-prompt-test-local-and-global-home/.config/nalar/memories";
-    const global_file = "/tmp/nalar-prompt-test-local-and-global-home/.config/nalar/memories/global-rule.md";
+    const tmp_home = "/tmp/pabrik-prompt-test-local-and-global-home";
+    const global_dir = "/tmp/pabrik-prompt-test-local-and-global-home/.config/pabrik/memories";
+    const global_file = "/tmp/pabrik-prompt-test-local-and-global-home/.config/pabrik/memories/global-rule.md";
 
     // And a cwd with a local memory
-    const tmp_cwd = "/tmp/nalar-prompt-test-local-and-global-cwd";
-    const local_dir = "/tmp/nalar-prompt-test-local-and-global-cwd/.nalar/memories";
-    const local_file = "/tmp/nalar-prompt-test-local-and-global-cwd/.nalar/memories/local-rule.md";
+    const tmp_cwd = "/tmp/pabrik-prompt-test-local-and-global-cwd";
+    const local_dir = "/tmp/pabrik-prompt-test-local-and-global-cwd/.pabrik/memories";
+    const local_file = "/tmp/pabrik-prompt-test-local-and-global-cwd/.pabrik/memories/local-rule.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
@@ -431,7 +431,7 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
         try std.Io.File.writeStreamingAll(f, io,
             \\# Global Cross-Project Rule
             \\
-            \\This rule applies to every nalar project.
+            \\This rule applies to every pabrik project.
             \\
         );
     }
@@ -488,12 +488,12 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
     try std.testing.expect(local_pos < global_pos);
 }
 
-test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does not exist" {
+test "build_agent_prompt omits Local Knowledge when <cwd>/.pabrik/memories does not exist" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    // Use a cwd that has no .nalar/ subdir at all
-    const tmp_cwd = "/tmp/nalar-prompt-test-no-local-dir";
+    // Use a cwd that has no .pabrik/ subdir at all
+    const tmp_cwd = "/tmp/pabrik-prompt-test-no-local-dir";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     std.Io.Dir.cwd().createDirPath(io, tmp_cwd) catch {};
@@ -518,7 +518,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does n
         "", "");
     defer alloc.free(prompt);
 
-    // No .nalar/memories → no Local Knowledge section
+    // No .pabrik/memories → no Local Knowledge section
     try std.testing.expect(!contains(prompt, "## Local Knowledge"));
 }
 
@@ -556,13 +556,13 @@ test "build_agent_prompt omits Local Knowledge when cwd is empty" {
 // regardless of tool list, because the local memory content is auto-injected
 // (no `list_memory` invocation needed). Same invariant as GlobalMemorySystem.
 
-test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no .md files" {
+test "build_agent_prompt omits Local Knowledge when <cwd>/.pabrik/memories has no .md files" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-prompt-test-local-dir-empty";
-    const local_dir = "/tmp/nalar-prompt-test-local-dir-empty/.nalar/memories";
-    const txt_path = "/tmp/nalar-prompt-test-local-dir-empty/.nalar/memories/notes.txt";
+    const tmp_cwd = "/tmp/pabrik-prompt-test-local-dir-empty";
+    const local_dir = "/tmp/pabrik-prompt-test-local-dir-empty/.pabrik/memories";
+    const txt_path = "/tmp/pabrik-prompt-test-local-dir-empty/.pabrik/memories/notes.txt";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
@@ -823,7 +823,7 @@ test "build_agent_prompt omits Kanban Status Tracking when section is empty" {
 // The function is `pub` in `prompts.zig` solely for testability from this
 // file. The tests below set up a real `Environ.Map` with `HOME` pointing
 // at a temp directory under `/tmp/`, create real `.md` files in the
-// expected `~/.config/nalar/memories/` subdir, then call
+// expected `~/.config/pabrik/memories/` subdir, then call
 // `loadGlobalKnowledge` directly and assert the returned markdown blob
 // matches the documented format:
 //
@@ -846,11 +846,11 @@ test "loadGlobalKnowledge returns empty string when env is null" {
 
 test "loadGlobalKnowledge returns empty string when HOME has no memories subdir" {
     // First-run case: HOME exists but the user has not created
-    // ~/.config/nalar/memories/ yet. Must not error, must return "".
+    // ~/.config/pabrik/memories/ yet. Must not error, must return "".
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-load-global-knowledge-missing-dir";
+    const tmp_home = "/tmp/pabrik-load-global-knowledge-missing-dir";
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     try std.Io.Dir.cwd().createDirPath(io, tmp_home);
@@ -871,14 +871,14 @@ test "loadGlobalKnowledge returns empty string when memories dir exists but is e
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-load-global-knowledge-empty-dir";
-    const memories_dir = "/tmp/nalar-load-global-knowledge-empty-dir/.config/nalar/memories";
+    const tmp_home = "/tmp/pabrik-load-global-knowledge-empty-dir";
+    const memories_dir = "/tmp/pabrik-load-global-knowledge-empty-dir/.config/pabrik/memories";
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     try std.Io.Dir.cwd().createDirPath(io, memories_dir);
 
     // Drop a non-md file to confirm it's ignored, not picked up as a memory.
-    const txt_path = "/tmp/nalar-load-global-knowledge-empty-dir/.config/nalar/memories/notes.txt";
+    const txt_path = "/tmp/pabrik-load-global-knowledge-empty-dir/.config/pabrik/memories/notes.txt";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, txt_path, .{});
         defer std.Io.File.close(f, io);
@@ -904,9 +904,9 @@ test "loadGlobalKnowledge loads a single memory file with H1 title" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-load-global-knowledge-single-h1";
-    const memories_dir = "/tmp/nalar-load-global-knowledge-single-h1/.config/nalar/memories";
-    const file_path = "/tmp/nalar-load-global-knowledge-single-h1/.config/nalar/memories/regression-test-rule.md";
+    const tmp_home = "/tmp/pabrik-load-global-knowledge-single-h1";
+    const memories_dir = "/tmp/pabrik-load-global-knowledge-single-h1/.config/pabrik/memories";
+    const file_path = "/tmp/pabrik-load-global-knowledge-single-h1/.config/pabrik/memories/regression-test-rule.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
@@ -947,9 +947,9 @@ test "loadGlobalKnowledge uses filename stem as title when no H1 is present" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-load-global-knowledge-no-h1";
-    const memories_dir = "/tmp/nalar-load-global-knowledge-no-h1/.config/nalar/memories";
-    const file_path = "/tmp/nalar-load-global-knowledge-no-h1/.config/nalar/memories/random-name.md";
+    const tmp_home = "/tmp/pabrik-load-global-knowledge-no-h1";
+    const memories_dir = "/tmp/pabrik-load-global-knowledge-no-h1/.config/pabrik/memories";
+    const file_path = "/tmp/pabrik-load-global-knowledge-no-h1/.config/pabrik/memories/random-name.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
@@ -982,10 +982,10 @@ test "loadGlobalKnowledge concatenates multiple memory files" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-load-global-knowledge-multi";
-    const memories_dir = "/tmp/nalar-load-global-knowledge-multi/.config/nalar/memories";
-    const file1 = "/tmp/nalar-load-global-knowledge-multi/.config/nalar/memories/after-fix-test.md";
-    const file2 = "/tmp/nalar-load-global-knowledge-multi/.config/nalar/memories/stderr-debug.md";
+    const tmp_home = "/tmp/pabrik-load-global-knowledge-multi";
+    const memories_dir = "/tmp/pabrik-load-global-knowledge-multi/.config/pabrik/memories";
+    const file1 = "/tmp/pabrik-load-global-knowledge-multi/.config/pabrik/memories/after-fix-test.md";
+    const file2 = "/tmp/pabrik-load-global-knowledge-multi/.config/pabrik/memories/stderr-debug.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
@@ -1035,10 +1035,10 @@ test "loadGlobalKnowledge skips a corrupt file and loads the rest" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_home = "/tmp/nalar-load-global-knowledge-corrupt-skip";
-    const memories_dir = "/tmp/nalar-load-global-knowledge-corrupt-skip/.config/nalar/memories";
-    const bad_path = "/tmp/nalar-load-global-knowledge-corrupt-skip/.config/nalar/memories/broken.md";
-    const good_path = "/tmp/nalar-load-global-knowledge-corrupt-skip/.config/nalar/memories/working.md";
+    const tmp_home = "/tmp/pabrik-load-global-knowledge-corrupt-skip";
+    const memories_dir = "/tmp/pabrik-load-global-knowledge-corrupt-skip/.config/pabrik/memories";
+    const bad_path = "/tmp/pabrik-load-global-knowledge-corrupt-skip/.config/pabrik/memories/broken.md";
+    const good_path = "/tmp/pabrik-load-global-knowledge-corrupt-skip/.config/pabrik/memories/working.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_home) catch {};
@@ -1077,8 +1077,8 @@ test "loadGlobalKnowledge skips a corrupt file and loads the rest" {
 // ---------------------------------------------------------------------------
 // loadLocalKnowledge — direct unit tests for the per-project memory loader.
 //
-// Sibling of `loadGlobalKnowledge`, but scoped to `<cwd>/.nalar/memories/`
-// instead of `<HOME>/.config/nalar/memories/`. The function does NOT take
+// Sibling of `loadGlobalKnowledge`, but scoped to `<cwd>/.pabrik/memories/`
+// instead of `<HOME>/.config/pabrik/memories/`. The function does NOT take
 // an environment — local knowledge is project-scoped, not user-scoped.
 //
 // The tests mirror the `loadGlobalKnowledge` suite (empty cwd, missing
@@ -1099,13 +1099,13 @@ test "loadLocalKnowledge returns empty string when cwd is empty" {
     try std.testing.expectEqualStrings("", result);
 }
 
-test "loadLocalKnowledge returns empty string when cwd has no .nalar/memories subdir" {
+test "loadLocalKnowledge returns empty string when cwd has no .pabrik/memories subdir" {
     // First-run case: cwd is a real path but the user has not created
-    // `<cwd>/.nalar/memories/` yet. Must not error, must return "".
+    // `<cwd>/.pabrik/memories/` yet. Must not error, must return "".
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-load-local-knowledge-missing-dir";
+    const tmp_cwd = "/tmp/pabrik-load-local-knowledge-missing-dir";
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     try std.Io.Dir.cwd().createDirPath(io, tmp_cwd);
@@ -1122,14 +1122,14 @@ test "loadLocalKnowledge returns empty string when memories dir exists but is em
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-load-local-knowledge-empty-dir";
-    const memories_dir = "/tmp/nalar-load-local-knowledge-empty-dir/.nalar/memories";
+    const tmp_cwd = "/tmp/pabrik-load-local-knowledge-empty-dir";
+    const memories_dir = "/tmp/pabrik-load-local-knowledge-empty-dir/.pabrik/memories";
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     try std.Io.Dir.cwd().createDirPath(io, memories_dir);
 
     // Drop a non-md file to confirm it's ignored, not picked up as a memory.
-    const txt_path = "/tmp/nalar-load-local-knowledge-empty-dir/.nalar/memories/notes.txt";
+    const txt_path = "/tmp/pabrik-load-local-knowledge-empty-dir/.pabrik/memories/notes.txt";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, txt_path, .{});
         defer std.Io.File.close(f, io);
@@ -1151,9 +1151,9 @@ test "loadLocalKnowledge loads a single memory file with H1 title" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-load-local-knowledge-single-h1";
-    const memories_dir = "/tmp/nalar-load-local-knowledge-single-h1/.nalar/memories";
-    const file_path = "/tmp/nalar-load-local-knowledge-single-h1/.nalar/memories/project-build-rule.md";
+    const tmp_cwd = "/tmp/pabrik-load-local-knowledge-single-h1";
+    const memories_dir = "/tmp/pabrik-load-local-knowledge-single-h1/.pabrik/memories";
+    const file_path = "/tmp/pabrik-load-local-knowledge-single-h1/.pabrik/memories/project-build-rule.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
@@ -1190,9 +1190,9 @@ test "loadLocalKnowledge uses filename stem as title when no H1 is present" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-load-local-knowledge-no-h1";
-    const memories_dir = "/tmp/nalar-load-local-knowledge-no-h1/.nalar/memories";
-    const file_path = "/tmp/nalar-load-local-knowledge-no-h1/.nalar/memories/random-name.md";
+    const tmp_cwd = "/tmp/pabrik-load-local-knowledge-no-h1";
+    const memories_dir = "/tmp/pabrik-load-local-knowledge-no-h1/.pabrik/memories";
+    const file_path = "/tmp/pabrik-load-local-knowledge-no-h1/.pabrik/memories/random-name.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
@@ -1221,10 +1221,10 @@ test "loadLocalKnowledge concatenates multiple memory files" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-load-local-knowledge-multi";
-    const memories_dir = "/tmp/nalar-load-local-knowledge-multi/.nalar/memories";
-    const file1 = "/tmp/nalar-load-local-knowledge-multi/.nalar/memories/run-tests-first.md";
-    const file2 = "/tmp/nalar-load-local-knowledge-multi/.nalar/memories/commit-style.md";
+    const tmp_cwd = "/tmp/pabrik-load-local-knowledge-multi";
+    const memories_dir = "/tmp/pabrik-load-local-knowledge-multi/.pabrik/memories";
+    const file1 = "/tmp/pabrik-load-local-knowledge-multi/.pabrik/memories/run-tests-first.md";
+    const file2 = "/tmp/pabrik-load-local-knowledge-multi/.pabrik/memories/commit-style.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
@@ -1270,10 +1270,10 @@ test "loadLocalKnowledge skips a corrupt file and loads the rest" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_cwd = "/tmp/nalar-load-local-knowledge-corrupt-skip";
-    const memories_dir = "/tmp/nalar-load-local-knowledge-corrupt-skip/.nalar/memories";
-    const bad_path = "/tmp/nalar-load-local-knowledge-corrupt-skip/.nalar/memories/broken.md";
-    const good_path = "/tmp/nalar-load-local-knowledge-corrupt-skip/.nalar/memories/working.md";
+    const tmp_cwd = "/tmp/pabrik-load-local-knowledge-corrupt-skip";
+    const memories_dir = "/tmp/pabrik-load-local-knowledge-corrupt-skip/.pabrik/memories";
+    const bad_path = "/tmp/pabrik-load-local-knowledge-corrupt-skip/.pabrik/memories/broken.md";
+    const good_path = "/tmp/pabrik-load-local-knowledge-corrupt-skip/.pabrik/memories/working.md";
 
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};

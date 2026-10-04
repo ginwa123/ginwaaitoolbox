@@ -156,7 +156,7 @@ function installChatViewMocks(opts: { messages: Message[]; sessionId: string }) 
     current: '',
     status: '',
   })
-  vi.spyOn(api, 'getNalarConfig').mockResolvedValue({ profiles: {} })
+  vi.spyOn(api, 'getPabrikConfig').mockResolvedValue({ profiles: {} })
 }
 
 /**

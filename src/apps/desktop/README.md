@@ -1,7 +1,7 @@
-# desktop — Nalar web app
+# desktop — Pabrik web app
 
-The Vue 3 + TypeScript + Pinia single-page app for Nalar. It talks to a running
-`nalar` backend over REST + SSE (`/api/*`); the Vite dev server proxies `/api`
+The Vue 3 + TypeScript + Pinia single-page app for Pabrik. It talks to a running
+`pabrik` backend over REST + SSE (`/api/*`); the Vite dev server proxies `/api`
 and the terminal websocket to `http://localhost:8081` (override with
 `VITE_API_PROXY_TARGET`).
 
@@ -31,8 +31,8 @@ pnpm run lint       # oxlint --fix + eslint --fix
 pnpm run format     # prettier --write src/
 ```
 
-`dist/` is what `zig build nalar-desktop` embeds into the native shell, and
-what `nalar --static-dir src/apps/desktop/dist` serves from the backend.
+`dist/` is what `zig build pabrik-desktop` embeds into the native shell, and
+what `pabrik --static-dir src/apps/desktop/dist` serves from the backend.
 
 ## Layout
 

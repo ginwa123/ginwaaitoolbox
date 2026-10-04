@@ -45,7 +45,7 @@ def repo(tmp_path: Path) -> Path:
 
 
 def test_branch_with_slashes_reaches_gh_intact(
-    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+    repo: Path, tmp_path: Path, monkeypatch, default_pabrik_bin: Path
 ) -> None:
     """`pr=worktree/feature-x-123` must arrive at `gh` as one intact arg."""
     bindir = tmp_path / "fakebin"
@@ -79,7 +79,7 @@ def test_branch_with_slashes_reaches_gh_intact(
     monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("GH_ARGS_FILE", str(args_file))
 
-    h2 = FunctionalHarness.boot(default_nalar_bin)
+    h2 = FunctionalHarness.boot(default_pabrik_bin)
     try:
         body = h2.http(
             "GET",

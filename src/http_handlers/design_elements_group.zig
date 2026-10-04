@@ -21,8 +21,8 @@
 //! Plan: docs/superpowers/plans/2026-07-28-grouped-layers.md (Chunk 3)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const design_model = @import("../agentic_loop/design_model.zig");
 
@@ -101,7 +101,7 @@ pub const GroupElementsOutput = struct {
 /// tests over static-contract grep tests when feasible).
 pub fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: GroupElementsInput,
 ) DesignElementsGroupError!GroupElementsOutput {
     if (input.page_id.len == 0) return error.PageIdRequired;
@@ -168,7 +168,7 @@ pub fn designElementsGroupHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Validate path params + body presence + JSON shape.
@@ -334,7 +334,7 @@ pub fn designElementsGroupHandler(
 
 const testing = std.testing;
 const design_elements_group = @This();
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 
 // ─── Test fixtures (mirrors `design_model_group_test.zig`) ─────────────────
 

@@ -36,15 +36,15 @@
 //! Note: this module lives in its own file (not `on_event_sent.zig`)
 //! so the design event types are co-located with the design domain
 //! code, and `on_event_sent.zig` stays untouched. The new module is
-//! re-exported as `nalarcore.ai_mod.on_event_sent_design` from
+//! re-exported as `pabrikcore.ai_mod.on_event_sent_design` from
 //! `src/ai_workflow/tui/mod.zig`.
 //!
 //! Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
 //!   (Chunk 2)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const on_event_sent = nalarcore.ai_mod.on_event_sent;
+const pabrikcore = @import("pabrikcore");
+const on_event_sent = pabrikcore.ai_mod.on_event_sent;
 const on_event_design = @import("on_event_design.zig");
 
 const SseEvent = on_event_sent.SseEvent;
@@ -86,7 +86,7 @@ pub fn onEventSendDesignElementCreated(
     // event_bus.emit returns void and silently no-ops when no
     // subscriber is registered — so tests that don't stand up an SSE
     // server still pass.
-    const di = nalarcore.getSingleton() catch return;
+    const di = pabrikcore.getSingleton() catch return;
     di.event_bus.emit(SseEvent, "design_element", event);
 }
 
@@ -112,7 +112,7 @@ pub fn onEventSendDesignElementUpdated(
         .event_type = "design_element_updated",
     };
 
-    const di = nalarcore.getSingleton() catch return;
+    const di = pabrikcore.getSingleton() catch return;
     di.event_bus.emit(SseEvent, "design_element", event);
 }
 
@@ -142,7 +142,7 @@ pub fn onEventSendDesignElementsGeometryBatchUpdated(
         .event_type = "design_elements_geometry_batch_updated",
     };
 
-    const di = nalarcore.getSingleton() catch return;
+    const di = pabrikcore.getSingleton() catch return;
     di.event_bus.emit(SseEvent, "design_element", event);
 }
 
@@ -168,7 +168,7 @@ pub fn onEventSendDesignElementDeleted(
         .event_type = "design_element_deleted",
     };
 
-    const di = nalarcore.getSingleton() catch return;
+    const di = pabrikcore.getSingleton() catch return;
     di.event_bus.emit(SseEvent, "design_element", event);
 }
 
@@ -195,7 +195,7 @@ pub fn onEventSendDesignPageDeleted(
         .event_type = "design_page_deleted",
     };
 
-    const di = nalarcore.getSingleton() catch return;
+    const di = pabrikcore.getSingleton() catch return;
     di.event_bus.emit(SseEvent, "design_page", event);
 }
 
@@ -272,12 +272,12 @@ test "on_event_sent_design.zig exposes 3 pub emitter functions" {
     }
 }
 
-test "on_event_sent_design.zig uses the nalarcore singleton" {
+test "on_event_sent_design.zig uses the pabrikcore singleton" {
     const source = try readSourceOESD(testing_oesd.allocator, ON_EVENT_SENT_DESIGN_PATH);
     defer testing_oesd.allocator.free(source);
 
-    if (std.mem.indexOf(u8, source, "nalarcore.getSingleton()") == null) {
-        std.debug.print("!! on_event_sent_design.zig does not call nalarcore.getSingleton() !!\n", .{});
+    if (std.mem.indexOf(u8, source, "pabrikcore.getSingleton()") == null) {
+        std.debug.print("!! on_event_sent_design.zig does not call pabrikcore.getSingleton() !!\n", .{});
         return error.GetSingletonMissing;
     }
 }

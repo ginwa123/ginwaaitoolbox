@@ -8,7 +8,7 @@
  * `<span class="tok-*">` and keep the row red/green background as the
  * source of truth for removed/added.
  *
- * Token palette mirrors the `nalar-dark` monaco theme in CodeEditor.vue:
+ * Token palette mirrors the `pabrik-dark` monaco theme in CodeEditor.vue:
  * comment #7a8382 italic, keyword #8992a7, string #87a987,
  * number #c4b28a, type #8ba4b0, function #8ea4a2, plain inherits.
  *

@@ -321,7 +321,7 @@ pub const McpServer = struct {
                 .logging = .{},
             },
             .serverInfo = .{
-                .name = "nalarcore-mcp",
+                .name = "pabrikcore-mcp",
                 .version = "0.0.1",
             },
         };

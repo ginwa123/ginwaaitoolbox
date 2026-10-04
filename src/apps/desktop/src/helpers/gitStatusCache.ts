@@ -21,7 +21,7 @@
 import type { GitStatus } from '../api'
 import { userScopedKey } from './userScope'
 
-const KEY_PREFIX = 'nalar-git-status:v1:'
+const KEY_PREFIX = 'pabrik-git-status:v1:'
 
 function storageKey(cwd: string): string {
   return userScopedKey(`${KEY_PREFIX}${cwd}`)

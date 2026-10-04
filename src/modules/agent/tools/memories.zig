@@ -1,14 +1,20 @@
 const std = @import("std");
+const helpers = @import("helpers");
+const brand = helpers.brand_paths;
 
 /// App name for config directory. Matches skills.zig and agents.zig.
-pub const APP_NAME = "nalar";
+pub const APP_NAME = "pabrik";
+
+/// Pre-rebrand app name. Still resolved so a user's existing global memories
+/// keep loading; see helpers/brand_paths.zig.
+pub const LEGACY_APP_NAME = brand.legacy_app_name;
 
 /// Subdirectory name under the per-app config folder.
 pub const MEMORIES_DIR = "memories";
 
 /// Subdirectory name under the per-project local config folder.
-/// Mirrors `LOCAL_SKILLS_DIR = ".nalar/skills"` in tools/skills.zig.
-pub const LOCAL_MEMORIES_DIR = ".nalar/memories";
+/// Mirrors `LOCAL_SKILLS_DIR = ".pabrik/skills"` in tools/skills.zig.
+pub const LOCAL_MEMORIES_DIR = ".pabrik/memories";
 
 /// Concatenate `dir` and `name` into a forward-slash path and return it.
 ///
@@ -92,9 +98,9 @@ pub const MemoryInfo = struct {
 };
 
 /// Get the global memories directory path using XDG standards.
-/// Linux: $XDG_CONFIG_HOME/nalar/memories/  (or ~/.config/nalar/memories/)
-/// macOS: $HOME/Library/Application Support/nalar/memories/
-/// Windows: %APPDATA%/nalar/memories/
+/// Linux: $XDG_CONFIG_HOME/pabrik/memories/  (or ~/.config/pabrik/memories/)
+/// macOS: $HOME/Library/Application Support/pabrik/memories/
+/// Windows: %APPDATA%/pabrik/memories/
 ///
 /// Returns an allocated string the caller must free, or null if neither
 /// XDG_CONFIG_HOME nor HOME is set in the environment.
@@ -103,14 +109,18 @@ pub fn get_global_memories_path(
     environment: *const std.process.Environ.Map,
 ) ?[]const u8 {
     if (environment.get("XDG_CONFIG_HOME")) |xdg_config| {
-        return joinPath3(allocator, xdg_config, APP_NAME, MEMORIES_DIR) catch null;
+        const current = joinPath3(allocator, xdg_config, APP_NAME, MEMORIES_DIR) catch return null;
+        const legacy = joinPath3(allocator, xdg_config, LEGACY_APP_NAME, MEMORIES_DIR) catch return current;
+        return brand.choose(allocator, current, legacy);
     }
 
     if (environment.get("HOME")) |home| {
         // Linux/macOS: ~/.config/<APP>/<MEMORIES_DIR>.
         // On macOS the convention is $HOME/Library/Application Support; keep
         // the Unix-style fallback for now (separate task to detect macOS).
-        return joinPath4(allocator, home, ".config", APP_NAME, MEMORIES_DIR) catch null;
+        const current = joinPath4(allocator, home, ".config", APP_NAME, MEMORIES_DIR) catch return null;
+        const legacy = joinPath4(allocator, home, ".config", LEGACY_APP_NAME, MEMORIES_DIR) catch return current;
+        return brand.choose(allocator, current, legacy);
     }
 
     return null;
@@ -118,7 +128,7 @@ pub fn get_global_memories_path(
 
 /// Get the local memories directory path for a specific cwd.
 ///
-/// Returns an allocated `<cwd>/.nalar/memories` (no realpath resolution —
+/// Returns an allocated `<cwd>/.pabrik/memories` (no realpath resolution —
 /// caller is responsible for passing an absolute cwd, which
 /// `buildMessages` already guarantees via `realPathFileAlloc`).
 ///
@@ -591,11 +601,11 @@ pub fn memoryExists(
 }
 
 // -------------------------------------------------------------------------
-// LOCAL memories — scoped to a per-cwd `.nalar/memories/` directory.
+// LOCAL memories — scoped to a per-cwd `.pabrik/memories/` directory.
 //
-// The global CRUD helpers above operate on `~/.config/nalar/memories/`
+// The global CRUD helpers above operate on `~/.config/pabrik/memories/`
 // (resolved via env). The local helpers below operate on an explicit
-// `<cwd>/.nalar/memories/` path supplied by the caller. They share the
+// `<cwd>/.pabrik/memories/` path supplied by the caller. They share the
 // `isValidMemoryName` validation (so the same `foo.md` rules apply
 // regardless of where the file lives) and the same atomic-rename write
 // pattern.
@@ -610,7 +620,7 @@ pub fn memoryExists(
 ///
 /// Mirrors `get_local_skills_path_from_io` (tools/skills.zig) — used
 /// by HTTP handlers that don't have an explicit cwd from the caller
-/// and want to fall back to the nalar server's own working directory.
+/// and want to fall back to the pabrik server's own working directory.
 ///
 /// Returns `null` when:
 ///   - `realPath` fails (cwd is unavailable, e.g. deleted)
@@ -628,7 +638,7 @@ pub fn get_local_memories_path_from_io(
 }
 
 /// Resolve the local memories path for a given name. The caller passes
-/// the full directory path (e.g. `<cwd>/.nalar/memories/`) — typically
+/// the full directory path (e.g. `<cwd>/.pabrik/memories/`) — typically
 /// obtained from `get_local_memories_path_from_io` or
 /// `get_local_memories_path_for_dir`.
 ///
@@ -674,7 +684,7 @@ pub fn readLocalMemoryFile(
 }
 
 /// Write content to a local memory file. Creates the parent
-/// `<dir_path>` (typically `<cwd>/.nalar/memories/`) if missing.
+/// `<dir_path>` (typically `<cwd>/.pabrik/memories/`) if missing.
 /// Overwrites an existing file with the same name. Uses the same
 /// atomic-rename pattern as `writeMemoryFile` (write to `.tmp` then
 /// rename).
@@ -764,13 +774,13 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
 // get_local_memories_path_for_dir — pure function tests
 // -------------------------------------------------------------------------
 
-test "get_local_memories_path_for_dir returns <cwd>/.nalar/memories" {
+test "get_local_memories_path_for_dir returns <cwd>/.pabrik/memories" {
     const alloc = std.testing.allocator;
     const path = memories.get_local_memories_path_for_dir(alloc, "/tmp/proj");
     defer if (path) |p| alloc.free(p);
 
     try std.testing.expect(path != null);
-    try std.testing.expectEqualStrings("/tmp/proj/.nalar/memories", path.?);
+    try std.testing.expectEqualStrings("/tmp/proj/.pabrik/memories", path.?);
 }
 
 test "get_local_memories_path_for_dir returns null on empty cwd" {
@@ -789,7 +799,7 @@ test "get_local_memories_path_for_dir does not resolve relative paths" {
     defer if (path) |p| alloc.free(p);
 
     try std.testing.expect(path != null);
-    try std.testing.expectEqualStrings("relative/proj/.nalar/memories", path.?);
+    try std.testing.expectEqualStrings("relative/proj/.pabrik/memories", path.?);
 }
 
 test "get_local_memories_path_for_dir freed slice does not double-free" {
@@ -809,7 +819,7 @@ test "listMemoriesInDir returns empty slice when dir does not exist" {
     const io = std.testing.io;
 
     // Point at a dir we know is absent.
-    const missing_dir = "/tmp/nalar-list-memories-missing-dir";
+    const missing_dir = "/tmp/pabrik-list-memories-missing-dir";
     std.Io.Dir.cwd().deleteTree(io, missing_dir) catch {};
 
     const list = memories.listMemoriesInDir(alloc, io, missing_dir);
@@ -822,14 +832,14 @@ test "listMemoriesInDir returns empty slice when dir has no .md files" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_dir = "/tmp/nalar-list-memories-empty";
+    const tmp_dir = "/tmp/pabrik-list-memories-empty";
     std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
 
     try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
 
     // Drop a non-md file
-    const txt_path = "/tmp/nalar-list-memories-empty/notes.txt";
+    const txt_path = "/tmp/pabrik-list-memories-empty/notes.txt";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, txt_path, .{});
         defer std.Io.File.close(f, io);
@@ -846,14 +856,14 @@ test "listMemoriesInDir skips .txt, .json, and subdirectories" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_dir = "/tmp/nalar-list-memories-filter";
+    const tmp_dir = "/tmp/pabrik-list-memories-filter";
     std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
 
     try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
 
     // Create a real .md file
-    const md_path = "/tmp/nalar-list-memories-filter/keep.md";
+    const md_path = "/tmp/pabrik-list-memories-filter/keep.md";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, md_path, .{});
         defer std.Io.File.close(f, io);
@@ -861,7 +871,7 @@ test "listMemoriesInDir skips .txt, .json, and subdirectories" {
     }
 
     // A .txt file (must be filtered)
-    const txt_path = "/tmp/nalar-list-memories-filter/skip.txt";
+    const txt_path = "/tmp/pabrik-list-memories-filter/skip.txt";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, txt_path, .{});
         defer std.Io.File.close(f, io);
@@ -869,7 +879,7 @@ test "listMemoriesInDir skips .txt, .json, and subdirectories" {
     }
 
     // A .json file (must be filtered)
-    const json_path = "/tmp/nalar-list-memories-filter/skip.json";
+    const json_path = "/tmp/pabrik-list-memories-filter/skip.json";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, json_path, .{});
         defer std.Io.File.close(f, io);
@@ -877,7 +887,7 @@ test "listMemoriesInDir skips .txt, .json, and subdirectories" {
     }
 
     // A subdirectory that should be skipped (no SKILL.MD analogue for memories)
-    try std.Io.Dir.cwd().createDirPath(io, "/tmp/nalar-list-memories-filter/subdir");
+    try std.Io.Dir.cwd().createDirPath(io, "/tmp/pabrik-list-memories-filter/subdir");
 
     const list = memories.listMemoriesInDir(alloc, io, tmp_dir);
     defer memories.freeMemoriesList(alloc, list);
@@ -891,13 +901,13 @@ test "listMemoriesInDir lists multiple .md files with correct titles" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_dir = "/tmp/nalar-list-memories-multi";
+    const tmp_dir = "/tmp/pabrik-list-memories-multi";
     std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
 
     try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
 
-    const file1 = "/tmp/nalar-list-memories-multi/after-fix-test.md";
+    const file1 = "/tmp/pabrik-list-memories-multi/after-fix-test.md";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, file1, .{});
         defer std.Io.File.close(f, io);
@@ -909,7 +919,7 @@ test "listMemoriesInDir lists multiple .md files with correct titles" {
         );
     }
 
-    const file2 = "/tmp/nalar-list-memories-multi/stderr-debug.md";
+    const file2 = "/tmp/pabrik-list-memories-multi/stderr-debug.md";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, file2, .{});
         defer std.Io.File.close(f, io);
@@ -949,13 +959,13 @@ test "listMemoriesInDir falls back to filename stem when no H1" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_dir = "/tmp/nalar-list-memories-no-h1";
+    const tmp_dir = "/tmp/pabrik-list-memories-no-h1";
     std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
 
     try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
 
-    const file_path = "/tmp/nalar-list-memories-no-h1/random-name.md";
+    const file_path = "/tmp/pabrik-list-memories-no-h1/random-name.md";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
         defer std.Io.File.close(f, io);
@@ -974,13 +984,13 @@ test "listMemoriesInDir finds H1 in second line (after blank line)" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_dir = "/tmp/nalar-list-memories-h1-second-line";
+    const tmp_dir = "/tmp/pabrik-list-memories-h1-second-line";
     std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
 
     try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
 
-    const file_path = "/tmp/nalar-list-memories-h1-second-line/delayed-h1.md";
+    const file_path = "/tmp/pabrik-list-memories-h1-second-line/delayed-h1.md";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
         defer std.Io.File.close(f, io);
@@ -1006,13 +1016,13 @@ test "listMemoriesInDir record path is absolute" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_dir = "/tmp/nalar-list-memories-path-check";
+    const tmp_dir = "/tmp/pabrik-list-memories-path-check";
     std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
 
     try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
 
-    const file_path = "/tmp/nalar-list-memories-path-check/test.md";
+    const file_path = "/tmp/pabrik-list-memories-path-check/test.md";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, file_path, .{});
         defer std.Io.File.close(f, io);
@@ -1113,7 +1123,7 @@ test "isValidMemoryName accepts simple, hyphenated, and dotted .md names" {
 test "readMemoryFile returns null on invalid name" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-invalid-name");
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "pabrik-crud-invalid-name");
     var env = env_or_err.env;
     defer env.deinit();
     defer alloc.free(env_or_err.home_path);
@@ -1130,7 +1140,7 @@ test "readMemoryFile returns null on invalid name" {
 test "readMemoryFile returns null on missing file" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-missing-read");
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "pabrik-crud-missing-read");
     var env = env_or_err.env;
     defer env.deinit();
     defer alloc.free(env_or_err.home_path);
@@ -1148,7 +1158,7 @@ test "readMemoryFile returns null on missing file" {
 test "writeMemoryFile creates parent dir if missing" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-create-parent");
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "pabrik-crud-create-parent");
     var env = env_or_err.env;
     defer env.deinit();
     defer alloc.free(env_or_err.home_path);
@@ -1168,7 +1178,7 @@ test "writeMemoryFile creates parent dir if missing" {
 test "writeMemoryFile overwrites existing file" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-overwrite");
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "pabrik-crud-overwrite");
     var env = env_or_err.env;
     defer env.deinit();
     defer alloc.free(env_or_err.home_path);
@@ -1199,7 +1209,7 @@ test "writeMemoryFile overwrites existing file" {
 test "memoryExists: false on missing, true after write, false after delete" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-exists");
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "pabrik-crud-exists");
     var env = env_or_err.env;
     defer env.deinit();
     defer alloc.free(env_or_err.home_path);
@@ -1224,7 +1234,7 @@ test "memoryExists: false on missing, true after write, false after delete" {
 test "deleteMemoryFile is idempotent (returns true on missing)" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-idem-delete");
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "pabrik-crud-idem-delete");
     var env = env_or_err.env;
     defer env.deinit();
     defer alloc.free(env_or_err.home_path);
@@ -1247,7 +1257,7 @@ test "deleteMemoryFile is idempotent (returns true on missing)" {
 test "editMemoryFile returns false when target does not exist" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const env_or_err = try setupMemoryHomeEnv(alloc, io, "nalar-crud-edit-missing");
+    const env_or_err = try setupMemoryHomeEnv(alloc, io, "pabrik-crud-edit-missing");
     var env = env_or_err.env;
     defer env.deinit();
     defer alloc.free(env_or_err.home_path);
@@ -1268,7 +1278,7 @@ test "editMemoryFile returns false when target does not exist" {
 // deleteLocalMemoryFile, localMemoryExists.
 //
 // These mirror the global CRUD helpers above but operate on an
-// explicit `<dir>/.nalar/memories/` path. Tests use a fresh temp
+// explicit `<dir>/.pabrik/memories/` path. Tests use a fresh temp
 // directory for `dir_path` (no env / HOME involved) so the test is
 // hermetic — the helpers do NOT touch the user's actual local
 // memories. The structure mirrors the global tests above for
@@ -1281,7 +1291,7 @@ fn setupLocalDir(alloc: std.mem.Allocator, io: std.Io, label: []const u8) ![]u8 
     const stamp = std.Io.Clock.now(.real, io).toNanoseconds();
     const path = try std.fmt.allocPrint(
         alloc,
-        "/tmp/nalar-local-mem-{s}-{d}",
+        "/tmp/pabrik-local-mem-{s}-{d}",
         .{ label, stamp },
     );
     try std.Io.Dir.cwd().createDirPath(io, path);
@@ -1290,21 +1300,21 @@ fn setupLocalDir(alloc: std.mem.Allocator, io: std.Io, label: []const u8) ![]u8 
 
 test "get_local_memory_file_path joins dir and name" {
     const alloc = std.testing.allocator;
-    const path = memories.get_local_memory_file_path(alloc, "/tmp/proj/.nalar/memories", "foo.md");
+    const path = memories.get_local_memory_file_path(alloc, "/tmp/proj/.pabrik/memories", "foo.md");
     defer if (path) |p| alloc.free(p);
 
     try std.testing.expect(path != null);
-    try std.testing.expectEqualStrings("/tmp/proj/.nalar/memories/foo.md", path.?);
+    try std.testing.expectEqualStrings("/tmp/proj/.pabrik/memories/foo.md", path.?);
 }
 
 test "get_local_memory_file_path returns null on invalid name" {
     const alloc = std.testing.allocator;
     // `..` segment is rejected by isValidMemoryName (path-traversal guard).
-    try std.testing.expect(memories.get_local_memory_file_path(alloc, "/tmp/proj/.nalar/memories", "../escape.md") == null);
+    try std.testing.expect(memories.get_local_memory_file_path(alloc, "/tmp/proj/.pabrik/memories", "../escape.md") == null);
     // Missing `.md` extension is rejected.
-    try std.testing.expect(memories.get_local_memory_file_path(alloc, "/tmp/proj/.nalar/memories", "no-ext") == null);
+    try std.testing.expect(memories.get_local_memory_file_path(alloc, "/tmp/proj/.pabrik/memories", "no-ext") == null);
     // Empty name is rejected.
-    try std.testing.expect(memories.get_local_memory_file_path(alloc, "/tmp/proj/.nalar/memories", "") == null);
+    try std.testing.expect(memories.get_local_memory_file_path(alloc, "/tmp/proj/.pabrik/memories", "") == null);
 }
 
 test "get_local_memory_file_path returns null on empty dir_path" {
@@ -1322,7 +1332,7 @@ test "writeLocalMemoryFile creates the parent dir if missing" {
     const stamp = std.Io.Clock.now(.real, io).toNanoseconds();
     const dir = try std.fmt.allocPrint(
         alloc,
-        "/tmp/nalar-local-mem-create-dir-{d}/.nalar/memories",
+        "/tmp/pabrik-local-mem-create-dir-{d}/.pabrik/memories",
         .{stamp},
     );
     defer alloc.free(dir);

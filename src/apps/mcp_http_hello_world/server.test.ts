@@ -24,8 +24,8 @@
 //! overhead without giving us any extra coverage at the transport
 //! layer.
 //!
-//! The end-to-end test through a real nalar HTTP client lives at
-//! `tests/functional/mcp_http_test.py` — that one boots a real nalar
+//! The end-to-end test through a real pabrik HTTP client lives at
+//! `tests/functional/mcp_http_test.py` — that one boots a real pabrik
 //! binary, configures an `mcp_servers.url` pointing at this server,
 //! and asserts the agent's spec-compliant client can talk to it. This
 //! vitest test is the server-side smoke test; the python test is the
@@ -65,7 +65,7 @@ async function getFreePort(): Promise<number> {
  * Throws on timeout or spawn failure.
  *
  * Default readiness is generous (15s): under `zig build` this test runs
- * while the box is saturated (zig compiling nalar.exe + parallel pnpm
+ * while the box is saturated (zig compiling pabrik.exe + parallel pnpm
  * installs), and cold node + MCP-SDK import can take several seconds
  * when CPU-starved — 5s flaked in CI with an alive-but-silent process
  * and empty stderr (i.e. still starting, not crashed). */
@@ -130,7 +130,7 @@ async function spawnAndWaitForReady(port: number, timeoutMs = 15000): Promise<Ch
  * The SSE parsing is a small subset of the spec — we read events
  * separated by `\n\n`, take the `data:` field, concatenate multi-`data:`
  * lines with `\n`, and use the LAST event's data as the final response.
- * This is the same logic the nalar Zig client will implement in
+ * This is the same logic the pabrik Zig client will implement in
  * mcp_http.zig's SseEvent parser (Task 2 of the plan). */
 async function jsonRpcRequest(
   baseUrl: string,

@@ -30,8 +30,8 @@ from scenarios import ROWS, SCENARIOS, expected_message_ids, message_id
 #: Where the Kotlin counterpart lives. Both paths are tried so the test works
 #: whether pytest is invoked from the repository root or the worktree root.
 _KOTLIN_CANDIDATES = (
-    "src/apps/android_mobile/app/src/androidTest/java/com/nalar/mobile/functional/FunctionalScenario.kt",
-    "../src/apps/android_mobile/app/src/androidTest/java/com/nalar/mobile/functional/FunctionalScenario.kt",
+    "src/apps/android_mobile/app/src/androidTest/java/com/pabrik/mobile/functional/FunctionalScenario.kt",
+    "../src/apps/android_mobile/app/src/androidTest/java/com/pabrik/mobile/functional/FunctionalScenario.kt",
 )
 
 _SESSION_LITERAL = re.compile(r'"(sess_fn_[a-z]+)"')

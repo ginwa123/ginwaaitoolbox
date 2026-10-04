@@ -607,7 +607,7 @@ test "run: empty output on both streams" {
 
 test "run: a missing program surfaces the spawn error, not a panic" {
     const gpa = testing.allocator;
-    const result = run(gpa, testing.io, &.{"nalar-definitely-not-a-real-binary-xyzzy"}, .{});
+    const result = run(gpa, testing.io, &.{"pabrik-definitely-not-a-real-binary-xyzzy"}, .{});
     try testing.expectError(error.FileNotFound, result);
 }
 
@@ -615,7 +615,7 @@ test "run: a non-existent cwd surfaces the spawn error" {
     if (skipOnWindows()) return error.SkipZigTest;
     const gpa = testing.allocator;
     const result = run(gpa, testing.io, &.{ SH, "-c", "true" }, .{
-        .cwd = "/nalar/no/such/directory/xyzzy",
+        .cwd = "/pabrik/no/such/directory/xyzzy",
     });
     try testing.expectError(error.FileNotFound, result);
 }

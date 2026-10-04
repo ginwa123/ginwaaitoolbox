@@ -16,5 +16,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NalarAndroid"
+rootProject.name = "PabrikAndroid"
 include(":app")

@@ -10,7 +10,7 @@
  * pageId, elementId, html)` directly.
  *
  * 1 behavioural test (project convention: behavioural only — see
- * ~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md).
+ * ~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'

@@ -123,7 +123,7 @@ function installBaseMocks() {
     is_git_repo: false,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
-  vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
+  vi.spyOn(api, 'getPabrikConfig').mockResolvedValue({
     profiles: {},
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)

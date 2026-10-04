@@ -9,7 +9,7 @@ artifact — a reviewer should be able to open it from a PR without running
 anything — and a committed artifact that nobody regenerates is worse than none,
 because it is confidently wrong. The check compares the freshly-rendered page
 against what is on disk with the git sha masked out, so an unrelated commit does
-not fail it while a changed `NalarNavGraph.kt` does.
+not fail it while a changed `PabrikNavGraph.kt` does.
 
 ### Why the sha is masked rather than excluded
 
@@ -115,7 +115,7 @@ def build(
 
     graph = navgraph.extract_graph(root, generated_by="tools/navgraph/build.py")
     payload = navgraph.render_payload(graph)
-    page = render_html(payload, "Nalar Android — navigation graph", template)
+    page = render_html(payload, "Pabrik Android — navigation graph", template)
 
     json_path.parent.mkdir(parents=True, exist_ok=True)
     html_path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,7 +134,7 @@ def check(root: Path) -> int:
     """
     graph = navgraph.extract_graph(root, generated_by="tools/navgraph/build.py")
     payload = navgraph.render_payload(graph)
-    fresh = render_html(payload, "Nalar Android — navigation graph", None)
+    fresh = render_html(payload, "Pabrik Android — navigation graph", None)
 
     html_path = root / DEFAULT_HTML
     json_path = root / DEFAULT_JSON
@@ -145,7 +145,7 @@ def check(root: Path) -> int:
     elif strip_sha(html_path.read_text(encoding="utf-8")) != strip_sha(fresh):
         problems.append(
             "%s is stale: re-running `python3 tools/navgraph/build.py` changes it. Either "
-            "NalarNavGraph.kt moved and nobody regenerated the page, or the template changed."
+            "PabrikNavGraph.kt moved and nobody regenerated the page, or the template changed."
             % DEFAULT_HTML
         )
     if not json_path.is_file():

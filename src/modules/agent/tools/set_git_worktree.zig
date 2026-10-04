@@ -5,15 +5,15 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
-const nalar = @import("nalarcore");
-const sqlite = nalar.sqlite;
+const pabrik = @import("pabrikcore");
+const sqlite = pabrik.sqlite;
 
 /// Input structure for set_git_worktree tool
 pub const SetGitWorktreeInput = struct {
     /// Absolute path to the worktree directory. The directory must NOT
     /// already exist (git worktree add will create it). The parent
     /// directory MUST exist. Canonical root (Option A):
-    ///   "/home/you/.config/nalar/.worktrees/fix-login"
+    ///   "/home/you/.config/pabrik/.worktrees/fix-login"
     /// Ad-hoc paths elsewhere are accepted.
     /// Required unless `clear=true`. Must be absolute, ≤ 4096 chars,
     /// contain no `..` segments, no null bytes. The basename must
@@ -44,8 +44,8 @@ pub const set_git_worktree_tool_system_prompt =
     \\you MUST call `set_git_worktree` before any `bash`/`read_file`/`write_file`
     \\operation touches repo files. Never operate on the original repo path.
     \\
-    \\- Canonical root (Option A): `$HOME/.config/nalar/.worktrees/<task-slug>`.
-    \\  Example: `/home/you/.config/nalar/.worktrees/fix-login`.
+    \\- Canonical root (Option A): `$HOME/.config/pabrik/.worktrees/<task-slug>`.
+    \\  Example: `/home/you/.config/pabrik/.worktrees/fix-login`.
     \\  The kanban dialog prefills this absolute path as the `Path:` line after
     \\  `#Notes UseGitWorktree`. Prefer it when given; when the note has no
     \\  `Path:` line, create the worktree under the same root derived from the
@@ -68,7 +68,7 @@ pub const set_git_worktree_tool = AgentTool{
     .function = .{
         .name = "set_git_worktree",
         .description =
-        \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. Canonical root is `$HOME/.config/nalar/.worktrees/<task-slug>` (e.g. '/home/you/.config/nalar/.worktrees/fix-login') — the kanban dialog prefills this as the `Path:` line after `#Notes UseGitWorktree`. A custom absolute path elsewhere is accepted for ad-hoc use. While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. Pass `base` (e.g. 'origin/main') to create the branch FROM that ref instead of the repo's current HEAD — the kanban note carries it as the `Base:` line. If a path starts with `~/`, expand `~` to `$HOME` before calling (non-absolute paths are rejected). Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
+        \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. Canonical root is `$HOME/.config/pabrik/.worktrees/<task-slug>` (e.g. '/home/you/.config/pabrik/.worktrees/fix-login') — the kanban dialog prefills this as the `Path:` line after `#Notes UseGitWorktree`. A custom absolute path elsewhere is accepted for ad-hoc use. While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. Pass `base` (e.g. 'origin/main') to create the branch FROM that ref instead of the repo's current HEAD — the kanban note carries it as the `Base:` line. If a path starts with `~/`, expand `~` to `$HOME` before calling (non-absolute paths are rejected). Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
         \\
         \\On error, recover by: (1) the tool pre-checks for path collisions before invoking git, so a "path already exists" error means the path is occupied by an existing worktree — pass `branch=<existing-branch>` to auto-bind to it, or pick a different path; (2) for branch conflicts (a different worktree already has the same branch checked out), pass `branch=''` to use the auto-derived name `worktree/<basename(path)>`; (3) NEVER `rm -rf` the conflicting path — there may be uncommitted work in it. Use `bash` + `git -C <repo> worktree list --porcelain` to inspect the current state if the error is unclear.
         ,
@@ -78,7 +78,7 @@ pub const set_git_worktree_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description = "Absolute path to the worktree directory. Canonical root is `$HOME/.config/nalar/.worktrees/<task-slug>` (e.g. '/home/you/.config/nalar/.worktrees/fix-login'). Must be absolute, contain no '..' segments, no null bytes, be ≤ 4096 chars, and the parent directory must already exist. The basename must match [A-Za-z0-9._-]{1,100} (so the auto-derived branch name is legal). Expand a leading `~/` to `$HOME` before calling.",
+                    .description = "Absolute path to the worktree directory. Canonical root is `$HOME/.config/pabrik/.worktrees/<task-slug>` (e.g. '/home/you/.config/pabrik/.worktrees/fix-login'). Must be absolute, contain no '..' segments, no null bytes, be ≤ 4096 chars, and the parent directory must already exist. The basename must match [A-Za-z0-9._-]{1,100} (so the auto-derived branch name is legal). Expand a leading `~/` to `$HOME` before calling.",
                 },
                 .{
                     .name = "branch",
@@ -1059,7 +1059,7 @@ fn runGitWorktreeRemove(
         .argv = &.{
             "git", "worktree", "remove", "--force", worktree_path,
         },
-        .cwd = .inherit, // use the nalar process's cwd (the session cwd is inside the original repo)
+        .cwd = .inherit, // use the pabrik process's cwd (the session cwd is inside the original repo)
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
@@ -1311,7 +1311,7 @@ pub fn unverifiedWorktreeMessage(
 ) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "path '{s}' has a .git file pointing at {s}, but nalar could not determine whether git " ++
+        "path '{s}' has a .git file pointing at {s}, but pabrik could not determine whether git " ++
             "still tracks it: {s}. Treat it as a LIVE worktree — it may be holding another " ++
             "session's uncommitted work, so do not delete or move it. Verify with " ++
             "`git -C <repo> worktree list --porcelain`; if the path is listed, re-call " ++
@@ -1393,7 +1393,7 @@ fn successClearToXml(allocator: std.mem.Allocator, session_id: []const u8) []con
 
 // ===== Tests merged from set_git_worktree_test.zig (2026-09-29 flatten) =====
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const text_normalize = @import("helpers").text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/set_git_worktree.zig";
@@ -1620,8 +1620,8 @@ test "tools_equipped.zig imports set_git_worktree module" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOLS_EQUIPPED_PATH);
     defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "const set_git_worktree_mod = nalarcore.set_git_worktree;") == null) {
-        std.debug.print("!! tools_equipped.zig does not bind set_git_worktree_mod = nalarcore.set_git_worktree !!\n", .{});
+    if (std.mem.indexOf(u8, source, "const set_git_worktree_mod = pabrikcore.set_git_worktree;") == null) {
+        std.debug.print("!! tools_equipped.zig does not bind set_git_worktree_mod = pabrikcore.set_git_worktree !!\n", .{});
         return error.SetGitWorktreeModBindingMissing;
     }
 }
@@ -2233,8 +2233,8 @@ test "jsonClear sets cleared flag" {
 // input can be exercised from Linux.
 test "pathsDenoteSameDir: git forward slashes match the model's backslashes" {
     try testing.expect(pathsDenoteSameDir(
-        "C:/Users/ginwa/.config/nalar/.worktrees/fix-login",
-        "C:\\Users\\ginwa\\.config\\nalar\\.worktrees\\fix-login",
+        "C:/Users/ginwa/.config/pabrik/.worktrees/fix-login",
+        "C:\\Users\\ginwa\\.config\\pabrik\\.worktrees\\fix-login",
     ));
 }
 
@@ -2269,7 +2269,7 @@ test "pathsDenoteSameDir: case is ignored only on Windows" {
 // as Windows git prints it, matched against the path the model would send.
 test "parseAndMatchBlock: a Windows worktree listing matches the model's backslash path" {
     const block =
-        \\worktree C:/Users/ginwa/.config/nalar/.worktrees/fix-login
+        \\worktree C:/Users/ginwa/.config/pabrik/.worktrees/fix-login
         \\HEAD 0123456789abcdef0123456789abcdef01234567
         \\branch refs/heads/worktree/fix-login
         \\
@@ -2278,7 +2278,7 @@ test "parseAndMatchBlock: a Windows worktree listing matches the model's backsla
     const matched = try parseAndMatchBlock(
         testing.allocator,
         block,
-        "C:\\Users\\ginwa\\.config\\nalar\\.worktrees\\fix-login",
+        "C:\\Users\\ginwa\\.config\\pabrik\\.worktrees\\fix-login",
     );
     try testing.expect(matched != null);
     defer if (matched) |m| {
@@ -2293,7 +2293,7 @@ test "parseAndMatchBlock: a Windows worktree listing matches the model's backsla
 
 test "parseAndMatchBlock: a genuinely different worktree is not matched" {
     const block =
-        \\worktree C:/Users/ginwa/.config/nalar/.worktrees/other
+        \\worktree C:/Users/ginwa/.config/pabrik/.worktrees/other
         \\HEAD 0123456789abcdef0123456789abcdef01234567
         \\branch refs/heads/worktree/other
         \\
@@ -2301,7 +2301,7 @@ test "parseAndMatchBlock: a genuinely different worktree is not matched" {
     const matched = try parseAndMatchBlock(
         testing.allocator,
         block,
-        "C:\\Users\\ginwa\\.config\\nalar\\.worktrees\\fix-login",
+        "C:\\Users\\ginwa\\.config\\pabrik\\.worktrees\\fix-login",
     );
     try testing.expect(matched == null);
 }
@@ -2344,7 +2344,7 @@ test "static contract: parseAndMatchBlock does not compare worktree paths with s
 //   2. It is DESTRUCTIVE. The recovery advice is `rm -rf` on a live
 //      worktree — the same advice that would delete a sibling
 //      session's uncommitted work. The `rm -rf` in the message is not
-//      git's; nalar wrote it.
+//      git's; pabrik wrote it.
 //
 // The tests below pin the fix: a worktree's own admin directory
 // (`<repo>/.git/worktrees/<name>`) is the registration record git
@@ -2419,7 +2419,7 @@ const GitFixture = struct {
         // `git worktree add` needs a resolvable start-point, so the repo
         // needs one commit before it can hand out a branch.
         try fx.git(&.{
-            "-C", repo, "-c", "user.email=nalar@example.com", "-c", "user.name=nalar",
+            "-C", repo, "-c", "user.email=pabrik@example.com", "-c", "user.name=pabrik",
             "commit", "-q", "--allow-empty", "-m", "init",
         });
         return fx;
@@ -2736,7 +2736,7 @@ test "classifyPath: a path that does not exist is not_found regardless of repo_r
 // ─── The advice itself ────────────────────────────────────────────────
 //
 // `rm -rf` on a directory that may hold a sibling session's uncommitted
-// work is not a recovery step, it is a data-loss footgun, and nalar — not
+// work is not a recovery step, it is a data-loss footgun, and pabrik — not
 // git — is the one writing it. Pin the wording.
 
 test "the false 'is not registered with git' claim is gone from the impl" {

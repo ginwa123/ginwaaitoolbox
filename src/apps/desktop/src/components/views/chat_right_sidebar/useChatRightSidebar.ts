@@ -1,12 +1,12 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 
-const STORAGE_KEY_WIDTH = 'nalar-right-sidebar-width'
+const STORAGE_KEY_WIDTH = 'pabrik-right-sidebar-width'
 const DEFAULT_WIDTH = 280
 const MIN_WIDTH = 200
 const MAX_WIDTH = 600
 
 function openKey(chatType: string): string {
-  return `nalar-chat-right-sidebar-open:${chatType}`
+  return `pabrik-chat-right-sidebar-open:${chatType}`
 }
 
 function loadWidth(): number {

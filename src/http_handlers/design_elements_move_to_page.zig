@@ -28,9 +28,9 @@
 //!   (Chunk 2, Tasks 2.1-2.3)
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const gserverz = pabrikcore.gserverz;
 const design_model = @import("../agentic_loop/design_model.zig");
 const http_response = @import("http_response.zig");
 
@@ -120,7 +120,7 @@ pub fn designElementsMoveToPageHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // 1. Path-param validation.
@@ -236,7 +236,7 @@ fn makeErrorJson(allocator: std.mem.Allocator, message: []const u8) ![]u8 {
 // ─── Behavioural tests for the move-to-page use-case (Chunk 2) ───
 //
 // Inline tests per the project rule (see AGENTS.md /
-// `nalar-agentic-loop-inline-tests-required.md`). Mirrors the
+// `pabrik-agentic-loop-inline-tests-required.md`). Mirrors the
 // `design_elements_move_batch.zig::useCase` test pattern above (the
 // use-case is the testable layer; the HTTP handler is exercised by
 // the live-smoke flow).

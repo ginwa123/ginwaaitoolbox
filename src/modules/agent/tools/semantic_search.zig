@@ -207,7 +207,7 @@ pub fn handleIndexCodebase(
     // // Write chunks
     // indexing.writeChunks(ctx.allocator, ctx.io, index_dir, all_chunks.items) catch |err| {
     //     ctx.logger.errFmt("[index_codebase] Failed to write chunks: {s}", .{@errorName(err)});
-    //     const output = try nalar.semantic_search.jsonError(ctx.allocator, "Failed to write chunks");
+    //     const output = try pabrik.semantic_search.jsonError(ctx.allocator, "Failed to write chunks");
     //     return tool_registry.ToolExecResult{ .output = output, .output_allocated = true };
     // };
     //
@@ -226,6 +226,6 @@ pub fn handleIndexCodebase(
     // const summary = try std.fmt.allocPrint(ctx.allocator, "Indexed {d} files, {d} chunks.", .{ files.len, all_chunks.items.len });
     // defer ctx.allocator.free(summary);
     //
-    // const output = try nalar.semantic_search.toJSONSuccess(ctx.allocator, &.{});
+    // const output = try pabrik.semantic_search.toJSONSuccess(ctx.allocator, &.{});
     // return tool_registry.ToolExecResult{ .output = output, .output_allocated = true };
 }

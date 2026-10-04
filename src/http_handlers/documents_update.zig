@@ -6,8 +6,8 @@
 //! so the `edit_document` agent tool inherits the same rule.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const documents_store = @import("../agentic_loop/documents_store.zig");
 
@@ -44,7 +44,7 @@ pub const DocumentsUpdateOutput = struct {
 
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: DocumentsUpdateInput,
 ) DocumentsUpdateError!DocumentsUpdateOutput {
     if (input.workspace_id.len == 0 or input.document_id.len == 0) {
@@ -70,7 +70,7 @@ pub fn documentsUpdateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     if (req.body.len == 0) {
@@ -124,7 +124,7 @@ pub fn documentsUpdateHandler(
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const testing = std.testing;
 const migration = @import("../migrations/migration.zig");
 

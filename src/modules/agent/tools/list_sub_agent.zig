@@ -42,8 +42,8 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const config_mod = nalarcore.config;
+const pabrikcore = @import("pabrikcore");
+const config_mod = pabrikcore.config;
 
 /// Input for `list_sub_agent`. Empty struct — no params, profile_name is implicit.
 pub const ListSubAgentInput = struct {};

@@ -7,7 +7,7 @@ markdown. Any text outside the tags still renders as markdown.
 
 Each test:
 
-1. Boots a fresh nalar + Vite via the ``ui_harness`` fixture.
+1. Boots a fresh pabrik + Vite via the ``ui_harness`` fixture.
 2. Seeds ``sessions`` + ``llm_history`` rows whose ``response_content``
    carries the raw tagged string — the exact wire shape production
    stores (tags included).
@@ -40,7 +40,7 @@ from ui_harness import UIHarness
 
 def _seed_db_path(h: UIHarness) -> Path:
     """Path to the harness's isolated agent.db (DbSeed re-validates)."""
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _wait_for_text(page, text: str, timeout_ms: int = 10000) -> None:

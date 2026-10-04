@@ -13,7 +13,7 @@
  *   [Retry {attempt}/{max}] {error_name} ({source}). Retrying in {delay_ms}ms.
  *   Server said: {server_detail}
  * or the bail variant:
- *   [Agent Nalar System error] workflow halted after {n} consecutive retries.
+ *   [Agent Pabrik System error] workflow halted after {n} consecutive retries.
  *   Reason for last retry: {error} (source: {source}).
  *   Server said: {detail}
  *

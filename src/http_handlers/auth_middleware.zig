@@ -3,7 +3,7 @@
 //! Wired via `router.group("/api")` + `use()` in main.zig (see the
 //! kabelweb `MiddlewareFn` / `MiddlewareChain` docs in
 //! `src/server/router.zig`). Short-circuits with 401 when the request
-//! has no valid `nalar_session` cookie; otherwise calls `chain.next`.
+//! has no valid `pabrik_session` cookie; otherwise calls `chain.next`.
 //!
 //! Gaps covered elsewhere (kabelweb `sse()`/`ws()` do not run
 //! middleware, static fallback bypasses the router):
@@ -12,8 +12,8 @@
 //!     when unauthenticated so the Vue router can show `/login`.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const auth_common = @import("auth_common.zig");
 
@@ -21,7 +21,7 @@ const auth_common = @import("auth_common.zig");
 /// checks. Returns true when the request may proceed.
 pub fn isAuthorized(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     auth_enabled: bool,
     path: []const u8,
     headers: anytype,
@@ -41,7 +41,7 @@ pub fn authMiddleware(
     chain: *gserverz.Router.MiddlewareChain,
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
-    const di = nalarcore.getSingleton() catch {
+    const di = pabrikcore.getSingleton() catch {
         // No singleton in unit tests — fail open so handler tests
         // that construct their own ctx keep working.
         return chain.next(ctx, req, res);

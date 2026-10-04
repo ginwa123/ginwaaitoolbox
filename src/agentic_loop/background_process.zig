@@ -1,5 +1,5 @@
 const std = @import("std");
-const root_mod = @import("nalarcore");
+const root_mod = @import("pabrikcore");
 const sqlite = root_mod.sqlite;
 const process_status = root_mod.helpers.process_status;
 const testing = std.testing;
@@ -405,7 +405,7 @@ test "buildCompletionMessage preserves metacharacters verbatim in JSON strings" 
 }
 
 test "readLogTruncated returns FileNotFound for a missing file" {
-    const result = readLogTruncated(testing.allocator, testing.io, "/tmp/nalar-bg-test-never-exists-12345.log", 100);
+    const result = readLogTruncated(testing.allocator, testing.io, "/tmp/pabrik-bg-test-never-exists-12345.log", 100);
     try testing.expectError(error.FileNotFound, result);
 }
 

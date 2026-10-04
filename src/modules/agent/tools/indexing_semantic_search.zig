@@ -356,7 +356,7 @@ fn walkDirRecursive(
         const name = entry.name;
 
         if (std.mem.eql(u8, name, ".git")) continue;
-        if (name[0] == '.' and name[1] == 'n' and std.mem.startsWith(u8, name, ".nalar")) continue;
+        if (name[0] == '.' and name[1] == 'n' and std.mem.startsWith(u8, name, ".pabrik")) continue;
 
         const full_path = try std.fs.path.join(allocator, &.{ dir_path, name });
 
@@ -696,7 +696,7 @@ pub fn getIndexDir(root_cwd: []const u8) ![]const u8 {
     // process (Debug/ReleaseSafe) instead of returning an error. `path.join`
     // cannot make a relative `root_cwd` absolute, so reject it here.
     if (!std.fs.path.isAbsolute(root_cwd)) return error.IndexRootNotAbsolute;
-    return try std.fs.path.join(std.heap.page_allocator, &.{ root_cwd, ".nalar", "semantic_index" });
+    return try std.fs.path.join(std.heap.page_allocator, &.{ root_cwd, ".pabrik", "semantic_index" });
 }
 
 // ============================================================================

@@ -1,9 +1,9 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 
-const logger_mod = nalarcore.loggermod;
-const sqlite = nalarcore.sqlite;
-const config_mod = nalarcore.config;
+const logger_mod = pabrikcore.loggermod;
+const sqlite = pabrikcore.sqlite;
+const config_mod = pabrikcore.config;
 const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 
 pub const all_agent_tools = @import("tools_equipped.zig").equips;

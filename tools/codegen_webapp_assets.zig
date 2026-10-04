@@ -49,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
     const out_path = args_iter.next() orelse return error.MissingOutPath;
 
     // Check if dist_path exists. If not, emit a stub webapp_assets.zig
-    // (empty assets array) so the nalar-desktop build doesn't fail when
+    // (empty assets array) so the pabrik-desktop build doesn't fail when
     // `bun run build` hasn't been run yet (e.g., on a fresh checkout).
     // Use std.c.access (POSIX, cross-platform via libc) instead of
     // std.os.linux.faccessat (Linux syscall only — would SIGSYS on macOS).

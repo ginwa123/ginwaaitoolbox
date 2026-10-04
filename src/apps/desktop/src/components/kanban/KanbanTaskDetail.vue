@@ -319,7 +319,7 @@ const unattended = ref<'0' | '1'>('1')
 // queue_message. Plain create ignores it (no queue_message there).
 const useGitWorktree = ref(false)
 // Worktree path input (create mode only, visible when the toggle is
-// ON). Canonical root is $HOME/.config/nalar/.worktrees (Option A) —
+// ON). Canonical root is $HOME/.config/pabrik/.worktrees (Option A) —
 // prefilled on toggle-on as <slug>-<timestamp> from the task name plus
 // Date.now() so concurrent tasks never collide; the user can accept or
 // edit it. Empty = agent picks the path itself (bare `#Notes UseGitWorktree`).
@@ -328,7 +328,7 @@ const useGitWorktree = ref(false)
 // literal `~` would fail at tool-call time. Home is resolved via
 // getSystemFolder().home; until loaded we fall back to `~` for display
 // and expand on emit.
-const WORKTREE_DIR_SUFFIX = '.config/nalar/.worktrees'
+const WORKTREE_DIR_SUFFIX = '.config/pabrik/.worktrees'
 const homeDir = ref('')
 const resolveWorktreeDir = (): string => {
   const home = homeDir.value.trim()
@@ -1116,7 +1116,7 @@ const loadProfiles = async () => {
   if (!isCreateMode.value) return
   profilesLoading.value = true
   try {
-    const config = await api.getNalarConfig()
+    const config = await api.getPabrikConfig()
     const profiles = (config.profiles ?? {}) as Record<
       string,
       { model?: string; base_url?: string }
@@ -1828,7 +1828,7 @@ const isMediaLoading = computed<boolean>(() => {
             id="kanban-worktree-path-input"
             type="text"
             v-model="worktreePath"
-            placeholder="/home/you/.config/nalar/.worktrees/my-task-1757792000000"
+            placeholder="/home/you/.config/pabrik/.worktrees/my-task-1757792000000"
             class="w-full px-2 py-1.5 rounded-lg text-dense"
             style="
               background-color: var(--semantic-sidebar-bg);
@@ -1838,7 +1838,7 @@ const isMediaLoading = computed<boolean>(() => {
             data-testid="kanban-task-detail-use-git-worktree-path"
           />
           <div class="text-meta" style="color: var(--semantic-text-dim)">
-            Default: $HOME/.config/nalar/.worktrees/&lt;task-name&gt;-&lt;timestamp&gt;. Must be
+            Default: $HOME/.config/pabrik/.worktrees/&lt;task-name&gt;-&lt;timestamp&gt;. Must be
             absolute; the parent folder must exist.
           </div>
         </div>

@@ -15,7 +15,7 @@ Why a real browser is required
     The claim is about a WIRE round trip racing a MOMENTUM SCROLL. Neither can
     be reproduced in jsdom (no layout, no coalesced scroll events, and jsdom
     does not fire `scroll` on `scrollTop` writes). This test boots a real
-    `nalar` backend + a real Vite dev server + headless Chromium and drives a
+    `pabrik` backend + a real Vite dev server + headless Chromium and drives a
     synthetic fling with `requestAnimationFrame`.
 
 The hard gate (assertion that FAILS on the pre-fix build)
@@ -33,7 +33,7 @@ duplicating rendered groups and without moving the reading anchor.
 
 Run (binary must be built first — a fresh worktree has no `zig-out/`):
     zig build
-    NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \\
+    PABRIK_BIN=./zig-out/bin/pabrikcore-linux-x86_64 \\
         python3 -m pytest tests/functional_ui/chatview_lazy_prefetch_ui_test.py -v
 
 Control run (proves the gate measures the fix) — same command against `main`,
@@ -86,7 +86,7 @@ BODY_TEMPLATE = (
 
 def _seed_db_path(h: UIHarness) -> Path:
     """Path to the harness's isolated ``agent.db`` (pre-validated tmpdir)."""
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _seed_session(

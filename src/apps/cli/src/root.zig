@@ -1,4 +1,4 @@
-//! Public API surface for the `nalarcli` package.
+//! Public API surface for the `pabrikcli` package.
 //!
 //! Re-exports the modules consumed by the CLI executable and the
 //! test runner. Keeping the surface small makes the build graph

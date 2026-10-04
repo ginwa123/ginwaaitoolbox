@@ -263,7 +263,7 @@ export function kindOf(path: string, query: Record<string, unknown> | null | und
 export function fallbackTitle(kind: TabKind): string {
   switch (kind) {
     case 'home':
-      return 'Nalar'
+      return 'Pabrik'
     case 'chat':
       return 'Chat'
     case 'workspace':

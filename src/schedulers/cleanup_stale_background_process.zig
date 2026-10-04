@@ -36,22 +36,22 @@
 //! is composite.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 const process_status = @import("helpers").process_status;
-const logger_mod = nalarcore.loggermod;
-const event_bus_mod = nalarcore.event_bus;
-// Route the bg-completion helpers + queue insert through `nalarcore`
+const logger_mod = pabrikcore.loggermod;
+const event_bus_mod = pabrikcore.event_bus;
+// Route the bg-completion helpers + queue insert through `pabrikcore`
 // (the `root` module) instead of @import'ing the agentic_loop files
 // directly — same pattern as cleanup_stale_worker.zig's
-// `nalarcore.ai_mod.delete_worker`. The exe module compiles `main.zig`
-// which reaches this file via the `nalarcore` re-export; a direct
+// `pabrikcore.ai_mod.delete_worker`. The exe module compiles `main.zig`
+// which reaches this file via the `pabrikcore` re-export; a direct
 // relative @import here would put those files in TWO modules and fire
 // Zig's "file exists in two modules" error. `insertQueueMessage` is
 // re-exported by workflow.zig so no mod.zig change is needed for it;
 // `background_process` has its own `pub const` in ai_workflow/tui/mod.zig.
-const bg_proc = nalarcore.ai_mod.background_process;
-const ai_workflow = nalarcore.ai_mod.ai_workflow;
+const bg_proc = pabrikcore.ai_mod.background_process;
+const ai_workflow = pabrikcore.ai_mod.ai_workflow;
 // `migration.zig` lives in `src/migrations/` — one `..` up from
 // `src/schedulers/`. Per project memory `project-test-use-migrations-module`:
 // test setupDb MUST use `MigrationManager.registerAllMigrations +
@@ -254,7 +254,7 @@ pub fn notifySingleBackgroundCompletion(args: NotifySingleBackgroundCompletionAr
     // on SSE. Emitted AFTER the queue insert succeeds (same tick that
     // deletes the row) — covers both the immediate watcher thread and
     // the per-minute cron fallback, which share this function.
-    nalarcore.ai_mod.background_process_events.emitCompleted(
+    pabrikcore.ai_mod.background_process_events.emitCompleted(
         allocator,
         event_bus,
         args.session_id,
@@ -273,7 +273,7 @@ pub fn notifySingleBackgroundCompletion(args: NotifySingleBackgroundCompletionAr
 /// Moved verbatim out of the `handle()` wake loop so the immediate
 /// watcher thread can reuse the exact same path. All errors are caught
 /// and logged — never panics, never propagates.
-pub fn wakeSessionForCompletion(di: *nalarcore.ContextIPCTui, allocator: std.mem.Allocator, sid: []const u8) void {
+pub fn wakeSessionForCompletion(di: *pabrikcore.ContextIPCTui, allocator: std.mem.Allocator, sid: []const u8) void {
     const logger = di.logger;
 
     const running = ai_workflow.isWorkerRunning(allocator, di.db, sid);
@@ -657,7 +657,7 @@ pub fn handle(ctx: ?*anyopaque, now_unix: i64) void {
     _ = ctx;
     _ = now_unix;
 
-    const di = nalarcore.getSingleton() catch return;
+    const di = pabrikcore.getSingleton() catch return;
     const allocator = di.allocator;
     const logger = di.logger;
 
@@ -903,7 +903,7 @@ test "cleanupStaleBackgroundProcesses notifies with a not-found marker and still
     var ctx = try setupCtx();
     defer ctx.deinit();
 
-    const missing = "/tmp/nalar-bg-test-never-exists-xyz.log";
+    const missing = "/tmp/pabrik-bg-test-never-exists-xyz.log";
     try seedRowFull(&ctx.db, testing.allocator, "s_gone", 999_999_998, "sleep 30", missing, "running");
 
     var result = try cleanupStaleBackgroundProcesses(.{

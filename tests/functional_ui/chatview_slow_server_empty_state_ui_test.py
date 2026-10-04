@@ -107,7 +107,7 @@ EMPTY_STATE_TEXT = "How can I help you?"
 
 def _seed_db_path(h: UIHarness) -> Path:
     """Path to the harness's isolated ``agent.db`` (already ``is_safe_tmp``-checked)."""
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _create_workspace(h: UIHarness, name: str = "ui-slow-server-ws") -> str:

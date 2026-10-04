@@ -149,7 +149,7 @@ fn waitReadable(
 /// it and is responsible for freeing. No per-byte scratch buffers,
 /// no errdefer cleanup — see "Per-Request Arena Cleanup" in AGENTS.md
 /// for the project convention. When `allocator` is an arena (the
-/// normal call site — nalar's request arena), the slice is freed by
+/// normal call site — pabrik's request arena), the slice is freed by
 /// the arena teardown without a per-call free. When `allocator` is
 /// `std.testing.allocator` (used in tests), the existing
 /// `defer testing.allocator.free(body)` at the call site handles it.
@@ -894,7 +894,7 @@ pub const StdioRegistry = struct {
     ///
     /// even though `node` IS reachable from the build process (the
     /// pnpm invocations in the mcp build chain succeed). It only happens
-    /// at the nalar→child boundary because the GLOBAL registry builds its
+    /// at the pabrik→child boundary because the GLOBAL registry builds its
     /// own Threaded (see `initThreaded`), whereas direct-from-pytest
     /// spawns use the harness's full environment and pass. Local dev
     /// boxes typically have node at `/usr/bin/node` (on the default
@@ -902,7 +902,7 @@ pub const StdioRegistry = struct {
     ///
     /// `std.start` constructs the main io the same way (capture the live
     /// environ block), so we mirror it here. `std.c.environ` links because
-    /// nalar always links libc — the vendored curl/sqlite/openssl/libc++
+    /// pabrik always links libc — the vendored curl/sqlite/openssl/libc++
     /// stacks all pull it in.
     fn processEnviron() std.process.Environ {
         const block: std.process.Environ.Block = switch (builtin.os.tag) {
@@ -1149,7 +1149,7 @@ pub const StdioRegistry = struct {
         self.arena.deinit();
     }
 
-    // Process-global singleton. Lives for the whole nalar process.
+    // Process-global singleton. Lives for the whole pabrik process.
     // Cleaned up via the shutdown hook in main.zig (Task 7).
     //
     // Backing rule (use-after-free post-mortem, see
@@ -1366,7 +1366,7 @@ test "StdioClient.send writes framed bytes to child stdin" {
     // NOTE: full send+recv roundtrips are exercised by the functional
     // test at tests/functional/mcp_stdio_test.py — that test runs
     // against a real `mcp-hello-world` binary with the threaded io in
-    // a fully-wired nalar process. The in-process Zig test below has
+    // a fully-wired pabrik process. The in-process Zig test below has
     // race conditions with the threaded test runtime (the child can
     // appear to close its stdin early when the test scope tears down
     // the test runtime), so we only assert that `StdioClient.init`

@@ -3,15 +3,15 @@
 // Runtime asset extraction: write a flat list of `AssetEntry` records
 // (the source: webapp_assets.assets — see tools/codegen_webapp_assets.zig)
 // to a fresh per-user temp dir. The returned absolute path is what the
-// webview in Chunks 4-7 loads via `file://` (or as the nalar `--static-dir`
+// webview in Chunks 4-7 loads via `file://` (or as the pabrik `--static-dir`
 // argument) at app startup; `cleanup` is called on shutdown to remove
 // the temp dir.
 //
 // Why temp + per-run: the assets are embedded in the binary (10+ MiB),
-// but the nalar server's `--static-dir` only reads from disk. We unpack
-// to a per-pid temp subdir so multiple concurrent nalar-desktop
+// but the pabrik server's `--static-dir` only reads from disk. We unpack
+// to a per-pid temp subdir so multiple concurrent pabrik-desktop
 // invocations don't collide. The subdir is created via
-// `nalar-desktop-webapp-<pid>` and removed in cleanup().
+// `pabrik-desktop-webapp-<pid>` and removed in cleanup().
 //
 // Zig 0.16 API notes:
 //   * `std.posix.getenv` doesn't exist in 0.16; use `std.c.getenv`
@@ -100,7 +100,7 @@ pub fn extract(allocator: std.mem.Allocator, assets: anytype) ![]u8 {
     };
     const subdir = try std.fmt.allocPrint(
         allocator,
-        "nalar-desktop-webapp-{d}",
+        "pabrik-desktop-webapp-{d}",
         .{pid_for_subdir},
     );
     defer allocator.free(subdir);
@@ -132,7 +132,7 @@ pub fn cleanup(allocator: std.mem.Allocator, dir: []const u8) void {
 /// Name of the marker file written LAST inside a persistent webapp dir.
 /// Its presence is what `dirIsComplete` checks before reusing a dir, so a
 /// run killed mid-extraction can never be mistaken for a complete one.
-pub const complete_marker_name = ".nalar-webapp-complete";
+pub const complete_marker_name = ".pabrik-webapp-complete";
 
 /// Materialise the webapp into a **persistent, content-addressed** dir and
 /// return its absolute path. The caller owns the returned slice and must
@@ -140,7 +140,7 @@ pub const complete_marker_name = ".nalar-webapp-complete";
 ///
 /// This is the replacement for `extract()` on the real startup path.
 /// `extract()` hands out a per-pid temp dir that `cleanup()` deletes when
-/// the window closes — but the nalar daemon the desktop spawned keeps
+/// the window closes — but the pabrik daemon the desktop spawned keeps
 /// running with `--static-dir <that dir>` long after the window is gone
 /// (the desktop deliberately never signals the daemon). Once the dir is
 /// deleted, that daemon answers `GET /` with `404 Not Found`; the NEXT
@@ -228,7 +228,7 @@ pub fn ensurePersistentIn(
 
 /// Name of the stable symlink inside the persistent base dir. The symlink
 /// points at the current `<hash>` dir, so the path handed to
-/// `nalar --static-dir` is a single stable string (`<base>/current`)
+/// `pabrik --static-dir` is a single stable string (`<base>/current`)
 /// instead of a hash that changes on every webapp rebuild. `ps` output,
 /// state files, and docs can all name one path.
 ///
@@ -331,23 +331,23 @@ fn persistentBaseDir(allocator: std.mem.Allocator) []u8 {
     switch (builtin.os.tag) {
         .linux => {
             if (getenvNonEmpty("XDG_DATA_HOME")) |v| {
-                return std.fs.path.join(allocator, &.{ v, "nalar", "desktop-webapp" }) catch
+                return std.fs.path.join(allocator, &.{ v, "pabrik", "desktop-webapp" }) catch
                     persistentBaseFallback(allocator);
             }
             if (getenvNonEmpty("HOME")) |v| {
-                return std.fs.path.join(allocator, &.{ v, ".local", "share", "nalar", "desktop-webapp" }) catch
+                return std.fs.path.join(allocator, &.{ v, ".local", "share", "pabrik", "desktop-webapp" }) catch
                     persistentBaseFallback(allocator);
             }
         },
         .macos => {
             if (getenvNonEmpty("HOME")) |v| {
-                return std.fs.path.join(allocator, &.{ v, "Library", "Application Support", "nalar", "desktop-webapp" }) catch
+                return std.fs.path.join(allocator, &.{ v, "Library", "Application Support", "pabrik", "desktop-webapp" }) catch
                     persistentBaseFallback(allocator);
             }
         },
         .windows => {
             if (getenvNonEmpty("LOCALAPPDATA")) |v| {
-                return std.fs.path.join(allocator, &.{ v, "nalar", "desktop-webapp" }) catch
+                return std.fs.path.join(allocator, &.{ v, "pabrik", "desktop-webapp" }) catch
                     persistentBaseFallback(allocator);
             }
         },
@@ -362,8 +362,8 @@ fn persistentBaseDir(allocator: std.mem.Allocator) []u8 {
 fn persistentBaseFallback(allocator: std.mem.Allocator) []u8 {
     const tmp = tmpDirBase(allocator);
     defer allocator.free(tmp);
-    return std.fs.path.join(allocator, &.{ tmp, "nalar-desktop-webapp" }) catch
-        allocator.dupe(u8, "/tmp/nalar-desktop-webapp") catch @panic("out of memory resolving webapp data dir");
+    return std.fs.path.join(allocator, &.{ tmp, "pabrik-desktop-webapp" }) catch
+        allocator.dupe(u8, "/tmp/pabrik-desktop-webapp") catch @panic("out of memory resolving webapp data dir");
 }
 
 fn getenvNonEmpty(name: [*:0]const u8) ?[]const u8 {
@@ -492,7 +492,7 @@ fn fallbackTmp(allocator: std.mem.Allocator) []u8 {
 // Every helper here copies the path into a per-call NUL-terminated
 // stack buffer (the `copyToNull` pattern from
 // tools/codegen_webapp_assets.zig) because the linux.* syscalls want
-// `[*:0]const u8`. The buffer must outlive the syscall — see NALAR.md
+// `[*:0]const u8`. The buffer must outlive the syscall — see PABRIK.md
 // "Never return stack-allocated slices from functions".
 
 fn copyToNull(buf: *[std.fs.max_path_bytes:0]u8, path: []const u8) [*:0]const u8 {
@@ -1105,7 +1105,7 @@ fn testCopyToNull(buf: *[std.fs.max_path_bytes:0]u8, path: []const u8) [*:0]cons
 // ensurePersistentIn — the persistent, content-addressed webapp dir
 // =====================================================================
 //
-// Why these exist: the desktop used to hand a spawned (detached) nalar a
+// Why these exist: the desktop used to hand a spawned (detached) pabrik a
 // per-pid temp dir and then delete that dir at window close. The daemon
 // kept running with a --static-dir that no longer existed, so the NEXT
 // desktop launch attached to it and the webview rendered

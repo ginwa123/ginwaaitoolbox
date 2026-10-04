@@ -14,7 +14,7 @@
 //! Task: task_1787597624259_2
 
 const std = @import("std");
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 
 /// Resolve the workspace_item_id for a session. Returns "" when the
 /// session doesn't exist (no workspace_item_tasks row).
@@ -145,7 +145,7 @@ pub fn makeAgentKanbanSystemPrompt(
 const testing = std.testing;
 // Use a fresh alias for the test section to avoid duplicate-struct-
 // member shadowing (file-level `const sqlite` already exists).
-const test_sqlite = @import("nalarcore").sqlite;
+const test_sqlite = @import("pabrikcore").sqlite;
 const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
 
 const TestCtx = struct {

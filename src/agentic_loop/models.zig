@@ -1,11 +1,11 @@
-const sqlite = @import("nalarcore").sqlite;
-const config = @import("nalarcore").config;
-const loggermod = @import("nalarcore").loggermod;
-const nalarcore = @import("nalarcore");
-const event_bus = nalarcore.event_bus;
+const sqlite = @import("pabrikcore").sqlite;
+const config = @import("pabrikcore").config;
+const loggermod = @import("pabrikcore").loggermod;
+const pabrikcore = @import("pabrikcore");
+const event_bus = pabrikcore.event_bus;
 const std = @import("std");
 pub const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
-const gserverz = nalarcore.gserverz;
+const gserverz = pabrikcore.gserverz;
 
 
 pub const TUIHistory = struct {

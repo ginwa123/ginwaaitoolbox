@@ -1,4 +1,4 @@
-"""The navigation-graph extractor must keep agreeing with `NalarNavGraph.kt`.
+"""The navigation-graph extractor must keep agreeing with `PabrikNavGraph.kt`.
 
 `tools/navgraph/` reads the Android client's `NavHost` as text and draws a
 committed HTML audit page from it. Nothing about that is enforced by the Kotlin
@@ -115,7 +115,7 @@ def test_deep_links_and_manifest_hosts_are_both_read(graph) -> None:
     linked = set()
     for destination in graph.destinations:
         for pattern in destination.deep_links:
-            match = re.match(r"nalar://([^/]+)", pattern)
+            match = re.match(r"pabrik://([^/]+)", pattern)
             assert match, f"unrecognised deep link {pattern!r}"
             linked.add(match.group(1))
 
@@ -127,7 +127,7 @@ def test_deep_links_and_manifest_hosts_are_both_read(graph) -> None:
 
 
 def test_every_navigation_resolves_to_a_known_destination(graph) -> None:
-    """`navigate(NalarRoutes.x(...))` must map onto a real `composable` route.
+    """`navigate(PabrikRoutes.x(...))` must map onto a real `composable` route.
 
     An unresolved target is a route constant the builder table does not know, and
     it means the diagram is quietly missing an edge.
@@ -227,7 +227,7 @@ def test_audit_flags_a_deep_link_the_manifest_does_not_claim() -> None:
                 route="CHAT",
                 template="chat/{id}",
                 arguments=("ARG_ID",),
-                deep_links=("nalar://chat/{id}",),
+                deep_links=("pabrik://chat/{id}",),
                 screens=("ChatScreen",),
                 composables=("ChatScreen",),
                 back_affordances=("onBack = goBack",),
@@ -250,7 +250,7 @@ def test_audit_flags_a_deep_link_the_manifest_does_not_claim() -> None:
         start_destination="chat/{id}",
         manifest_hosts={"network": 40},  # claims `network`, not `chat`
         manifest_file="AndroidManifest.xml",
-        nav_file="NalarNavGraph.kt",
+        nav_file="PabrikNavGraph.kt",
         git_sha="test",
         generated_by="test",
     )
@@ -285,9 +285,9 @@ def test_audit_has_no_raw_back_call_in_the_real_graph(graph) -> None:
 def test_audit_acknowledges_the_unreachable_deep_links(graph) -> None:
     """Record what the audit currently reports about the manifest.
 
-    `nalar://chats/…` and `nalar://project/…` are declared as `navDeepLink`
+    `pabrik://chats/…` and `pabrik://project/…` are declared as `navDeepLink`
     patterns with no matching `<intent-filter>` in `AndroidManifest.xml`, so
-    `adb shell am start -d nalar://chats/…` resolves to no activity and nothing
+    `adb shell am start -d pabrik://chats/…` resolves to no activity and nothing
     in the app reports it.
 
     This test pins the *known* gap so it cannot be forgotten. When the manifest
@@ -296,7 +296,7 @@ def test_audit_acknowledges_the_unreachable_deep_links(graph) -> None:
     """
     known_unclaimed = {"chats", "project"}
     host_of = {
-        destination.template: re.match(r"nalar://([^/]+)", pattern).group(1)
+        destination.template: re.match(r"pabrik://([^/]+)", pattern).group(1)
         for destination in graph.destinations
         for pattern in destination.deep_links
     }
@@ -311,7 +311,7 @@ def test_audit_acknowledges_the_unreachable_deep_links(graph) -> None:
         match.group(1)
         for destination in graph.destinations
         for pattern in destination.deep_links
-        if (match := re.match(r"nalar://([^/]+)", pattern))
+        if (match := re.match(r"pabrik://([^/]+)", pattern))
     }
 
     assert unclaimed <= known_unclaimed, (
@@ -366,7 +366,7 @@ def test_committed_navgraph_html_is_current() -> None:
     payload = navgraph.render_payload(
         navgraph.extract_graph(_REPO_ROOT, generated_by="tools/navgraph/build.py")
     )
-    expected = navbuild.render_html(payload, "Nalar Android — navigation graph", None)
+    expected = navbuild.render_html(payload, "Pabrik Android — navigation graph", None)
 
     assert navbuild.strip_sha(committed.read_text(encoding="utf-8")) == navbuild.strip_sha(
         expected

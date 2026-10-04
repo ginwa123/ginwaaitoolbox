@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const change_agent_mod = nalarcore.change_agent;
+const agent = pabrikcore.agent;
+const change_agent_mod = pabrikcore.change_agent;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execChangeAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

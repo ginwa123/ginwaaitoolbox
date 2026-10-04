@@ -32,9 +32,9 @@
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
-const logger_mod = nalarcore.loggermod;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
+const logger_mod = pabrikcore.loggermod;
 const migration = @import("../migrations/migration.zig");
 
 /// The kinds of ledger row. Stored as text so a `SELECT` is readable without a

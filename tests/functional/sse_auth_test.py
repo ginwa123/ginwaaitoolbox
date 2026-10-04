@@ -74,8 +74,8 @@ def _login(bin_path_port: int, email: str, password: str) -> str:
     )
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
 def _read_sse(port: int, channels: str, cookie: str | None, timeout_s: float):
@@ -129,9 +129,9 @@ def _read_sse(port: int, channels: str, cookie: str | None, timeout_s: float):
     return events, result["eof"], raw_lines
 
 
-def test_unauth_sse_terminates_with_auth_error(default_nalar_bin: Path):
+def test_unauth_sse_terminates_with_auth_error(default_pabrik_bin: Path):
     """--auth on, no cookie: auth_error event, then EOF. Never a hang."""
-    h = _boot_auth(default_nalar_bin)
+    h = _boot_auth(default_pabrik_bin)
     try:
         events, eof, raw = _read_sse(h.port, "workers", None, timeout_s=10.0)
         names = [name for name, _ in events]
@@ -145,13 +145,13 @@ def test_unauth_sse_terminates_with_auth_error(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_authed_sse_gets_connected(default_nalar_bin: Path):
+def test_authed_sse_gets_connected(default_pabrik_bin: Path):
     """--auth on, valid cookie: the connected handshake arrives."""
-    h = _boot_auth(default_nalar_bin)
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "sse@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "sse@example.com", "supersecret123")
         token = _login(h.port, "sse@example.com", "supersecret123")
-        events, _, _ = _read_sse(h.port, "workers", f"nalar_session={token}", timeout_s=8.0)
+        events, _, _ = _read_sse(h.port, "workers", f"pabrik_session={token}", timeout_s=8.0)
         names = [name for name, _ in events]
         assert "connected" in names, f"expected connected handshake, got {names}"
     finally:

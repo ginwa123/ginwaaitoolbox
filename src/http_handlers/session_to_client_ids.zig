@@ -6,8 +6,8 @@
 //! JSON) and a thin handler that maps errors to status codes.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 
 pub const SessionToClientIdsError = error{
     ServerContextNotInitialized,
@@ -53,7 +53,7 @@ fn useCase(
     allocator: std.mem.Allocator,
     io: std.Io,
 ) SessionToClientIdsError!SessionToClientIdsResult {
-    const di = nalarcore.getSingleton() catch return error.ServerContextNotInitialized;
+    const di = pabrikcore.getSingleton() catch return error.ServerContextNotInitialized;
 
     // Acquire the session_map_lock to safely read the shared map.
     try di.session_map_lock.lock(io);
@@ -117,7 +117,7 @@ pub fn sessionToClientIdsHandler(
         };
         return res.jsonResponse(.{
             .status_code = status,
-            .data = try nalarcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+            .data = try pabrikcore.http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
 

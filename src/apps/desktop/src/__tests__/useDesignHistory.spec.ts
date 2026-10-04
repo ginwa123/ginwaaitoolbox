@@ -13,7 +13,7 @@
  *   - Group capture (parentId + childIds)
  *
  * 8 behavioural tests — no static-contract grep tests (project rule:
- * ~/.config/nalar/memories/static-contract-test-when-to-prefer-behavioural.md).
+ * ~/.config/pabrik/memories/static-contract-test-when-to-prefer-behavioural.md).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'

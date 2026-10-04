@@ -1,6 +1,6 @@
 """Functional tests for automatic per-user workspace provisioning.
 
-Boots a REAL nalar binary + REAL SQLite via the harness (never a live dev
+Boots a REAL pabrik binary + REAL SQLite via the harness (never a live dev
 server, never port 8081). Replays the EXACT wire flow a brand-new account
 takes: `create-admin` -> `POST /api/auth/login` -> `GET /api/workspaces`.
 
@@ -71,12 +71,12 @@ def _login(port: int, email: str, password: str) -> str:
     )
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
 def _workspaces(port: int, cookie: str) -> list[dict]:
-    status, _, body = _raw("GET", port, "/api/workspaces", cookie=f"nalar_session={cookie}")
+    status, _, body = _raw("GET", port, "/api/workspaces", cookie=f"pabrik_session={cookie}")
     assert status == 200, body[:500]
     return json.loads(body.decode())["workspaces"]
 
@@ -84,7 +84,7 @@ def _workspaces(port: int, cookie: str) -> list[dict]:
 def _db_connect(h: FunctionalHarness):
     """Read-only handle on the on-disk DB, so assertions can name rows the API
     filters out (e.g. another user's membership)."""
-    p = Path(h.temp_dir) / ".config" / "nalar" / "agent.db"
+    p = Path(h.temp_dir) / ".config" / "pabrik" / "agent.db"
     assert p.exists(), f"db not found at {p}"
     return sqlite3.connect(f"file:{p}?mode=ro", uri=True)
 
@@ -109,10 +109,10 @@ def _members_of(h: FunctionalHarness, user_id: str) -> list[tuple]:
         con.close()
 
 
-def test_a_fresh_user_is_given_a_workspace_named_default(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_a_fresh_user_is_given_a_workspace_named_default(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "fresh@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "fresh@example.com", "supersecret123")
         cookie = _login(h.port, "fresh@example.com", "supersecret123")
 
         rows = _workspaces(h.port, cookie)
@@ -127,17 +127,17 @@ def test_a_fresh_user_is_given_a_workspace_named_default(default_nalar_bin: Path
         h.teardown()
 
 
-def test_the_provisioned_workspace_already_has_a_default_project(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_the_provisioned_workspace_already_has_a_default_project(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "proj@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "proj@example.com", "supersecret123")
         cookie = _login(h.port, "proj@example.com", "supersecret123")
         ws_id = _workspaces(h.port, cookie)[0]["id"]
 
         # An empty Projects list inside the new workspace is the same dead end
         # one level down, so it ships with its default.
         status, _, body = _raw(
-            "GET", h.port, f"/api/workspaces/{ws_id}/items", cookie=f"nalar_session={cookie}"
+            "GET", h.port, f"/api/workspaces/{ws_id}/items", cookie=f"pabrik_session={cookie}"
         )
         assert status == 200, body[:500]
         items = json.loads(body.decode())["items"]
@@ -153,10 +153,10 @@ def test_the_provisioned_workspace_already_has_a_default_project(default_nalar_b
         h.teardown()
 
 
-def test_logging_in_again_adds_nothing(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_logging_in_again_adds_nothing(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "again@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "again@example.com", "supersecret123")
         cookie = _login(h.port, "again@example.com", "supersecret123")
         first = _workspaces(h.port, cookie)
         assert len(first) == 1
@@ -173,17 +173,17 @@ def test_logging_in_again_adds_nothing(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_a_user_who_created_a_workspace_keeps_exactly_what_they_made(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_a_user_who_created_a_workspace_keeps_exactly_what_they_made(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "maker@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "maker@example.com", "supersecret123")
         cookie = _login(h.port, "maker@example.com", "supersecret123")
         assert len(_workspaces(h.port, cookie)) == 1
 
         status, _, body = _raw(
             "POST", h.port, "/api/workspaces",
             body={"name": "Client Project"},
-            cookie=f"nalar_session={cookie}",
+            cookie=f"pabrik_session={cookie}",
         )
         assert status == 201, body[:500]
         mine = json.loads(body.decode())
@@ -196,11 +196,11 @@ def test_a_user_who_created_a_workspace_keeps_exactly_what_they_made(default_nal
         h.teardown()
 
 
-def test_a_second_admin_gets_their_own_default_not_the_first_ones(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_a_second_admin_gets_their_own_default_not_the_first_ones(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "alice@example.com", "supersecret123")
-        _create_admin(default_nalar_bin, h.temp_dir, "bob@example.com", "supersecret123", force=True)
+        _create_admin(default_pabrik_bin, h.temp_dir, "alice@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "bob@example.com", "supersecret123", force=True)
 
         alice = _login(h.port, "alice@example.com", "supersecret123")
         bob = _login(h.port, "bob@example.com", "supersecret123")

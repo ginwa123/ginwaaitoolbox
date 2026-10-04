@@ -1,12 +1,12 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const llm_history = nalarcore.llm_history;
-const set_git_worktree_mod = nalarcore.set_git_worktree;
+const agent = pabrikcore.agent;
+const llm_history = pabrikcore.llm_history;
+const set_git_worktree_mod = pabrikcore.set_git_worktree;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execSetGitWorktree(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

@@ -37,8 +37,8 @@ from __future__ import annotations
 import os
 from typing import Sequence, TypeVar
 
-TOTAL_ENV = "NALAR_FUNC_SHARD_TOTAL"
-INDEX_ENV = "NALAR_FUNC_SHARD_INDEX"
+TOTAL_ENV = "PABRIK_FUNC_SHARD_TOTAL"
+INDEX_ENV = "PABRIK_FUNC_SHARD_INDEX"
 
 T = TypeVar("T")
 

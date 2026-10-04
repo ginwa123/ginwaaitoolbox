@@ -85,9 +85,9 @@ pub const App = struct {
         if (cfg.session_id) |sid| {
             app.session_id = try allocator.dupe(u8, sid);
         }
-        app.status.setLeft("nalar-tui");
+        app.status.setLeft("pabrik-tui");
         app.status.setRight(if (cfg.session_id) |sid| sid else "new session");
-        try app.viewport.appendLine("nalar-tui — type a message, Enter to send, Ctrl-C to quit", .{ .fg = .brightBlack });
+        try app.viewport.appendLine("pabrik-tui — type a message, Enter to send, Ctrl-C to quit", .{ .fg = .brightBlack });
         return app;
     }
 
@@ -546,11 +546,11 @@ test "App: legacy rows without finish_reason only end the turn when they are new
 test "App: status bar shows the session id once, and only in the right slot" {
     var app = try testApp();
     defer app.deinit();
-    try testing.expectEqualStrings("nalar-tui", app.status.left[0..app.status.left_len]);
+    try testing.expectEqualStrings("pabrik-tui", app.status.left[0..app.status.left_len]);
     try testing.expectEqualStrings("new session", app.status.right[0..app.status.right_len]);
 
     try app.onSendOk("session-1789312894544");
-    try testing.expectEqualStrings("nalar-tui", app.status.left[0..app.status.left_len]);
+    try testing.expectEqualStrings("pabrik-tui", app.status.left[0..app.status.left_len]);
     // Was stuck at "new session"; the left slot used to render
     // "session session-1789..." because the id already contains "session-".
     try testing.expectEqualStrings("session-1789312894544", app.status.right[0..app.status.right_len]);
@@ -743,7 +743,7 @@ test "App: onMessages renders user-reported scenario (tool cards + stripped thin
     try testing.expectEqual(@as(usize, 5), items.len); // welcome + u1 + t1 + t2 + a1
 
     // 1. welcome — unchanged.
-    try testing.expect(std.mem.indexOf(u8, items[0].text, "nalar-tui") != null);
+    try testing.expect(std.mem.indexOf(u8, items[0].text, "pabrik-tui") != null);
 
     // 2. user prompt — bold green.
     try testing.expectEqualStrings("> hai", items[1].text);

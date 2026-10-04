@@ -1,12 +1,12 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const llm_history = nalarcore.llm_history;
-const config = nalarcore.config;
-const agent = nalarcore.agent;
-const tool_models = nalarcore.tool_models;
-const http_response = nalarcore.http_response;
-const workflow = nalarcore.ai_mod.ai_workflow;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const llm_history = pabrikcore.llm_history;
+const config = pabrikcore.config;
+const agent = pabrikcore.agent;
+const tool_models = pabrikcore.tool_models;
+const http_response = pabrikcore.http_response;
+const workflow = pabrikcore.ai_mod.ai_workflow;
 const buildMessages = @import("../agentic_loop/prompts_build_messages_for_agent_prompt.zig").buildMessages;
 
 
@@ -18,7 +18,7 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const session_id = req.params.get("session_id") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing session_id" }) });
     };
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
     const io = di.io;
     const logger = di.logger;
@@ -39,7 +39,7 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     };
 
     // Pull the LLM credentials from the live config (read-only borrows).
-    const live_cfg = nalarcore.getLlmConfig(di);
+    const live_cfg = pabrikcore.getLlmConfig(di);
     const api_key = live_cfg.api_key;
     const model = live_cfg.model;
     const base_url = live_cfg.base_url;

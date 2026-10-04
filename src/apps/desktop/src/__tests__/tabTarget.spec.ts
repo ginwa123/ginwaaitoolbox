@@ -318,7 +318,7 @@ describe('getWindowId', () => {
     __resetWindowIdForTests()
     expect(getWindowId()).toBe(first)
     __resetWindowIdForTests()
-    expect(storage.getItem('nalar-window-id')).toBe(first)
+    expect(storage.getItem('pabrik-window-id')).toBe(first)
   })
 
   it('returns a stable id when storage throws', () => {

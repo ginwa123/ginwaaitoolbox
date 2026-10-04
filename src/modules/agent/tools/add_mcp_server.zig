@@ -42,8 +42,8 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
-const nalarcore = @import("nalarcore");
-const config_mod = nalarcore.config;
+const pabrikcore = @import("pabrikcore");
+const config_mod = pabrikcore.config;
 const LlmConfig = config_mod.LlmConfig;
 
 const helpers = @import("helpers");
@@ -119,7 +119,7 @@ pub const add_mcp_server_tool = AgentTool{
         \\
         \\HTTP transport (`url` + `headers`) is reserved for a sibling task and will return a clear error today.
         \\
-        \\The tool validates inputs, mutates the live in-memory config, then persists the change to `~/.config/nalar/config.json` (or platform equivalent) so the server survives restart. On success the tool returns the list of tools the new server exposed (best-effort; if the server can't be reached right now, the call still succeeds and you can call its tools on the next iteration).
+        \\The tool validates inputs, mutates the live in-memory config, then persists the change to `~/.config/pabrik/config.json` (or platform equivalent) so the server survives restart. On success the tool returns the list of tools the new server exposed (best-effort; if the server can't be reached right now, the call still succeeds and you can call its tools on the next iteration).
         ,
         .parameters = .{
             .type = "object",

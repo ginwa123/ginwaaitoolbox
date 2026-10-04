@@ -15,20 +15,20 @@
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const tools_equipped = @import("tools_equipped.zig");
 const tool_eligibility = @import("tool_eligibility.zig");
 const llm_history = @import("llm_history.zig");
 const migration = @import("../migrations/migration.zig");
 
-const sqlite = nalarcore.sqlite;
-const config_mod = nalarcore.config;
+const sqlite = pabrikcore.sqlite;
+const config_mod = pabrikcore.config;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const used_tools_mod = nalarcore.used_tools;
-const ask_user_mod = nalarcore.ask_user;
+const agent = pabrikcore.agent;
+const used_tools_mod = pabrikcore.used_tools;
+const ask_user_mod = pabrikcore.ask_user;
 const wrapToolOutput = tools.wrapToolOutput;
 
 /// Resolve the session's effective tool list (mirror of
@@ -75,7 +75,7 @@ fn resolveEquipped(ctx: ToolExecContext) ![]used_tools_mod.ToolSummary {
     }
 
     // MCP tools reach the wire ONLY when this session equipped them.
-    const di = nalarcore.getSingleton() catch null;
+    const di = pabrikcore.getSingleton() catch null;
     const mcp: ?[]const agent.AgentTool = if (di) |d| d.getMcpToolsCached(ctx.allocator) else null;
     if (mcp) |mcp_tools| {
         for (mcp_tools) |tool| {
@@ -312,7 +312,7 @@ test "static contract: used_tools exec is re-exported from tools.zig" {
     try testing.expect(std.mem.indexOf(u8, tools_src, "tools_exec_used_tools.zig") != null);
 }
 
-test "static contract: used_tools pure module is aliased on nalarcore root" {
+test "static contract: used_tools pure module is aliased on pabrikcore root" {
     try testing.expect(std.mem.indexOf(u8, root_src, "used_tools") != null);
     try testing.expect(std.mem.indexOf(u8, root_src, "modules/agent/tools/used_tools.zig") != null);
 }

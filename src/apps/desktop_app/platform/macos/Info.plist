@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Nalar Desktop</string>
+    <string>Pabrik Desktop</string>
     <key>CFBundleDisplayName</key>
-    <string>Nalar</string>
+    <string>Pabrik</string>
     <key>CFBundleIdentifier</key>
-    <string>com.ginwa.nalar-desktop</string>
+    <string>com.ginwa.pabrik-desktop</string>
     <key>CFBundleVersion</key>
     <string>1.0.0</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0.0</string>
     <key>CFBundleExecutable</key>
-    <string>nalar-desktop</string>
+    <string>pabrik-desktop</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>

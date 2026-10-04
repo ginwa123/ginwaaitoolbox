@@ -1,6 +1,6 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 const llm_history = @import("llm_history.zig");
 const design_model = @import("design_model.zig");
 
@@ -215,11 +215,11 @@ pub fn buildDesignCanvasPrompt(
         \\uses `overflow-x: auto`, `overflow-y: auto`, `overflow: auto`,
         \\or `overflow: scroll` on any container, the user will see a
         \\**default light-gray webkit scrollbar** that looks out of
-        \\place against the dark nalar theme.
+        \\place against the dark pabrik theme.
         \\
         \\To keep designs on-brand, embed a `<style>` block at the top
         \\of the element's `html` body that styles scrollbars using the
-        \\nalar color tokens. Template (paste at the very top of the
+        \\pabrik color tokens. Template (paste at the very top of the
         \\`html` string you pass to `add_element` / `update_element`):
         \\
         \\```html

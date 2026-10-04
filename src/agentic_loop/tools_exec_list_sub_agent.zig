@@ -9,16 +9,16 @@
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 const migration = @import("../migrations/migration.zig");
 
-const sqlite = nalarcore.sqlite;
-const config_mod = nalarcore.config;
+const sqlite = pabrikcore.sqlite;
+const config_mod = pabrikcore.config;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const list_sub_agent_mod = nalarcore.list_sub_agent;
+const agent = pabrikcore.agent;
+const list_sub_agent_mod = pabrikcore.list_sub_agent;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execListSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -261,7 +261,7 @@ test "static contract: list_sub_agent exec is re-exported from tools.zig" {
     try testing.expect(std.mem.indexOf(u8, tools_src, "tools_exec_list_sub_agent.zig") != null);
 }
 
-test "static contract: list_sub_agent pure module is aliased on nalarcore root" {
+test "static contract: list_sub_agent pure module is aliased on pabrikcore root" {
     try testing.expect(std.mem.indexOf(u8, root_src, "list_sub_agent") != null);
     try testing.expect(std.mem.indexOf(u8, root_src, "modules/agent/tools/list_sub_agent.zig") != null);
 }

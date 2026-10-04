@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const list_directory_mod = nalarcore.list_directory;
+const agent = pabrikcore.agent;
+const list_directory_mod = pabrikcore.list_directory;
 const wrapToolOutput = tools.wrapToolOutput;
 const testing = std.testing;
 

@@ -1,6 +1,6 @@
 """Functional tests for per-user SSE channel isolation (plan 2026-09-25, W3).
 
-Boots a REAL nalar binary + REAL SQLite via the harness (never a live dev
+Boots a REAL pabrik binary + REAL SQLite via the harness (never a live dev
 server, never port 8081). Two authenticated admins share ONE database and
 BOTH open `/api/events?channels=sessions,workers`, so this is the wire-level
 proof that user A's live events never reach user B's EventSource.
@@ -82,8 +82,8 @@ def _login(port: int, email: str, password: str) -> str:
     )
     assert status == 200, body[:500]
     set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-    assert "nalar_session=" in set_cookie
-    return set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+    assert "pabrik_session=" in set_cookie
+    return set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
 
 
 def _create_session(port: int, cookie: str, session_id: str) -> str:
@@ -220,7 +220,7 @@ def _open_stream(port: int, cookie: str | None, channels: str = "sessions,worker
 # ─── tests ────────────────────────────────────────────────────────────────
 
 
-def test_sse_does_not_deliver_foreign_session_events(default_nalar_bin: Path):
+def test_sse_does_not_deliver_foreign_session_events(default_pabrik_bin: Path):
     """A's session rename must never reach B's EventSource.
 
     This is the W3 leak: the bus fans out by family routing key, so before
@@ -228,18 +228,18 @@ def test_sse_does_not_deliver_foreign_session_events(default_nalar_bin: Path):
     frame verbatim. The assertion is on A's session id appearing anywhere in
     B's stream — the payload carries `id`, so a leak is unmistakable.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     stream_a = stream_b = None
     try:
-        sess_a = _create_session(h.port, f"nalar_session={tok_a}", "sess_iso_a_1")
-        sess_b = _create_session(h.port, f"nalar_session={tok_b}", "sess_iso_b_1")
+        sess_a = _create_session(h.port, f"pabrik_session={tok_a}", "sess_iso_a_1")
+        sess_b = _create_session(h.port, f"pabrik_session={tok_b}", "sess_iso_b_1")
 
-        stream_a = _open_stream(h.port, f"nalar_session={tok_a}")
-        stream_b = _open_stream(h.port, f"nalar_session={tok_b}")
+        stream_a = _open_stream(h.port, f"pabrik_session={tok_a}")
+        stream_b = _open_stream(h.port, f"pabrik_session={tok_b}")
 
         # A renames its own session — this emits `session_updated` on the
         # `sessions` routing key with A's session id in the payload.
-        _rename_session(h.port, sess_a, "A renamed this", f"nalar_session={tok_a}")
+        _rename_session(h.port, sess_a, "A renamed this", f"pabrik_session={tok_a}")
 
         # A's own stream must receive it (proves the event was actually
         # published, so B's silence is isolation and not a dead bus).
@@ -263,23 +263,23 @@ def test_sse_does_not_deliver_foreign_session_events(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_sse_still_delivers_own_events_to_each_user(default_nalar_bin: Path):
+def test_sse_still_delivers_own_events_to_each_user(default_pabrik_bin: Path):
     """Both users receive their OWN session events — no over-filtering.
 
     Guards the false pass where the filter drops everything: B must still
     see B's rename, and A must still see A's.
     """
-    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    h, tok_a, tok_b = _two_users(default_pabrik_bin)
     stream_a = stream_b = None
     try:
-        sess_a = _create_session(h.port, f"nalar_session={tok_a}", "sess_iso_a_2")
-        sess_b = _create_session(h.port, f"nalar_session={tok_b}", "sess_iso_b_2")
+        sess_a = _create_session(h.port, f"pabrik_session={tok_a}", "sess_iso_a_2")
+        sess_b = _create_session(h.port, f"pabrik_session={tok_b}", "sess_iso_b_2")
 
-        stream_a = _open_stream(h.port, f"nalar_session={tok_a}")
-        stream_b = _open_stream(h.port, f"nalar_session={tok_b}")
+        stream_a = _open_stream(h.port, f"pabrik_session={tok_a}")
+        stream_b = _open_stream(h.port, f"pabrik_session={tok_b}")
 
-        _rename_session(h.port, sess_a, "A own rename", f"nalar_session={tok_a}")
-        _rename_session(h.port, sess_b, "B own rename", f"nalar_session={tok_b}")
+        _rename_session(h.port, sess_a, "A own rename", f"pabrik_session={tok_a}")
+        _rename_session(h.port, sess_b, "B own rename", f"pabrik_session={tok_b}")
 
         assert stream_a.wait_for(sess_a), "A must receive its own session event"
         assert stream_b.wait_for(sess_b), "B must receive its own session event"
@@ -296,13 +296,13 @@ def test_sse_still_delivers_own_events_to_each_user(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_sse_auth_off_still_delivers_events(default_nalar_bin: Path):
+def test_sse_auth_off_still_delivers_events(default_pabrik_bin: Path):
     """Regression: without `--auth` the stream still delivers session events.
 
     With auth off there is no identity, so the system user sees everything
     and the fan-out filter must be a no-op — the pre-isolation behaviour.
     """
-    h = FunctionalHarness.boot(default_nalar_bin)
+    h = FunctionalHarness.boot(default_pabrik_bin)
     stream = None
     try:
         sess = _create_session(h.port, "", "sess_iso_noauth")

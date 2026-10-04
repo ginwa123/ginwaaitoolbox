@@ -1,8 +1,8 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const sqlite = pabrikcore.sqlite;
 const auth_common = @import("auth_common.zig");
 
 pub const WorkspaceWithItemsResponse = struct {
@@ -52,11 +52,11 @@ pub fn workspacesListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const is_include_items_str = req.query.get("is_include_items") orelse "true";
     const is_include_items = std.mem.eql(u8, is_include_items_str, "true");
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     // Scope the list to this request's owner (server-derived from the
-    // `nalar_session` cookie). Auth off / no cookie -> the shared sentinel,
+    // `pabrik_session` cookie). Auth off / no cookie -> the shared sentinel,
     // which also matches every legacy row, so auth-off is unchanged.
     const owner = auth_common.resolveRequestUserId(allocator, sqlite_db, di.auth_enabled, req.headers) catch {
         return res.jsonResponse(.{

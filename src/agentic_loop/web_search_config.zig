@@ -5,7 +5,7 @@
 //! `ToolExecContext.config` (`src/agentic_loop/tools.zig:101`) is the
 //! `LlmConfig` SINGLETON. In `--auth` mode that singleton never sees what
 //! the user saved: the config PUT returns early in the auth branch and does
-//! not swap it — its own comment says so (`nalar_config_put.zig:522-538`,
+//! not swap it — its own comment says so (`pabrik_config_put.zig:522-538`,
 //! "the global singleton is NOT swapped (config is per-user)").
 //!
 //! So a tool reading `ctx.config.web_search` would find it EMPTY for every
@@ -25,7 +25,7 @@
 //! bug as the Skill Evals trap, one layer over.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const config_mod = @import("../modules/config/Config.zig");
 
 pub const Providers = config_mod.LlmConfig.WebSearchProvidersMap;
@@ -46,10 +46,10 @@ const UserConfigHolder = struct {
 /// failure mode is the pre-existing one rather than a new breakage.
 pub fn resolve(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) ?Providers {
-    const di = nalarcore.getSingleton() catch return null;
+    const di = pabrikcore.getSingleton() catch return null;
     // File mode: the PUT swaps the singleton synchronously, so it already
     // tracks the user's settings. Reading the database here would add a
     // second source that can only ever disagree with it.
@@ -68,10 +68,10 @@ pub fn resolve(
 /// would leak into every other test in the binary.
 pub fn resolveForOwner(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     owner: []const u8,
 ) ?Providers {
-    const raw = nalarcore.user_config_store.loadRaw(allocator, db, owner) catch return null;
+    const raw = pabrikcore.user_config_store.loadRaw(allocator, db, owner) catch return null;
     // No saved config means this user never opened Settings, so the
     // singleton is still the better guess. An absent row is not a request
     // to remove their providers.
@@ -90,7 +90,7 @@ pub fn resolveForOwner(
 /// The session's user id, or an error when the session is not owned.
 fn sessionOwner(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) ![]u8 {
     var q = try db.query(
@@ -109,7 +109,7 @@ fn sessionOwner(
 // ─── tests: matrix rows 58–63 ────────────────────────────────────────────
 
 const testing = std.testing;
-const sqlite = nalarcore.sqlite;
+const sqlite = pabrikcore.sqlite;
 const migration = @import("../migrations/migration.zig");
 
 const TestCtx = struct {

@@ -49,7 +49,7 @@ _REAL_HTML_REPORT = """No stray processes, the port-8081 server was never touche
 
 <html>
 <div style="font-family:ui-sans-serif,system-ui,sans-serif;line-height:1.5">
-<h2>Audit: <code>nalar-tui</code> memory leak + slow typing/scrolling</h2>
+<h2>Audit: <code>pabrik-tui</code> memory leak + slow typing/scrolling</h2>
 
 <p><strong>Root cause found and fixed — PR <a href="https://github.com/ginwa123/ginwaaitoolbox/pull/479">#479</a></strong> · card moved to <em>in_review_task</em>. Everything below was measured by driving the real binary inside a pty (RSS from <code>/proc</code>, key→echo latency via <code>select</code>), with a control experiment proving the pty itself adds only 0.07 ms.</p>
 
@@ -74,7 +74,7 @@ _REAL_HTML_REPORT = """No stray processes, the port-8081 server was never touche
 <p>Per-frame re-wrapping with a dupe per chunk → borrowed subslices + one reused scratch list; row counting without allocation; <code>draw()</code> now transfers frame ownership instead of allocating + <code>memcpy</code>-ing a second frame (~80 KB × 10/s); the 10k-line scrollback cap no longer does a 10 000-entry memmove per appended line.</p>
 
 <h3>Gates</h3>
-<p><code>zig build test:tui</code> 165/165 · <code>zig build test</code> 3272 pass / 8 skip / 0 fail · new pty gate <code>tests/functional/tui_perf_test.py</code> 3 passed <em>and it fails on the pre-fix binary</em> (1 638 KB/s, 103.8 ms) · audit report at <code>docs/superpowers/plans/2026-09-13-audit-nalar-tui-memory-and-latency.md</code>.</p>
+<p><code>zig build test:tui</code> 165/165 · <code>zig build test</code> 3272 pass / 8 skip / 0 fail · new pty gate <code>tests/functional/tui_perf_test.py</code> 3 passed <em>and it fails on the pre-fix binary</em> (1 638 KB/s, 103.8 ms) · audit report at <code>docs/superpowers/plans/2026-09-13-audit-pabrik-tui-memory-and-latency.md</code>.</p>
 
 <p style="opacity:.8">Documented follow-ups (not in this PR): the 500 ms poll does a <em>blocking</em> HTTP GET on the UI thread (worst case 15 s stall while streaming — move to the already-written-but-dead <code>sse.zig</code> or a worker), <code>onMessages</code> re-parses an unbounded body and double-strips thinking tags, <code>seen_ids</code> is never pruned, and idle ticks still redraw unconditionally.</p>
 </div>
@@ -125,8 +125,8 @@ after:   2 passed</code></pre>
 
 <p><strong>PR <a href="https://github.com/ginwa123/ginwaaitoolbox/pull/481">#481</a></strong> — <em>fix(tui): a finished previous turn no longer silences the next one</em> — open on branch <code>worktree/audit-tui-turn-scoping-1789301162387</code>, rebased on current <code>main</code> (I verified the TUI/test/doc files are byte-identical to the commit I measured). Card is back in <strong>in_review_task</strong>.</p>
 
-<p style="opacity:.85">Note: <strong>PR #479 was merged as <code>dc653788</code> while I was working</strong>, so a commit pushed to that branch after the merge would not have reached main — hence the fresh branch + cherry-pick. Your installed <code>~/.local/bin/nalar-tui</code> is from Sep&nbsp;2, so it has neither fix yet; to try both right now:</p>
-<pre style="background:#f6f8fa;padding:10px;border-radius:6px;overflow-x:auto"><code>cd ~/.config/nalar/.worktrees/audit-tui-app-1789301141999 &amp;&amp; zig build install-tui</code></pre>
+<p style="opacity:.85">Note: <strong>PR #479 was merged as <code>dc653788</code> while I was working</strong>, so a commit pushed to that branch after the merge would not have reached main — hence the fresh branch + cherry-pick. Your installed <code>~/.local/bin/pabrik-tui</code> is from Sep&nbsp;2, so it has neither fix yet; to try both right now:</p>
+<pre style="background:#f6f8fa;padding:10px;border-radius:6px;overflow-x:auto"><code>cd ~/.config/pabrik/.worktrees/audit-tui-app-1789301141999 &amp;&amp; zig build install-tui</code></pre>
 
 <p style="opacity:.85">Still open from the audit (documented in §7 of the report, not in this PR): the 500&nbsp;ms poll does a <em>blocking</em> HTTP GET on the UI thread (worst case 15&nbsp;s stall while streaming → the right fix is the already-written-but-dead <code>sse.zig</code>, or a worker thread); <code>onMessages</code> re-parses an unbounded body and strips thinking tags twice; <code>seen_ids</code> is never pruned; nothing stops the spinner if a turn never emits a stop row.</p>
 
@@ -138,7 +138,7 @@ after:   2 passed</code></pre>
 
 
 def _seed_db_path(h: UIHarness) -> Path:
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def _seed_report_session(h: UIHarness, workspace_id: str, session_id: str) -> None:
@@ -384,7 +384,7 @@ def test_srcdoc_shell_carries_theme_and_resize_script(
         "srcdoc must carry the auto-resize reporter script"
     )
     # The LLM's payload is still rendered verbatim (no escaping regression).
-    assert "nalar-tui" in srcdoc and "<h2>" in srcdoc
+    assert "pabrik-tui" in srcdoc and "<h2>" in srcdoc
 
 
 # ─── Test 4: a payload authored for a LIGHT page stays legible ─────────────

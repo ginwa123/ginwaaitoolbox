@@ -18,8 +18,8 @@
 //! Task: task_1787408958280_1
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// HTTP request body. Decoupled from the domain `SystemPromptUpdateInput`
@@ -87,7 +87,7 @@ pub const SystemPromptUpdateOutput = struct {
 /// below) — all allocations go through the passed-in allocator.
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: SystemPromptUpdateInput,
 ) SystemPromptUpdateError!SystemPromptUpdateOutput {
     if (input.agent_id.len == 0 or input.prompt_id.len == 0) {
@@ -177,7 +177,7 @@ pub fn agentSystemPromptUpdateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const agent_id = req.params.get("agent_id") orelse "";
@@ -233,7 +233,7 @@ pub fn agentSystemPromptUpdateHandler(
 //   4. PATCH with empty-string content is legal (COALESCE → '',
 //      NOT NULL — regression for empty-slice-binds-as-NULL)
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 const Migration080AddAgentSystemPrompt = @import("../migrations/migration.zig").Migration080AddAgentSystemPrompt;

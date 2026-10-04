@@ -14,9 +14,9 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const llm_history = nalarcore.llm_history;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const llm_history = pabrikcore.llm_history;
 
 pub const SessionGetError = error{
     QueryFailed,
@@ -59,7 +59,7 @@ pub const SessionDetailJson = struct {
 /// Returns null for an unknown session id (handler → 404).
 fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,
 ) SessionGetError!?[]const u8 {
     // Empty id: fail closed without touching the resolver (it also
@@ -74,7 +74,7 @@ fn useCase(
     // Workspace resolution is auxiliary data: a resolver failure
     // degrades to workspace_id=null instead of failing the whole
     // detail read.
-    const workspace_id = nalarcore.workspace_scope.resolveWorkspaceId(allocator, db, session_id) catch |err| blk: {
+    const workspace_id = pabrikcore.workspace_scope.resolveWorkspaceId(allocator, db, session_id) catch |err| blk: {
         std.log.warn(
             "session_get: workspace resolution failed (non-fatal, workspace_id=null): {s}",
             .{@errorName(err)},
@@ -127,7 +127,7 @@ pub fn sessionGetHandler(
         });
     }
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const response = useCase(allocator, sqlite_db, session_id) catch |err| {
@@ -163,7 +163,7 @@ const testing = std.testing;
 const text_normalize = @import("helpers").text_normalize;
 
 const TestCtx = struct {
-    db: nalarcore.sqlite.SqliteBackend,
+    db: pabrikcore.sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
 };
 
@@ -172,7 +172,7 @@ fn setupDb() !TestCtx {
     var threaded = std.Io.Threaded.init(alloc, .{});
     errdefer threaded.deinit();
     const io = threaded.io();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
 

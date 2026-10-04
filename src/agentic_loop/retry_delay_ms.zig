@@ -1,11 +1,11 @@
 const std = @import("std");
 const testing = std.testing;
 const builtin = @import("builtin");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const isWorkerCancelled = @import("is_worker_cancelled.zig").isWorkerCancelled;
 
-const logger_mod = nalarcore.loggermod;
-const sqlite = nalarcore.sqlite;
+const logger_mod = pabrikcore.loggermod;
+const sqlite = pabrikcore.sqlite;
 const IsWorkerCancelledInput = @import("is_worker_cancelled.zig").IsWorkerCancelledInput;
 
 // Portable sleep helper. We can't use std.c.timespec directly because

@@ -1,10 +1,10 @@
 // src/apps/desktop_app/attach.zig
 //
-// Desktop's "find nalar" logic (Chunk 4 of the decoupled-nalar-service plan).
+// Desktop's "find pabrik" logic (Chunk 4 of the decoupled-pabrik-service plan).
 //
-// On launch, the desktop probes for a running nalar daemon that can serve
+// On launch, the desktop probes for a running pabrik daemon that can serve
 // the webapp and attaches the webview. If none is found and --no-auto-start
-// is NOT set, the desktop spawns a detached nalar via `subprocess.spawn`
+// is NOT set, the desktop spawns a detached pabrik via `subprocess.spawn`
 // and waits for it to come up.
 //
 // "Can serve the webapp" is deliberately stronger than "is running": a
@@ -14,45 +14,45 @@
 // with an HTML body) before we hand it to the webview, and a freshly
 // spawned child must pass it too before we return it.
 //
-// The desktop never signals nalar on close — closing the window does
-// NOT stop the daemon. Only `nalar service stop` (a separate CLI
+// The desktop never signals pabrik on close — closing the window does
+// NOT stop the daemon. Only `pabrik service stop` (a separate CLI
 // invocation) ends the daemon's life.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const helpers = @import("helpers");
 const subprocess = @import("subprocess.zig");
 const path_resolve = @import("path_resolve.zig");
 const port = @import("port.zig");
 
 pub const AttachOptions = struct {
-    /// Path to the nalar state file (from `state_file.defaultStatePath`).
+    /// Path to the pabrik state file (from `state_file.defaultStatePath`).
     /// The desktop reads this to find an existing daemon's host+port.
     state_path: []const u8,
     /// Port to probe as a fallback if no state file exists. Default 8081.
     default_port: u16 = 8081,
-    /// When true, refuse to auto-spawn nalar if none is running; the
+    /// When true, refuse to auto-spawn pabrik if none is running; the
     /// caller surfaces an actionable error to the user.
     no_auto_start: bool = false,
-    /// Path to the nalar binary (used by the auto-spawn path).
+    /// Path to the pabrik binary (used by the auto-spawn path).
     /// Optional — when null, we attempt to spawn using `path_resolve`
     /// against the desktop's own location.
-    nalar_path: ?[]const u8 = null,
+    pabrik_path: ?[]const u8 = null,
     /// The desktop's own executable path. Used by `path_resolve` to
-    /// check if `nalar` lives next to the desktop binary. Optional —
+    /// check if `pabrik` lives next to the desktop binary. Optional —
     /// when null, the auto-spawn path skips the "next-to-self"
     /// resolution strategy and goes straight to $PATH lookup.
     self_exe_path: ?[]const u8 = null,
     /// $PATH string (colon-separated on Unix). Required for the $PATH
-    /// resolution strategy when `nalar_path` is null AND there's no
-    /// nalar next to the desktop binary.
+    /// resolution strategy when `pabrik_path` is null AND there's no
+    /// pabrik next to the desktop binary.
     path_env: []const u8 = "",
     /// Absolute path to the extracted webapp assets. When the auto-spawn
-    /// path fires, the spawned nalar is started with `--static-dir <this>`
+    /// path fires, the spawned pabrik is started with `--static-dir <this>`
     /// so it serves the desktop's webapp at `/`. When attaching to an
-    /// existing nalar, this field is ignored (the user manages their
-    /// own nalar's static-dir). Always provided by main.zig; treat as
+    /// existing pabrik, this field is ignored (the user manages their
+    /// own pabrik's static-dir). Always provided by main.zig; treat as
     /// non-null in the auto-spawn path.
     static_dir: []const u8 = "",
 };
@@ -70,7 +70,7 @@ pub const AttachTarget = struct {
 pub const AttachError = error{
     AutoStartDisabled,
     AutoSpawnFailed,
-    NalarNotFound,
+    PabrikNotFound,
     OutOfMemory,
 };
 
@@ -90,8 +90,8 @@ pub fn resolveAttachTarget(
     opts: AttachOptions,
 ) AttachError!AttachTarget {
     // 1. State file: read it, check the pid is alive, probe the port.
-    if (try nalarcore.state_file.readStateFile(allocator, io, opts.state_path)) |state| {
-        defer nalarcore.state_file.freeState(allocator, state);
+    if (try pabrikcore.state_file.readStateFile(allocator, io, opts.state_path)) |state| {
+        defer pabrikcore.state_file.freeState(allocator, state);
         if (isUsableWebappServer(state.host, state.port, io)) {
             // Caller now owns state.host — it outlives this function. We
             // can't pass a slice into a returned struct without making a
@@ -122,15 +122,15 @@ pub fn resolveAttachTarget(
     return try autoSpawnAndWaitForHealth(allocator, io, opts);
 }
 
-/// True when `port` hosts a nalar that actually serves the webapp.
+/// True when `port` hosts a pabrik that actually serves the webapp.
 /// Logs (loudly) why a merely-healthy server was rejected, because the
-/// user's next question is always "my nalar is running, why did it
+/// user's next question is always "my pabrik is running, why did it
 /// start a second one?".
 fn isUsableWebappServer(host: []const u8, backend_port: u16, io: std.Io) bool {
     if (!probeHealth(host, backend_port, io)) return false;
     if (subprocess.probeWebapp(backend_port)) return true;
     std.log.warn(
-        "nalar on port {d} is alive but does not serve the webapp at / (GET / is not HTML) — ignoring it",
+        "pabrik on port {d} is alive but does not serve the webapp at / (GET / is not HTML) — ignoring it",
         .{backend_port},
     );
     return false;
@@ -150,10 +150,10 @@ fn autoSpawnAndWaitForHealth(
     io: std.Io,
     opts: AttachOptions,
 ) AttachError!AttachTarget {
-    // 1. Resolve nalar's absolute path. Order is: explicit
-    //    `--nalar-path` flag → next to self → $PATH lookup.
-    const nalar_path = blk: {
-        const explicit = opts.nalar_path orelse null;
+    // 1. Resolve pabrik's absolute path. Order is: explicit
+    //    `--pabrik-path` flag → next to self → $PATH lookup.
+    const pabrik_path = blk: {
+        const explicit = opts.pabrik_path orelse null;
         const self_exe = opts.self_exe_path orelse ".";
         const resolved = path_resolve.resolve(
             allocator,
@@ -162,58 +162,58 @@ fn autoSpawnAndWaitForHealth(
             opts.path_env,
         );
         break :blk resolved orelse {
-            std.log.err("Cannot find 'nalar' binary.", .{});
-            std.log.err("Hint: launch the desktop from a directory containing nalar, OR", .{});
-            std.log.err("      run `nalar service start --port {d}` in a terminal first.", .{
+            std.log.err("Cannot find 'pabrik' binary.", .{});
+            std.log.err("Hint: launch the desktop from a directory containing pabrik, OR", .{});
+            std.log.err("      run `pabrik service start --port {d}` in a terminal first.", .{
                 opts.default_port,
             });
-            return error.NalarNotFound;
+            return error.PabrikNotFound;
         };
     };
-    defer allocator.free(nalar_path);
+    defer allocator.free(pabrik_path);
 
     // 2. Pick a port the child can actually bind. Prefer the well-known
     //    one (keeps 8081 / --attach-port working), but if something else
-    //    holds it — typically a nalar that does not serve the webapp,
+    //    holds it — typically a pabrik that does not serve the webapp,
     //    which steps 1/2 above refused to attach to — take an ephemeral
     //    port instead. Spawning into an occupied port would fail to bind
     //    while the squatter's own `/health` kept answering our readiness
     //    probe, so we'd report success for a port we don't own.
     const spawn_port = chooseSpawnPort(allocator, io, opts.default_port);
 
-    std.log.info("No usable nalar daemon found — spawning a new one at {s} --port {d} (static dir: {s})", .{
-        nalar_path,
+    std.log.info("No usable pabrik daemon found — spawning a new one at {s} --port {d} (static dir: {s})", .{
+        pabrik_path,
         spawn_port,
         if (opts.static_dir.len > 0) opts.static_dir else "(none)",
     });
 
     // 3. Spawn the child process. Pass `opts.static_dir` so the spawned
-    //    nalar serves the webapp at `/`. If static_dir is empty (caller
-    //    didn't provide one), `nalar` only serves API endpoints and the
+    //    pabrik serves the webapp at `/`. If static_dir is empty (caller
+    //    didn't provide one), `pabrik` only serves API endpoints and the
     //    webapp check in step 5 below fails — which is the honest answer
     //    for a desktop that exists to show the webapp. In practice
     //    main.zig always populates this with a persistent dir.
     var child = subprocess.spawn(
         allocator,
         io,
-        nalar_path,
+        pabrik_path,
         spawn_port,
         if (opts.static_dir.len > 0) opts.static_dir else null,
     ) catch |err| {
-        std.log.err("Spawning nalar at {s} failed: {s}", .{ nalar_path, @errorName(err) });
-        std.log.err("Hint: the desktop doesn't manage nalar's lifecycle.", .{});
-        std.log.err("      If `nalar service start` is more reliable, prefer that.", .{});
+        std.log.err("Spawning pabrik at {s} failed: {s}", .{ pabrik_path, @errorName(err) });
+        std.log.err("Hint: the desktop doesn't manage pabrik's lifecycle.", .{});
+        std.log.err("      If `pabrik service start` is more reliable, prefer that.", .{});
         return error.AutoSpawnFailed;
     };
 
     // 4. Wait for /health to respond with 200. The child is now running;
     //    if the desktop closes, the child is NOT auto-terminated (that's
     //    the chunk 4 architectural commitment — desktop doesn't signal
-    //    nalar on close). The child becomes a long-lived daemon the user
-    //    has to stop manually via `nalar service stop` — which is
+    //    pabrik on close). The child becomes a long-lived daemon the user
+    //    has to stop manually via `pabrik service stop` — which is
     //    precisely why its --static-dir must be a persistent directory.
     subprocess.waitForHealth(spawn_port, 5_000, 100) catch |err| {
-        std.log.err("Spawned nalar but /health never came up: {s}", .{@errorName(err)});
+        std.log.err("Spawned pabrik but /health never came up: {s}", .{@errorName(err)});
         // Don't leak the orphan: kill it before bailing.
         child.terminate(io);
         return error.AutoSpawnFailed;
@@ -225,7 +225,7 @@ fn autoSpawnAndWaitForHealth(
     //    behind) instead of opening a blank window.
     if (!subprocess.probeWebapp(spawn_port)) {
         std.log.err(
-            "Spawned nalar on port {d} but it does not serve the webapp at / — refusing to open a 404 window.",
+            "Spawned pabrik on port {d} but it does not serve the webapp at / — refusing to open a 404 window.",
             .{spawn_port},
         );
         std.log.err("Check that the webapp dir contains index.html and is readable.", .{});
@@ -240,7 +240,7 @@ fn autoSpawnAndWaitForHealth(
     //    `--browser` click leaks another detached daemon — e.g. :51165
     //    then :8081 side by side. Best-effort: the daemon is already
     //    healthy and usable, so a write failure only warns.
-    const state: nalarcore.state_file.State = .{
+    const state: pabrikcore.state_file.State = .{
         .pid = child.pid,
         .port = spawn_port,
         .host = "127.0.0.1",
@@ -248,9 +248,9 @@ fn autoSpawnAndWaitForHealth(
         .version = "0.4.0",
         .static_dir = if (opts.static_dir.len > 0) opts.static_dir else null,
     };
-    nalarcore.state_file.writeStateFile(allocator, io, opts.state_path, state) catch |err| {
+    pabrikcore.state_file.writeStateFile(allocator, io, opts.state_path, state) catch |err| {
         std.log.warn(
-            "Spawned nalar on port {d} but could not write state file {s}: {s} — the next launch may spawn a duplicate",
+            "Spawned pabrik on port {d} but could not write state file {s}: {s} — the next launch may spawn a duplicate",
             .{ spawn_port, opts.state_path, @errorName(err) },
         );
     };
@@ -283,19 +283,19 @@ fn chooseSpawnPort(allocator: std.mem.Allocator, io: std.Io, preferred: u16) u16
         .{ preferred, free.port },
     );
     std.log.warn(
-        "To stop that server and go back to port {d}, run:  nalar service stop  (or kill the process listening on {d})",
+        "To stop that server and go back to port {d}, run:  pabrik service stop  (or kill the process listening on {d})",
         .{ preferred, preferred },
     );
     return free.port;
 }
 
 // ===== Tests merged from attach_test.zig (2026-09-29 flatten) =====
-// Tests for the desktop's "find nalar" logic.
+// Tests for the desktop's "find pabrik" logic.
 //
 // These tests stand up a real loopback HTTP server on a kernel-picked port
 // whose responses are path-aware, plus a hand-rolled state.json, so the
 // resolve/probe plumbing is exercised over a real socket without depending
-// on whether a nalar binary happens to exist on the host. See
+// on whether a pabrik binary happens to exist on the host. See
 // subprocess.zig for the same pattern (kernel-picked port + accept
 // loop in a background thread).
 //
@@ -308,7 +308,7 @@ const testing = std.testing;
 
 /// What the mock server pretends to be.
 const MockKind = enum {
-    /// A working nalar: 200 + HTML at `/`, 200 at `/health`.
+    /// A working pabrik: 200 + HTML at `/`, 200 at `/health`.
     full_app,
     /// The broken shape: 200 at `/health`, `404 Not Found` at `/`.
     health_only,
@@ -465,7 +465,7 @@ fn writeStateFile(
     return path;
 }
 
-/// Fake `nalar` binary used by the auto-spawn test. It binds the port in
+/// Fake `pabrik` binary used by the auto-spawn test. It binds the port in
 /// `--port`, answers every request with 200 + HTML (so both the health poll
 /// and the webapp check pass), and exits on its own after a few seconds so
 /// the test cannot leak a process.
@@ -473,7 +473,7 @@ fn writeStateFile(
 /// Exposed as a script rather than a stub executable so the test exercises
 /// the real spawn path: argv shape, readiness polling, and the post-spawn
 /// "does it actually serve the app?" verification.
-const fake_nalar_script =
+const fake_pabrik_script =
     \\#!/usr/bin/env python3
     \\import socket, sys, time
     \\
@@ -486,7 +486,7 @@ const fake_nalar_script =
     \\srv.listen(8)
     \\srv.settimeout(0.5)
     \\
-    \\body = b"<!DOCTYPE html><html><body>fake nalar</body></html>"
+    \\body = b"<!DOCTYPE html><html><body>fake pabrik</body></html>"
     \\headers = (
     \\    b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
     \\    + str(len(body)).encode()
@@ -510,15 +510,15 @@ const fake_nalar_script =
     \\
 ;
 
-/// Materialise `fake_nalar_script` in `tmp`'s dir, mark it executable, and
+/// Materialise `fake_pabrik_script` in `tmp`'s dir, mark it executable, and
 /// return its owned absolute path.
-fn writeFakeNalar(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]u8 {
+fn writeFakePabrik(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]u8 {
     var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
-    const path = try std.fs.path.join(allocator, &.{ dir_buf[0..dir_len], "fake-nalar" });
+    const path = try std.fs.path.join(allocator, &.{ dir_buf[0..dir_len], "fake-pabrik" });
     errdefer allocator.free(path);
 
-    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = fake_nalar_script });
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = fake_pabrik_script });
 
     var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
     if (path.len >= path_buf.len) return error.PathTooLong;
@@ -565,7 +565,7 @@ test "resolveAttachTarget attaches to a daemon that serves the webapp" {
     defer allocator.free(state_path);
 
     // --no-auto-start short-circuits the spawn fallback so the test needs
-    // no nalar binary on disk; a successful attach is the only way to get
+    // no pabrik binary on disk; a successful attach is the only way to get
     // a target back.
     const result = try resolveAttachTarget(allocator, testing.io, .{
         .state_path = state_path,
@@ -582,7 +582,7 @@ test "resolveAttachTarget refuses a daemon whose static dir is gone (health 200,
     if (builtin.os.tag == .windows) return;
     const allocator = testing.allocator;
 
-    // This is the exact shape of the reported bug: a detached nalar whose
+    // This is the exact shape of the reported bug: a detached pabrik whose
     // --static-dir was deleted. /health is 200, / is 404 Not Found.
     var srv = try bindMockServer(.health_only);
     defer srv.stop();
@@ -604,7 +604,7 @@ test "resolveAttachTarget refuses a daemon whose static dir is gone (health 200,
 
 test "resolveAttachTarget falls through to a fresh spawn when the only daemon 404s /" {
     if (builtin.os.tag == .windows) return;
-    if (!fileExists("/usr/bin/env")) return error.SkipZigTest; // fake nalar needs python3
+    if (!fileExists("/usr/bin/env")) return error.SkipZigTest; // fake pabrik needs python3
     const allocator = testing.allocator;
 
     var srv = try bindMockServer(.health_only);
@@ -615,11 +615,11 @@ test "resolveAttachTarget falls through to a fresh spawn when the only daemon 40
     const state_path = try writeStateFile(allocator, &tmp, srv.port);
     defer allocator.free(state_path);
 
-    // Stand-in for the real nalar binary: a script that binds the --port it
+    // Stand-in for the real pabrik binary: a script that binds the --port it
     // is given and answers everything with 200 + HTML, then exits on its own
     // so the test can't leak a process.
-    const fake_nalar = try writeFakeNalar(allocator, &tmp);
-    defer allocator.free(fake_nalar);
+    const fake_pabrik = try writeFakePabrik(allocator, &tmp);
+    defer allocator.free(fake_pabrik);
 
     // Auto-start is ON and the only daemon around 404s `/`. The desktop must
     // skip that daemon and spawn its own on a DIFFERENT port — the port the
@@ -629,7 +629,7 @@ test "resolveAttachTarget falls through to a fresh spawn when the only daemon 40
         .state_path = state_path,
         .default_port = srv.port,
         .no_auto_start = false,
-        .nalar_path = fake_nalar,
+        .pabrik_path = fake_pabrik,
     });
     defer allocator.free(result.host);
 
@@ -669,7 +669,7 @@ test "resolveAttachTarget refuses a 404-ing daemon on the fallback port too" {
     try testing.expectError(error.AutoStartDisabled, result);
 }
 
-test "resolveAttachTarget returns AutoStartDisabled when --no-auto-start and no nalar" {
+test "resolveAttachTarget returns AutoStartDisabled when --no-auto-start and no pabrik" {
     if (builtin.os.tag == .windows) return;
     const allocator = testing.allocator;
 
@@ -694,7 +694,7 @@ test "resolveAttachTarget returns AutoStartDisabled when --no-auto-start and no 
 
 test "auto-spawn persists state.json so the next launch attaches instead of spawning" {
     if (builtin.os.tag == .windows) return;
-    if (!fileExists("/usr/bin/env")) return error.SkipZigTest; // fake nalar needs python3
+    if (!fileExists("/usr/bin/env")) return error.SkipZigTest; // fake pabrik needs python3
     const allocator = testing.allocator;
 
     // Squatter on the well-known port: healthy but serves no webapp, so the
@@ -710,15 +710,15 @@ test "auto-spawn persists state.json so the next launch attaches instead of spaw
     const state_path = try std.fs.path.join(allocator, &.{ dir_buf[0..dir_len], "state.json" });
     defer allocator.free(state_path);
 
-    const fake_nalar = try writeFakeNalar(allocator, &tmp);
-    defer allocator.free(fake_nalar);
+    const fake_pabrik = try writeFakePabrik(allocator, &tmp);
+    defer allocator.free(fake_pabrik);
 
     // First launch: no state file, well-known port unusable → spawn.
     const first = try resolveAttachTarget(allocator, testing.io, .{
         .state_path = state_path,
         .default_port = squatter.port,
         .no_auto_start = false,
-        .nalar_path = fake_nalar,
+        .pabrik_path = fake_pabrik,
     });
     defer allocator.free(first.host);
     try testing.expect(first.we_spawned);
@@ -728,10 +728,10 @@ test "auto-spawn persists state.json so the next launch attaches instead of spaw
     // the freshly spawned port. Without this, the next launch only probes
     // the state file (stale/missing) + the well-known port and spawns a
     // SECOND daemon (the :8081 half of the reported bug).
-    const recorded = try nalarcore.state_file.readStateFile(allocator, testing.io, state_path);
+    const recorded = try pabrikcore.state_file.readStateFile(allocator, testing.io, state_path);
     try testing.expect(recorded != null);
     const state = recorded.?;
-    defer nalarcore.state_file.freeState(allocator, state);
+    defer pabrikcore.state_file.freeState(allocator, state);
     try testing.expectEqual(first.port, state.port);
 
     // Second launch: with auto-start disabled (so a spawn is impossible),

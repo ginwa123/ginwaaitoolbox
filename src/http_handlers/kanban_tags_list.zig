@@ -15,9 +15,9 @@
 const std = @import("std");
 const testing = std.testing;
 const http_response = @import("http_response.zig");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
-const ai_mod = nalarcore.ai_mod;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const ai_mod = pabrikcore.ai_mod;
 const llm_history = ai_mod.llm_history;
 
 const DEFAULT_LIMIT: u32 = 8;
@@ -42,7 +42,7 @@ pub const KanbanTagsListResult = []const u8; // pre-serialized JSON
 
 pub fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: KanbanTagsListInput,
 ) KanbanTagsListError!KanbanTagsListResult {
     const page = llm_history.listKanbanDistinctTags(
@@ -106,7 +106,7 @@ pub fn kanbanTagsListHandler(
     const offset_str = req.query.get("offset") orelse "0";
     const offset = std.fmt.parseInt(u32, offset_str, 10) catch 0;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const data = useCase(allocator, sqlite_db, .{
@@ -136,12 +136,12 @@ pub fn kanbanTagsListHandler(
 // Behavioural tests; not static-contract / grep.
 // =====================================================================
 
-fn setupDbWithTagsForHandler() !struct { db: nalarcore.sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+fn setupDbWithTagsForHandler() !struct { db: pabrikcore.sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     const alloc = testing.allocator;
     var threaded = std.Io.Threaded.init(alloc, .{});
     errdefer threaded.deinit();
     const io = threaded.io();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
     try db.exec(alloc, "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL)", &.{});

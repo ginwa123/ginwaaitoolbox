@@ -16,8 +16,8 @@
 //! end, so neither layer needs explicit nor free.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const gserverz = nalarcore.gserverz;
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 
 /// HTTP request body. Decoupled from the domain `KnowledgeUpdateInput`
@@ -103,7 +103,7 @@ pub const KnowledgeUpdateOutput = struct {
 ///     empty slices as SQL NULL, which violates NOT NULL.
 pub fn useCase(
     allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
+    db: *pabrikcore.sqlite.SqliteBackend,
     input: KnowledgeUpdateInput,
 ) KnowledgeUpdateError!KnowledgeUpdateOutput {
     if (input.agent_id.len == 0 or input.knowledge_id.len == 0) {
@@ -207,7 +207,7 @@ pub fn agentKnowledgeUpdateHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    const di = try nalarcore.getSingleton();
+    const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
 
     const agent_id = req.params.get("agent_id") orelse "";
@@ -266,7 +266,7 @@ pub fn agentKnowledgeUpdateHandler(
 //   4. file_path only: updates just file_path
 //   5. label only: updates just label
 
-const sqlite = @import("nalarcore").sqlite;
+const sqlite = @import("pabrikcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 const Migration079AddContentToAgentKnowledge = @import("../migrations/migration.zig").Migration079AddContentToAgentKnowledge;

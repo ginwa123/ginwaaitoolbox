@@ -3,7 +3,7 @@
   Debug-only cleartext allowance for the functional UI suite.
 
   `10.0.2.2` is the Android emulator's own alias for the loopback interface of
-  the machine running the emulator. nalar binds 127.0.0.1 only: its CLI surface
+  the machine running the emulator. pabrik binds 127.0.0.1 only: its CLI surface
   is port, static-dir, http2, tls, tls-selfsigned and auth, with no host option
   at all. So that alias is the way in from a device (and the reason this suite
   does not use an `adb reverse` tunnel is that the adb client is unreliable on

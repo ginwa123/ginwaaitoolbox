@@ -540,7 +540,7 @@ test "executePresentFilesToString rejects missing file" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var refs = [_]PresentFileRef{.{ .path = "/tmp/nalar-present-files-does-not-exist-xyz.txt" }};
+    var refs = [_]PresentFileRef{.{ .path = "/tmp/pabrik-present-files-does-not-exist-xyz.txt" }};
     const input = PresentFilesInput{ .files = &refs };
     const payload = try present_files.executePresentFilesToString(alloc, io, input, null);
     defer alloc.free(payload);
@@ -574,18 +574,18 @@ test "executePresentFilesToString returns success envelope for real files" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const tmp_dir = "/tmp/nalar-present-files-test";
+    const tmp_dir = "/tmp/pabrik-present-files-test";
     std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
 
-    const txt_path = "/tmp/nalar-present-files-test/notes.txt";
+    const txt_path = "/tmp/pabrik-present-files-test/notes.txt";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, txt_path, .{});
         defer std.Io.File.close(f, io);
         try std.Io.File.writeStreamingAll(f, io, "hello world");
     }
-    const jpg_path = "/tmp/nalar-present-files-test/photo.jpg";
+    const jpg_path = "/tmp/pabrik-present-files-test/photo.jpg";
     {
         const f = try std.Io.Dir.createFileAbsolute(io, jpg_path, .{});
         defer std.Io.File.close(f, io);

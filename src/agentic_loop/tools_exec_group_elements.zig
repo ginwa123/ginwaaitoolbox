@@ -1,11 +1,11 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const group_design_elements_mod = nalarcore.group_design_elements;
+const agent = pabrikcore.agent;
+const group_design_elements_mod = pabrikcore.group_design_elements;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execGroupElements(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {

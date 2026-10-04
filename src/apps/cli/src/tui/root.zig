@@ -39,7 +39,7 @@ pub const Input = widgets.Input;
 pub const Spinner = widgets.Spinner;
 pub const StatusBar = widgets.StatusBar;
 
-/// The chat application model (used by `nalar-tui`; reusable by other
+/// The chat application model (used by `pabrik-tui`; reusable by other
 /// frontends).
 pub const app = @import("app.zig");
 pub const transport = @import("transport.zig");

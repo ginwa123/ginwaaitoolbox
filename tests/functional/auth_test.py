@@ -1,6 +1,6 @@
 """Functional tests for opt-in `--auth` mode.
 
-Boots a REAL nalar binary + REAL SQLite via the harness (never a live
+Boots a REAL pabrik binary + REAL SQLite via the harness (never a live
 dev server, never port 8081). Replays the EXACT wire flows the login
 page uses: unauthenticated API -> 401, login -> Set-Cookie, authed
 request -> 200, logout -> clear, empty cookie -> 401.
@@ -10,7 +10,7 @@ Covers:
   * GATE — with `--auth`: /api/workspaces without cookie -> 401.
   * LOGIN-FLOW — create-admin -> login -> Set-Cookie (HttpOnly) ->
     authed GET works -> /api/auth/me 200 -> logout clears.
-  * EMPTY-COOKIE — `Cookie: nalar_session=` -> 401 (not 500).
+  * EMPTY-COOKIE — `Cookie: pabrik_session=` -> 401 (not 500).
   * EXEMPT — /health + /api/auth/login reachable without cookie when on.
 """
 
@@ -67,8 +67,8 @@ def test_open_by_default(harness: FunctionalHarness):
     assert isinstance(r.json(), (list, dict))
 
 
-def test_gate_without_cookie(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_gate_without_cookie(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
         status, _, _ = _raw("GET", h.port, "/api/workspaces")
         assert status == 401
@@ -76,8 +76,8 @@ def test_gate_without_cookie(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_exempt_routes_without_cookie(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_exempt_routes_without_cookie(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
         status, _, _ = _raw("GET", h.port, "/health")
         assert status == 200
@@ -87,35 +87,35 @@ def test_exempt_routes_without_cookie(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_empty_cookie_is_401(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_empty_cookie_is_401(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        status, _, _ = _raw("GET", h.port, "/api/workspaces", cookie="nalar_session=")
+        status, _, _ = _raw("GET", h.port, "/api/workspaces", cookie="pabrik_session=")
         assert status == 401
     finally:
         h.teardown()
 
 
-def test_login_flow(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_login_flow(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "admin@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "admin@example.com", "supersecret123")
         status, headers, body = _raw(
             "POST", h.port, "/api/auth/login",
             body={"email": "admin@example.com", "password": "supersecret123"},
         )
         assert status == 200, body[:500]
         set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
-        assert "nalar_session=" in set_cookie
+        assert "pabrik_session=" in set_cookie
         assert "HttpOnly" in set_cookie
         # Extract raw token for subsequent requests.
-        token = set_cookie.split("nalar_session=", 1)[1].split(";", 1)[0].strip()
+        token = set_cookie.split("pabrik_session=", 1)[1].split(";", 1)[0].strip()
         assert len(token) > 16
 
-        status, _, _ = _raw("GET", h.port, "/api/workspaces", cookie=f"nalar_session={token}")
+        status, _, _ = _raw("GET", h.port, "/api/workspaces", cookie=f"pabrik_session={token}")
         assert status == 200
 
-        status, _, me_body = _raw("GET", h.port, "/api/auth/me", cookie=f"nalar_session={token}")
+        status, _, me_body = _raw("GET", h.port, "/api/auth/me", cookie=f"pabrik_session={token}")
         assert status == 200
         me = json.loads(me_body.decode())
         assert me["authenticated"] is True
@@ -129,23 +129,23 @@ def test_login_flow(default_nalar_bin: Path):
         assert status == 401
 
         # Logout clears the session server-side.
-        status, logout_headers, _ = _raw("POST", h.port, "/api/auth/logout", cookie=f"nalar_session={token}")
+        status, logout_headers, _ = _raw("POST", h.port, "/api/auth/logout", cookie=f"pabrik_session={token}")
         assert status == 200
         assert "Max-Age=0" in (logout_headers.get("Set-Cookie") or "")
-        status, _, _ = _raw("GET", h.port, "/api/workspaces", cookie=f"nalar_session={token}")
+        status, _, _ = _raw("GET", h.port, "/api/workspaces", cookie=f"pabrik_session={token}")
         assert status == 401
     finally:
         h.teardown()
 
 
-def test_create_admin_refuses_second_without_force(default_nalar_bin: Path):
-    h = _boot_auth(default_nalar_bin)
+def test_create_admin_refuses_second_without_force(default_pabrik_bin: Path):
+    h = _boot_auth(default_pabrik_bin)
     try:
-        _create_admin(default_nalar_bin, h.temp_dir, "one@example.com", "supersecret123")
+        _create_admin(default_pabrik_bin, h.temp_dir, "one@example.com", "supersecret123")
         env = dict(os.environ)
         env["HOME"] = str(h.temp_dir)
         r = subprocess.run(
-            [str(default_nalar_bin), "create-admin", "--email", "two@example.com", "--password", "supersecret123"],
+            [str(default_pabrik_bin), "create-admin", "--email", "two@example.com", "--password", "supersecret123"],
             capture_output=True,
             text=True,
             env=env,
@@ -156,7 +156,7 @@ def test_create_admin_refuses_second_without_force(default_nalar_bin: Path):
         h.teardown()
 
 
-def test_login_refresh_serves_spa_shell(default_nalar_bin: Path, tmp_path: Path):
+def test_login_refresh_serves_spa_shell(default_pabrik_bin: Path, tmp_path: Path):
     """Refreshing at /login?redirect=/app must serve index.html, not 404.
 
     Regression: the SPA fallback only covered the /app prefix, so the
@@ -166,7 +166,7 @@ def test_login_refresh_serves_spa_shell(default_nalar_bin: Path, tmp_path: Path)
     static_dir = tmp_path / "webapp"
     static_dir.mkdir()
     (static_dir / "index.html").write_text("<!doctype html><title>SPA</title>")
-    h = FunctionalHarness.boot(default_nalar_bin, extra_args=("--auth", "--static-dir", str(static_dir)))
+    h = FunctionalHarness.boot(default_pabrik_bin, extra_args=("--auth", "--static-dir", str(static_dir)))
     try:
         status, headers, body = _raw("GET", h.port, "/login?redirect=/app")
         assert status == 200, body[:200]

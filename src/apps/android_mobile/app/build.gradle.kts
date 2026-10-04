@@ -13,33 +13,33 @@ plugins {
 // `HttpsAuthTransport` had already captured the production host. Baking it into
 // the variant removes the ordering question entirely.
 //
-// The functional UI suite passes `-PnalarBaseUrl=http://10.0.2.2:<port>` to talk
-// to a harness-booted nalar; nothing else does. `10.0.2.2` is the emulator's own
+// The functional UI suite passes `-PpabrikBaseUrl=http://10.0.2.2:<port>` to talk
+// to a harness-booted pabrik; nothing else does. `10.0.2.2` is the emulator's own
 // alias for the host's loopback interface, which is the address a `127.0.0.1`
 // bound server is reachable on from inside the emulator.
 val productionBaseUrl = "https://agent.ginwa.site"
 
 val debugBaseUrl: String = run {
-    val raw = (project.findProperty("nalarBaseUrl") as String?)?.trim().orEmpty()
+    val raw = (project.findProperty("pabrikBaseUrl") as String?)?.trim().orEmpty()
     if (raw.isEmpty()) {
         productionBaseUrl
     } else {
         require(raw.startsWith("http://") || raw.startsWith("https://")) {
-            "nalarBaseUrl must be an absolute http(s) URL, got: $raw"
+            "pabrikBaseUrl must be an absolute http(s) URL, got: $raw"
         }
         require(!raw.contains('"') && !raw.contains('\\')) {
-            "nalarBaseUrl must not contain quotes or backslashes, got: $raw"
+            "pabrikBaseUrl must not contain quotes or backslashes, got: $raw"
         }
         raw.trimEnd('/')
     }
 }
 
 android {
-    namespace = "com.nalar.mobile"
+    namespace = "com.pabrik.mobile"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.nalar.mobile"
+        applicationId = "com.pabrik.mobile"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -70,7 +70,7 @@ android {
         // `src/debug/res/xml/network_security_config.xml`.
         //
         // Note this does *not* make a debug build insecure by default: with no
-        // `-PnalarBaseUrl`, a debug APK points at production over HTTPS exactly
+        // `-PpabrikBaseUrl`, a debug APK points at production over HTTPS exactly
         // as release does, and the flag is simply unused.
         debug {
             buildConfigField("String", "API_BASE_URL", "\"$debugBaseUrl\"")
@@ -84,7 +84,7 @@ android {
             )
             // Restated from `defaultConfig` on purpose — see the comment there.
             // `debugBaseUrl` is deliberately unreadable here, so a stray
-            // `-PnalarBaseUrl` on a release invocation cannot redirect it.
+            // `-PpabrikBaseUrl` on a release invocation cannot redirect it.
             buildConfigField("String", "API_BASE_URL", "\"$productionBaseUrl\"")
             buildConfigField("boolean", "ALLOW_INSECURE_HTTP", "false")
         }
@@ -139,7 +139,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     // The three offline caches. One Room database, three DAOs — see
-    // com.nalar.mobile.cache.NalarCacheDatabase.
+    // com.pabrik.mobile.cache.PabrikCacheDatabase.
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")

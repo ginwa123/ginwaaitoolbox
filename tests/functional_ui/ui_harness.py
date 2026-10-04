@@ -1,4 +1,4 @@
-"""UI test harness — boots a nalar backend + Vite dev server for Playwright.
+"""UI test harness — boots a pabrik backend + Vite dev server for Playwright.
 
 Extends the existing ``FunctionalHarness`` boot story by ALSO spawning a
 Vite dev server that:
@@ -137,7 +137,7 @@ VITE_POLL_INTERVAL_S = 0.2
 
 @dataclasses.dataclass
 class UIHarness:
-    """A booted nalar backend + Vite dev server, both bound to the same
+    """A booted pabrik backend + Vite dev server, both bound to the same
     isolated tmpdir as the backend's HOME.
 
     The frontend (Vite) is spawned AFTER the backend is ready, with
@@ -178,7 +178,7 @@ class UIHarness:
     @classmethod
     def boot(
         cls,
-        nalar_bin: Path | None = None,
+        pabrik_bin: Path | None = None,
         *,
         port: int | None = None,
         vite_port: int | None = None,
@@ -191,8 +191,8 @@ class UIHarness:
         """Boot backend + vite against an isolated tmpdir HOME.
 
         Args:
-            nalar_bin: Path to the nalar binary (default: $NALAR_BIN or
-                zig-out/bin/nalar).
+            pabrik_bin: Path to the pabrik binary (default: $PABRIK_BIN or
+                zig-out/bin/pabrik).
             port: Backend port. ``None`` (the default) picks a **random**
                 free port from the wide shared ``[RANDOM_PORT_START,
                 RANDOM_PORT_END]`` range. Pass an explicit integer to
@@ -201,7 +201,7 @@ class UIHarness:
             vite_port: Vite port. ``None`` (the default) picks a random
                 free port from the same wide range, with reserved ports
                 = ``(5173, 8081)``. Pass a value to skip the random pick.
-            ready_timeout_s: Seconds to wait for nalar to become ready.
+            ready_timeout_s: Seconds to wait for pabrik to become ready.
             vite_ready_timeout_s: Seconds to wait for vite to serve a 200
                 on its root URL.
             stub_llm_profile: If True, pre-create a stub LLM profile so
@@ -221,7 +221,7 @@ class UIHarness:
         # 1. Boot the backend (inherited harness). If this fails, the
         #    tempdir is cleaned up by FunctionalHarness.boot internally.
         backend = FunctionalHarness.boot(
-            nalar_bin,
+            pabrik_bin,
             port=port,
             ready_timeout_s=ready_timeout_s,
             stub_llm_profile=stub_llm_profile,
@@ -285,7 +285,7 @@ class UIHarness:
         # Vite log outside temp_dir so backend's rmtree doesn't fail on
         # Windows when vite child still holds the file (PermissionError).
         # Use a separate temp file that we clean up explicitly.
-        vite_log_path = Path(tempfile.gettempdir()) / f"nalar-vite-{backend.temp_dir.name}.log"
+        vite_log_path = Path(tempfile.gettempdir()) / f"pabrik-vite-{backend.temp_dir.name}.log"
         vite_log_file = vite_log_path.open("wb")
         vite_proc = subprocess.Popen(
             [
@@ -636,7 +636,7 @@ _port_is_free = port_is_free_with_reuse
 
 
 def run_quick(
-    nalar_bin: Path | None = None,
+    pabrik_bin: Path | None = None,
     *,
     port: int | None = None,
     stub_llm_profile: bool = False,
@@ -649,7 +649,7 @@ def run_quick(
             print(h.web_url())  # http://127.0.0.1:<vite-port>/
     """
     h = UIHarness.boot(
-        nalar_bin, port=port, stub_llm_profile=stub_llm_profile
+        pabrik_bin, port=port, stub_llm_profile=stub_llm_profile
     )
     try:
         yield h

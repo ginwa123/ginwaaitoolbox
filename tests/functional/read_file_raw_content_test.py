@@ -20,7 +20,7 @@ envelope carries raw content ..."):
     definitions.
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \
       python3 -m pytest tests/functional/read_file_raw_content_test.py -v
 """
 

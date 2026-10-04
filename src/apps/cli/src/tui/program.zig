@@ -65,7 +65,7 @@ pub fn Program(comptime Model: type) type {
         /// yields Ctrl-C. Always restores the terminal.
         pub fn run(self: *Self) !void {
             if (!terminal.isTty()) {
-                std.log.err("nalar-tui requires a TTY (stdin is not a terminal)", .{});
+                std.log.err("pabrik-tui requires a TTY (stdin is not a terminal)", .{});
                 return error.NotATerminal;
             }
 

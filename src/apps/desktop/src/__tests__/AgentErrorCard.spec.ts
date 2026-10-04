@@ -14,7 +14,7 @@ import AgentErrorCard from '../components/chat/AgentErrorCard.vue'
 const RETRY_MESSAGE = `[Retry 1/10] StreamInterrupted (callDynamicAgentNew). Retrying in 10000ms.
 Server said: {"error":{"message":"Provider returned error","code":429}}`
 
-const BAIL_MESSAGE = `[Agent Nalar System error] workflow halted after 10 consecutive retries.
+const BAIL_MESSAGE = `[Agent Pabrik System error] workflow halted after 10 consecutive retries.
 Reason for last retry: StreamInterrupted (source: callDynamicAgentNew).
 Server said: upstream provider rate-limited`
 

@@ -1,12 +1,12 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
+const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
-const agent = nalarcore.agent;
-const llm_history = nalarcore.llm_history;
-const set_pull_request_mod = nalarcore.set_pull_request;
+const agent = pabrikcore.agent;
+const llm_history = pabrikcore.llm_history;
+const set_pull_request_mod = pabrikcore.set_pull_request;
 const wrapToolOutput = tools.wrapToolOutput;
 
 fn payloadString(inner_parsed: ?std.json.Parsed(std.json.Value), field: []const u8) ?[]const u8 {

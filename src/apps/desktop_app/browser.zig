@@ -1,9 +1,9 @@
 // src/apps/desktop_app/browser.zig
 //
-// Browser-tab mode for nalar-desktop (`--browser`).
+// Browser-tab mode for pabrik-desktop (`--browser`).
 //
 // Reuses the exact same attach flow as the webview path (state file →
-// probe → auto-spawn detached nalar), but instead of opening a native
+// probe → auto-spawn detached pabrik), but instead of opening a native
 // webview window it opens the resolved URL in the OS default browser
 // (new tab/window — the browser decides) and exits 0 immediately.
 // The daemon keeps running; closing the browser tab does NOT stop it,

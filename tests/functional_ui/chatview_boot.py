@@ -53,7 +53,7 @@ def seed_db_path(h: UIHarness) -> Path:
     The harness's tempdir passed ``is_safe_tmp`` validation before boot;
     ``DbSeed`` re-validates as belt-and-suspenders.
     """
-    return h.temp_dir / ".config" / "nalar" / "agent.db"
+    return h.temp_dir / ".config" / "pabrik" / "agent.db"
 
 
 def create_workspace(h: UIHarness, name: str = "ui-chat-ws") -> str:

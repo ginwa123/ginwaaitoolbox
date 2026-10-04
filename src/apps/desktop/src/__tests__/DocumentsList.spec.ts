@@ -166,8 +166,8 @@ describe('DocumentsList — section chrome', () => {
 
     await wrapper.get('[data-testid="documents-section-header"]').trigger('click')
     await nextTick()
-    expect(localStorage.getItem('nalar-sidebar-documents-expanded')).toBe('false')
-    expect(localStorage.getItem('nalar-sidebar-projects-expanded')).toBe(null)
+    expect(localStorage.getItem('pabrik-sidebar-documents-expanded')).toBe('false')
+    expect(localStorage.getItem('pabrik-sidebar-projects-expanded')).toBe(null)
     wrapper.unmount()
   })
 

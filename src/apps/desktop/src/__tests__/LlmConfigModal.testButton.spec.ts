@@ -2,7 +2,7 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LlmTestResult } from '../api'
-import LlmConfigModal, { type LlmConfigModalValue } from '../components/nalar/LlmConfigModal.vue'
+import LlmConfigModal, { type LlmConfigModalValue } from '../components/pabrik/LlmConfigModal.vue'
 
 // Mock the `testLlmProfile` API client so the modal's "Test" button
 // tests don't hit the network. Per-test overrides shape success vs

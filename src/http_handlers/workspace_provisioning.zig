@@ -15,8 +15,8 @@
 //! `workspaces_create.zig` delegates here rather than carrying its own copy.
 
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const sqlite = nalarcore.sqlite;
+const pabrikcore = @import("pabrikcore");
+const sqlite = pabrikcore.sqlite;
 const auth_common = @import("auth_common.zig");
 const process = @import("helpers").process;
 const getCurrentProcessId = process.getCurrentProcessId;
