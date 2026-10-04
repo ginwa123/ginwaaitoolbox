@@ -98,7 +98,7 @@ pub fn onEventSendSessions(
 //
 // The sibling `on_event_sent.zig::onEventSendSessions` uses an identical
 // `event_type_name` if/else but reaches the bus via a `pabrikcore.getSingleton()`
-// call that requires a live ContextIPCTui. It's verified by code review of
+// call that requires a live App. It's verified by code review of
 // the parallel fix (see PR #215). Behavioural coverage of the wire-format
 // mapping for the auto-rename cascade path — which is the user's reported
 // bug — lives here.

@@ -6,12 +6,12 @@ account, so this is the wire-level proof of what W2.6 can and cannot scope.
 
 WHY THIS FILE ASSERTS A BOUNDARY RATHER THAN ISOLATION
 ------------------------------------------------------
-`/api/skills*` and `/api/memories*` are **filesystem-scoped**, not DB rows:
+`/api/memories*` is **filesystem-scoped**, not DB rows:
 
-  * global skills/memories live in `~/.config/pabrik/skills|memories/` — one
-    directory per OS account, shared by every browser user on the machine;
-  * local skills/memories live in `{cwd}/.pabrik/skills|memories/` — and
-    `cwd` is caller-supplied.
+  * global memories live in `~/.config/pabrik/memories/` — one directory per
+    OS account, shared by every browser user on the machine;
+  * local memories live in `{cwd}/.pabrik/memories/` — and `cwd` is
+    caller-supplied.
 
 There is no `user_id` column to filter on, so "scope them per user" would
 mean inventing a per-user filesystem root — which is the **deferred D9
@@ -22,13 +22,25 @@ A fake fix here would be worse than none: it would make the system *look*
 isolated while the same bytes stay readable by path. So this file pins the
 boundary as a documented, tested fact:
 
-  * GLOBAL-SHARED  — B's `GET /api/skills` / `/api/memories` sees the same
-                     global entries as A's (the shared OS-account directory).
+  * GLOBAL-SHARED  — B's `GET /api/memories` sees the same global entries as
+                     A's (the shared OS-account directory).
   * LOCAL-CWD      — the local list follows the caller-supplied `?cwd=`, so
                      B can point at A's workspace directory and read its
                      `.pabrik/` files. This is the D9 boundary, asserted so a
                      future change that closes it must update this test.
   * AUTH-OFF       — without `--auth` the same endpoints still work.
+
+SKILLS LEFT THIS FILE
+---------------------
+Skills used to sit here too, sharing both properties: a skill was a file
+under `~/.config/pabrik/skills/`, so `/api/skills` merged two directories on
+the way in and had no workspace to scope to. They are rows in the
+workspace-scoped `skills` table now (Migration 101,
+`/api/workspaces/:workspace_id/skills`), so there is no cross-user directory
+to share and no D9 boundary left to assert for skills. What replaced it
+here is the negative: the directory-tier route is GONE, for every user and
+with or without auth. The workspace-level isolation assertions live in
+`skills_sqlite_test.py`.
 
 Both users are created with `create-admin`, so the assertions here are also
 the admin-vs-admin assertions: `admin` grants NO cross-user visibility.
@@ -129,10 +141,17 @@ def test_global_skills_and_memories_are_shared_across_users(default_pabrik_bin: 
             "update this test and the plan's D9 section."
         )
 
-        # Same for skills: both users get a 200 with the same global set.
+        # Skills are no longer in this file's boundary: they are
+        # workspace-scoped rows, so there is no global directory left to
+        # share. What is asserted instead is that the directory-tier route
+        # is gone for BOTH users — a route that still answered would mean
+        # the migration left a filesystem read path reachable, which is
+        # exactly the leak this table was built to close.
         for who, tok in (("A", tok_a), ("B", tok_b)):
             status, _, s_body = _raw("GET", h.port, "/api/skills", cookie=f"pabrik_session={tok}")
-            assert status == 200, f"{who} skills list: {s_body[:300]}"
+            assert status == 404, (
+                f"{who} still has a directory-scoped /api/skills: {s_body[:300]}"
+            )
     finally:
         h.teardown()
 
@@ -175,11 +194,22 @@ def test_local_memories_follow_the_caller_supplied_cwd(default_pabrik_bin: Path,
 
 
 def test_skills_and_memories_auth_off_is_unchanged(default_pabrik_bin: Path):
-    """Regression: without `--auth` both endpoints still work."""
+    """Regression: without `--auth` the endpoints still answer.
+
+    The skills half is now a 404 on the old route plus a 200 on the
+    workspace-scoped one — "auth off" must not accidentally restore the
+    directory walk that the table replaced.
+    """
     h = FunctionalHarness.boot(default_pabrik_bin)
     try:
         status, _, body = _raw("GET", h.port, "/api/skills")
+        assert status == 404, body[:300]
+        status, _, body = _raw("POST", h.port, "/api/workspaces", body={"name": "auth-off-skills"})
+        assert status in (200, 201), body[:300]
+        ws_id = json.loads(body)["id"]
+        status, _, body = _raw("GET", h.port, f"/api/workspaces/{ws_id}/skills")
         assert status == 200, body[:300]
+        assert json.loads(body) == {"skills": []}, body[:300]
         status, _, body = _raw("GET", h.port, "/api/memories")
         assert status == 200, body[:300]
         # `/api/local-memories` needs a cwd (query or server cwd); pass one.

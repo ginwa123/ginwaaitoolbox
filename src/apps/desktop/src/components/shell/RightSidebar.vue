@@ -511,7 +511,7 @@ const handleSkillClick = (skill: api.Skill) => {
 
       <!-- Skills tab -->
       <div v-else-if="activeTab === 'skills'" class="h-full">
-        <RightSideBarSkillList :cwd="cwd" @skill-click="handleSkillClick" />
+        <RightSideBarSkillList @skill-click="handleSkillClick" />
       </div>
     </div>
   </div>

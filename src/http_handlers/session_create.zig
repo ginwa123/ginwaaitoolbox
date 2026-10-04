@@ -168,7 +168,7 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     });
 }
 
-fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.ContextIPCTui, parsed: RequestSession, owner: []const u8) !ResponseSession {
+fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.App, parsed: RequestSession, owner: []const u8) !ResponseSession {
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
 
     // --- Resolve all values locally using arena ---
@@ -466,7 +466,7 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
 /// responsible for falling back to `createSandbox(...)` on empty.
 fn resolveCwdFromTaskOrItem(
     alloc: std.mem.Allocator,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []const u8,
 ) ![]const u8 {
     // Single JOIN'd query — cheaper than two separate SELECTs and
@@ -532,7 +532,7 @@ fn resolveCwdFromTaskOrItem(
 /// guard against in `resolveCwdFromTaskOrItem`.
 fn resolveNameFromTask(
     alloc: std.mem.Allocator,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     session_id: []const u8,
 ) !?[]const u8 {
     var q = di.db.query(

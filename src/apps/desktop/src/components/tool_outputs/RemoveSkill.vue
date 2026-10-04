@@ -44,7 +44,7 @@ const handleToggle = (next: boolean) => {
       :primary="parsed.skillName"
       :success="parsed.removed"
       :expanded="isExpanded"
-      :expandable="!parsed.removed || !!parsed.error || !!parsed.path || hasArgs"
+      :expandable="!parsed.removed || !!parsed.error || hasArgs"
       :show-open-in-editor="false"
       @update:expanded="handleToggle"
     />
@@ -61,11 +61,14 @@ const handleToggle = (next: boolean) => {
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
       <div
-        v-if="parsed.removed && parsed.path"
+        v-if="parsed.removed && parsed.skillName"
         class="flex gap-2 px-2 py-1.5 text-green-500 text-dense border-b border-dashed border-[var(--color-border)]"
+        data-testid="remove-skill-name"
       >
-        <span class="font-semibold shrink-0">Path:</span>
-        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)]">{{ parsed.path }}</span>
+        <span class="font-semibold shrink-0">Removed:</span>
+        <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)]">{{
+          parsed.skillName
+        }}</span>
       </div>
       <ToolParameters :parameters="parameters" />
     </div>

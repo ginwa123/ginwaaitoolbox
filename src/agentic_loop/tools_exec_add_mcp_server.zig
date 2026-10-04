@@ -336,7 +336,7 @@ fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
 /// is per-user in auth mode — but invalidates the MCP tools cache.
 /// Returns an owned status slice on `ctx.allocator` (`"true"` or
 /// `"false: <reason>"`), same contract as `persistAndReloadStatus`.
-fn persistAuthModeStatus(ctx: ToolExecContext, di: *pabrikcore.ContextIPCTui) ![]u8 {
+fn persistAuthModeStatus(ctx: ToolExecContext, di: *pabrikcore.App) ![]u8 {
     const user_config_store = pabrikcore.user_config_store;
     // 1. Resolve the session owner.
     var owner: ?[]u8 = null;
@@ -844,7 +844,7 @@ test "substitutePersistedStatus: missing placeholder returns error" {
 }
 
 // F6 caveat: `persistAndReloadStatus` requires `pabrikcore.getSingleton()`
-// (the live ContextIPCTui) so it can't be unit-tested in isolation —
+// (the live App) so it can't be unit-tested in isolation —
 // the path is exercised end-to-end when an LLM actually calls
 // `add_mcp_server` in production. The functional harness boots pabrik
 // with a stub LLM that never responds to chat completions, so a

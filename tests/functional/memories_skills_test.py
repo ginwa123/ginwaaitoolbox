@@ -1,19 +1,26 @@
 """Functional tests for memories + skills.
 
-Memories are full CRUD via HTTP (POST/GET/PUT/DELETE). Skills are
-file-system-managed — the API has GET (list/detail) and DELETE, but
-no POST/PUT for skill creation. Skills live as .md files in
-`~/.config/pabrik/skills/`; the API only reads and deletes them.
+Memories are full CRUD via HTTP (POST/GET/PUT/DELETE) and stay
+file-system-managed: they are .md files under
+`~/.config/pabrik/memories/`.
+
+Skills are NOT file-system-managed any more. They are rows in the
+workspace-scoped `skills` table (Migration 101), reachable at
+`/api/workspaces/:workspace_id/skills[/:skill_name]`; the two
+`~/.config/pabrik/skills/` and `<cwd>/.pabrik/skills/` tiers and the
+`path` / `is_global` / `deleted_from` fields that described them are
+gone. Creation is an agent tool (`add_skill`), so this file seeds rows
+into the harness's isolated database directly. Plan:
+docs/plans/2026-10-04-skills-sqlite-table.md.
 
 Plan: docs/superpowers/plans/2026-07-26-functional-tests-with-real-data.md (Chunk 6)
 """
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
-
-import pytest
 
 from harness import FunctionalHarness
 
@@ -31,15 +38,46 @@ def _list_memories(harness: FunctionalHarness) -> list[dict[str, Any]]:
     return r.json()["memories"]
 
 
-def _list_skills(harness: FunctionalHarness) -> list[dict[str, Any]]:
-    """GET /api/skills returns {global_skills:[...], local_skills:[...], cwd}.
+def _list_skills(harness: FunctionalHarness, workspace_id: str) -> list[dict[str, Any]]:
+    """GET /api/workspaces/:workspace_id/skills returns {skills:[...]}.
 
-    Returns the merged list (global + local). Each skill has
-    {name, description, path, is_global}.
+    One flat array of {name, description}. The old payload was two arrays
+    (`global_skills` + `local_skills`) plus a `cwd`, which is the
+    two-directory precedence this change removed.
     """
-    r = harness.http("GET", "/api/skills", expect=200)
-    body = r.json()
-    return body.get("global_skills", []) + body.get("local_skills", [])
+    r = harness.http("GET", f"/api/workspaces/{workspace_id}/skills", expect=200)
+    return r.json()["skills"]
+
+
+def _seed_skill_row(
+    harness: FunctionalHarness,
+    workspace_id: str,
+    name: str,
+    description: str = "Seeded by the functional test.",
+    content: str = "---\nname: %s\ndescription: %s\n---\n\nbody\n",
+) -> None:
+    """Insert one `skills` row straight into the harness's database.
+
+    There is no HTTP create route for skills — `add_skill` is an agent
+    tool — so a test that needs a row to read writes one. Written the way
+    `skills_store.upsertSkill` writes it, `COALESCE(NULLIF(?, ''), '')`
+    included: `SqliteBackend.exec` binds an empty slice as SQL NULL, which
+    would violate the NOT NULL constraint on `description`.
+    """
+    db = Path(harness.temp_dir) / ".config" / "pabrik" / "agent.db"
+    assert db.exists(), f"database not found at {db}"
+    con = sqlite3.connect(db)
+    try:
+        con.execute(
+            "INSERT INTO skills "
+            "(id, workspace_id, name, description, content, created_at, updated_at) "
+            "VALUES (?, ?, ?, COALESCE(NULLIF(?, ''), ''), "
+            "COALESCE(NULLIF(?, ''), ''), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (f"sk_seed_{workspace_id}_{name}", workspace_id, name, description, content),
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def _get_memory_disk_path(harness: FunctionalHarness, name: str) -> Path:
@@ -61,22 +99,6 @@ def _get_memory_disk_path(harness: FunctionalHarness, name: str) -> Path:
         return appdata_base
     # Default for new writes: use the XDG/.config location (matches
     # harness's isolated XDG_CONFIG_HOME on Windows and HOME/.config on Linux).
-    return config_base
-
-
-def _get_skill_disk_path(harness: FunctionalHarness, name: str) -> Path:
-    """Return the absolute path where a skill file lives on disk.
-
-    Skills are stored as `$XDG_CONFIG_HOME/pabrik/skills/<name>/SKILL.MD`
-    or `$HOME/.config/pabrik/skills/<name>/SKILL.MD`
-    (Windows: %APPDATA%/pabrik/skills). Same fallback as memories.
-    """
-    config_base = harness.temp_dir / ".config" / "pabrik" / "skills" / name / "SKILL.MD"
-    if config_base.exists():
-        return config_base
-    appdata_base = harness.temp_dir / "AppData" / "Roaming" / "pabrik" / "skills" / name / "SKILL.MD"
-    if appdata_base.exists():
-        return appdata_base
     return config_base
 
 
@@ -215,36 +237,47 @@ def test_create_local_memory_under_cwd(
     assert mem_path.read_text(encoding="utf-8") == "# local\nscoped to cwd"
 
 
-# ─── Test 6: skill listing — create skill on disk, list it ────────────
+# ─── Test 6: skill listing — a seeded row lists under its workspace ────
 
 
-def test_skill_create_on_disk_then_list(
+def test_skill_list_is_workspace_scoped(
     harness: FunctionalHarness,
 ) -> None:
-    """Skills are file-system-managed. Create a .md file directly,
-    then list via API.
+    """A skill is a row in the workspace's `skills` table.
 
-    Skills require YAML frontmatter (`---\\nname: ...\\ndescription: ...\\n---`)
-    to be discoverable by `list_skills_from_dir_path`. A bare markdown
-    file with no frontmatter is silently skipped.
+    It used to be a `SKILL.MD` file under `~/.config/pabrik/skills/`, which
+    the API re-walked on every request and merged with a project-local
+    copy. Writing a file to disk no longer makes a skill appear — the
+    directory is an input to the importer, not a source of truth.
     """
-    skill_path = _get_skill_disk_path(harness, "my-skill")
-    skill_path.parent.mkdir(parents=True, exist_ok=True)
-    skill_path.write_text(
-        "---\n"
-        "name: my-skill\n"
-        "description: Does a thing.\n"
-        "---\n"
-        "\n"
-        "# My Skill\n"
-        "\n"
-        "Body of the skill.\n"
-    )
+    ws = _create_workspace(harness, "ms-skills")
+    assert _list_skills(harness, ws) == []
 
-    listed = _list_skills(harness)
-    skill_names = {s.get("name", s) for s in listed}
-    assert "my-skill" in skill_names, (
-        f"created skill not in list: {skill_names}"
+    _seed_skill_row(harness, ws, "my-skill", "Does a thing.")
+
+    listed = _list_skills(harness, ws)
+    assert [s["name"] for s in listed] == ["my-skill"], (
+        f"seeded skill not in list response: {listed!r}"
+    )
+    assert listed[0] == {"name": "my-skill", "description": "Does a thing."}
+
+
+def test_skill_list_does_not_leak_across_workspaces(
+    harness: FunctionalHarness,
+) -> None:
+    """The workspace_id in the URL is the isolation boundary.
+
+    A skill file used to be visible from every workspace that happened to
+    share a machine; a row is not. This is the assertion that would fail
+    first if a query ever dropped `workspace_id` from its WHERE clause.
+    """
+    ws_a = _create_workspace(harness, "ms-skills-a")
+    ws_b = _create_workspace(harness, "ms-skills-b")
+    _seed_skill_row(harness, ws_a, "only-in-a", "A's skill.")
+
+    assert [s["name"] for s in _list_skills(harness, ws_a)] == ["only-in-a"]
+    assert _list_skills(harness, ws_b) == [], (
+        "workspace B must not see workspace A's skill"
     )
 
 
@@ -254,42 +287,49 @@ def test_skill_create_on_disk_then_list(
 def test_skill_detail_and_delete(
     harness: FunctionalHarness,
 ) -> None:
-    """GET /api/skills/:name returns the file; DELETE removes it."""
-    skill_path = _get_skill_disk_path(harness, "to-delete")
-    skill_path.parent.mkdir(parents=True, exist_ok=True)
-    skill_path.write_text(
-        "---\n"
-        "name: to-delete\n"
-        "description: Will be deleted.\n"
-        "---\n"
-        "\n"
-        "# To Delete\n"
-        "\n"
-        "Bye.\n"
-    )
+    """GET the body, DELETE the row — both under the workspace.
 
-    # Detail. Response shape: {"skill": {name, description, content, path, is_global},
-    # "error_message": null|"..."}.
-    detail = harness.http("GET", "/api/skills/to-delete", expect=200).json()
+    The delete takes the name as a PATH SEGMENT now, not as `?name=…&is_global=…&cwd=…`.
+    Those three query parameters were the directory decision, and a body
+    that exists in one place cannot be told apart from one that exists in
+    another by query string alone.
+    """
+    ws = _create_workspace(harness, "ms-skills-delete")
+    content = "---\nname: to-delete\ndescription: Will be deleted.\n---\n\n# To Delete\n\nBye.\n"
+    _seed_skill_row(harness, ws, "to-delete", "Will be deleted.", content)
+
+    detail = harness.http(
+        "GET", f"/api/workspaces/{ws}/skills/to-delete", expect=200
+    ).json()
     assert "skill" in detail, f"unexpected detail shape: {detail!r}"
     skill = detail["skill"]
     assert skill is not None, f"skill should exist, got: {detail!r}"
     assert skill.get("name") == "to-delete"
-    assert "content" in skill
-    assert "path" in skill
-    assert skill.get("is_global") is True
+    assert skill.get("description") == "Will be deleted."
+    # Byte-exact: `skill_eval` identities are sha256(body), so a body that
+    # came back trimmed would stale every cached verdict silently.
+    assert skill["content"] == content
+    assert skill["content"].startswith("---")
+    assert skill["asset_count"] == 0
+    # `path` and `is_global` described a directory; there is no directory.
+    assert "path" not in skill
+    assert "is_global" not in skill
+    assert detail["error_message"] == ""
 
-    # Delete. The DELETE endpoint takes query params (?name=...&is_global=true).
-    del_resp = harness.http(
-        "DELETE",
-        "/api/skills",
-        params={"name": "to-delete", "is_global": "true"},
-        expect=200,
+    deleted = harness.http(
+        "DELETE", f"/api/workspaces/{ws}/skills/to-delete", expect=200
     ).json()
-    assert del_resp.get("success") is True
-    assert not skill_path.exists(), (
-        f"skill file not removed after delete: {skill_path}"
+    assert deleted == {"success": True, "skill_name": "to-delete", "error_message": ""}, (
+        f"unexpected delete payload: {deleted!r}"
     )
+    assert _list_skills(harness, ws) == []
+
+    # A second delete is a miss, not a silent success.
+    missing = harness.http(
+        "DELETE", f"/api/workspaces/{ws}/skills/to-delete", expect=404
+    ).json()
+    assert missing["success"] is False
+    assert missing["error_message"]
 
 
 # ─── Test 8: memory and skill namespaces don't collide ─────────────────
@@ -298,40 +338,32 @@ def test_skill_detail_and_delete(
 def test_memory_and_skill_namespaces_dont_collide(
     harness: FunctionalHarness,
 ) -> None:
-    """A memory named 'foo.md' and a skill named 'foo' live in different
-    directories and both round-trip through their respective APIs.
+    """A memory named 'foo.md' and a skill named 'foo' are independent rows.
+
+    The memory is a file under `~/.config/pabrik/memories/`; the skill is a
+    row in the `skills` table. Same name, two stores — and deleting one
+    must not touch the other.
     """
-    # Create memory foo.md.
+    ws = _create_workspace(harness, "ms-ns")
+
     harness.http(
         "POST",
         "/api/memories",
         json_body={"name": "ns-foo.md", "content": "# memory foo"},
         expect=201,
     )
-    # Create skill foo (file on disk).
-    skill_path = _get_skill_disk_path(harness, "ns-foo")
-    skill_path.parent.mkdir(parents=True, exist_ok=True)
-    skill_path.write_text(
-        "---\n"
-        "name: ns-foo\n"
-        "description: namespace test skill.\n"
-        "---\n"
-        "\n"
-        "Body.\n"
-    )
+    _seed_skill_row(harness, ws, "ns-foo", "namespace test skill.")
 
-    # Both are independently queryable.
     mems = _list_memories(harness)
     mem_names = {m["name"] for m in mems}
-    skills = _list_skills(harness)
-    skill_names = {s.get("name", s) for s in skills}
+    skill_names = {s["name"] for s in _list_skills(harness, ws)}
 
     assert "ns-foo.md" in mem_names
     assert "ns-foo" in skill_names
 
-    # Delete one doesn't affect the other.
+    # Delete one, the other survives.
     harness.http("DELETE", "/api/memories/ns-foo.md", expect=200)
     assert not _get_memory_disk_path(harness, "ns-foo.md").exists()
-    assert skill_path.exists(), (
-        "memory delete must not touch the skill file"
+    assert "ns-foo" in {s["name"] for s in _list_skills(harness, ws)}, (
+        "memory delete must not touch the skill row"
     )

@@ -1,11 +1,17 @@
 /*
  * SearchSkills.vue — the `search_skills` card.
  *
- * Pins the NEW paged-search result shape (flat `skills[]` rows with a
- * per-row `scope`, plus `count`/`total`/`offset`/`limit`/`truncated`/
- * `next_offset`/`pattern_warning`). The empty state must distinguish
- * "nothing matched this query" from "no skills installed at all" — that
- * branch is driven by whether `query` came back empty, so both are covered.
+ * Pins the paged-search result shape: flat `skills[]` rows of `name` /
+ * `description` only, plus `count`/`total`/`offset`/`limit`/`truncated`/
+ * `next_offset`/`pattern_warning`. There is no per-row `scope` and no
+ * `path` any more — the page is one workspace's skills.
+ *
+ * Three shapes get their own tests because they are where this card
+ * breaks: a payload that still carries the old `scope`/`path` keys (a
+ * transcript recorded before the table refactor) must still render its
+ * names, a row with an empty description must still render its name, and
+ * a row key built from a field that no longer arrives would silently
+ * collapse to `undefined-undefined-<name>` for every row.
  */
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
@@ -15,24 +21,21 @@ const page = {
   query: 'auth',
   pattern_mode: 'regex',
   pattern_warning: null,
-  scope: null,
   count: 2,
   total: 7,
   offset: 0,
   limit: 2,
   skills: [
-    { name: 'auth', description: 'handles auth', scope: 'global', path: '/g/auth/SKILL.MD' },
-    {
-      name: 'auth-local',
-      description: 'local auth notes',
-      scope: 'local',
-      path: '/l/auth/SKILL.MD',
-    },
+    { name: 'auth', description: 'handles auth' },
+    { name: 'auth-notes', description: 'secondary auth notes' },
   ],
   truncated: true,
   next_offset: 2,
   hint: 'Showing 0-2 of 7 matches — call again with offset=2 (same query) for the next page, or narrow the query.',
 }
+
+const rowNames = (wrapper: ReturnType<typeof mount>) =>
+  wrapper.findAll('[data-testid="search-skills-row"]').map((r) => r.attributes('data-skill-name'))
 
 describe('SearchSkills.vue — header names the tool and the paging facts', () => {
   it('renders search_skills with the count-of-total and the next offset', () => {
@@ -47,21 +50,55 @@ describe('SearchSkills.vue — header names the tool and the paging facts', () =
     expect(text).toContain('Showing 0-2 of 7 matches')
   })
 
-  it('renders one flat row per skill with a scope badge, path and description', () => {
+  it('renders one flat row per skill with its description', () => {
     const wrapper = mount(SearchSkills, { props: { content: page, expanded: true } as never })
     const rows = wrapper.findAll('[data-testid="search-skills-row"]')
     expect(rows).toHaveLength(2)
-    const firstRow = rows.at(0)
-    expect(firstRow?.text()).toContain('auth')
-    expect(firstRow?.text()).toContain('handles auth')
-    expect(firstRow?.text()).toContain('/g/auth/SKILL.MD')
-    expect(rows.map((r) => r.find('[data-testid="search-skills-scope"]')?.text())).toEqual([
-      'global',
-      'local',
-    ])
-    // The old card split the list into Global / Local sections — no more.
+    expect(rows.at(0)?.text()).toContain('auth')
+    expect(rows.at(0)?.text()).toContain('handles auth')
+    // Neither the two-tier sections nor the per-row badge survive.
     expect(wrapper.text()).not.toContain('Global Skills')
     expect(wrapper.text()).not.toContain('Local Skills')
+    expect(wrapper.find('[data-testid="search-skills-scope"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('global')
+    expect(wrapper.text()).not.toContain('local')
+  })
+
+  it('never renders a path, and keys each row by its name alone', () => {
+    const wrapper = mount(SearchSkills, { props: { content: page, expanded: true } as never })
+    expect(wrapper.text()).not.toContain('SKILL.MD')
+    expect(rowNames(wrapper)).toEqual(['auth', 'auth-notes'])
+  })
+
+  it('still renders names from a payload carrying the retired scope / path keys', () => {
+    // A transcript recorded before the table refactor. The rows must not
+    // collapse to blanks just because the extra keys are gone.
+    const legacy = {
+      ...page,
+      skills: [
+        { name: 'auth', description: 'handles auth', scope: 'global', path: '/g/SKILL.MD' },
+        { name: 'auth-notes', description: 'secondary notes', scope: 'local', path: '/l/SK.MD' },
+      ],
+    }
+    const wrapper = mount(SearchSkills, { props: { content: legacy, expanded: true } as never })
+    const rows = wrapper.findAll('[data-testid="search-skills-row"]')
+    expect(rows).toHaveLength(2)
+    expect(rows.at(0)?.text()).toContain('handles auth')
+    expect(rowNames(wrapper)).toEqual(['auth', 'auth-notes'])
+    expect(wrapper.text()).not.toContain('/g/SKILL.MD')
+    expect(wrapper.find('[data-testid="search-skills-scope"]').exists()).toBe(false)
+  })
+
+  it('renders a row whose description is empty', () => {
+    const wrapper = mount(SearchSkills, {
+      props: {
+        content: { ...page, skills: [{ name: 'bare', description: '' }], count: 1, total: 1 },
+        expanded: true,
+      } as never,
+    })
+    const row = wrapper.find('[data-testid="search-skills-row"]')
+    expect(row.exists()).toBe(true)
+    expect(row.text()).toContain('bare')
   })
 })
 
@@ -116,6 +153,14 @@ describe('SearchSkills.vue — warnings and empty states', () => {
     const wrapper = mount(SearchSkills, { props: { content: undefined, expanded: true } as never })
     expect(wrapper.findAll('[data-testid="search-skills-row"]')).toHaveLength(0)
     expect(wrapper.text()).toContain('search_skills')
+  })
+
+  it('does not throw when skills holds non-objects', () => {
+    const wrapper = mount(SearchSkills, {
+      props: { content: { query: 'x', skills: ['auth', null, 7] }, expanded: true } as never,
+    })
+    expect(wrapper.findAll('[data-testid="search-skills-row"]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="search-skills-empty"]').exists()).toBe(true)
   })
 })
 

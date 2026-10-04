@@ -563,7 +563,7 @@ pub fn pabrikConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     try writer.interface.writeAll(config_str);
     try writer.flush();
 
-    // === Live-reload ContextIPCTui.llm_config ===
+    // === Live-reload App.llm_config ===
     // Reload from disk so the running workflow picks up the new API key,
     // model, base_url, mcp_servers, and profiles without a server restart.
     // On any failure we still respond 200 (disk is already authoritative)
@@ -1385,7 +1385,7 @@ test "parseConfigInput: notify_on_complete + notify_on_error in same body parse 
 }
 
 // ===== Tests merged from pabrik_config_put_test.zig (2026-09-11 flatten) =====
-// Tests for the live-reload `LlmConfigHolder` semantics on `ContextIPCTui`.
+// Tests for the live-reload `LlmConfigHolder` semantics on `App`.
 //
 // These tests verify the swap-and-hold pattern that keeps in-flight
 // workflows (which captured the old `*const LlmConfig` into a local)
@@ -1395,7 +1395,7 @@ test "parseConfigInput: notify_on_complete + notify_on_error in same body parse 
 // GinwaServer. The handler-level "reload from disk" path is covered by
 // manual smoke test against `pabrik-dev` (see the plan's §4).
 
-const ContextIPCTui = pabrikcore.ContextIPCTui;
+const App = pabrikcore.App;
 const LlmConfigHolder = pabrikcore.LlmConfigHolder;
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1432,12 +1432,12 @@ fn makeConfig(allocator: std.mem.Allocator, model: []const u8) !*LlmConfig {
     return ptr;
 }
 
-/// Build a minimal `ContextIPCTui` carrying the given `LlmConfigHolder`.
+/// Build a minimal `App` carrying the given `LlmConfigHolder`.
 /// Other fields are left `undefined` — the holder tests only touch
 /// `llm_config_holder` and `allocator`. We must build on the heap because
-/// `ContextIPCTui` contains a `std.Io.Group` which is not copyable.
-fn makeCtx(allocator: std.mem.Allocator, holder: LlmConfigHolder) !*ContextIPCTui {
-    const ctx = try allocator.create(ContextIPCTui);
+/// `App` contains a `std.Io.Group` which is not copyable.
+fn makeCtx(allocator: std.mem.Allocator, holder: LlmConfigHolder) !*App {
+    const ctx = try allocator.create(App);
     ctx.* = .{
         .allocator = allocator,
         .io = undefined, // not used by holder helpers

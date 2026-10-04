@@ -33,6 +33,14 @@ pub fn execCreateKanbanTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecR
     };
     defer parsed.deinit();
 
+    // Seed the session's chat with a real model id. The tool's own schema
+    // has no `resolved_model` field, so this is the only way that value is
+    // ever populated — and the seed INSERT's `llm_history.model` bind
+    // depends on it. Assigned unconditionally so a model that guessed the
+    // field (or omitted it) cannot influence what gets recorded.
+    var input = parsed.value;
+    input.resolved_model = ctx.model;
+
     // executeKanbanTaskToJSON returns a JSON string. Errors
     // (missing input, DB failure, validation rejection) are encoded as
     // {"success":false,"error":...} so the LLM sees
@@ -40,7 +48,7 @@ pub fn execCreateKanbanTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecR
     const inner = create_kanban_task_mod.executeKanbanTaskToJSON(
         ctx.allocator,
         ctx.db,
-        parsed.value,
+        input,
     ) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "create_kanban_task failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "create_kanban_task", tc.function.arguments, false, err_msg, "");

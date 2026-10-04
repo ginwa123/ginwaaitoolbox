@@ -9,7 +9,7 @@ const ai_workflow = pabrikcore.ai_mod;
 /// Called once during app initialization to bootstrap workers from database
 pub fn startup(
     allocator: std.mem.Allocator,
-    ctxTui: *pabrikcore.ContextIPCTui,
+    ctxTui: *pabrikcore.App,
 ) !void {
     const sqlite_db = ctxTui.db;
     const logger = ctxTui.logger;

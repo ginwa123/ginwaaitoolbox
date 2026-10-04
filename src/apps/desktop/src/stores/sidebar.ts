@@ -13,8 +13,9 @@ const STORAGE_KEY_PROJECTS_EXPANDED = 'pabrik-sidebar-projects-expanded'
 // independent lists and the user collapses them independently.
 const STORAGE_KEY_DOCUMENTS_EXPANDED = 'pabrik-sidebar-documents-expanded'
 const STORAGE_KEY_RIGHT_SIDEBAR_WIDTH = 'pabrik-right-sidebar-width'
-const STORAGE_KEY_SKILLS_GLOBAL = 'pabrik-sidebar-skills-global-expanded'
-const STORAGE_KEY_SKILLS_LOCAL = 'pabrik-sidebar-skills-local-expanded'
+// One key, because there is one list: the global/local split was the
+// two-tier filesystem, and the list is now one workspace's rows.
+const STORAGE_KEY_SKILLS_EXPANDED = 'pabrik-sidebar-skills-expanded'
 const DEFAULT_CHATS_HEIGHT = 40
 const MIN_CHATS_HEIGHT = 10
 const MAX_CHATS_HEIGHT = 80
@@ -143,42 +144,23 @@ export const useSidebarStore = defineStore('sidebar', () => {
   }
 
   // Load skills section expanded state from localStorage
-  const loadSkillsGlobalExpanded = (): boolean => {
-    const saved = localStorage.getItem(STORAGE_KEY_SKILLS_GLOBAL)
+  const loadSkillsExpanded = (): boolean => {
+    const saved = localStorage.getItem(STORAGE_KEY_SKILLS_EXPANDED)
     if (saved !== null) {
       return saved === 'true'
     }
     return true // Default to expanded
   }
 
-  // Load local skills section expanded state from localStorage
-  const loadSkillsLocalExpanded = (): boolean => {
-    const saved = localStorage.getItem(STORAGE_KEY_SKILLS_LOCAL)
-    if (saved !== null) {
-      return saved === 'true'
-    }
-    return true // Default to expanded
+  const skillsExpanded = ref(loadSkillsExpanded())
+
+  const saveSkillsExpanded = () => {
+    localStorage.setItem(STORAGE_KEY_SKILLS_EXPANDED, String(skillsExpanded.value))
   }
 
-  const skillsGlobalExpanded = ref(loadSkillsGlobalExpanded())
-  const skillsLocalExpanded = ref(loadSkillsLocalExpanded())
-
-  const saveSkillsGlobalExpanded = () => {
-    localStorage.setItem(STORAGE_KEY_SKILLS_GLOBAL, String(skillsGlobalExpanded.value))
-  }
-
-  const saveSkillsLocalExpanded = () => {
-    localStorage.setItem(STORAGE_KEY_SKILLS_LOCAL, String(skillsLocalExpanded.value))
-  }
-
-  const toggleSkillsGlobalExpanded = () => {
-    skillsGlobalExpanded.value = !skillsGlobalExpanded.value
-    saveSkillsGlobalExpanded()
-  }
-
-  const toggleSkillsLocalExpanded = () => {
-    skillsLocalExpanded.value = !skillsLocalExpanded.value
-    saveSkillsLocalExpanded()
+  const toggleSkillsExpanded = () => {
+    skillsExpanded.value = !skillsExpanded.value
+    saveSkillsExpanded()
   }
 
   return {
@@ -192,9 +174,7 @@ export const useSidebarStore = defineStore('sidebar', () => {
     toggleDocumentsExpanded,
     rightSidebarWidth,
     setRightSidebarWidth,
-    skillsGlobalExpanded,
-    skillsLocalExpanded,
-    toggleSkillsGlobalExpanded,
-    toggleSkillsLocalExpanded,
+    skillsExpanded,
+    toggleSkillsExpanded,
   }
 })

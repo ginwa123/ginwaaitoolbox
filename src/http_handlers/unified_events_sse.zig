@@ -108,7 +108,7 @@ fn forwardToClients(routing_key: []const u8, data: ai_mod.on_event_sent.SseEvent
 /// id does not name a session row, fall back to the payload's `session_id`
 /// field before deciding; a payload that names no session either is
 /// delivered (nothing to scope on).
-fn clientMayReceive(di: *pabrik_core.ContextIPCTui, client_id: [16]u8, data: ai_mod.on_event_sent.SseEvent) bool {
+fn clientMayReceive(di: *pabrik_core.App, client_id: [16]u8, data: ai_mod.on_event_sent.SseEvent) bool {
     const owner = pabrik_core.getClientOwner(client_id) orelse return true;
     if (auth_common.isSharedOwner(owner)) return true;
 

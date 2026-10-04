@@ -10,6 +10,7 @@ const config_mod = pabrikcore.config;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("pabrikcore").llm_models;
 const on_event_sent = @import("on_event_sent.zig");
+const model_guard = @import("llm_history_model_guard.zig");
 // NOTE: routines_model import deleted with the per-task `routines`
 // table (Migration 084, plan 2026-09-10-workspace-items-routines).
 
@@ -1641,7 +1642,10 @@ pub fn saveMessage(
 
     const copy_session_id = try allocator.dupe(u8, input.session_id);
     defer allocator.free(copy_session_id);
-    const copy_model = try allocator.dupe(u8, input.model);
+    // Never bind an empty model: `SqliteBackend.exec` binds a zero-length
+    // slice as SQL NULL, which violates `model TEXT NOT NULL` and fails the
+    // whole INSERT. See llm_history_model_guard.zig.
+    const copy_model = try allocator.dupe(u8, model_guard.resolve(input.model));
     defer allocator.free(copy_model);
     const copy_content = try allocator.dupe(u8, contentStr);
     defer allocator.free(copy_content);
@@ -3359,7 +3363,10 @@ pub fn saveToolResultPlaceholder(
     const sqlArgs = &.{
         id,
         opts.session_id,
-        opts.model,
+        // Guarded for the same reason as `saveMessage`: an empty bind lands
+        // as NULL and fails `model TEXT NOT NULL`. See
+        // llm_history_model_guard.zig.
+        model_guard.resolve(opts.model),
         opts.tool_call_id,
         opts.tool_name,
         loop_index_str,
@@ -3947,7 +3954,7 @@ pub fn updateTaskLastHumanTouchedAt(
 ///
 /// Called by every HTTP handler / workflow site that mutates a chat on
 /// behalf of a human user:
-///   - `root.zig::emit_run_agent` — the single funnel for every
+///   - `app.zig::emit_run_agent` — the single funnel for every
 ///     "user sends a message" path (chat send, kanban "create & run",
 ///     kanban "Start agent", `+ Chat`). Stamps before the workflow
 ///     kicks off so even an immediate agent bail leaves the stamp in

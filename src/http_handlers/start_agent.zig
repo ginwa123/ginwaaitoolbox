@@ -4,7 +4,7 @@
 //! ## File structure
 //!
 //! This file holds BOTH the use-case (pure-ish function over the DB
-//! and the `ContextIPCTui` singleton) and the HTTP handler (thin
+//! and the `App` singleton) and the HTTP handler (thin
 //! orchestrator that validates the path param, calls the use-case,
 //! and maps the outcome to an HTTP response):
 //!
@@ -105,7 +105,7 @@ pub const StartAgentOutcome = union(enum) {
 pub fn startAgentUseCase(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     task_id: []const u8,
 ) !StartAgentOutcome {
     // 1. Validate the task exists. `getWorkspaceItemTask` returns
@@ -224,7 +224,7 @@ pub fn startAgentHandler(
         });
     }
 
-    // 2. Resolve the `ContextIPCTui` singleton (carries the DB handle
+    // 2. Resolve the `App` singleton (carries the DB handle
     //    + the Io group that `emit_run_agent` schedules onto).
     const di = pabrikcore.getSingleton() catch {
         return res.jsonResponse(.{

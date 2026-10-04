@@ -22,6 +22,8 @@ const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const skill_evals_db = pabrikcore.skill_evals_db;
 const skill_eval_events = pabrikcore.skill_eval_events;
+const skills_store = pabrikcore.skills_store;
+const workspace_scope = pabrikcore.workspace_scope;
 
 pub const SkillEvalsError = error{
     Internal,
@@ -217,7 +219,6 @@ const ApplyJson = struct {
 /// modes are a separate, later decision.
 fn applyUseCase(
     allocator: std.mem.Allocator,
-    io: std.Io,
     result_id: []const u8,
     action: []const u8,
 ) SkillEvalsError![]const u8 {
@@ -241,10 +242,10 @@ fn applyUseCase(
         .won => {},
     }
 
-    // The hash re-check. `base_content_hash` is the body the eval judged; if the
-    // file on disk no longer hashes to it, the verdict is about a body that is
-    // gone.
-    const current = readCurrentSkillHash(allocator, io, di, row.skill_name, row.session_id) catch null;
+    // The hash re-check. `base_content_hash` is the body the eval judged; if
+    // the workspace's row no longer hashes to it, the verdict is about a body
+    // that is gone.
+    const current = readCurrentSkillHash(allocator, di, row.skill_name, row.session_id) catch null;
     if (current) |hash| {
         defer allocator.free(hash);
         if (row.base_content_hash.len > 0 and !std.mem.eql(u8, hash, row.base_content_hash)) {
@@ -271,7 +272,7 @@ fn applyUseCase(
 /// after the claim is recorded; a failure here must not fail the apply.
 fn emitApplied(
     allocator: std.mem.Allocator,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     result_id: []const u8,
 ) void {
     skill_eval_events.emitSkillEvalEvent(allocator, di.event_bus, .{
@@ -280,30 +281,40 @@ fn emitApplied(
     });
 }
 
-/// Hash the skill body as it is on disk right now, or null when it cannot be
-/// read. Local scope first, then global — the same order `use_skill` resolves
-/// with, so we compare against the file the agent would actually get.
+/// Hash the skill body as it stands in the workspace this result's session ran
+/// in, or null when it cannot be read.
 ///
-/// `session_id` supplies the repo root. The server process's cwd is NOT the
-/// session's repo (it is usually a worktree), so hashing the local tier
-/// against it re-hashes the wrong file — or nothing at all — and a live verdict
-/// gets refused as stale.
+/// A skill is a row in one workspace-scoped table, so there is no longer a
+/// local tier to prefer over a global one and no directory to walk: the body
+/// is `skills_store.getSkillByName(workspace_id, skill_name)`, with the
+/// workspace resolved from the RESULT's own `session_id` — the session whose
+/// verdict this is. That is the same row, behind the same guard, that
+/// `use_skill` materialised when the verdict was computed.
+///
+/// Resolving from the result's session rather than the request's is not a
+/// detail: a verdict belongs to the body its own session read. Hashing a name
+/// out of whatever workspace happens to answer it would refuse a live verdict
+/// as stale — or, worse, bless one computed against a different workspace's
+/// body.
 fn readCurrentSkillHash(
     allocator: std.mem.Allocator,
-    io: std.Io,
-    di: *pabrikcore.ContextIPCTui,
+    di: *pabrikcore.App,
     skill_name: []const u8,
     session_id: []const u8,
 ) !?[]u8 {
-    const session_repo = try pabrikcore.workspace_scope.sessionCwd(allocator, di.db, session_id);
-    defer if (session_repo) |p| allocator.free(p);
+    // Fails closed, like every other caller: an unresolvable session is
+    // "cannot tell", and "cannot tell" must not read as "unchanged".
+    const workspace_id = workspace_scope.resolveWorkspaceId(allocator, di.db, session_id) catch null;
+    defer if (workspace_id) |w| allocator.free(w);
+    const ws = workspace_id orelse return null;
 
-    const body = pabrikcore.skill_mod.parse_skill(allocator, io, skill_name, session_repo, false, di.environment) orelse
-        pabrikcore.skill_mod.parse_skill(allocator, io, skill_name, session_repo, true, di.environment) orelse
-        return null;
-    defer allocator.free(body);
+    const row = (skills_store.getSkillByName(allocator, di.db, ws, skill_name) catch null) orelse return null;
+    defer skills_store.freeSkillRow(allocator, row);
+
+    // Byte-exact, matching `run_skill_eval`: the hash is only comparable with
+    // `base_content_hash` if both sides hashed the same bytes.
     var buf: [64]u8 = undefined;
-    skill_evals_db.sha256Hex(body, &buf);
+    skill_evals_db.sha256Hex(row.content, &buf);
     return try allocator.dupe(u8, buf[0..]);
 }
 
@@ -388,7 +399,7 @@ pub fn skillEvalsApplyHandler(
     const result_id = req.query.get("result_id") orelse "";
     const action = req.query.get("action") orelse "apply";
 
-    const body = applyUseCase(allocator, ctx.io, result_id, action) catch |err| return errorResponse(allocator, res, err);
+    const body = applyUseCase(allocator, result_id, action) catch |err| return errorResponse(allocator, res, err);
 
     return res.jsonResponse(.{ .status_code = 200, .data = body });
 }
