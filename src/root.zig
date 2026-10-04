@@ -1158,6 +1158,7 @@ test {
     // (`thread N panic: reached unreachable code`), which is exactly the
     // class of bug the wiring assertions below are supposed to catch.
     _ = @import("http_handlers/git_pr_status.zig");
+    _ = @import("http_handlers/git_pr_checks.zig");
     _ = @import("http_handlers/git_pr_create.zig");
     _ = @import("http_handlers/git_pr_diff.zig");
     _ = @import("http_handlers/git_pr_conflicts.zig");

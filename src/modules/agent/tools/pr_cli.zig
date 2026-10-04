@@ -184,6 +184,98 @@ pub fn createArgv(
     return storage[0..n];
 }
 
+/// Fields requested from `gh pr checks --json`. `bucket` earns its place:
+/// `state` is free-form (`SUCCESS`, `FAILURE`, `NEUTRAL`), `bucket` is gh's own
+/// rollup into pass/fail/pending/skipping/cancel, which a UI can switch on.
+pub const GH_CHECKS_JSON_FIELDS = "bucket,name,state,link,workflow,startedAt,completedAt";
+
+/// Upper bound on `checksArgv` output.
+pub const checks_argv_max = 6;
+
+/// `<gh> pr checks [<ref>] --json <field list>`.
+///
+/// Null for every provider but GitHub: glab has no `mr checks` (its CI surface
+/// needs a pipeline id we do not have). The caller must turn that into "not
+/// supported", not into an empty list — which reads as "everything passed".
+pub fn checksArgv(storage: [][]const u8, provider: PrProvider, prog: []const u8, ref: []const u8) ?[]const []const u8 {
+    switch (provider) {
+        .github => {},
+        .gitlab, .generic => return null,
+    }
+    if (storage.len < checks_argv_max) return null;
+
+    var n: usize = 0;
+    storage[n] = prog;
+    n += 1;
+    storage[n] = "pr";
+    n += 1;
+    storage[n] = "checks";
+    n += 1;
+    if (ref.len > 0) {
+        storage[n] = ref;
+        n += 1;
+    }
+    storage[n] = "--json";
+    n += 1;
+    storage[n] = GH_CHECKS_JSON_FIELDS;
+    n += 1;
+    return storage[0..n];
+}
+
+/// Upper bound on `runJobsArgv` output (prog, run, view, id, --json, jobs).
+pub const run_jobs_argv_max = 6;
+
+/// `<gh> run view <run_id> --json jobs` — the second hop behind the Checks tab.
+/// `gh pr checks` reports jobs; only a run's step list answers "which task
+/// failed". `jobs` only: the run's own fields are already on the check rows.
+pub fn runJobsArgv(storage: [][]const u8, prog: []const u8, run_id: []const u8) ?[]const []const u8 {
+    if (storage.len < run_jobs_argv_max) return null;
+    if (run_id.len == 0) return null;
+
+    var n: usize = 0;
+    storage[n] = prog;
+    n += 1;
+    storage[n] = "run";
+    n += 1;
+    storage[n] = "view";
+    n += 1;
+    storage[n] = run_id;
+    n += 1;
+    storage[n] = "--json";
+    n += 1;
+    storage[n] = "jobs";
+    n += 1;
+    return storage[0..n];
+}
+
+/// `<run_id>` out of `…/actions/runs/<run_id>/job/<job_id>`. Borrows from
+/// `link`. Null for a non-Actions check (CircleCI, a bot-posted status): there
+/// is no run to drill into, which is "no steps", not "the lookup failed".
+pub fn runIdFromJobLink(link: []const u8) ?[]const u8 {
+    return digitsAfter(link, "/actions/runs/");
+}
+
+/// `<job_id>` at the tail of an Actions job link. How a check row finds its job
+/// in `run view --json jobs` (whose jobs carry a `databaseId`).
+pub fn jobIdFromJobLink(link: []const u8) ?[]const u8 {
+    return digitsAfter(link, "/job/");
+}
+
+/// The digits right after `marker`, stopping at the first `/`, `?` or `#`.
+/// Null when absent, empty, or non-numeric — a malformed link must not smuggle
+/// a fragment through as an id.
+fn digitsAfter(link: []const u8, marker: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, link, marker) orelse return null;
+    const rest = link[at + marker.len ..];
+    const end = std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len;
+    const digits = rest[0..end];
+    if (digits.len == 0) return null;
+    for (digits) |c| {
+        if (!std.ascii.isDigit(c)) return null;
+    }
+    return digits;
+}
+
 /// Pick the URL out of a forge CLI's stdout after a successful create.
 ///
 /// The naive read — "stdout is the URL" — is what `gh pr create` looks
@@ -312,4 +404,65 @@ test "isHttpUrl accepts http(s) with a host and rejects prose" {
     try std.testing.expect(!isHttpUrl("://gitlab.com/a"));
     try std.testing.expect(!isHttpUrl("https:///a/b"));
     try std.testing.expect(!isHttpUrl("gitlab.com/a/b"));
+}
+
+test "checksArgv builds `gh pr checks` with --json and no ref" {
+    var storage: [checks_argv_max][]const u8 = undefined;
+    try expectArgv(checksArgv(&storage, .github, "gh", ""), &.{ "gh", "pr", "checks", "--json", GH_CHECKS_JSON_FIELDS });
+}
+
+test "checksArgv passes a number / URL / branch through verbatim" {
+    var storage: [checks_argv_max][]const u8 = undefined;
+    try expectArgv(checksArgv(&storage, .github, "gh", "42"), &.{ "gh", "pr", "checks", "42", "--json", GH_CHECKS_JSON_FIELDS });
+    try expectArgv(checksArgv(&storage, .github, "gh", "https://github.com/acme/app/pull/42"), &.{ "gh", "pr", "checks", "https://github.com/acme/app/pull/42", "--json", GH_CHECKS_JSON_FIELDS });
+}
+
+test "checksArgv refuses every forge but GitHub" {
+    // glab has no `mr checks`; returning null is what lets the handler
+    // answer 422 ("not supported") instead of 200 with zero checks,
+    // which a UI reads as "everything passed".
+    var storage: [checks_argv_max][]const u8 = undefined;
+    try std.testing.expect(checksArgv(&storage, .gitlab, "glab", "7") == null);
+    try std.testing.expect(checksArgv(&storage, .generic, "gh", "") == null);
+}
+
+test "runJobsArgv builds `gh run view <id> --json jobs`" {
+    var storage: [run_jobs_argv_max][]const u8 = undefined;
+    try expectArgv(runJobsArgv(&storage, "gh", "37146940187"), &.{ "gh", "run", "view", "37146940187", "--json", "jobs" });
+}
+
+test "runJobsArgv rejects an empty run id and an undersized buffer" {
+    var storage: [run_jobs_argv_max][]const u8 = undefined;
+    try std.testing.expect(runJobsArgv(&storage, "gh", "") == null);
+    var tiny: [run_jobs_argv_max - 1][]const u8 = undefined;
+    try std.testing.expect(runJobsArgv(&tiny, "gh", "1") == null);
+}
+
+test "runIdFromJobLink pulls the run id out of an Actions job link" {
+    try std.testing.expectEqualStrings("37146940187", runIdFromJobLink("https://github.com/acme/app/actions/runs/37146940187/job/111272848907").?);
+    // Trailing query/fragment and a missing /job segment both terminate
+    // the id the same way.
+    try std.testing.expectEqualStrings("12", runIdFromJobLink("https://github.com/acme/app/actions/runs/12?checkSuite=1").?);
+    try std.testing.expectEqualStrings("7", runIdFromJobLink("https://github.com/acme/app/actions/runs/7").?);
+}
+
+test "runIdFromJobLink returns null for a link that is not an Actions job" {
+    // An external check has no run to drill into — the caller must read
+    // this as "no steps", never as "the lookup failed".
+    try std.testing.expect(runIdFromJobLink("https://circleci.com/gh/acme/app/1") == null);
+    try std.testing.expect(runIdFromJobLink("https://api.github.com/repos/acme/app") == null);
+    try std.testing.expect(runIdFromJobLink("") == null);
+    // Present marker, non-numeric segment: a malformed link must not
+    // smuggle "abc" through as a run id.
+    try std.testing.expect(runIdFromJobLink("https://github.com/a/b/actions/runs/abc/job/1") == null);
+    try std.testing.expect(runIdFromJobLink("https://github.com/a/b/actions/runs//job/1") == null);
+}
+
+test "jobIdFromJobLink pulls the job id, and only from an Actions link" {
+    try std.testing.expectEqualStrings("111272848907", jobIdFromJobLink("https://github.com/acme/app/actions/runs/37146940187/job/111272848907").?);
+    try std.testing.expectEqualStrings("9", jobIdFromJobLink("https://github.com/a/b/actions/runs/1/job/9?checkSuite=2").?);
+    // A link with no job segment has no job to match a run against.
+    try std.testing.expect(jobIdFromJobLink("https://github.com/acme/app/actions/runs/37146940187") == null);
+    try std.testing.expect(jobIdFromJobLink("https://circleci.com/gh/acme/app/1") == null);
+    try std.testing.expect(jobIdFromJobLink("") == null);
 }

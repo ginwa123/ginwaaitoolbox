@@ -4941,6 +4941,73 @@ export async function getPrStatus(
   return await apiFetch<GitPrStatus>(`/git/pr/status?${params.toString()}`, { silent: true })
 }
 
+/**
+ * PR CI checks (GET /api/git/pr/checks via `gh pr checks`).
+ *
+ * `checks` is one row per CI job; `steps` is filled in for failed and
+ * cancelled jobs only — "which job failed" is already on the PR page,
+ * "which process or task failed" is what the user comes here for.
+ *
+ * `steps_error` is the contract that matters: when the backend tried to
+ * read a job's steps and could not, the reason lands here so the panel
+ * can say so. An empty `steps` with an empty `steps_error` is a real
+ * answer (an external check has no steps); an empty `steps` with a
+ * message is a gap.
+ */
+export interface GitPrCheckStep {
+  name: string
+  number: number
+  conclusion: string // success | failure | cancelled | skipped | neutral | timed_out | ''
+  status: string // queued | in_progress | completed
+  started_at: string
+  completed_at: string
+}
+
+export interface GitPrCheck {
+  name: string
+  workflow: string
+  bucket: string // pass | fail | pending | skipping | cancel
+  state: string
+  link: string
+  started_at: string
+  completed_at: string
+  steps: GitPrCheckStep[]
+  steps_error: string
+}
+
+export interface GitPrChecksSummary {
+  total: number
+  passed: number
+  failed: number
+  pending: number
+  skipped: number
+  cancelled: number
+}
+
+export interface GitPrChecks {
+  provider: string
+  pr_url: string
+  checks: GitPrCheck[]
+  summary: GitPrChecksSummary
+  /** Some failed jobs have no steps because the run-lookup budget ran out. */
+  steps_truncated: boolean
+}
+
+export async function getPrChecks(
+  cwd: string,
+  prUrl: string,
+  opts?: { provider?: string },
+): Promise<GitPrChecks> {
+  const params = new URLSearchParams({
+    path: cwd,
+    pr: prUrl,
+  })
+  if (opts?.provider) params.set('provider', opts.provider)
+  // `silent: true`: the Checks tab renders its own error inline, and a
+  // toast per poll would be noise on top of it.
+  return await apiFetch<GitPrChecks>(`/git/pr/checks?${params.toString()}`, { silent: true })
+}
+
 // Which-files-conflict API. `getPrStatus` tells us a PR is CONFLICTING but
 // not what blocks it — no forge API exposes that, so the backend runs the
 // same three-way merge locally (`git merge-tree --write-tree --name-only`)

@@ -290,6 +290,9 @@ fn registerGitRoutes(authed: *Group) !void {
     try authed.get("/api/git/commit/file", ai_mod.http_handlers.gitCommitFileDiffHandler);
     try authed.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
     try authed.get("/api/git/pr/status", ai_mod.http_handlers.gitPrStatusHandler);
+    // Literal path, no `:param` sibling under `/api/git/pr/` (asserted by a
+    // test in git_pr_checks.zig), so matchRoute cannot shadow it.
+    try authed.get("/api/git/pr/checks", ai_mod.http_handlers.gitPrChecksHandler);
     try authed.get("/api/git/pr/diff", ai_mod.http_handlers.gitPrDiffHandler);
     try authed.get("/api/git/pr/conflicts", ai_mod.http_handlers.gitPrConflictsHandler);
 }
