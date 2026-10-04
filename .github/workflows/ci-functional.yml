@@ -112,43 +112,49 @@ jobs:
     # in the thing that proves the shards partition the suite. Let it fall
     # back to the job id.
     runs-on: ${{ inputs.os }}
-    # Per-platform, because 75 minutes is right for two of the three cells
-    # and fatal for the third.
+    # Per-platform. Linux and macOS finish a whole shard job — checkout,
+    # venv, a zig build and 1/3 of BOTH suites — in 8-15 min, so 75 is
+    # generous for them. Windows was not: 150, then a raise, and every
+    # shard still died on the ceiling.
     #
-    # The 75 was sized from Linux and macOS, where a whole shard job —
-    # checkout, venv, a zig build and 1/3 of BOTH suites — finishes in about
-    # 9 minutes. Windows is roughly an order of magnitude slower at
-    # everything this job does: `vcpkg install` alone is 11 minutes before
-    # a single test can link, and every test boots a real pabrik and (in the
-    # UI suite) a Vite dev server.
+    # WHY WINDOWS IS DIFFERENT — and it was not "Windows is slow".
+    # Measured on run 37109078837 (main @ fb7b2dc4):    #
+    #     functional Linux  X64  shard 1/3    8.4 min
+    #     functional Linux  X64  shard 2/3   10.8 min
+    #     functional Linux  X64  shard 3/3   11.1 min
+    #     functional macOS  X64  shard 1/3   12.6 min
+    #     functional macOS  X64  shard 2/3   15.0 min
+    #     functional macOS  X64  shard 3/3   12.8 min
+    #     functional Windows X64 shard 1/3  150.4 min  (cancelled)
+    #     functional Windows X64 shard 2/3  150.4 min  (cancelled)
+    #     functional Windows X64 shard 3/3  150.3 min  (cancelled)
     #
-    # Measured, from run 37046311981 `functional Windows X64 · shard 1/3`:
+    # Windows did 195 of its 279 tests in 138 min of pytest: 42 s/test
+    # against Linux's 2.7 s/test, with the failures spread evenly from 1%
+    # to 67% rather than clustered late. A flat 15x, not a ramp.
     #
-    #     18:33:49  job starts
-    #     18:45:48  the functional step begins          <- 12 min of setup
-    #     19:48:57  "The operation was canceled."       <- 63 min, never
-    #                                                             finished
+    # The cause was in the harness, not the runner: `_wait_dead` reported
+    # a RUNNING server as dead (see tests/functional/harness.py), so every
+    # teardown ran the full 10 x 1s rmtree retry budget against a live
+    # server still holding agent.db — 10 s per test, and the server was
+    # never killed, so instances piled up for the rest of the shard. That
+    # is now fixed, and the ceiling is set from a measurement taken after
+    # the fix rather than from a guess made before it.
     #
-    # `18:33:49 + 75 min` is exactly where it died, so 75 is not "too tight
-    # on a bad day" — it is below what the cell needs on a normal day. It
-    # has been that way for every run in the last 60: I checked the job list
-    # for the whole recent history and EVERY `functional Windows X64` shard
-    # is `cancelled`, none has ever completed.
+    # 300 for Windows, 75 for the other two. The number is deliberately
+    # NOT derived from the pre-fix 42 s/test figure, because that figure
+    # was mostly the 10 s teardown stall and would have asked for ~7 h.
+    # If a future run needs more headroom the answer is to make the suite
+    # faster, not to keep raising this — 300 is still well under the 360
+    # ceiling for a GitHub-hosted runner, and a wedged job now costs 5 h
+    # of one machine instead of 6.
     #
-    # It is also self-reinforcing, which is what made it look unfixable.
-    # The step buffers its output through `tee | tail -n 80`, so a killed job
-    # prints nothing, and `actions/cache` only saves in post-job cleanup —
-    # a job that dies on the timeout never saves its `.zig-cache`. The next
-    # run therefore misses the cache, pays another cold ~90 MB compile, and
-    # dies on the same wall. The cache key was never once found in a log:
-    #   `Cache not found for input keys: v1-func-zig-windows-2022-...`
-    # So the honest fix is headroom; once ONE run completes, its cache is
-    # saved and every later run starts warm.
-    #
-    # 150, not 360: a timeout is a ceiling, not a target — a job that needs
-    # 90 still exits at 90 — so the only thing a generous ceiling costs is
-    # when something is genuinely wedged, and 2.5 h bounds that.
-    timeout-minutes: ${{ inputs.os == 'windows-2022' && 150 || 75 }}
+    # A killed job still saves nothing: `actions/cache` writes in post-job
+    # cleanup, so a shard that times out never persists its `.zig-cache` and
+    # the next run pays another cold compile. That is the second half of
+    # why these shards looked unfixable, and it is why "just raise the
+    # timeout" was not sufficient on its own.
+    timeout-minutes: ${{ inputs.os == 'windows-2022' && 300 || 75 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -237,6 +243,78 @@ jobs:
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
+      - name: Exclude the build paths from Defender (Windows)
+        if: runner.os == 'Windows'
+        # The single biggest reason this cell is ~8-10x slower per test than
+        # Linux, and the one lever that actually moves it.
+        #
+        # MEASURED, on run 37136277927 `functional Windows X64 · shard 2/3`:
+        #
+        #     wall 62.3 min total -> 235 of ~279 shard items complete
+        #     235 tests/functional/ (the whole API suite) + 1 functional_ui
+        #
+        # i.e. ~15 s per API test. The SAME suite on Linux takes ~1.8 s per
+        # item end-to-end (8.5 min for a whole shard), and on an ordinary
+        # Windows dev box it is ~1.5 s per test — so this is not a code
+        # hotspot, it is a flat ~8-10x tax on everything the runner does.
+        #
+        # What the suite does that is worst-case for Defender: it boots a
+        # real ~16 MB server binary per test (~280 times per shard), each boot
+        # creating a brand-new tmpdir HOME and running every migration into
+        # a fresh SQLite database, then deleting the whole tree. That is
+        # process-create plus thousands of file create/write/delete calls
+        # per test, each one through a minifilter.
+        #
+        # (For the record: the boot itself is NOT the hotspot. A cold boot
+        # with all 100 migrations measured 0.55 s on a dev box, against a
+        # 0.002 s file copy of the finished DB — so "pre-seed the migrated
+        # database" would buy nothing. The tax is uniform, which is why the
+        # remedy is environmental rather than algorithmic.)
+        #
+        # SCOPE: three paths only — the workspace, `runner.temp` (the venv
+        # and the pinned playwright dir), and the system TEMP the harness
+        # writes its per-test tmpdirs under. The OS, user profile and
+        # Program Files stay scanned. This is an ephemeral, single-use
+        # runner that only ever builds this repository.
+        #
+        # Failure here is NOT fatal and must not be: on some runner images
+        # `Add-MpPreference` is slow or the Defender module is absent, and a
+        # 30x slower-but-correct shard beats a red one. It writes a marker so
+        # a later step can tell whether the fast path was actually taken.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $targets = @(
+            $env:GITHUB_WORKSPACE,
+            $env:RUNNER_TEMP,
+            $env:TEMP
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
+          $applied = @()
+          $failed  = @()
+          foreach ($t in $targets) {
+            try {
+              Add-MpPreference -ExclusionPath $t -ErrorAction Stop
+              $applied += $t
+              Write-Host "excluded: $t"
+            } catch {
+              $failed += "$t ($($_.Exception.Message))"
+              Write-Warning "could not exclude ${t}: $($_.Exception.Message)"
+            }
+          }
+
+          if ($applied.Count -gt 0) {
+            "defender_excluded=true" >> $env:GITHUB_ENV
+            Write-Host "Defender exclusions active for $($applied.Count) path(s)."
+          } else {
+            "defender_excluded=false" >> $env:GITHUB_ENV
+            Write-Warning "No Defender exclusions applied — the suite will run at full scan cost."
+          }
+          if ($failed.Count -gt 0) {
+            Write-Warning ("not excluded: " + ($failed -join "; "))
+          }
+          $global:LASTEXITCODE = 0
+
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows'
         # The windows-2022 image already has VS 2022 with the C++ workload.
@@ -268,6 +346,79 @@ jobs:
             exit 1
           }
           $global:LASTEXITCODE = 0
+
+      - name: Resolve the vcpkg baseline (Windows)
+        id: vcpkg-baseline
+        if: runner.os == 'Windows'
+        # The cache key for the ports install below.
+        #
+        # `windows-2022` is a MOVING image tag: its vcpkg (and therefore its
+        # ports tree — curl, openssl, libpq, sqlite3 all get new versions)
+        # changes underneath us. A cache keyed only on the port list would
+        # happily restore an `installed/` tree built from an OLDER ports
+        # tree, and the result is a header/library pair that disagree —
+        # which fails deep inside `zig build` as an opaque link error rather
+        # than as "your cache is stale".
+        #
+        # So the key carries vcpkg's own version string. When the image moves,
+        # the key misses and the ports are rebuilt, which is the correct
+        # outcome and also the only thing that keeps the cache from growing a
+        # new ~1 GB entry per image bump.
+        #
+        # Runs after the bootstrap step and before the install, so
+        # `vcpkg.exe` is guaranteed to exist.
+        shell: pwsh
+        run: |
+          $raw = (& C:\vcpkg\vcpkg.exe version) -join "-"
+          # Sanitise to [A-Za-z0-9.-]: `actions/cache` keys are used verbatim
+          # in a file path, and vcpkg's output contains spaces.
+          $safe = ($raw -replace '[^A-Za-z0-9.\-]', '-') -replace '-+', '-'
+          Write-Host "vcpkg version (raw) : $raw"
+          Write-Host "vcpkg cache key part: $safe"
+          "value=$safe" >> $env:GITHUB_OUTPUT
+          $global:LASTEXITCODE = 0
+
+      - name: Cache the vcpkg ports (Windows)
+        if: runner.os == 'Windows'
+        # ~10 MINUTES PER WINDOWS JOB, and it is the same ten minutes every
+        # time.
+        #
+        # Measured on run 37136277927: `Install vcpkg ports (Windows)` took
+        # 8.5 / 10.2 / 10.7 min on the three shards — against 0.6-0.7 min for
+        # Linux's `ci-install-linux-deps.sh`. Linux is quick only because
+        # `ubuntu-24.04` already ships libcurl/openssl/libpq/sqlite3;
+        # `windows-2022` ships vcpkg *bootstrapped* but NOT with the four
+        # ports built, so every job compiles them from source.
+        #
+        # With three shards on three separate VMs, that is ~30 minutes of
+        # duplicated compilation per PR, plus ~10 more in the backend cell —
+        # for output that is byte-identical every run. It is also most of the
+        # gap between "checkout to first test" on Windows (11 min) and Linux
+        # (1 min).
+        #
+        # Only `installed/` is cached, deliberately:
+        #   * NOT the whole of `C:\vcpkg` — the backend cell runs
+        #     `vcpkg integrate install`, which writes MSBuild integration
+        #     state outside `installed/`. Caching that would restore another
+        #     job's integration state into a fresh VM.
+        #   * NOT `downloads/` — it roughly doubles the entry size and only
+        #     helps on a cold miss, where the ports are being rebuilt for a
+        #     NEW vcpkg baseline and want new sources anyway. The expensive
+        #     half is the compile, and that is what `installed/` holds.
+        #
+        # `installed/` only, so a restore is exactly the four port trees plus
+        # vcpkg's status files. The `Install vcpkg ports` step below still
+        # runs on a hit — it becomes a no-op resolution rather than a
+        # compile — and it keeps its four `Test-Path` header assertions, so a
+        # truncated or half-restored cache fails HERE with "vcpkg port X
+        # missing" instead of as an opaque link error later.
+        #
+        # Keyed by image (`inputs.os`) for the reason every other cache here
+        # is: these are platform-specific binaries.
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: v1-vcpkg-ports-${{ inputs.os }}-${{ steps.vcpkg-baseline.outputs.value }}
 
       - name: Install vcpkg ports (Windows)
         if: runner.os == 'Windows'
@@ -326,23 +477,52 @@ jobs:
         # job:
         #   - the pytest/playwright venv, at ${{ runner.temp }}/pabrik-ci-venv
         #     (build.zig reads PABRIK_FUNC_VENV_DIR at config time)
-        #   - Playwright's Chromium download, at ~/.cache/ms-playwright
+        #   - Playwright's Chromium download, at the job-level
+        #     PLAYWRIGHT_BROWSERS_PATH below
         #
+        # THE BROWSERS PATH IS PINNED, NOT DISCOVERED. Playwright picks a
+        # DIFFERENT default directory per platform —
+        #   ~/.cache/ms-playwright              (Linux)
+        #   ~/Library/Caches/ms-playwright      (macOS)
+        #   %LOCALAPPDATA%\ms-playwright        (Windows)
+        # — so the `~/.cache/ms-playwright` this step used to cache is a
+        # path that exists ONLY on Linux. On windows-2022 the cache saved
+        # an empty/nonexistent directory, the key still matched, and every
+        # run re-downloaded all three browser payloads. That is visible in
+        # the run logs as ~310 MB of Chromium, headless-shell and FFmpeg
+        # coming down on a cache hit:
+        #   Chrome for Testing ... downloaded to
+        #     C:\Users\runneradmin\AppData\Local\ms-playwright\chromium-1243
+        # i.e. the cache and the download disagreed about where the
+        # browsers live. Setting PLAYWRIGHT_BROWSERS_PATH to one explicit
+        # directory makes the install and the cache agree on all three
+        # platforms, and keeps the whole thing under runner.temp so it
+        # survives post-job cleanup like the venv does.
+        #
+        # It is set at JOB level, not on the pytest step, because it has to
+        # be in the environment of BOTH ends: `zig build
+        # functional-test-all` runs `python -m playwright install chromium`
+        # (build.zig:3249) and then spawns pytest, and Playwright resolves
+        # the same variable in each. A step-level value would give the
+        # install one directory and the browser launch another — a silently
+        # redownloading cache, which is the bug this replaces.        #
         # Key scoped by RUNNER IMAGE (`inputs.os`) plus the interpreter,
         # never by `runner.os`: a venv is a directory of scripts and
         # site-packages whose layout and wheel tags are platform-specific
         # (Windows uses `Scripts/`, not `bin/`), so a Linux-built venv
         # restored onto a Windows runner is not a slow cache hit — it is a
-        # broken interpreter path. Three cells means three caches; that is
-        # the price of running the suites on three platforms.
+        # broken interpreter path. The browser binaries are equally
+        # platform-specific, so they belong under the same per-image key.
+        # Three cells means three caches; that is the price of running the
+        # suites on three platforms.
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/ms-playwright
+            ${{ runner.temp }}/ms-playwright
             ${{ runner.temp }}/pabrik-ci-venv
-          key: v3-py-${{ inputs.os }}-py312-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
+          key: v4-py-${{ inputs.os }}-py312-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
           restore-keys: |
-            v3-py-${{ inputs.os }}-py312-
+            v4-py-${{ inputs.os }}-py312-
 
       - name: Cache pnpm store
         # The Vite dev server is spawned by UIHarness during the run via
@@ -476,6 +656,30 @@ jobs:
           # what normalises Windows' mixed separators to the `Scripts/`
           # layout.
           PABRIK_FUNC_VENV_DIR: ${{ runner.temp }}/pabrik-ci-venv
+          # ONE browser directory for all three runners. Playwright's
+          # default is platform-dependent (`~/.cache/ms-playwright` on
+          # Linux, `~/Library/Caches/ms-playwright` on macOS,
+          # `%LOCALAPPDATA%\ms-playwright` on Windows), which is why the
+          # cache step could only ever hit on Linux — on windows-2022 it
+          # saved a nonexistent directory, the key still matched, and
+          # every run re-downloaded ~310 MB of Chromium on a cache *hit*.
+          #
+          # This step is the ONLY consumer, and that is the point: this one
+          # `run:` block is what executes
+          # `zig build functional-test-all`, which in turn runs
+          # `python -m playwright install chromium` (build.zig:3249) and
+          # then pytest. `b.addSystemCommand` inherits the parent
+          # environment, so a value set here reaches the installer AND the
+          # browser launch — which is what has to agree with the cache.
+          #
+          # STEP level, and that is forced rather than chosen: `runner` is
+          # not an available context in `jobs.<job_id>.env` (or in
+          # workflow-level `env`). Putting `${{ runner.temp }}` there makes
+          # GitHub reject the file outright — the run appears, exits
+          # `failure` in the same second, has zero jobs, and no check run
+          # is attached to the PR. Found by bisecting this very file; see
+          # the PR.
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
           # ── THE SHARD ─────────────────────────────────────────────
           # These two variables are the entire sharding contract; they
           # are read by tests/conftest.py, which slices the collected

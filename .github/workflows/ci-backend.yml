@@ -288,6 +288,54 @@ jobs:
           }
           Write-Host "ok MSVC toolchain on PATH"
           $global:LASTEXITCODE = 0
+
+      - name: Resolve the vcpkg baseline (Windows)
+        id: vcpkg-baseline
+        if: runner.os == 'Windows'
+        # Key input for the ports cache below. See the identical step in
+        # ci-functional.yml for the full reasoning; the short version is that
+        # `windows-2022` is a moving tag whose vcpkg (and so whose curl /
+        # openssl / libpq / sqlite3 versions) changes underneath us, and a key
+        # of just the port list would restore an `installed/` tree built from
+        # an older ports tree — which fails later as an opaque link error
+        # rather than as a stale cache.
+        shell: pwsh
+        run: |
+          $raw = (& C:\vcpkg\vcpkg.exe version) -join "-"
+          $safe = ($raw -replace '[^A-Za-z0-9.\-]', '-') -replace '-+', '-'
+          Write-Host "vcpkg cache key part: $safe"
+          "value=$safe" >> $env:GITHUB_OUTPUT
+          $global:LASTEXITCODE = 0
+
+      - name: Cache the vcpkg ports (Windows)
+        if: runner.os == 'Windows'
+        # ~10 minutes per Windows run, for output that never changes.
+        #
+        # `windows-2022` ships vcpkg bootstrapped but NOT with the four ports
+        # built, so this cell compiles curl/openssl/libpq/sqlite3 from source
+        # every time. Measured 8.5-10.7 min on the three functional shards of
+        # run 37136277927; the backend cell pays the same.
+        #
+        # The key is SHARED with ci-functional.yml on purpose: the backend
+        # cell runs first in the chain, so on a warm cache it populates the
+        # entry and the three shards hit it, instead of four separate jobs
+        # each compiling the same four ports. That is the whole point — the
+        # three shards are separate VMs and cannot share a filesystem.
+        #
+        # Only `installed/` is cached. NOT the whole of `C:\vcpkg`: the step
+        # below runs `vcpkg integrate install`, which writes MSBuild
+        # integration state outside `installed/`, and restoring another job's
+        # integration state onto a fresh VM is not worth the bytes.
+        #
+        # The install step still runs on a hit (a no-op resolution rather than
+        # a compile) and keeps its four `Test-Path` header assertions, so a
+        # bad restore fails here with "vcpkg port X missing" instead of later
+        # as an opaque link error.
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: v1-vcpkg-ports-${{ inputs.os }}-${{ steps.vcpkg-baseline.outputs.value }}
+
       - name: Install vcpkg ports (Windows)
         if: runner.os == 'Windows'
         # `shell: pwsh` per the project rule. See the comment on

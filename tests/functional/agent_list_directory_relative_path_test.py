@@ -53,6 +53,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -314,9 +315,32 @@ def test_list_directory_relative_path_does_not_abort_worker(default_pabrik_bin: 
             f"tool returned an error envelope instead of a listing: {envelope}"
         )
         expected_dir = str(ws / RELATIVE_PATH)
-        assert envelope["data"]["path"] == expected_dir, (
+        # Compare NORMALISED, and say why.
+        #
+        # The assertion is about "the relative path resolved against the
+        # session cwd", not about which separator character the wire format
+        # uses. `ws / RELATIVE_PATH` goes through pathlib and therefore
+        # yields backslashes on Windows, while the server composes the
+        # resolved path with `/` — so a byte comparison failed on Windows
+        # with `frontend\src` vs `frontend/src` while passing on Linux and
+        # macOS.
+        #
+        # Both spellings are a valid path for the Windows API, so neither side
+        # is wrong and there is nothing here to fix in the product.
+        # `os.path.normpath` is the platform's own answer to "are these the
+        # same path", which is exactly the question being asked.
+        got_path = (envelope.get("data") or {}).get("path")
+        assert got_path is not None, (
+            "list_directory reported success but carried no data.path, so the "
+            "relative-path resolution cannot be checked. This is a product "
+            "shape problem, not a separator problem -- and the envelope is "
+            f"printed in full because `data: null` on a success row says "
+            f"nothing on its own:\n  {envelope!r}"
+        )
+        got_dir = os.path.normpath(got_path)
+        assert got_dir == os.path.normpath(expected_dir), (
             f"relative path must resolve against the SESSION cwd {expected_dir!r}, "
-            f"got {envelope['data']['path']!r}"
+            f"got {got_path!r}"
         )
         names = [e["name"] for e in envelope["data"]["entries"]]
         assert "index.ts" in names, f"expected index.ts in the listing, got {names}"

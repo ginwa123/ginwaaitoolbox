@@ -109,6 +109,7 @@ from harness import (
     FunctionalHarnessError,
     find_free_port_random,
     is_safe_tmp,
+    snapshot_parent_env,
 )
 
 # ---------------------------------------------------------------------------
@@ -289,6 +290,22 @@ def _spawn_pabrik(
             "HOME not set; refusing to boot. Functional tests need a normal shell."
         )
 
+    # Snapshot the Windows env vars too, for the SAME reason boot() does: they
+    # are what `FunctionalHarness.teardown()` puts back, and this helper
+    # constructs the harness by hand.
+    #
+    # Omitting them defaulted them to "" on the dataclass, and teardown reads
+    # "" as "there was nothing to restore" and POPS the variable. Measured
+    # effect, after this module ran: the parent process had lost
+    # USERPROFILE, APPDATA and LOCALAPPDATA outright. The next module's nalar
+    # then died inside `Config.zig:getDefaultConfigPath` — before reaching the
+    # code that module was testing — which surfaced as a completely unrelated
+    # failure: `server_port_bind_test` asserting on a missing "already in use"
+    # string. Purely order-dependent, and invisible in isolation.
+    orig_userprofile = os.environ.get("USERPROFILE", "")
+    orig_appdata = os.environ.get("APPDATA", "")
+    orig_localappdata = os.environ.get("LOCALAPPDATA", "")
+
     port = find_free_port_random()  # wide range, never 8081
     temp_dir = Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
     if not is_safe_tmp(str(temp_dir), orig_home):
@@ -332,6 +349,21 @@ def _spawn_pabrik(
         log_path=log_path,
         pid=proc.pid,
         dry_run=os.environ.get("PABRIK_FUNCTIONAL_DRY_RUN") == "1",
+        orig_userprofile=orig_userprofile,
+        orig_appdata=orig_appdata,
+        orig_localappdata=orig_localappdata,
+        # Same reason boot() passes it: _wait_dead answers liveness from the
+        # Popen handle via poll(). Without it this harness falls back to
+        # probing the bare pid, which on Windows cannot tell an exited
+        # process from a live one.
+        _proc=proc,
+        # This helper shadows nothing in the PARENT env (it builds a child env
+        # dict instead), so `_env_shadowed` is empty — but it still owes
+        # teardown an exact snapshot, or teardown would "restore" HOME from a
+        # synthesised value and invent a variable Windows never had.
+        _env_backup=snapshot_parent_env(),
+        _env_shadowed={},
+
     )
 
     started = time.monotonic()
@@ -412,14 +444,45 @@ def _require_ready(booted: Booted) -> FunctionalHarness:
 
 
 def _expect_boot_failure(booted: Booted, what: str) -> str:
-    """Assert the server did NOT start; return detail + log for text assertions."""
+    """Assert the server did NOT start; return detail + log for text assertions.
+
+    Returns the WHOLE log, not `tail_log(50)`.
+
+    The callers assert that the failure text names `--tls` and the offending
+    path. That text is printed early — right where the flag is validated — and
+    a window of the last N lines only contains it if nothing else is logged
+    afterwards. On Windows something is: the CI binary is a Debug build, so
+    the error return from `main` runs Zig's leak check, which prints a
+    `error(DebugAllocator): memory address ... leaked:` block with a stack
+    trace per allocation. That block is longer than the window, so the tail
+    contained only leak frames and the assertion failed with
+
+        error must name the flag; got:
+        nalar exited rc=1 during boot (plaintext mode)
+        --- last 50 lines of log ---
+        ... crtexe.c / Args.zig frames ...
+
+    while the server had in fact exited rc=1 and said exactly the right
+    thing. Reading the whole log is also the more honest assertion here: the
+    claim under test is "the error message mentions the flag", not "the error
+    message is among the last 50 lines".
+
+    This cannot pass vacuously. `booted.detail` is a curl/probe result
+    string and never contains the argv, and `Booted.ready` is already False
+    by the time we get here, so the boot failure itself is established
+    independently of the text being searched for.
+    """
     if booted.ready:
         pytest.fail(
             f"{what}: the binary started and answered plaintext instead of exiting "
             "non-zero — the flag was accepted and ignored.",
             pytrace=False,
         )
-    return booted.detail + "\n" + booted.harness.tail_log(50)
+    try:
+        log = booted.harness.log_path.read_text(errors="replace")
+    except OSError as e:
+        log = f"<could not read {booted.harness.log_path}: {e}>"
+    return booted.detail + "\n" + log
 
 
 # ---------------------------------------------------------------------------

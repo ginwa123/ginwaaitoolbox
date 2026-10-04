@@ -243,11 +243,24 @@ fn unixTimestampWindows() i64 {
 /// Platform implementation:
 /// - **POSIX (Linux/macOS):** libc `clock_gettime(CLOCK_REALTIME, ...)`.
 ///   Declared as `extern "c"` (not in std.c in 0.16 for some configs).
+///   True nanosecond resolution, so consecutive calls differ and no
+///   tie-break is needed.
 /// - **Windows:** `GetSystemTimeAsFileTime` (FILETIME = 100-ns ticks
 ///   since 1601-01-01 UTC) → nanoseconds since 1970-01-01 UTC by
 ///   multiplying ticks by 100 (100-ns → 1-ns) and subtracting the 1601→1970
 ///   offset (11_644_473_600 seconds = 11_644_473_600_000_000_000 ns).
 ///   Conversion lives in `filetimeTicksToUnixNanos` (pure + unit-tested).
+///   That clock only advances once per system timer tick (~1.6 ms
+///   measured), so the result is pushed through a process-wide atomic to
+///   guarantee uniqueness — see `unixTimestampNanosWindows`.
+///
+/// ## Uniqueness
+///
+/// Callers use the result as a row-id suffix (`item_<nanos>`,
+/// `task_<nanos>`, `at_<nanos>_<i>`), so two calls must never return the
+/// same value in one process. That holds on all three platforms: POSIX has
+/// real nanosecond resolution, and Windows breaks the tie in a
+/// process-wide atomic rather than per-thread.
 pub fn unixTimestampNanos() i128 {
     return switch (builtin.os.tag) {
         .linux, .macos => unixTimestampNanosPosix(),
@@ -286,45 +299,80 @@ fn unixTimestampNanosWindows() i128 {
     // Combine low + high 32 bits into u128 (little-endian on Windows).
     const ticks: u128 = (@as(u128, ft.dwHighDateTime) << 32) | @as(u128, ft.dwLowDateTime);
     const base_ns = filetimeTicksToUnixNanos(ticks);
-    // Raw 1601-based nanos for the same-tick dedup counter below
-    // (pre-offset, so the counter never conflates absolute time with
-    // the in-tick sequence number).
-    const ns_since_1601: i128 = @intCast(ticks * 100);
 
-    // Ensure uniqueness across rapid back-to-back calls. `GetSystemTimeAsFileTime`
-    // has only 100-ns resolution, so two consecutive calls inside a single tick
-    // (e.g. a migration inserting N rows in a tight loop) return identical
-    // values — breaking callers that use the result as a unique-row-id suffix
-    // (`task_<nanos>` patterns in `migration.zig:2540` and `design_items_create.zig:100`).
-    // The thread-local counter starts at 1 (so the first call gets the raw
-    // FILETIME), and increments per call until the wall clock advances enough
-    // to absorb it — guaranteeing monotonic uniqueness for any caller that
-    // reads the value within a single tick. Counter value is added AFTER the
-    // raw FILETIME so callers that compare against a previous call see
-    // monotonically-increasing values across the in-tick window.
+    // Claim a PROCESS-WIDE value that is both unique and non-decreasing.
     //
-    // threadlocal safety: each thread gets its own counter (Zig's
-    // `threadlocal var` is the right primitive). The counter resets to 0
-    // when the FILETIME advances by ≥ 1ns, so it doesn't accumulate forever.
-    const last_ns = unixNanosWindowsLastNs;
-    const counter = unixNanosWindowsCounter;
-    defer {
-        // Compare the raw FILETIME (not `base_ns` which has the offset
-        // subtracted) so we don't conflate absolute time with the counter.
-        const raw_ns = ns_since_1601;
-        unixNanosWindowsLastNs = raw_ns;
-    }
-    if (ns_since_1601 == last_ns) {
-        unixNanosWindowsCounter = counter + 1;
-        return base_ns + counter + 1;
-    } else {
-        unixNanosWindowsCounter = 0;
-        return base_ns;
+    // Why this is a CAS loop and not "read the clock, add a thread-local
+    // counter": `GetSystemTimeAsFileTime` is not a 100-ns clock. Its
+    // resolution is the Windows *system timer tick*, measured on a stock
+    // windows-2022 host at ~1.6 ms (4000 reads in a tight loop spanned a
+    // single tick). So any two calls within that window return the SAME
+    // value — including two calls made microseconds apart on two
+    // different threads.
+    //
+    // And two different threads is the normal case here, not an edge
+    // case: kabelweb's server is thread-per-connection
+    // (`kabelweb/src/server/event_loop.zig`, "Non-breaking companion to
+    // `http_server.zig:listen` (thread-per-connection)"), and the
+    // functional harness opens a fresh connection per request. So
+    // `POST /api/workspaces` — which mints the default project's
+    // `item_<nanos>` — and the `POST /api/workspaces/:id/items/agent`
+    // that follows it a millisecond later land on two threads, each
+    // starting its own thread-local counter at 0, and both compute the
+    // identical `base_ns`.
+    //
+    // The second INSERT then dies on the primary key and the handler maps
+    // it to `error.DatabaseError`, so the wire shows
+    //     POST /api/workspaces/:ws/items/agent -> 500
+    //     {"error":"Failed to create agent item"}
+    // with `UNIQUE constraint failed: workspace_items.id` in the server
+    // log. Reproduced on windows-2022 (functional shards, ~36 failures per
+    // shard) and locally; Linux/macOS never see it because
+    // `clock_gettime(CLOCK_REALTIME)` there has true nanosecond
+    // resolution, so the POSIX path needs no tie-break at all.
+    //
+    // `workspaces_create.zig` already solved this for its own id with a
+    // process-wide `std.atomic.Value` counter and a comment naming this
+    // exact 500; this brings the shared helper in line with it.
+    //
+    // The loop only nudges the value forward when the clock has not yet
+    // caught up, so the drift is bounded by how many ids are minted inside
+    // one ~1.6 ms tick (tens), and it self-corrects on the next tick.
+    var candidate: u64 = unixNanosToStamp(base_ns);
+    while (true) {
+        const last = unixNanosWindowsStamp.load(.monotonic);
+        if (candidate <= last) candidate = last + 1;
+        if (unixNanosWindowsStamp.cmpxchgWeak(last, candidate, .monotonic, .monotonic) == null) {
+            return candidate;
+        }
+        // Lost the race: another thread claimed a value at or past ours.
+        // Re-read and re-run so this call still returns a strictly larger
+        // one than every value handed out so far.
     }
 }
 
-threadlocal var unixNanosWindowsLastNs: i128 = 0;
-threadlocal var unixNanosWindowsCounter: u64 = 0;
+/// Clamp a `filetimeTicksToUnixNanos` result into the `u64` domain the
+/// atomic stamp lives in.
+///
+/// `filetimeTicksToUnixNanos` returns `i128` because the FILETIME epoch
+/// (1601) predates the Unix one; on a real host the value is ~1.8e18 and
+/// comfortably inside `u64`. The clamp exists so a pathological or
+/// pre-1970 tick degrades to the nearest representable stamp instead of
+/// panicking on `@intCast` — this is an id generator, and panicking in it
+/// would take down whichever request happened to read a bad clock.
+fn unixNanosToStamp(ns: i128) u64 {
+    if (ns <= 0) return 0;
+    if (ns > std.math.maxInt(u64)) return std.math.maxInt(u64);
+    return @intCast(ns);
+}
+
+/// Last value handed out by `unixTimestampNanosWindows`, process-wide.
+///
+/// NOT `threadlocal` — see the call site for the collision that motivated
+/// it. `std.atomic.Value` with `.monotonic` ordering: this only ever moves
+/// forward, so it needs no release fence and no ordering against the clock
+/// read.
+var unixNanosWindowsStamp: std.atomic.Value(u64) = .init(0);
 
 /// Cross-platform monotonic nanosecond timestamp.
 ///

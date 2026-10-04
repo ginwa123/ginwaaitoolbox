@@ -66,12 +66,42 @@ def _symlink_supported(link: Path, target: Path) -> bool:
 
 
 def _point_link(link: Path, target: Path) -> None:
-    """Atomically point `link` at `target` (same dance as extraction.zig)."""
+    """Atomically point `link` at `target` (same dance as extraction.zig).
+
+    `os.replace` over an existing symlink is a single atomic `rename(2)` on
+    POSIX, which is the point of this helper — a reader either sees the old
+    target or the new one, never neither.
+
+    Windows refuses that. `os.replace` maps to `MoveFileEx` with
+    `MOVEFILE_REPLACE_EXISTING`, and when the destination is a symlink *to a
+    directory* Windows treats it as the directory itself and fails:
+
+        PermissionError: [WinError 5] Access is denied:
+          ...\\current.tmp-9552 -> ...\\current
+
+    Note this is NOT the missing-symlink-privilege case: `_symlink_supported`
+    has already passed by the time this runs, and `tmp.symlink_to(...)` on the
+    line above succeeds. Only the replace is refused.
+
+    So on Windows the destination is unlinked first and the rename retried.
+    POSIX keeps the atomic rename untouched — the fallback is not taken there,
+    and the test's "no 404 window" assertion still holds because the running
+    daemon resolved its content root at boot and is not re-resolving `current`
+    on each request.
+    """
     tmp = link.with_name(f"{link.name}.tmp-{os.getpid()}")
     if tmp.is_symlink() or tmp.exists():
         tmp.unlink()
     tmp.symlink_to(target.name)
-    os.replace(tmp, link)
+    try:
+        os.replace(tmp, link)
+    except OSError as e:
+        # WinError 5 == ERROR_ACCESS_DENIED, the directory-symlink replace.
+        if getattr(e, "winerror", None) != 5:
+            raise
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        os.replace(tmp, link)
 
 
 def test_stable_symlink_serves_the_app(

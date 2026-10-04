@@ -24,6 +24,7 @@ import harness
 from harness import (
     ALLOWED_TMP_PREFIXES,
     REQUIRED_TMP_SUBSTR,
+    REQUIRED_TMP_SUBSTR,
     FunctionalHarness,
     FunctionalHarnessError,
     is_safe_tmp,
@@ -313,6 +314,58 @@ def test_teardown_with_safe_temp_dir_runs_rmtree(tmp_path: Path) -> None:
     finally:
         _restore_env(saved_env)
     assert not safe.exists()
+
+
+def test_teardown_removes_a_tree_containing_read_only_files(tmp_path: Path) -> None:
+    """Read-only files must not survive teardown — and must not cost 10s.
+
+    Windows has no permission bits, so a file it considers read-only cannot
+    be deleted at all, and `shutil.rmtree` raises
+
+        PermissionError: [WinError 5] Access is denied:
+          ...\\.git\\objects\\08\\585692ce...
+
+    git creates loose objects with mode 0444, so every test that builds a real
+    repo inside the tempdir inherits them. Waiting cannot help — the attribute
+    is not going to change by itself — so the retry loop used to sleep through
+    its whole 10s budget and then re-raise, leaking the tempdir and reporting
+    the test red even though the test body passed.
+
+    Verified: `kanban_task_create_message_format_test.py::
+    test_git_branches_lists_refs_in_picker_order` passed and then ERRORed in
+    teardown for exactly this reason.
+    """
+    import stat
+
+    safe = tmp_path / f"{REQUIRED_TMP_SUBSTR}readonly"
+    objects = safe / ".git" / "objects" / "08"
+    objects.mkdir(parents=True)
+    loose = objects / "585692ce06452da6f82ae66b90d98b55536fca"
+    loose.write_text("not really a git object")
+    # Match git: mode 0444, i.e. read-only for everyone including the owner.
+    os.chmod(loose, stat.S_IREAD)
+
+    # Precondition, so a platform that ignores the mode bit cannot pass this
+    # test vacuously.
+    assert not os.access(loose, os.W_OK), (
+        "this platform does not enforce the read-only bit, so the scenario "
+        "under test does not exist here"
+    )
+
+    h = FunctionalHarness(
+        port=9999,
+        pabrik_bin=Path("/nonexistent"),
+        temp_dir=safe,
+        orig_home=os.environ.get("HOME") or tempfile.gettempdir(),
+        log_path=Path("/dev/null"),
+        pid=None,
+    )
+    h.teardown()
+
+    assert not safe.exists(), (
+        "teardown left a read-only file behind; _make_tree_writable must clear "
+        "the attribute so rmtree can proceed"
+    )
 
 
 # ─── constants are sane ───────────────────────────────────────────────────

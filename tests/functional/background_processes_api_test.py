@@ -193,7 +193,24 @@ def test_log_full_content_under_cap(harness: FunctionalHarness) -> None:
 
     content = "line one\nline two\ntail-marker-3e8f1a\n"
     log_path = str(Path(harness.temp_dir) / "bg-api-full.log")
-    Path(log_path).write_text(content, encoding="utf-8")
+    # BINARY, not `write_text`. Text mode translates "\n" to "\r\n" on
+    # Windows, so the file on disk held 40 bytes while this test asserted
+    # `len(content.encode())` == 37 — and the server, which correctly
+    # reported the real size and the real bytes it found, failed:
+    #
+    #   total_bytes mismatch: {... 'total_bytes': 40, 'truncated': False,
+    #   'content': 'line one\r\nline two\r\ntail-marker-3e8f1a\r\n'}
+    #   assert 40 == 37
+    #
+    # Nothing is wrong with the product here: it reported exactly what was in
+    # the file. The test just meant to put 37 specific bytes on disk and got
+    # 40, because it used a text-mode write for a byte-count assertion.
+    # Writing bytes makes the fixture platform-independent and states the
+    # intent outright — this log contains these exact bytes.
+    #
+    # `test_log_tail_when_over_cap` needs no equivalent change: its payload
+    # has no newline, so text mode writes it byte for byte.
+    Path(log_path).write_bytes(content.encode("utf-8"))
     _insert_bg_row(harness, session_id, DEAD_PID, "sleep 10", log_path)
 
     body = _get_log(harness, session_id, DEAD_PID)

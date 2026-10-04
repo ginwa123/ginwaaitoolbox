@@ -38,6 +38,7 @@ from harness import (
     _reap_orphan_test_pids,
     _wait_ready,
     is_safe_tmp,
+    snapshot_parent_env,
 )
 
 
@@ -174,6 +175,12 @@ def preboot(default_pabrik_bin):
             orig_home=orig_home,
             log_path=log_path,
             pid=proc.pid,
+            # Pass the Popen handle too. FunctionalHarness._wait_dead
+            # answers "is the server dead?" from this handle via poll();
+            # without it the harness has to fall back to probing the bare
+            # pid, which on Windows cannot distinguish an exited process
+            # from a live one.
+            _proc=proc,
             orig_userprofile=orig_userprofile,
             orig_appdata=orig_appdata,
             orig_localappdata=orig_localappdata,
@@ -181,6 +188,13 @@ def preboot(default_pabrik_bin):
             orig_xdg_state_home=orig_xdg_state_home,
             orig_xdg_data_home=orig_xdg_data_home,
             orig_xdg_cache_home=orig_xdg_cache_home,
+            # This helper builds a child `env` dict and never shadows the
+            # PARENT process, so `_env_shadowed` is empty — but teardown
+            # still needs an exact snapshot. Without one it restores HOME
+            # from the synthesised `orig_home` (which on Windows is derived
+            # from USERPROFILE), inventing a variable that never existed.
+            _env_backup=snapshot_parent_env(),
+            _env_shadowed={},
         )
         booted.append(h)
         return h

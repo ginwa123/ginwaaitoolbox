@@ -124,9 +124,9 @@ const VALID_KINDS = [_][]const u8{
 ///
 /// Steps:
 ///   1. Validate required fields and enum values.
-///   2. Generate row id = `"log_<microseconds>"` (matches project
-///      convention; microsecond timestamps are unique enough for this
-///      error-event volume).
+///   2. Generate row id = `"log_<nanos>"` (matches project convention).
+///      NOT microseconds: that is not unique, and a collision surfaces as an
+///      opaque `PersistFailed` 500. See `idForRow`.
 ///   3. Dedup check: SELECT id FROM logs WHERE kind = ? AND message = ?
 ///      AND IFNULL(stack,'') = IFNULL(?,'') AND created_at_nano >= ?.
 ///      If a row matches within the last second, UPDATE count + 1
@@ -143,9 +143,10 @@ fn useCase(
     if (!isValidKind(body.kind)) return error.InvalidKind;
     if (body.message.len == 0) return error.MissingMessage;
 
-    // Row id = "log_<microseconds>". Allocates from the per-request
+    // Row id = "log_<nanos>". Allocates from the per-request
     // arena (the caller's `allocator`); freed at scope exit. On OOM,
-    // surface 500 — the caller has no fallback id source.
+    // surface 500 — the caller has no fallback id source. See `idForRow`
+    // for why microseconds were not good enough.
     const id = idForRow(allocator) catch return error.IdAllocationFailed;
     defer allocator.free(id);
 
@@ -365,7 +366,30 @@ fn isValidKind(kind: []const u8) bool {
     return false;
 }
 
-/// Generate the canonical `log_<microseconds>` id for a new row.
+/// Generate the canonical `log_<nanos>` id for a new row.
+///
+/// NANOSECONDS, and that is load-bearing. This used to be
+/// `log_<microseconds>`, which is not a unique key: two inserts that land in
+/// the same microsecond produce the same id, and the second one dies on the
+/// PRIMARY KEY. `db.exec` failure there is reported as `error.PersistFailed`,
+/// so the client saw a bare
+///
+///     POST /api/logs -> 500 {"error":"Failed to persist log"}
+///
+/// with nothing in it pointing at a clock. Observed on windows-2022, where
+/// `GetSystemTimeAsFileTime` only advances once per ~1.6 ms system timer tick:
+/// two requests inside one tick read the same file time, and
+/// `unixTimestampNanosWindows` separated them by a single nanosecond — a gap
+/// that dividing by 1000 threw away. `frontend_log_dedup_test::
+/// test_different_message_inserts_second_row` posts twice and failed this way
+/// in a full sweep while passing in isolation, which is what a timing-
+/// dependent collision looks like.
+///
+/// The nanosecond value is unique within the process — that is exactly what
+/// `helpers.unixTimestampNanos` guarantees on all three platforms, and the same
+/// property `workspaces_create.zig` relies on for its own ids. Nothing reads
+/// the id back: `GET /api/logs` returns it opaquely and the frontend keys
+/// nothing on its shape.
 ///
 /// On OOM, propagates the alloc error to the caller (the useCase
 /// catches it as `error.IdAllocationFailed` and the handler returns
@@ -373,8 +397,8 @@ fn isValidKind(kind: []const u8) bool {
 /// id would risk a PRIMARY KEY collision, which is worse than a 500
 /// (the client can retry the POST after the OOM clears).
 fn idForRow(allocator: std.mem.Allocator) ![]u8 {
-    const us = microsecondsNow();
-    return std.fmt.allocPrint(allocator, "log_{d}", .{us});
+    const ns = @import("helpers").unixTimestampNanos();
+    return std.fmt.allocPrint(allocator, "log_{d}", .{ns});
 }
 
 /// Current Unix time in microseconds.
