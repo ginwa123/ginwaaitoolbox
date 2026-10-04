@@ -188,6 +188,60 @@ existing `?panel=` param so mount restores it.
 - ❌ Local-only `ref` booleans for view state in routed components.
 
 
+## Frontend — No Emoji as Icons; Use Inline SVG
+
+An emoji may NOT stand in for an icon. If a standalone glyph's job is to
+identify an object or an action, it MUST be inline SVG — ideally a shared
+component, not a third hand-copied `<path>`.
+
+Why, in order of how much damage each one does:
+
+- **They render at unpredictable sizes.** A status column built from
+  📝 ➕ 🗑️ 🔄 📋 ❓ renders six different pixel heights next to 12px
+  monospace paths, because each glyph has its own advance width and
+  baseline in the platform emoji font. The row is 28px because of what
+  is in it, and six sizes is six reasons the row drifts.
+- **They are multi-colour and fight the palette.** The app is dark-only
+  and muted (`--semantic-text #c5c9c5`, `--color-violet #8992a7`).
+  GitLab's `#FC6D26` orange sitting next to the kanagawa palette reads
+  as an error, so brand emoji AND brand hex both break the house rule
+  that colour comes from a CSS variable. `fill="currentColor"` fixes both.
+- **They are not portable.** This app ships Windows, macOS and Linux. The
+  same commit picks up Segoe UI Emoji / Apple Color Emoji / Noto Color
+  Emoji, and the three do not draw the same glyph.
+- **They carry no meaning the app can assert on.** 🔀 in the PR header
+  said "some kind of change request" when the panel must tell a GitHub
+  pull request from a GitLab merge request — the exact distinction
+  `helpers/forgeWording.ts` exists to enforce in prose, thrown away by
+  the icon. You cannot lock a spec onto an emoji; you *can* lock a spec
+  onto an SVG path (house pattern:
+  `WorkspaceItemTaskCard.gitBranch.spec.ts:90-99` pins `M6 3v12`).
+- **They are how provider-bug prose comes back.** The PR surface already
+  has one of these — `<pr-url>/conflicts` is GitHub-only and GitLab 404s
+  on it. An icon that cannot distinguish the two forges invites the next
+  one.
+
+- ✅ `<ForgeIcon :provider="prProvider" size-class="w-4 h-4" />` —
+  `components/git/ForgeIcon.vue`: inline SVG, `fill="currentColor"`,
+  both marks from the Simple Icons 24×24 set (CC0-1.0).
+- ✅ A shared component once two callers need it — `SpinnerIcon.vue`,
+  `EmptyState.vue`, `SseStatusBadge.vue` all exist for that reason.
+- ✅ A *typographic* character when it is genuinely a character:
+  `✕ ▶ ▼ ↻ ◫ ⋮ ⌕ ⚠`. Monochrome, one font stack, fixed advance. That is
+  what the right sidebar's rail and tab strip use.
+- ✅ An icon that names a thing gets a `data-testid` (and `data-forge`
+  on `ForgeIcon`) so a spec can assert which mark rendered.
+- ❌ `<span class="text-body">🔀</span>` in a panel header.
+- ❌ `<span class="text-display mb-3">🔀</span>` as an empty-state glyph —
+  `EmptyState` takes a `#glyph` slot for exactly that case.
+
+Honest status: this was written while redesigning the chat right
+sidebar, so offenders are still in the tree — `🔀` in
+`WorktreeMenu.vue:124` and `CreatePrDialog.vue:112`, plus `🌿` and `✓` in
+`SidebarDiffPanel.vue`. Sweep them when a component next touches those
+lines; do not start a tree-wide emoji sweep inside an unrelated change.
+
+
 ## Frontend — Banned Code in Vue/TS (the `useEffect` ban)
 
 `src/apps/desktop/` enforces the Vue/TS analogue of React's **"You Might Not

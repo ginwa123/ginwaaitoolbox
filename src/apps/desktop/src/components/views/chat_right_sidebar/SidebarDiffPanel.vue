@@ -7,7 +7,10 @@ import { conflictsUrl, forgeWording } from '../../../helpers/forgeWording'
 import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
 import { useContextMenu } from '../../../composables/useContextMenu'
 import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
+import SpinnerIcon from '../../shell/SpinnerIcon.vue'
+import EmptyState from '../../pabrik/EmptyState.vue'
 import GitCommits from '../../git/GitCommits.vue'
+import ForgeIcon from '../../git/ForgeIcon.vue'
 import PrChecksPanel from './PrChecksPanel.vue'
 import SkillEvalsPanel from './SkillEvalsPanel.vue'
 import {
@@ -261,7 +264,123 @@ const onConflictFileClick = (path: string) => {
   openFileInNewTab(path)
 }
 
-const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
+// ── Row anatomy ───────────────────────────────────────────────────────────
+// The panel shows 40+ rows of repo-relative paths that mostly share a long
+// identical prefix. Two helpers turn that into something scannable.
+
+// `src/a/b/PrChecksPanel.vue` -> { dir: 'src/a/b/', name: 'PrChecksPanel.vue' }
+// The template renders dir dim and name bright, so the eye skips the shared
+// prefix and lands on the one part that identifies the file. Both halves stay
+// in the DOM, so `wrapper.text()` still carries the whole path.
+function pathParts(path: string): { dir: string; name: string } {
+  const i = path.lastIndexOf('/')
+  if (i < 0) return { dir: '', name: path }
+  return { dir: path.slice(0, i + 1), name: path.slice(i + 1) }
+}
+
+// Status as a letter chip rather than a colour emoji. Six emoji render at six
+// different pixel sizes next to 12px paths and cannot be asserted on; one
+// letter in a fixed 16px box cannot drift. See AGENTS.md ("No Emoji as
+// Icons").
+type StatusChip = { letter: string; bg: string; fg: string; title: string }
+
+const STATUS_CHIPS: Record<string, StatusChip> = {
+  M: {
+    letter: 'M',
+    bg: 'color-mix(in srgb, var(--color-orange) 18%, transparent)',
+    fg: 'var(--color-orange)',
+    title: 'Modified',
+  },
+  A: {
+    letter: 'A',
+    bg: 'color-mix(in srgb, var(--color-green) 18%, transparent)',
+    fg: 'var(--color-green)',
+    title: 'Added',
+  },
+  D: {
+    letter: 'D',
+    bg: 'color-mix(in srgb, var(--semantic-error) 18%, transparent)',
+    fg: 'var(--semantic-error)',
+    title: 'Deleted',
+  },
+  R: {
+    letter: 'R',
+    bg: 'color-mix(in srgb, var(--color-violet) 18%, transparent)',
+    fg: 'var(--color-violet)',
+    title: 'Renamed',
+  },
+  C: { letter: 'C', bg: 'var(--color-bg-p1)', fg: 'var(--semantic-text-dim)', title: 'Copied' },
+  '??': {
+    letter: '?',
+    bg: 'var(--color-bg-p1)',
+    fg: 'var(--semantic-text-dim)',
+    title: 'Untracked',
+  },
+}
+
+const UNKNOWN_CHIP: StatusChip = {
+  letter: '?',
+  bg: 'var(--color-bg-p1)',
+  fg: 'var(--semantic-text-dim)',
+  title: 'Changed',
+}
+
+const UNTRACKED_CHIP: StatusChip = {
+  letter: '?',
+  bg: 'var(--color-bg-p1)',
+  fg: 'var(--semantic-text-dim)',
+  title: 'Untracked',
+}
+
+const chipFor = (status: string): StatusChip => STATUS_CHIPS[status] ?? UNKNOWN_CHIP
+
+const chipForFile = (file: api.GitFileChange): StatusChip => {
+  if (file.index_status === '??') return UNTRACKED_CHIP
+  const indexStatus = file.index_status === ' ' ? '' : file.index_status
+  if (indexStatus) return chipFor(indexStatus)
+  const worktreeStatus = file.worktree_status === ' ' ? '' : file.worktree_status
+  if (worktreeStatus) return chipFor(worktreeStatus)
+  return UNKNOWN_CHIP
+}
+
+// ── File filter ───────────────────────────────────────────────────────────
+// A 40-file list needs a way to narrow it. Shown only past FILTER_MIN_ROWS
+// so a three-file panel is not asked to carry a search box. This is
+// transient text, not a view switch — ?panel= / ?sidebar= / ?conflicts=
+// already own every piece of state that must survive a reload, and a filter
+// in the URL would make Back/Forward step through keystrokes.
+const FILTER_MIN_ROWS = 8
+const fileFilter = ref('')
+const fileFilterActive = computed(() => fileFilter.value.trim() !== '')
+
+const matchesFilter = (path: string): boolean => {
+  const q = fileFilter.value.trim().toLowerCase()
+  return q === '' || path.toLowerCase().includes(q)
+}
+
+const filteredStagedFiles = computed(() => stagedFiles.value.filter((f) => matchesFilter(f.path)))
+const filteredUnstagedFiles = computed(() =>
+  unstagedFiles.value.filter((f) => matchesFilter(f.path)),
+)
+const filteredUntrackedFiles = computed(() =>
+  untrackedFiles.value.filter((f) => matchesFilter(f.path)),
+)
+const filteredPrFiles = computed(() => visiblePrFiles.value.filter((f) => matchesFilter(f.path)))
+
+const changedFileTotal = computed(
+  () => stagedFiles.value.length + unstagedFiles.value.length + untrackedFiles.value.length,
+)
+// The bar stays put once it appears. Hiding it on the first keystroke
+// would leave no way to widen the query or clear it — the input takes the
+// focus, loses itself, and strands the state.
+const showWorktreeFilter = computed(() => changedFileTotal.value > FILTER_MIN_ROWS)
+const showPrFilter = computed(() => prFiles.value.length > FILTER_MIN_ROWS)
+const worktreeHits = computed(
+  () =>
+    filteredStagedFiles.value.length +
+    filteredUnstagedFiles.value.length +
+    filteredUntrackedFiles.value.length,
+)
 
 // Extract the server's `{"error": "..."}` message from an ApiError
 // (apiFetch throws ApiError with the raw body). Falls back to the
@@ -522,26 +641,6 @@ const selectPrFile = (file: SplitDiffFile) => {
     added: parsed.added,
     removed: parsed.removed,
   })
-}
-
-function displayStatus(file: api.GitFileChange): { icon: string; text: string } {
-  if (file.index_status === '??') return { icon: '❓', text: 'Untracked' }
-  const indexStatus = file.index_status === ' ' ? '' : file.index_status
-  const worktreeStatus = file.worktree_status === ' ' ? '' : file.worktree_status
-  const icons: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄', C: '📋', '??': '❓' }
-  const texts: Record<string, string> = {
-    M: 'Modified',
-    A: 'Added',
-    D: 'Deleted',
-    R: 'Renamed',
-    C: 'Copied',
-    '??': 'Untracked',
-  }
-  if (indexStatus)
-    return { icon: icons[indexStatus] ?? '📄', text: texts[indexStatus] ?? 'Changed' }
-  if (worktreeStatus)
-    return { icon: icons[worktreeStatus] ?? '📄', text: texts[worktreeStatus] ?? 'Changed' }
-  return { icon: '📄', text: 'Changed' }
 }
 
 const onRefreshClick = () => {
@@ -856,124 +955,175 @@ defineExpose({
   changeCount,
 })
 </script>
-
 <template>
   <div class="flex flex-col h-full min-h-0" data-testid="sidebar-diff-panel">
+    <!-- ── Sub-tab strip ───────────────────────────────────────────────────
+         One row: a scrollable tab cluster and a fixed action cluster. The
+         counts moved out of the labels and into pills, which is what makes
+         five tabs fit at the 200px minimum — "Pull request (43)" is 148px,
+         "PR" plus a pill is 46px. -->
     <div
       v-if="showTabs || showEvals || showChecks || !isPrMode"
-      class="flex items-center gap-1 px-3 h-9 shrink-0"
+      class="flex items-center gap-2 px-2 h-9 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
       role="tablist"
     >
-      <button
-        v-if="isPrMode"
-        type="button"
-        class="text-dense px-2 py-1 rounded hover:opacity-80"
-        data-testid="sidebar-tab-files"
-        role="tab"
-        :aria-selected="activeTab === 'files'"
-        :style="
-          activeTab === 'files'
-            ? {
-                color: 'var(--semantic-text)',
-                fontWeight: 600,
-                boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
-              }
-            : { color: 'var(--semantic-text)', opacity: '0.6' }
-        "
-        @click="setActiveTab('files')"
-      >
-        Files changed{{ changeCount > 0 ? ` (${changeCount})` : '' }}
-      </button>
-      <button
-        v-if="isPrMode"
-        type="button"
-        class="text-dense px-2 py-1 rounded hover:opacity-80"
-        data-testid="sidebar-tab-pr"
-        role="tab"
-        :aria-selected="activeTab === 'pr'"
-        :style="
-          activeTab === 'pr'
-            ? {
-                color: 'var(--semantic-text)',
-                fontWeight: 600,
-                boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
-              }
-            : { color: 'var(--semantic-text)', opacity: '0.6' }
-        "
-        @click="setActiveTab('pr')"
-      >
-        {{ forge.label }}{{ prFiles.length > 0 ? ` (${prFiles.length})` : '' }}
-      </button>
-      <button
-        type="button"
-        class="text-dense px-2 py-1 rounded hover:opacity-80"
-        data-testid="sidebar-tab-commits"
-        role="tab"
-        :aria-selected="activeTab === 'commits'"
-        :style="
-          activeTab === 'commits'
-            ? {
-                color: 'var(--semantic-text)',
-                fontWeight: 600,
-                boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
-              }
-            : { color: 'var(--semantic-text)', opacity: '0.6' }
-        "
-        @click="setActiveTab('commits')"
-      >
-        Commits
-      </button>
-      <button
-        type="button"
-        class="text-dense px-2 py-1 rounded hover:opacity-80"
-        data-testid="sidebar-tab-checks"
-        role="tab"
-        :aria-selected="activeTab === 'checks'"
-        :style="
-          activeTab === 'checks'
-            ? {
-                color: 'var(--semantic-text)',
-                fontWeight: 600,
-                boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
-              }
-            : { color: 'var(--semantic-text)', opacity: '0.6' }
-        "
-        @click="setActiveTab('checks')"
-      >
-        Checks
-      </button>
-      <button
-        type="button"
-        class="text-xs px-2 py-1 rounded hover:opacity-80"
-        data-testid="sidebar-tab-evals"
-        role="tab"
-        :aria-selected="activeTab === 'evals'"
-        :style="
-          activeTab === 'evals'
-            ? {
-                color: 'var(--semantic-text)',
-                fontWeight: 600,
-                boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
-              }
-            : { color: 'var(--semantic-text)', opacity: '0.6' }
-        "
-        @click="setActiveTab('evals')"
-      >
-        Evals
-      </button>
+      <div class="flex items-center gap-1 flex-1 min-w-0 h-full overflow-x-auto">
+        <button
+          v-if="isPrMode"
+          type="button"
+          class="shrink-0 h-8 px-2.5 rounded flex items-center gap-1.5 text-dense transition-colors duration-150"
+          data-testid="sidebar-tab-files"
+          role="tab"
+          :aria-selected="activeTab === 'files'"
+          :style="
+            activeTab === 'files'
+              ? {
+                  color: 'var(--semantic-text)',
+                  fontWeight: 600,
+                  boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+                }
+              : { color: 'var(--semantic-text)', opacity: '0.6' }
+          "
+          @click="setActiveTab('files')"
+        >
+          Files
+          <span
+            v-if="changeCount > 0"
+            class="px-1.5 rounded-full text-micro font-semibold"
+            style="background-color: var(--color-bg-p1); color: var(--semantic-text-muted)"
+            >{{ changeCount }}</span
+          >
+        </button>
+        <button
+          v-if="isPrMode"
+          type="button"
+          class="shrink-0 h-8 px-2.5 rounded flex items-center gap-1.5 text-dense transition-colors duration-150"
+          data-testid="sidebar-tab-pr"
+          role="tab"
+          :aria-selected="activeTab === 'pr'"
+          :style="
+            activeTab === 'pr'
+              ? {
+                  color: 'var(--semantic-text)',
+                  fontWeight: 600,
+                  boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+                }
+              : { color: 'var(--semantic-text)', opacity: '0.6' }
+          "
+          @click="setActiveTab('pr')"
+        >
+          {{ forge.short }}
+          <span
+            v-if="prFiles.length > 0"
+            class="px-1.5 rounded-full text-micro font-semibold"
+            style="background-color: var(--color-bg-p1); color: var(--semantic-text-muted)"
+            >{{ prFiles.length }}</span
+          >
+        </button>
+        <button
+          type="button"
+          class="shrink-0 h-8 px-2.5 rounded text-dense transition-colors duration-150"
+          data-testid="sidebar-tab-commits"
+          role="tab"
+          :aria-selected="activeTab === 'commits'"
+          :style="
+            activeTab === 'commits'
+              ? {
+                  color: 'var(--semantic-text)',
+                  fontWeight: 600,
+                  boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+                }
+              : { color: 'var(--semantic-text)', opacity: '0.6' }
+          "
+          @click="setActiveTab('commits')"
+        >
+          Commits
+        </button>
+        <button
+          type="button"
+          class="shrink-0 h-8 px-2.5 rounded text-dense transition-colors duration-150"
+          data-testid="sidebar-tab-checks"
+          role="tab"
+          :aria-selected="activeTab === 'checks'"
+          :style="
+            activeTab === 'checks'
+              ? {
+                  color: 'var(--semantic-text)',
+                  fontWeight: 600,
+                  boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+                }
+              : { color: 'var(--semantic-text)', opacity: '0.6' }
+          "
+          @click="setActiveTab('checks')"
+        >
+          Checks
+        </button>
+        <button
+          type="button"
+          class="shrink-0 h-8 px-2.5 rounded text-dense transition-colors duration-150"
+          data-testid="sidebar-tab-evals"
+          role="tab"
+          :aria-selected="activeTab === 'evals'"
+          :style="
+            activeTab === 'evals'
+              ? {
+                  color: 'var(--semantic-text)',
+                  fontWeight: 600,
+                  boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+                }
+              : { color: 'var(--semantic-text)', opacity: '0.6' }
+          "
+          @click="setActiveTab('evals')"
+        >
+          Evals
+        </button>
+      </div>
+      <div class="flex items-center gap-0.5 shrink-0">
+        <button
+          v-if="!isPrMode"
+          type="button"
+          class="h-7 px-2 rounded text-dense transition-colors duration-150"
+          style="color: var(--semantic-text-dim)"
+          :title="showCommits ? 'Show changed files' : 'Show commit history'"
+          data-testid="sidebar-diff-commits-toggle"
+          @click="setActiveTab(showCommits ? 'files' : 'commits')"
+        >
+          {{ showCommits ? 'Files' : 'Commits' }}
+        </button>
+        <button
+          type="button"
+          class="w-7 h-7 rounded flex items-center justify-center hover:opacity-70 transition-opacity"
+          style="color: var(--semantic-text-dim)"
+          :title="`Refresh ${forge.short}`"
+          data-testid="sidebar-diff-refresh"
+          @click="onRefreshClick"
+        >
+          ↻
+        </button>
+      </div>
     </div>
+
+    <!-- ── Context band ────────────────────────────────────────────────────
+         Tinted rather than outlined, so it reads as the second line of the
+         header block instead of a fourth bar of chrome. -->
     <div
       v-if="showPr"
-      class="flex items-center gap-2 px-3 h-10 shrink-0"
-      style="border-bottom: 1px solid var(--color-border)"
+      class="flex items-center gap-2 px-3 h-9 shrink-0"
+      style="background-color: var(--color-bg-m1); border-bottom: 1px solid var(--color-border)"
     >
-      <span class="text-body">🔀</span>
+      <ForgeIcon
+        :provider="prProvider"
+        class="shrink-0"
+        style="color: var(--semantic-text-dim)"
+        :title="`${forge.forge} ${forge.noun}`"
+        data-testid="sidebar-pr-forge-icon"
+      />
       <a
         :href="prUrl"
         target="_blank"
         rel="noopener"
-        class="text-body font-medium truncate flex-1 hover:underline"
+        class="font-mono text-dense font-semibold truncate hover:underline"
         style="color: var(--semantic-text)"
         :title="prUrl"
         data-testid="sidebar-pr-link"
@@ -982,7 +1132,7 @@ defineExpose({
       </a>
       <span
         v-if="prStatusLabel"
-        class="px-1.5 py-0.5 rounded text-dense font-medium shrink-0"
+        class="px-1.5 rounded-full text-micro font-semibold shrink-0"
         :style="prStatusStyle"
         :title="prStatusTitle || prStatusLabel"
         data-testid="sidebar-pr-status"
@@ -991,7 +1141,7 @@ defineExpose({
       </span>
       <span
         v-if="hasPrConflict"
-        class="px-1.5 py-0.5 rounded text-dense font-medium shrink-0"
+        class="px-1.5 rounded-full text-micro font-semibold shrink-0"
         style="background-color: var(--semantic-error); color: var(--color-bg)"
         :title="
           prConflictFiles.length > 0
@@ -1006,7 +1156,7 @@ defineExpose({
       </span>
       <span
         v-if="prBase || prHead"
-        class="text-dense truncate"
+        class="font-mono text-micro truncate min-w-0"
         style="color: var(--semantic-text-dim)"
         :title="`${prBase}...${prHead}`"
       >
@@ -1014,31 +1164,35 @@ defineExpose({
       </span>
       <span
         v-if="prFiles.length > 0"
-        class="px-1.5 py-0.5 rounded text-dense font-medium"
-        style="background-color: var(--color-violet); color: var(--color-bg)"
+        class="ml-auto shrink-0 px-1.5 rounded-full text-micro font-semibold"
+        style="background-color: var(--color-bg-p1); color: var(--semantic-text-muted)"
         data-testid="sidebar-pr-count"
       >
         {{ prFiles.length }}
       </span>
-      <button
-        type="button"
-        class="text-dense px-2 py-1 rounded hover:opacity-70"
-        style="color: var(--semantic-text-dim)"
-        :title="`Refresh ${forge.short} diff`"
-        data-testid="sidebar-diff-refresh"
-        @click="onRefreshClick"
-      >
-        ↻
-      </button>
     </div>
     <div
       v-else
-      class="flex items-center gap-2 px-3 h-10 shrink-0"
-      style="border-bottom: 1px solid var(--color-border)"
+      class="flex items-center gap-2 px-3 h-9 shrink-0"
+      style="background-color: var(--color-bg-m1); border-bottom: 1px solid var(--color-border)"
     >
-      <span class="text-body">🌿</span>
+      <svg
+        class="w-3.5 h-3.5 shrink-0"
+        style="color: var(--semantic-text-dim)"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path
+          d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
+        />
+      </svg>
       <span
-        class="text-body font-medium truncate flex-1"
+        class="font-mono text-dense font-medium truncate min-w-0"
         style="color: var(--semantic-text)"
         data-testid="sidebar-diff-branch"
       >
@@ -1046,32 +1200,12 @@ defineExpose({
       </span>
       <span
         v-if="changeCount > 0"
-        class="px-1.5 py-0.5 rounded text-dense font-medium"
-        style="background-color: var(--color-orange); color: var(--color-bg)"
+        class="ml-auto shrink-0 px-1.5 rounded-full text-micro font-semibold"
+        style="background-color: var(--color-bg-p1); color: var(--semantic-text-muted)"
         data-testid="sidebar-diff-count"
       >
         {{ changeCount }}
       </span>
-      <button
-        type="button"
-        class="text-dense px-2 py-1 rounded hover:opacity-70"
-        style="color: var(--semantic-text-dim)"
-        :title="showCommits ? 'Show changed files' : 'Show commit history'"
-        data-testid="sidebar-diff-commits-toggle"
-        @click="setActiveTab(showCommits ? 'files' : 'commits')"
-      >
-        {{ showCommits ? 'Files' : 'Commits' }}
-      </button>
-      <button
-        type="button"
-        class="text-dense px-2 py-1 rounded hover:opacity-70"
-        style="color: var(--semantic-text-dim)"
-        title="Refresh git status"
-        data-testid="sidebar-diff-refresh"
-        @click="onRefreshClick"
-      >
-        ↻
-      </button>
     </div>
 
     <div v-if="showChecks" class="flex-1 min-h-0">
@@ -1086,29 +1220,16 @@ defineExpose({
     <div v-else class="flex-1 overflow-y-auto min-h-0">
       <template v-if="showPr">
         <div v-if="isLoadingPr" class="flex items-center justify-center py-8">
-          <svg
-            class="animate-spin w-5 h-5"
-            style="color: var(--color-aqua)"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            />
-          </svg>
+          <SpinnerIcon size-class="w-5 h-5" />
         </div>
+        <!-- The error states stay bespoke rather than going through
+             EmptyState: each carries a testid on the element that holds the
+             server's own words, and EmptyState owns neither its heading nor
+             its CTA button. -->
         <div v-else-if="prError" class="flex flex-col items-center justify-center p-4 text-center">
-          <span class="text-title-lg mb-2">⚠️</span>
+          <span class="text-title-lg mb-2" style="color: var(--semantic-error)" aria-hidden="true"
+            >!</span
+          >
           <p
             class="text-dense break-words"
             style="color: var(--semantic-error); white-space: pre-wrap"
@@ -1118,7 +1239,7 @@ defineExpose({
           </p>
           <button
             type="button"
-            class="mt-3 px-3 py-1.5 text-body rounded"
+            class="mt-3 px-3 py-1.5 text-dense rounded-md"
             style="background: var(--color-green); color: var(--color-bg)"
             data-testid="sidebar-pr-retry"
             @click="retryPr"
@@ -1126,44 +1247,62 @@ defineExpose({
             Retry
           </button>
         </div>
-        <div
-          v-else-if="prFiles.length === 0"
-          class="flex flex-col items-center justify-center p-4 text-center"
-        >
-          <span class="text-display mb-3">🔀</span>
-          <p class="text-dense" style="color: var(--semantic-text-dim)">
-            No {{ forge.short }} changes found
-          </p>
+        <template v-else-if="prFiles.length === 0">
+          <EmptyState
+            class="m-2"
+            glyph="⌗"
+            :title="`No ${forge.short} changes found`"
+            :description="`This ${forge.noun} on ${forge.forge} has no file changes to show.`"
+          >
+            <template #glyph>
+              <ForgeIcon :provider="prProvider" size-class="w-7 h-7" />
+            </template>
+          </EmptyState>
           <p
             v-if="prStatusError"
-            class="text-dense break-words mt-2"
-            style="color: var(--semantic-error); white-space: pre-wrap"
+            class="mx-2 mt-2 px-2 py-1.5 rounded-md text-dense break-words"
+            style="
+              background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
+              color: var(--semantic-error);
+              white-space: pre-wrap;
+            "
             :title="prStatusError"
             data-testid="sidebar-pr-status-error"
           >
             {{ forge.short }} status unavailable — {{ prStatusError }}
           </p>
-        </div>
+        </template>
         <template v-else>
+          <!-- Notices are one-line strips: glyph, truncated text (the full
+               string stays in `title`), action on the right. Six stacked
+               prose boxes became a tidy rail stack. -->
           <div
             v-if="hasPrConflict"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense"
+            class="mx-2 mt-2 h-8 px-2 rounded-md flex items-center gap-2 text-dense shrink-0"
             style="
               background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
               color: var(--semantic-text);
             "
+            :title="
+              prConflictFiles.length > 0
+                ? `This ${forge.noun} has merge conflicts in ${prConflictFiles.length} file(s)`
+                : `This ${forge.noun} has merge conflicts that must be resolved`
+            "
             data-testid="sidebar-pr-conflict-notice"
           >
-            ⚠ This branch has conflicts that must be resolved. Use the
+            <span aria-hidden="true" style="color: var(--semantic-error)">⚠</span>
+            <span class="flex-1 min-w-0 truncate"
+              >This branch has conflicts that must be resolved. Use the</span
+            >
             <a
               v-if="prConflictsUrl"
               :href="prConflictsUrl"
               target="_blank"
               rel="noopener"
-              class="hover:underline"
+              class="shrink-0 hover:underline"
+              style="color: var(--semantic-link)"
               >web editor</a
-            ><span v-else>web editor</span>
-            or the command line to resolve conflicts before continuing.
+            ><span v-else class="shrink-0" style="color: var(--semantic-link)">web editor</span>
           </div>
           <!-- Which files, not just "there is a conflict". Computed locally by
                `git merge-tree` over the same base ref the PR diff used, so it
@@ -1177,46 +1316,61 @@ defineExpose({
             data-testid="sidebar-pr-conflict-files"
           >
             <div class="flex items-center gap-2 px-3 pt-2 pb-1">
-              <span class="text-dense font-semibold" style="color: var(--semantic-error)">
+              <span
+                class="text-micro font-semibold uppercase tracking-wide"
+                style="color: var(--semantic-error)"
+              >
                 Conflicting files ({{ prConflictFiles.length }})
               </span>
               <button
                 type="button"
-                class="text-dense px-1.5 py-0.5 rounded hover:opacity-80 shrink-0"
+                class="text-micro px-1.5 py-0.5 rounded-full shrink-0 hover:opacity-80"
                 :style="
                   conflictsOnly
                     ? { backgroundColor: 'var(--color-violet)', color: 'var(--color-bg)' }
-                    : { color: 'var(--semantic-text-dim)' }
+                    : { color: 'var(--semantic-text-dim)', backgroundColor: 'var(--color-bg-p1)' }
                 "
                 :aria-pressed="conflictsOnly"
                 :title="conflictsOnly ? 'Show all changed files' : 'Show only conflicting files'"
                 data-testid="sidebar-pr-conflicts-only"
                 @click="setConflictsOnly(!conflictsOnly)"
               >
-                {{ conflictsOnly ? '⚠ Conflicts only ✓' : '⚠ Conflicts only' }}
+                ⚠ Conflicts only<span v-if="conflictsOnly"> ✓</span>
               </button>
             </div>
             <div
               v-for="path in prConflictFiles"
               :key="'pr-conflict-' + path"
-              class="flex items-center gap-2 px-3 py-1 cursor-pointer hover:opacity-80"
+              role="button"
+              tabindex="0"
+              class="flex items-center gap-2 px-3 h-7 cursor-pointer hover:opacity-80"
               :style="{
                 backgroundColor:
                   selectedPath === path ? 'var(--semantic-active-bg)' : 'transparent',
+                boxShadow: selectedPath === path ? 'inset 2px 0 0 0 var(--color-violet)' : 'none',
               }"
               :data-testid="`sidebar-pr-conflict-file-${path}`"
               :title="path"
               @click="onConflictFileClick(path)"
               @contextmenu.prevent="onFileRowContextMenu($event, path)"
             >
-              <span class="text-dense">⚠</span>
-              <span class="text-dense truncate flex-1" style="color: var(--semantic-text)">
-                {{ path }}
+              <span
+                class="w-4 h-4 shrink-0 rounded flex items-center justify-center text-micro font-bold"
+                style="
+                  background-color: color-mix(in srgb, var(--semantic-error) 18%, transparent);
+                  color: var(--semantic-error);
+                "
+                aria-hidden="true"
+                >⚠</span
+              >
+              <span class="text-dense truncate flex-1 min-w-0" :title="path">
+                <span style="color: var(--semantic-text-dim)">{{ pathParts(path).dir }}</span
+                ><span style="color: var(--semantic-text)">{{ pathParts(path).name }}</span>
               </span>
             </div>
             <div
               v-if="prConflictTruncated"
-              class="px-3 py-1 text-dense"
+              class="px-3 py-1 text-micro"
               style="color: var(--semantic-text-dim)"
               data-testid="sidebar-pr-conflict-files-truncated"
             >
@@ -1224,7 +1378,7 @@ defineExpose({
             </div>
             <div
               v-if="prConflictBase"
-              class="px-3 py-1 text-dense"
+              class="px-3 py-1 text-micro"
               style="color: var(--semantic-text-dim)"
               data-testid="sidebar-pr-conflict-base"
             >
@@ -1236,100 +1390,159 @@ defineExpose({
                empty list beside a red badge. -->
           <div
             v-if="prConflictUnreproduced"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense"
+            class="mx-2 mt-2 h-8 px-2 rounded-md flex items-center gap-2 text-dense shrink-0"
             style="
               background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
               color: var(--semantic-text);
             "
+            :title="`Could not reproduce these conflicts locally from ${prConflictBase}`"
             data-testid="sidebar-pr-conflict-unreproduced"
           >
-            Could not reproduce these conflicts locally<span v-if="prConflictBase">
-              from {{ prConflictBase }}</span
-            >. Run <code>git fetch</code> and refresh — the forge may be comparing against a newer
-            base branch.
+            <span aria-hidden="true" style="color: var(--semantic-error)">⚠</span>
+            <span class="flex-1 min-w-0 truncate"
+              >Could not reproduce these conflicts locally<span v-if="prConflictBase">
+                from {{ prConflictBase }}</span
+              >. Run <code>git fetch</code> and refresh — the forge may be comparing against a newer
+              base branch.</span
+            >
           </div>
           <div
             v-else-if="hasPrConflict && prConflictError"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense break-words"
+            class="mx-2 mt-2 h-8 px-2 rounded-md flex items-center gap-2 text-dense shrink-0"
             style="
               background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
               color: var(--semantic-text);
-              white-space: pre-wrap;
             "
-            :title="prConflictError"
+            :title="`Could not list conflicting files — ${prConflictError}`"
             data-testid="sidebar-pr-conflict-error"
           >
-            Could not list conflicting files — {{ prConflictError }}
+            <span aria-hidden="true" style="color: var(--semantic-error)">⚠</span>
+            <span class="flex-1 min-w-0 truncate"
+              >Could not list conflicting files — {{ prConflictError }}</span
+            >
           </div>
           <div
             v-if="!prStatusLabel && prStatusError"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense break-words"
+            class="mx-2 mt-2 h-8 px-2 rounded-md flex items-center gap-2 text-dense shrink-0"
             style="
               background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
               color: var(--semantic-text);
-              white-space: pre-wrap;
             "
             :title="prStatusError"
             data-testid="sidebar-pr-status-error"
           >
-            {{ forge.short }} status unavailable — {{ prStatusError }}
+            <span aria-hidden="true" style="color: var(--semantic-error)">⚠</span>
+            <span class="flex-1 min-w-0 truncate"
+              >{{ forge.short }} status unavailable — {{ prStatusError }}</span
+            >
           </div>
           <div
             v-if="prStatus === 'merged'"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense"
+            class="mx-2 mt-2 h-8 px-2 rounded-md flex items-center gap-2 text-dense shrink-0"
             style="
               background-color: color-mix(in srgb, var(--color-violet) 15%, transparent);
               color: var(--semantic-text);
             "
+            :title="`Merged — this ${forge.short} was merged on ${forge.forge}. The diff below is the final state.`"
             data-testid="sidebar-pr-merged-notice"
           >
-            Merged — this {{ forge.short }} was merged on {{ forge.forge }}. The diff below is the
-            final state.
+            <span aria-hidden="true" style="color: var(--color-violet)">✓</span>
+            <span class="flex-1 min-w-0 truncate"
+              >Merged — this {{ forge.short }} was merged on {{ forge.forge }}. The diff below is
+              the final state.</span
+            >
           </div>
           <div
             v-else-if="prStatus === 'closed'"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense"
+            class="mx-2 mt-2 h-8 px-2 rounded-md flex items-center gap-2 text-dense shrink-0"
             style="
               background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
               color: var(--semantic-text);
             "
+            :title="`Closed — this ${forge.short} was closed on ${forge.forge} without merging.`"
             data-testid="sidebar-pr-closed-notice"
           >
-            Closed — this {{ forge.short }} was closed on {{ forge.forge }} without merging.
+            <span aria-hidden="true" style="color: var(--semantic-error)">⊘</span>
+            <span class="flex-1 min-w-0 truncate"
+              >Closed — this {{ forge.short }} was closed on {{ forge.forge }} without
+              merging.</span
+            >
           </div>
           <div
             v-if="prTruncated"
-            class="px-3 py-1 text-dense"
+            class="px-3 py-1 text-micro"
             style="color: var(--semantic-text-dim)"
           >
             Diff truncated at 1MB — showing first files
           </div>
-          <div class="py-1">
-            <div class="px-3 py-1 text-dense font-semibold" style="color: var(--color-violet)">
-              {{ forge.short }} files ({{ visiblePrFiles.length
+          <div v-if="showPrFilter" class="px-2 pt-2">
+            <label
+              class="flex items-center gap-2 h-8 px-2 rounded-md"
+              style="background-color: var(--color-bg-m1); border: 1px solid var(--color-border)"
+            >
+              <span aria-hidden="true" style="color: var(--semantic-text-dim)">⌕</span>
+              <input
+                :value="fileFilter"
+                type="text"
+                placeholder="Filter files…"
+                class="flex-1 min-w-0 bg-transparent outline-none text-dense"
+                style="color: var(--semantic-text)"
+                data-testid="sidebar-file-filter"
+                @input="fileFilter = ($event.target as HTMLInputElement).value"
+              />
+              <span class="shrink-0 text-micro" style="color: var(--semantic-text-dim)">
+                {{ prFiles.length }}
+              </span>
+            </label>
+          </div>
+          <div v-if="fileFilterActive && filteredPrFiles.length === 0" class="px-2 pt-2">
+            <EmptyState
+              class="m-0"
+              glyph="⌕"
+              title="No files match"
+              :description="`Nothing in this ${forge.short} matches “${fileFilter.trim()}”.`"
+            />
+          </div>
+          <div v-else class="py-1">
+            <div
+              class="flex items-center gap-1.5 px-3 h-7 text-micro font-semibold uppercase tracking-wide"
+              style="color: var(--color-violet)"
+            >
+              {{ forge.short }} files ({{ filteredPrFiles.length
               }}<template v-if="conflictsOnly"> of {{ prFiles.length }}</template
               >)
             </div>
             <div
-              v-for="file in visiblePrFiles"
+              v-for="file in filteredPrFiles"
               :key="'pr-' + file.path"
-              class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:opacity-80"
+              role="button"
+              tabindex="0"
+              class="flex items-center gap-2 px-3 h-7 cursor-pointer hover:opacity-80"
               :style="{
                 backgroundColor:
                   selectedPath === file.path ? 'var(--semantic-active-bg)' : 'transparent',
+                boxShadow:
+                  selectedPath === file.path ? 'inset 2px 0 0 0 var(--color-violet)' : 'none',
               }"
               :data-testid="`sidebar-pr-file-${file.path}`"
+              :title="file.path"
               @click="onPrFileRowClick($event, file)"
               @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
               @auxclick="onFileRowAuxClick($event, file.path)"
             >
-              <span class="text-dense">{{ prStatusIcon[file.status] ?? '📄' }}</span>
               <span
-                class="text-dense truncate flex-1"
-                style="color: var(--semantic-text)"
-                :title="file.path"
+                class="w-4 h-4 shrink-0 rounded flex items-center justify-center text-micro font-bold"
+                :style="{
+                  backgroundColor: chipFor(file.status).bg,
+                  color: chipFor(file.status).fg,
+                }"
+                :title="chipFor(file.status).title"
+                aria-hidden="true"
+                >{{ chipFor(file.status).letter }}</span
               >
-                {{ file.path }}
+              <span class="text-dense truncate flex-1 min-w-0" :title="file.path">
+                <span style="color: var(--semantic-text-dim)">{{ pathParts(file.path).dir }}</span
+                ><span style="color: var(--semantic-text)">{{ pathParts(file.path).name }}</span>
               </span>
             </div>
           </div>
@@ -1337,34 +1550,17 @@ defineExpose({
       </template>
       <template v-else>
         <div v-if="isLoadingGit" class="flex items-center justify-center py-8">
-          <svg
-            class="animate-spin w-5 h-5"
-            style="color: var(--color-aqua)"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            />
-          </svg>
+          <SpinnerIcon size-class="w-5 h-5" />
         </div>
 
         <div v-else-if="gitError" class="flex flex-col items-center justify-center p-4 text-center">
-          <span class="text-title-lg mb-2">⚠️</span>
-          <p class="text-dense" style="color: var(--semantic-error)">{{ gitError }}</p>
+          <span class="text-title-lg mb-2" style="color: var(--semantic-error)" aria-hidden="true"
+            >!</span
+          >
+          <p class="text-dense break-words" style="color: var(--semantic-error)">{{ gitError }}</p>
           <button
             type="button"
-            class="mt-3 px-3 py-1.5 text-body rounded"
+            class="mt-3 px-3 py-1.5 text-dense rounded-md"
             style="background: var(--color-green); color: var(--color-bg)"
             data-testid="sidebar-diff-retry"
             @click="loadGitStatus"
@@ -1373,144 +1569,235 @@ defineExpose({
           </button>
         </div>
 
-        <div
-          v-else-if="!isGitRepo"
-          class="flex flex-col items-center justify-center p-4 text-center"
-        >
-          <span class="text-display mb-3">🌿</span>
-          <p class="text-dense" style="color: var(--semantic-text-dim)">
-            {{ !cwd ? 'Select a workspace to view git status' : 'Not a git repository' }}
-          </p>
+        <div v-else-if="!isGitRepo" class="px-2 py-4">
+          <EmptyState
+            class="m-0"
+            glyph="⌗"
+            :title="!cwd ? 'Select a workspace' : 'Not a git repository'"
+            :description="
+              !cwd
+                ? 'Pick a workspace to see its git status.'
+                : 'This folder is not a git repository, so there is nothing to diff.'
+            "
+          >
+            <template #glyph>
+              <svg
+                class="w-7 h-7"
+                style="color: var(--semantic-text-dim)"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
+                />
+              </svg>
+            </template>
+          </EmptyState>
         </div>
 
-        <div
-          v-else-if="changeCount === 0"
-          class="flex flex-col items-center justify-center p-4 text-center"
-        >
-          <span class="text-display mb-3">✓</span>
-          <p class="text-dense" style="color: var(--semantic-text-dim)">Working tree clean</p>
+        <div v-else-if="changeCount === 0" class="px-2 py-4">
+          <EmptyState
+            class="m-0"
+            glyph="✓"
+            title="Working tree clean"
+            :description="`Nothing staged, modified or untracked on ${displayBranch || 'this branch'}.`"
+          />
         </div>
 
         <template v-else>
-          <div v-if="stagedFiles.length > 0" class="py-1">
-            <div class="px-3 py-1 text-dense font-semibold" style="color: var(--color-green)">
-              Staged Changes ({{ stagedFiles.length }})
-            </div>
-            <div
-              v-for="file in stagedFiles"
-              :key="'staged-' + file.path"
-              class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:opacity-80"
-              :style="{
-                backgroundColor:
-                  selectedPath === file.path && selectedStaged
-                    ? 'var(--semantic-active-bg)'
-                    : 'transparent',
-              }"
-              :data-testid="`sidebar-diff-file-staged-${file.path}`"
-              @click="onFileRowClick($event, file, true)"
-              @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
-              @auxclick="onFileRowAuxClick($event, file.path)"
+          <div v-if="showWorktreeFilter" class="px-2 pt-2">
+            <label
+              class="flex items-center gap-2 h-8 px-2 rounded-md"
+              style="background-color: var(--color-bg-m1); border: 1px solid var(--color-border)"
             >
-              <span class="text-dense">{{ displayStatus(file).icon }}</span>
-              <span
-                class="text-dense truncate flex-1"
+              <span aria-hidden="true" style="color: var(--semantic-text-dim)">⌕</span>
+              <input
+                :value="fileFilter"
+                type="text"
+                placeholder="Filter files…"
+                class="flex-1 min-w-0 bg-transparent outline-none text-dense"
                 style="color: var(--semantic-text)"
-                :title="file.path"
-              >
-                {{ file.path }}
+                data-testid="sidebar-file-filter"
+                @input="fileFilter = ($event.target as HTMLInputElement).value"
+              />
+              <span class="shrink-0 text-micro" style="color: var(--semantic-text-dim)">
+                {{ changedFileTotal }}
               </span>
-              <button
-                type="button"
-                class="text-dense px-1 rounded hover:opacity-70"
-                style="color: var(--semantic-text-dim)"
-                title="Unstage file"
-                :disabled="isStaging"
-                @click.stop="unstageFile(file)"
-              >
-                −
-              </button>
-            </div>
+            </label>
           </div>
+          <div v-if="fileFilterActive && worktreeHits === 0" class="px-2 pt-2">
+            <EmptyState
+              class="m-0"
+              glyph="⌕"
+              title="No files match"
+              :description="`Nothing in this working tree matches “${fileFilter.trim()}”.`"
+            />
+          </div>
+          <template v-else>
+            <div v-if="filteredStagedFiles.length > 0" class="py-1">
+              <div
+                class="px-3 py-1 text-micro font-semibold uppercase tracking-wide"
+                style="color: var(--color-green)"
+              >
+                Staged Changes ({{ filteredStagedFiles.length }})
+              </div>
+              <div
+                v-for="file in filteredStagedFiles"
+                :key="'staged-' + file.path"
+                role="button"
+                tabindex="0"
+                class="flex items-center gap-2 px-3 h-7 cursor-pointer hover:opacity-80"
+                :style="{
+                  backgroundColor:
+                    selectedPath === file.path && selectedStaged
+                      ? 'var(--semantic-active-bg)'
+                      : 'transparent',
+                  boxShadow:
+                    selectedPath === file.path && selectedStaged
+                      ? 'inset 2px 0 0 0 var(--color-violet)'
+                      : 'none',
+                }"
+                :data-testid="`sidebar-diff-file-staged-${file.path}`"
+                :title="file.path"
+                @click="onFileRowClick($event, file, true)"
+                @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+                @auxclick="onFileRowAuxClick($event, file.path)"
+              >
+                <span
+                  class="w-4 h-4 shrink-0 rounded flex items-center justify-center text-micro font-bold"
+                  :style="{ backgroundColor: chipForFile(file).bg, color: chipForFile(file).fg }"
+                  :title="chipForFile(file).title"
+                  aria-hidden="true"
+                  >{{ chipForFile(file).letter }}</span
+                >
+                <span class="text-dense truncate flex-1 min-w-0" :title="file.path">
+                  <span style="color: var(--semantic-text-dim)">{{ pathParts(file.path).dir }}</span
+                  ><span style="color: var(--semantic-text)">{{ pathParts(file.path).name }}</span>
+                </span>
+                <button
+                  type="button"
+                  class="w-5 h-5 shrink-0 rounded text-dense flex items-center justify-center hover:opacity-70"
+                  style="color: var(--semantic-text-dim)"
+                  title="Unstage file"
+                  :disabled="isStaging"
+                  @click.stop="unstageFile(file)"
+                >
+                  −
+                </button>
+              </div>
+            </div>
 
-          <div v-if="unstagedFiles.length > 0" class="py-1">
-            <div class="px-3 py-1 text-dense font-semibold" style="color: var(--color-orange)">
-              Changes ({{ unstagedFiles.length }})
-            </div>
-            <div
-              v-for="file in unstagedFiles"
-              :key="'unstaged-' + file.path"
-              class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:opacity-80"
-              :style="{
-                backgroundColor:
-                  selectedPath === file.path && !selectedStaged
-                    ? 'var(--semantic-active-bg)'
-                    : 'transparent',
-              }"
-              :data-testid="`sidebar-diff-file-unstaged-${file.path}`"
-              @click="onFileRowClick($event, file, false)"
-              @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
-              @auxclick="onFileRowAuxClick($event, file.path)"
-            >
-              <span class="text-dense">{{ displayStatus(file).icon }}</span>
-              <span
-                class="text-dense truncate flex-1"
-                style="color: var(--semantic-text)"
+            <div v-if="filteredUnstagedFiles.length > 0" class="py-1">
+              <div
+                class="px-3 py-1 text-micro font-semibold uppercase tracking-wide"
+                style="color: var(--color-orange)"
+              >
+                Changes ({{ filteredUnstagedFiles.length }})
+              </div>
+              <div
+                v-for="file in filteredUnstagedFiles"
+                :key="'unstaged-' + file.path"
+                role="button"
+                tabindex="0"
+                class="flex items-center gap-2 px-3 h-7 cursor-pointer hover:opacity-80"
+                :style="{
+                  backgroundColor:
+                    selectedPath === file.path && !selectedStaged
+                      ? 'var(--semantic-active-bg)'
+                      : 'transparent',
+                  boxShadow:
+                    selectedPath === file.path && !selectedStaged
+                      ? 'inset 2px 0 0 0 var(--color-violet)'
+                      : 'none',
+                }"
+                :data-testid="`sidebar-diff-file-unstaged-${file.path}`"
                 :title="file.path"
+                @click="onFileRowClick($event, file, false)"
+                @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+                @auxclick="onFileRowAuxClick($event, file.path)"
               >
-                {{ file.path }}
-              </span>
-              <button
-                type="button"
-                class="text-dense px-1 rounded hover:opacity-70"
-                style="color: var(--semantic-text-dim)"
-                title="Stage file"
-                :disabled="isStaging"
-                @click.stop="stageFile(file)"
-              >
-                +
-              </button>
+                <span
+                  class="w-4 h-4 shrink-0 rounded flex items-center justify-center text-micro font-bold"
+                  :style="{ backgroundColor: chipForFile(file).bg, color: chipForFile(file).fg }"
+                  :title="chipForFile(file).title"
+                  aria-hidden="true"
+                  >{{ chipForFile(file).letter }}</span
+                >
+                <span class="text-dense truncate flex-1 min-w-0" :title="file.path">
+                  <span style="color: var(--semantic-text-dim)">{{ pathParts(file.path).dir }}</span
+                  ><span style="color: var(--semantic-text)">{{ pathParts(file.path).name }}</span>
+                </span>
+                <button
+                  type="button"
+                  class="w-5 h-5 shrink-0 rounded text-dense flex items-center justify-center hover:opacity-70"
+                  style="color: var(--semantic-text-dim)"
+                  title="Stage file"
+                  :disabled="isStaging"
+                  @click.stop="stageFile(file)"
+                >
+                  +
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div v-if="untrackedFiles.length > 0" class="py-1">
-            <div class="px-3 py-1 text-dense font-semibold" style="color: var(--semantic-text-dim)">
-              Untracked ({{ untrackedFiles.length }})
-            </div>
-            <div
-              v-for="file in untrackedFiles"
-              :key="'untracked-' + file.path"
-              class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:opacity-80"
-              :style="{
-                backgroundColor:
-                  selectedPath === file.path && !selectedStaged
-                    ? 'var(--semantic-active-bg)'
-                    : 'transparent',
-              }"
-              :data-testid="`sidebar-diff-file-untracked-${file.path}`"
-              @click="onFileRowClick($event, file, false)"
-              @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
-              @auxclick="onFileRowAuxClick($event, file.path)"
-            >
-              <span class="text-dense">❓</span>
-              <span
-                class="text-dense truncate flex-1"
-                style="color: var(--semantic-text)"
-                :title="file.path"
-              >
-                {{ file.path }}
-              </span>
-              <button
-                type="button"
-                class="text-dense px-1 rounded hover:opacity-70"
+            <div v-if="filteredUntrackedFiles.length > 0" class="py-1">
+              <div
+                class="px-3 py-1 text-micro font-semibold uppercase tracking-wide"
                 style="color: var(--semantic-text-dim)"
-                title="Stage file"
-                :disabled="isStaging"
-                @click.stop="stageFile(file)"
               >
-                +
-              </button>
+                Untracked ({{ filteredUntrackedFiles.length }})
+              </div>
+              <div
+                v-for="file in filteredUntrackedFiles"
+                :key="'untracked-' + file.path"
+                role="button"
+                tabindex="0"
+                class="flex items-center gap-2 px-3 h-7 cursor-pointer hover:opacity-80"
+                :style="{
+                  backgroundColor:
+                    selectedPath === file.path && !selectedStaged
+                      ? 'var(--semantic-active-bg)'
+                      : 'transparent',
+                  boxShadow:
+                    selectedPath === file.path && !selectedStaged
+                      ? 'inset 2px 0 0 0 var(--color-violet)'
+                      : 'none',
+                }"
+                :data-testid="`sidebar-diff-file-untracked-${file.path}`"
+                :title="file.path"
+                @click="onFileRowClick($event, file, false)"
+                @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+                @auxclick="onFileRowAuxClick($event, file.path)"
+              >
+                <span
+                  class="w-4 h-4 shrink-0 rounded flex items-center justify-center text-micro font-bold"
+                  style="background-color: var(--color-bg-p1); color: var(--semantic-text-dim)"
+                  title="Untracked"
+                  aria-hidden="true"
+                  >?</span
+                >
+                <span class="text-dense truncate flex-1 min-w-0" :title="file.path">
+                  <span style="color: var(--semantic-text-dim)">{{ pathParts(file.path).dir }}</span
+                  ><span style="color: var(--semantic-text)">{{ pathParts(file.path).name }}</span>
+                </span>
+                <button
+                  type="button"
+                  class="w-5 h-5 shrink-0 rounded text-dense flex items-center justify-center hover:opacity-70"
+                  style="color: var(--semantic-text-dim)"
+                  title="Stage file"
+                  :disabled="isStaging"
+                  @click.stop="stageFile(file)"
+                >
+                  +
+                </button>
+              </div>
             </div>
-          </div>
+          </template>
         </template>
       </template>
     </div>

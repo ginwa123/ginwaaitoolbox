@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wireframe — chat right sidebar redesign (task_1791129885927_2)</title>
+<style>
+  /* Every colour below is the real token from src/style.css. No invented
+     hexes — if a colour shows up here it is a colour the app can produce. */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --sb-bg:#12120f; --bg:#181616; --m1:#1D1C19; --p1:#282727; --p2:#393836;
+    --border:#282727; --border-light:#393836;
+    --text:#c5c9c5; --muted:#a6a69c; --dim:#7a8382;
+    --violet:#8992a7; --green:#87a987; --orange:#b6927b; --red:#c4746e;
+    --yellow:#c4b28a; --blue:#8ba4b0; --aqua:#8ea4a2;
+  }
+  body { background:var(--m1); color:var(--text);
+         font-family: ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+         font-size:13px; padding:28px; line-height:1.5; }
+  h1 { font-size:20px; margin-bottom:6px; }
+  h2 { font-size:14px; margin:34px 0 4px; padding-bottom:7px; border-bottom:1px solid var(--border); }
+  h3 { font-size:11px; margin:20px 0 8px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+  .lede { color:var(--muted); font-size:12px; max-width:960px; margin-bottom:6px; }
+  .lede b { color:var(--text); font-weight:600; }
+  code { background:var(--p1); padding:1px 5px; border-radius:4px; font-size:11px;
+         font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+  .row { display:flex; gap:26px; flex-wrap:wrap; align-items:flex-start; }
+  .col { flex-shrink:0; }
+
+  /* ── the panel ───────────────────────────────────────────────── */
+  .panel { background:var(--sb-bg); border:1px solid var(--border); border-radius:8px;
+           overflow:hidden; display:flex; flex-direction:column; }
+  .panel .cap { font-size:11px; color:var(--dim); margin-bottom:6px; font-family:ui-monospace,Menlo,monospace; }
+  .panel .cap b { color:var(--muted); font-weight:500; }
+
+  /* ROW 1 — the rail (44px) */
+  .rail { height:44px; flex-shrink:0; display:flex; align-items:center; gap:6px;
+          padding:0 8px; border-bottom:1px solid var(--border); }
+  .rail .seg { flex:1; min-width:0; height:32px; border-radius:4px; display:flex;
+               align-items:center; justify-content:center; gap:6px;
+               font-size:12px; font-weight:500; color:var(--dim); }
+  .rail .seg.on { background:var(--p1); color:var(--text);
+                  box-shadow: inset 0 -2px 0 0 var(--violet); }
+  .rail .seg .g { opacity:.7; font-size:12px; }
+  .rail .x { width:28px; height:28px; flex-shrink:0; border-radius:4px;
+             display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:12px; }
+
+  /* ROW 2 — the sub-tab strip (36px) */
+  .strip { height:36px; flex-shrink:0; display:flex; align-items:center;
+           padding:0 8px; gap:2px; border-bottom:1px solid var(--border); }
+  .strip .tabs { display:flex; align-items:center; gap:2px; flex:1; min-width:0; overflow:hidden; }
+  .tab { height:28px; padding:0 8px; border-radius:4px; display:flex; align-items:center; gap:5px;
+         font-size:12px; color:var(--text); opacity:.6; white-space:nowrap; }
+  .tab.on { opacity:1; font-weight:600; box-shadow: inset 0 -2px 0 0 var(--violet); }
+  .tab .pill { background:var(--p1); color:var(--dim); border-radius:999px;
+               padding:1px 6px; font-size:10px; font-weight:600; }
+  .tab.on .pill { background:var(--p2); color:var(--text); }
+  .acts { display:flex; align-items:center; gap:2px; padding-left:6px; flex-shrink:0; }
+  .act { width:24px; height:24px; border-radius:4px; display:flex; align-items:center;
+         justify-content:center; color:var(--dim); font-size:12px; }
+
+  /* ROW 3 — the context band (36px) */
+  .ctx { height:36px; flex-shrink:0; display:flex; align-items:center; gap:8px;
+         padding:0 10px; background:var(--m1); border-bottom:1px solid var(--border);
+         font-size:12px; }
+  .ctx .pr { font-weight:600; color:var(--text); font-family:ui-monospace,Menlo,monospace;
+             display:inline-flex; align-items:center; gap:5px; }
+  /* Icons are inline SVG filled with currentColor — never emoji, never a brand hex.
+     See AGENTS.md "No Emoji as Icons". */
+  .mark { width:1em; height:1em; fill:currentColor; flex-shrink:0; }
+  .chip { padding:2px 7px; border-radius:999px; font-size:10px; font-weight:600; white-space:nowrap; }
+  .c-merged { background:var(--violet); color:var(--sb-bg); }
+  .c-open   { background:var(--green);  color:var(--sb-bg); }
+  .c-draft  { background:var(--p1); color:var(--muted); }
+  .ctx .range { color:var(--dim); min-width:0; overflow:hidden; text-overflow:ellipsis;
+                white-space:nowrap; font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+  .ctx .n { margin-left:auto; background:var(--p1); color:var(--muted);
+            padding:2px 7px; border-radius:999px; font-size:10px; font-weight:600; flex-shrink:0; }
+
+  /* ROW 4 — notice strips (32px each) */
+  .notice { height:32px; margin:8px 8px 0; border-radius:6px; display:flex; align-items:center;
+            gap:8px; padding:0 10px; font-size:12px; flex-shrink:0; }
+  .notice .ic { flex-shrink:0; opacity:.9; }
+  .notice .tx { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+  .notice .lk { flex-shrink:0; color:var(--blue); text-decoration:underline; }
+  .n-err { background:rgba(196,116,110,.12); color:var(--red); }
+  .n-warn { background:rgba(196,178,138,.12); color:var(--yellow); }
+  .n-info { background:rgba(137,146,167,.15); color:var(--violet); }
+
+  /* ROW 5 — the filter (32px) */
+  .filter { height:32px; margin:8px 8px 0; border-radius:6px; display:flex; align-items:center;
+            gap:8px; padding:0 10px; background:var(--m1); border:1px solid var(--border);
+            font-size:12px; color:var(--dim); flex-shrink:0; }
+  .filter .caret { color:var(--text); }
+  .filter .hits { margin-left:auto; font-size:10px; color:var(--dim);
+                  font-family:ui-monospace,Menlo,monospace; }
+
+  /* ROW 6 — group header (28px) */
+  .grp { height:28px; display:flex; align-items:center; gap:6px; padding:0 10px;
+         font-size:10px; font-weight:600; letter-spacing:.07em; text-transform:uppercase;
+         color:var(--dim); }
+  .grp .car { font-size:8px; }
+  .grp.g-violet { color:var(--violet); }
+  .grp.g-green  { color:var(--green); }
+  .grp.g-orange { color:var(--orange); }
+
+  /* ROW 7 — file rows (28px) */
+  .frow { height:28px; display:flex; align-items:center; gap:8px; padding:0 10px;
+          font-size:12px; cursor:default; }
+  .frow:hover { background:var(--m1); }
+  .frow.sel { background:var(--p1); box-shadow: inset 2px 0 0 0 var(--violet); }
+  .st { width:16px; height:16px; flex-shrink:0; border-radius:4px; display:flex;
+        align-items:center; justify-content:center; font-size:9px; font-weight:700; }
+  .st-M { background:rgba(182,146,123,.18); color:var(--orange); }
+  .st-A { background:rgba(135,169,135,.18); color:var(--green); }
+  .st-D { background:rgba(196,116,110,.18); color:var(--red); }
+  .st-R { background:rgba(137,146,167,.18); color:var(--violet); }
+  .st-C { background:var(--p1); color:var(--dim); }
+  .st-U { background:var(--p1); color:var(--dim); }
+  .p { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .p .d { color:var(--dim); }
+  .p .n { color:var(--text); }
+  .frow .act2 { flex-shrink:0; width:18px; text-align:center; color:var(--dim); font-size:11px; }
+
+  .list { flex:1; min-height:0; overflow:hidden; }
+  .foot { height:28px; display:flex; align-items:center; padding:0 10px; font-size:11px; color:var(--dim); }
+
+  /* ── BEFORE (the shipped design, for contrast) ──────────────── */
+  .old .title { height:40px; display:flex; align-items:center; padding:0 12px;
+                border-bottom:1px solid var(--border); font-size:12px; font-weight:600; }
+  .old .ptabs { display:flex; gap:4px; padding:8px 12px 0; }
+  .old .pt { flex:1; text-align:center; padding:6px 8px; font-size:12px;
+             border-radius:4px 4px 0 0; color:var(--text); opacity:.6; }
+  .old .pt.on { background:var(--p1); color:var(--text); opacity:1; }
+  .old .stabs { display:flex; gap:4px; padding:8px 12px; border-bottom:1px solid var(--border); font-size:12px; }
+  .old .sb { flex:1; padding:10px 12px; display:flex; align-items:center; gap:8px;
+             border-bottom:1px solid var(--border); font-size:12px; }
+  .old .sb .em { font-size:13px; }
+  .old .ban { margin:8px 12px 0; padding:8px 10px; border-radius:6px; font-size:12px;
+              background:rgba(137,146,167,.15); color:var(--text); }
+  .old .ol { font-size:12px; }
+  .old .ol .r { height:28px; display:flex; align-items:center; gap:8px; padding:0 12px; }
+
+  /* ── anatomy diagram ─────────────────────────────────────────── */
+  .note { border:1px solid var(--border); border-left:2px solid var(--violet); border-radius:6px;
+          padding:10px 12px; background:var(--bg); font-size:12px; color:var(--muted); max-width:300px; }
+  .note b { color:var(--text); display:block; margin-bottom:4px; font-size:12px; }
+  .note code { background:var(--p1); }
+  .swatch { display:flex; align-items:center; gap:7px; font-size:11px; color:var(--muted); margin-bottom:5px; }
+  .swatch i { width:13px; height:13px; border-radius:3px; display:inline-block; flex-shrink:0; }
+  .zoom { display:flex; align-items:center; gap:14px; padding:14px; background:var(--bg);
+          border:1px solid var(--border); border-radius:8px; }
+  .zoomrow { display:flex; flex-direction:column; gap:5px; }
+  .gl { font-size:10px; color:var(--dim); font-family:ui-monospace,Menlo,monospace; width:150px; }
+  table { border-collapse:collapse; font-size:12px; margin-top:10px; max-width:900px; }
+  th,td { text-align:left; padding:7px 12px 7px 0; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:.07em; font-weight:600; }
+  td b { color:var(--text); }
+  .k { display:inline-block; background:var(--p1); color:var(--muted); border-radius:3px;
+       padding:1px 5px; font-size:11px; font-family:ui-monospace,Menlo,monospace; }
+</style>
+</head>
+<body>
+
+<h1>Chat right sidebar — redesign wireframe</h1>
+<p class="lede">
+  Task <code>task_1791129885927_2</code> · target: the panel that shows PR #799's 43 files.
+  Every colour is the live token from <code>src/style.css</code>; every height is a Tailwind step the
+  app already uses. <b>Nothing here is a new value</b> — the design is entirely a rearrangement of
+  chrome the panel already owns.
+</p>
+
+<!-- ══════════════════════════════════════ BEFORE ══════════════════════════════════════ -->
+<h2>1 · Before — four chrome rows before row one of content</h2>
+<p class="lede">
+  The shipped panel, with the cost of each row called out. The panel is 360&times;900 here; the
+  screenshots that prompted this are the same shape.
+</p>
+
+<div class="row">
+  <div class="col">
+    <div class="cap"><b>360 &times; 900</b> — PR tab, 43 files</div>
+    <div class="panel old" style="width:360px;height:900px;">
+      <div class="title">Changes <span style="float:right;color:var(--dim)">✕</span></div>
+      <div class="ptabs">
+        <div class="pt">Explorer</div>
+        <div class="pt on">Files changed</div>
+        <div class="pt">⌁ Terminal</div>
+      </div>
+      <div class="stabs">
+        <div style="opacity:.6">Files changed</div>
+        <div style="font-weight:600;box-shadow:inset 0 -2px 0 0 var(--violet)">Pull request (43)</div>
+        <div style="opacity:.6">Commits</div>
+        <div style="opacity:.6">Checks</div>
+        <div style="opacity:.6">Evals</div>
+      </div>
+      <div class="sb">
+        <span class="em">🔀</span>
+        <span style="font-weight:600;flex:1">#799</span>
+        <span class="chip c-merged">Merged</span>
+        <span class="chip" style="background:var(--violet);color:var(--sb-bg)">43</span>
+        <span style="color:var(--dim)">↻</span>
+      </div>
+      <div class="ban">Merged — this PR was merged on GitHub. The diff below is the final state.</div>
+      <div class="ol">
+        <div class="r" style="color:var(--violet);font-size:11px;font-weight:600">PR files (43)</div>
+        <div class="r"><span class="em">📝</span><span>docs/plans/2026-10-04-skills-sqlite-table.md</span></div>
+        <div class="r"><span class="em">📝</span><span>src/agentic_loop/run_skill_eval.zig</span></div>
+        <div class="r"><span class="em">📝</span><span>src/agentic_loop/skills_import.zig</span></div>
+        <div class="r"><span class="em">📝</span><span>src/agentic_loop/skills_search.zig</span></div>
+        <div class="r"><span class="em">📝</span><span>src/agentic_loop/skills_store.zig</span></div>
+        <div class="r"><span class="em">📝</span><span>src/agentic_loop/tools_exec_skills.zig</span></div>
+        <div class="r"><span class="em">📝</span><span>src/apps/desktop/src/api/index.ts</span></div>
+        <div class="r"><span class="em">📝</span><span>src/apps/desktop/src/components/AppLayout.vue</span></div>
+        <div class="r"><span class="em">📝</span><span>src/apps/desktop/src/components/preview/UseSkill.vue</span></div>
+        <div class="r"><span class="em">📝</span><span>… and 34 more, each one line, all the same weight</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="cap">what it costs</div>
+    <div class="note" style="margin-bottom:10px"><b>~150px of chrome before row one</b>
+      40px title + 44px panel tabs + 36px sub-tabs + 40px PR header. On a 900px panel that is
+      17% of the height spent saying where you are.</div>
+    <div class="note" style="margin-bottom:10px"><b>“Files changed” twice</b>
+      The outer panel tab and the inner sub-tab carry the same words for two different things.</div>
+    <div class="note" style="margin-bottom:10px"><b>the strip clips</b>
+      <code>Pull request (43)</code> is 148px. Five of those do not fit between 200px and 360px,
+      so either the labels truncate or they overflow.</div>
+    <div class="note" style="margin-bottom:10px"><b>the eye has nowhere to land</b>
+      43 rows, one weight, identical <code>src/apps/desktop/src/components/</code> prefix.
+      <code>PrChecksPanel.vue</code> gets the last 12px of its row.</div>
+    <div class="note"><b>status is an emoji lottery</b>
+      📝 ➕ 🗑️ 🔄 📋 ❓ render at six different pixel sizes against 12px monospace paths.</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ AFTER ═══════════════════════════════════════ -->
+<h2>2 · After — one rail, one strip, one band, then files</h2>
+<p class="lede">
+  The same panel, the same PR, the same 43 files. Four chrome rows become two, and the third
+  (the context band) is tinted rather than outlined so it reads as part of the header block.
+</p>
+
+<div class="row">
+  <div class="col">
+    <div class="cap"><b>360 &times; 900</b> — PR tab, 43 files</div>
+    <div class="panel" style="width:360px;height:900px;">
+      <!-- 1 rail -->
+      <div class="rail">
+        <div class="seg"><span class="g">▤</span>Explorer</div>
+        <div class="seg on"><span class="g">⎇</span>Changes</div>
+        <div class="seg"><span class="g">⌁</span>Terminal</div>
+        <div class="x">✕</div>
+      </div>
+      <!-- 2 sub-tabs -->
+      <div class="strip">
+        <div class="tabs">
+          <div class="tab">Files<span class="pill">3</span></div>
+          <div class="tab on">PR<span class="pill">43</span></div>
+          <div class="tab">Commits</div>
+          <div class="tab">Checks</div>
+          <div class="tab">Evals</div>
+        </div>
+        <div class="acts"><div class="act">⌕</div><div class="act">↻</div></div>
+      </div>
+      <!-- 3 context band -->
+      <div class="ctx">
+        <span class="pr"><svg class="mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg> #799</span>
+        <span class="chip c-merged">Merged</span>
+        <span class="range">worktree/give-me-a-new-design…main</span>
+        <span class="n">43</span>
+      </div>
+      <!-- 4 notice -->
+      <div class="notice n-info"><span class="ic">✓</span>
+        <span class="tx">Merged on GitHub — the diff below is the final state.</span></div>
+      <!-- 5 filter -->
+      <div class="filter"><span class="caret">⌕</span>Filter files…<span class="hits">7/43</span></div>
+      <!-- 6 list -->
+      <div class="list">
+        <div class="grp g-violet"><span class="car">▼</span>PR files (43)</div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/agentic_loop/</span><span class="n">run_skill_eval.zig</span></span></div>
+        <div class="frow sel"><span class="st st-M">M</span><span class="p"><span class="d">src/agentic_loop/</span><span class="n">skills_import.zig</span></span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/agentic_loop/</span><span class="n">skills_search.zig</span></span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/agentic_loop/</span><span class="n">skills_store.zig</span></span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/agentic_loop/</span><span class="n">tools_exec_skills.zig</span></span></div>
+        <div class="frow"><span class="st st-A">A</span><span class="p"><span class="d">src/apps/desktop/src/api/</span><span class="n">index.ts</span></span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/apps/desktop/src/components/</span><span class="n">AppLayout.vue</span></span></div>
+        <div class="frow"><span class="st st-A">A</span><span class="p"><span class="d">src/apps/desktop/src/components/tool_outputs/</span><span class="n">EditSkill.vue</span></span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/apps/desktop/src/components/views/chat_right_sidebar/</span><span class="n">PrChecksPanel.vue</span></span></div>
+        <div class="frow"><span class="st st-A">A</span><span class="p"><span class="d">src/apps/desktop/src/components/views/chat_right_sidebar/</span><span class="n">SidebarDiffPanel.vue</span></span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/apps/desktop/src/components/views/chat_right_sidebar/</span><span class="n">SidebarDiffView.vue</span></span></div>
+        <div class="frow"><span class="st st-D">D</span><span class="p"><span class="d">src/http_handlers/</span><span class="n">mod.zig</span></span></div>
+        <div class="frow"><span class="st st-A">A</span><span class="p"><span class="d">src/http_handlers/</span><span class="n">skill_delete.zig</span></span></div>
+        <div class="frow"><span class="st st-R">R</span><span class="p"><span class="d">src/http_handlers/</span><span class="n">skill_evals.zig</span></span></div>
+        <div class="frow"><span class="st st-A">A</span><span class="p"><span class="d">src/http_handlers/</span><span class="n">skills_list.zig</span></span></div>
+        <div class="frow"><span class="st st-U">?</span><span class="p"><span class="d">docs/plans/</span><span class="n">2026-10-04-skills-sqlite-table.md</span></span></div>
+        <div class="foot">+ 27 more files</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="cap">what it costs now</div>
+    <div class="note" style="margin-bottom:10px"><b>116px of chrome before row one</b>
+      44 + 36 + 36. The list starts 34px higher, and the row it starts at is a real file
+      instead of a repeated title.</div>
+    <div class="note" style="margin-bottom:10px"><b>the widest tab is 46px</b>
+      <code>PR</code> + a pill, against 148px for <code>Pull request (43)</code>. That is what
+      makes the whole strip fit at 200px.</div>
+    <div class="note" style="margin-bottom:10px"><b>the eye lands on the filename</b>
+      Directory dim, filename bright. Across 43 rows the shared
+      <code>src/apps/desktop/src/components/</code> prefix becomes skippable and
+      <code>PrChecksPanel.vue</code> gets a full line.</div>
+    <div class="note"><b>status is one glyph</b>
+      A 16px letter chip — one width, one baseline, tinted per status. No emoji size lottery.</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ WIDTH PROOF ═════════════════════════════════════ -->
+<h2>3 · The same layout at 200px and 600px — the width it has to survive</h2>
+<p class="lede">
+  <code>useChatRightSidebar.ts</code> clamps the panel to 200–600px, default 280. The old strip
+  could not hold five counted labels at 280. These are the three ends of that range.
+</p>
+
+<div class="row">
+  <div class="col">
+    <div class="cap"><b>200 &times; 520</b> — MIN_WIDTH</div>
+    <div class="panel" style="width:200px;height:520px;">
+      <div class="rail">
+        <div class="seg"><span class="g">▤</span><span style="overflow:hidden;text-overflow:ellipsis">Explorer</span></div>
+        <div class="seg on"><span class="g">⎇</span>Changes</div>
+        <div class="seg"><span class="g">⌁</span>Terminal</div>
+        <div class="x">✕</div>
+      </div>
+      <div class="strip">
+        <div class="tabs">
+          <div class="tab">Files<span class="pill">3</span></div>
+          <div class="tab on">PR<span class="pill">43</span></div>
+          <div class="tab">Comm…</div>
+        </div>
+        <div class="acts"><div class="act">↻</div></div>
+      </div>
+      <div class="ctx">
+        <span class="pr">#799</span>
+        <span class="chip c-merged">Merged</span>
+        <span class="n">43</span>
+      </div>
+      <div class="notice n-info"><span class="ic">✓</span><span class="tx">Merged on GitHub.</span></div>
+      <div class="filter"><span class="caret">⌕</span>Filter files…<span class="hits">7/43</span></div>
+      <div class="list">
+        <div class="grp g-violet"><span class="car">▼</span>PR files (43)</div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/agentic_loop/</span><span class="n">run_skill_eval.zig</span></span></div>
+        <div class="frow sel"><span class="st st-A">A</span><span class="p"><span class="d">src/apps/desktop/src/components/tool_outputs/</span><span class="n">EditSkill.vue</span></span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/apps/desktop/src/components/views/chat_right_sidebar/</span><span class="n">PrChecksPanel.vue</span></span></div>
+        <div class="frow"><span class="st st-U">?</span><span class="p"><span class="d">docs/plans/</span><span class="n">2026-10-04-skills-sqlite-table.md</span></span></div>
+      </div>
+    </div>
+    <p class="lede" style="font-size:11px;margin-top:6px">The tab cluster scrolls; the file path
+      truncates at the <em>left</em> of the bright name, so the filename is what survives.</p>
+  </div>
+
+  <div class="col">
+    <div class="cap"><b>600 &times; 520</b> — MAX_WIDTH</div>
+    <div class="panel" style="width:600px;height:520px;">
+      <div class="rail">
+        <div class="seg"><span class="g">▤</span>Explorer</div>
+        <div class="seg on"><span class="g">⎇</span>Changes</div>
+        <div class="seg"><span class="g">⌁</span>Terminal</div>
+        <div class="x">✕</div>
+      </div>
+      <div class="strip">
+        <div class="tabs">
+          <div class="tab">Files<span class="pill">3</span></div>
+          <div class="tab on">PR<span class="pill">43</span></div>
+          <div class="tab">Commits</div>
+          <div class="tab">Checks</div>
+          <div class="tab">Evals</div>
+        </div>
+        <div class="acts"><div class="act">⌕</div><div class="act">↻</div></div>
+      </div>
+      <div class="ctx">
+        <span class="pr"><svg class="mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg> #799</span>
+        <span class="chip c-merged">Merged</span>
+        <span class="range">worktree/give-me-a-new-design-for-right-sidebar-1791129884831</span>
+        <span class="range" style="color:var(--muted)">…origin/main</span>
+        <span class="n">43</span>
+      </div>
+      <div class="list">
+        <div class="grp g-violet"><span class="car">▼</span>PR files (43)</div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/agentic_loop/</span><span class="n">run_skill_eval.zig</span></span><span style="color:var(--green);font-size:10px;flex-shrink:0">+128 −34</span></div>
+        <div class="frow sel"><span class="st st-A">A</span><span class="p"><span class="d">src/apps/desktop/src/components/tool_outputs/</span><span class="n">EditSkill.vue</span></span><span style="color:var(--green);font-size:10px;flex-shrink:0">+96</span></div>
+        <div class="frow"><span class="st st-D">D</span><span class="p"><span class="d">src/http_handlers/</span><span class="n">mod.zig</span></span><span style="color:var(--red);font-size:10px;flex-shrink:0">−212</span></div>
+      </div>
+    </div>
+    <p class="lede" style="font-size:11px;margin-top:6px">At 600px the spare width goes to the
+      branch range and — if it is cheap to fetch — per-file <code>+n −n</code>. Not required for
+      this change; shown as what the layout affords.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ ANATOMY ═════════════════════════════════════════ -->
+<h2>4 · Anatomy of the file row — the highest-value change in the panel</h2>
+<p class="lede">
+  One line, 28px, unchanged height. The change is entirely in what is bright.
+</p>
+
+<div class="zoom">
+  <div class="zoomrow">
+    <div class="frow" style="width:560px;background:var(--bg)">
+      <span class="st st-M">M</span>
+      <span class="p" style="font-size:14px">
+        <span class="d">src/apps/desktop/src/components/views/chat_right_sidebar/</span><span class="n">PrChecksPanel.vue</span>
+      </span>
+    </div>
+    <div style="height:26px"></div>
+    <div class="zoomrow" style="flex-direction:row;gap:22px">
+      <div class="gl">1 · status chip<br><span style="color:var(--dim)">16px, letter, tinted</span></div>
+      <div class="gl">2 · directory, dim<br><span style="color:var(--dim)">skippable noise</span></div>
+      <div class="gl">3 · filename, bright<br><span style="color:var(--dim)">where the eye lands</span></div>
+    </div>
+  </div>
+  <div>
+    <div class="swatch"><i class="st-M" style="width:16px;height:16px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">M</i> Modified — <span class="k">--color-orange</span> @ 18%</div>
+    <div class="swatch"><i class="st-A" style="width:16px;height:16px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">A</i> Added — <span class="k">--color-green</span> @ 18%</div>
+    <div class="swatch"><i class="st-D" style="width:16px;height:16px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">D</i> Deleted — <span class="k">--semantic-error</span> @ 18%</div>
+    <div class="swatch"><i class="st-R" style="width:16px;height:16px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">R</i> Renamed — <span class="k">--color-violet</span> @ 18%</div>
+    <div class="swatch"><i class="st-C" style="width:16px;height:16px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">C</i> Copied — <span class="k">--semantic-text-dim</span></div>
+    <div class="swatch"><i class="st-U" style="width:16px;height:16px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700">?</i> Untracked — <span class="k">--semantic-text-dim</span></div>
+    <div style="margin-top:12px;font-size:11px;color:var(--dim);line-height:1.7">
+      Selection = <span class="k">--semantic-active-bg</span> + <span class="k">inset 2px 0 0 0 var(--color-violet)</span><br>
+      the same left-bar idiom as <code>ChatsList.vue:1085</code>.
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ FORGE MARKS ═══════════════════════════════════════ -->
+<h2>5 · The forge marks — GitHub and GitLab, as SVG</h2>
+<p class="lede">
+  The panel used to say <b>🔀</b> for both, which is the same class of bug as calling a GitLab
+  merge request a &ldquo;pull request&rdquo; — the one <code>helpers/forgeWording.ts</code> exists to
+  prevent in prose, thrown away again by the icon. These are the Simple Icons 24&times;24 marks
+  (CC0-1.0), filled with <code>currentColor</code> so they inherit
+  <span class="k">--semantic-text-dim</span> rather than carrying a brand hex that would fight the
+  kanagawa palette.
+</p>
+
+<div class="row">
+  <div class="col">
+    <div class="cap">context band — 16px, next to <span class="k">--semantic-text-dim</span></div>
+    <div class="panel" style="width:360px;">
+      <div class="ctx">
+        <span class="pr"><svg class="mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg> #799</span>
+        <span class="chip c-merged">Merged</span>
+        <span class="range">worktree/give-me-a-new-design…main</span>
+        <span class="n">43</span>
+      </div>
+      <div class="ctx">
+        <span class="pr"><svg class="mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m23.6004 9.5927-.0337-.0862L20.3.9814a.851.851 0 0 0-.3362-.405.8748.8748 0 0 0-.9997.0539.8748.8748 0 0 0-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 0 0-.29-.4412.8748.8748 0 0 0-.9997-.0537.8585.8585 0 0 0-.3362.4049L.4332 9.5015l-.0325.0862a6.0657 6.0657 0 0 0 2.0119 7.0105l.0113.0087.03.0213 4.976 3.7264 2.462 1.8633 1.4995 1.1321a1.0085 1.0085 0 0 0 1.2197 0l1.4995-1.1321 2.4619-1.8633 5.006-3.7489.0125-.01a6.0682 6.0682 0 0 0 2.0094-7.003z"/></svg> #812</span>
+        <span class="chip c-open">Open</span>
+        <span class="range">feature…main</span>
+        <span class="n">12</span>
+      </div>
+    </div>
+    <p class="lede" style="font-size:11px;margin-top:6px">The same component, one prop:
+      <code>&lt;ForgeIcon :provider="prProvider" /&gt;</code>. Unknown/empty provider falls back
+      to GitHub — the same default <code>forgeWording()</code> uses, because
+      <code>pr_provider</code> is empty on every session predating GitLab support.</p>
+  </div>
+
+  <div class="col">
+    <div class="cap">legibility down the sizes the panel actually uses</div>
+    <div style="border:1px solid var(--border);border-radius:8px;background:var(--bg);padding:14px">
+      <div style="display:flex;align-items:center;gap:18px;margin-bottom:12px;color:var(--semantic-text-dim)">
+        <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        <svg style="width:28px;height:28px" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        <span style="font-size:10px">16px · context band</span>
+        <span style="font-size:10px">28px · empty state</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:18px;margin-bottom:12px;color:var(--semantic-text-dim)">
+        <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="currentColor"><path d="m23.6004 9.5927-.0337-.0862L20.3.9814a.851.851 0 0 0-.3362-.405.8748.8748 0 0 0-.9997.0539.8748.8748 0 0 0-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 0 0-.29-.4412.8748.8748 0 0 0-.9997-.0537.8585.8585 0 0 0-.3362.4049L.4332 9.5015l-.0325.0862a6.0657 6.0657 0 0 0 2.0119 7.0105l.0113.0087.03.0213 4.976 3.7264 2.462 1.8633 1.4995 1.1321a1.0085 1.0085 0 0 0 1.2197 0l1.4995-1.1321 2.4619-1.8633 5.006-3.7489.0125-.01a6.0682 6.0682 0 0 0 2.0094-7.003z"/></svg>
+        <svg style="width:28px;height:28px" viewBox="0 0 24 24" fill="currentColor"><path d="m23.6004 9.5927-.0337-.0862L20.3.9814a.851.851 0 0 0-.3362-.405.8748.8748 0 0 0-.9997.0539.8748.8748 0 0 0-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 0 0-.29-.4412.8748.8748 0 0 0-.9997-.0537.8585.8585 0 0 0-.3362.4049L.4332 9.5015l-.0325.0862a6.0657 6.0657 0 0 0 2.0119 7.0105l.0113.0087.03.0213 4.976 3.7264 2.462 1.8633 1.4995 1.1321a1.0085 1.0085 0 0 0 1.2197 0l1.4995-1.1321 2.4619-1.8633 5.006-3.7489.0125-.01a6.0682 6.0682 0 0 0 2.0094-7.003z"/></svg>
+      </div>
+      <div style="font-size:11px;color:var(--dim);line-height:1.7;border-top:1px solid var(--border);padding-top:10px">
+        Both stay readable at 16px, which a single word (&ldquo;GitHub&rdquo;) would not — a label
+        truncates inside a 200px panel, a mark does not.
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="cap">the rule, now in AGENTS.md</div>
+    <div class="note" style="max-width:330px"><b>No emoji as icons.</b>
+      If a standalone glyph's job is to identify an object or an action, it must be inline SVG.
+      Emoji render at six different pixel sizes, are multi-colour, differ across
+      Windows/macOS/Linux, and cannot be asserted on in a spec — only an SVG path can be.
+      <div style="margin-top:9px">
+        <div class="swatch" style="margin-bottom:4px"><span style="font-size:14px">🔀</span> ❌ the &ldquo;both forges&rdquo; emoji</div>
+        <div class="swatch" style="margin-bottom:4px"><svg class="mark" style="width:14px;height:14px" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg> ✅ the mark it was standing in for</div>
+        <div class="swatch"><svg style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.5;stroke-linecap:round" viewBox="0 0 24 24"><path d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"/></svg> ✅ <span class="k">✕ ▶ ▼ ↻ ◫ ⌕ ⚠</span> — typographic characters stay</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ STATES ══════════════════════════════════════════ -->
+<h2>6 · The states the panel has to have anyway</h2>
+<p class="lede">
+  Every banner collapses to the same one-line strip — glyph, truncated text (full string in
+  <code>title</code>), optional action on the right. Empty states stop being four different
+  hand-rolled emoji blocks and become the shared <code>EmptyState</code> / <code>SpinnerIcon</code>.
+</p>
+
+<div class="row">
+  <div class="col">
+    <div class="cap">git tab, 3 staged / 2 modified / 1 untracked</div>
+    <div class="panel" style="width:330px;height:330px;">
+      <div class="rail"><div class="seg"><span class="g">▤</span>Explorer</div><div class="seg on"><span class="g">⎇</span>Changes</div><div class="seg"><span class="g">⌁</span>Terminal</div><div class="x">✕</div></div>
+      <div class="strip">
+        <div class="tabs"><div class="tab on">Files<span class="pill">6</span></div><div class="tab">Commits</div><div class="tab">Checks</div><div class="tab">Evals</div></div>
+        <div class="acts"><div class="act">↻</div></div>
+      </div>
+      <div class="ctx"><span><svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"/></svg> <span style="color:var(--text);font-weight:500">worktree/give-me-a-new-design…</span></span><span class="n">6</span></div>
+      <div class="list">
+        <div class="grp g-green"><span class="car">▼</span>Staged Changes (3)</div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/apps/desktop/src/components/views/chat_right_sidebar/</span><span class="n">SidebarDiffPanel.vue</span></span><span class="act2">−</span></div>
+        <div class="frow"><span class="st st-A">A</span><span class="p"><span class="d">src/apps/desktop/src/components/views/chat_right_sidebar/</span><span class="n">ChatRightSidebar.vue</span></span><span class="act2">−</span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">docs/plans/</span><span class="n">2026-10-04-right-sidebar-redesign.md</span></span><span class="act2">−</span></div>
+        <div class="grp g-orange"><span class="car">▼</span>Changes (2)</div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/apps/desktop/src/api/</span><span class="n">index.ts</span></span><span class="act2">+</span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="p"><span class="d">src/http_handlers/</span><span class="n">mod.zig</span></span><span class="act2">+</span></div>
+        <div class="grp"><span class="car">▼</span>Untracked (1)</div>
+        <div class="frow"><span class="st st-U">?</span><span class="p"><span class="n">preview-wireframe.html</span></span><span class="act2">+</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="cap">PR with merge conflicts — the loud case, still one strip each</div>
+    <div class="panel" style="width:330px;height:330px;">
+      <div class="rail"><div class="seg"><span class="g">▤</span>Explorer</div><div class="seg on"><span class="g">⎇</span>Changes</div><div class="seg"><span class="g">⌁</span>Terminal</div><div class="x">✕</div></div>
+      <div class="strip">
+        <div class="tabs"><div class="tab">Files<span class="pill">3</span></div><div class="tab on">PR<span class="pill">12</span></div><div class="tab">Commits</div><div class="tab">Checks</div><div class="tab">Evals</div></div>
+        <div class="acts"><div class="act">↻</div></div>
+      </div>
+      <div class="ctx"><span class="pr"><svg class="mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m23.6004 9.5927-.0337-.0862L20.3.9814a.851.851 0 0 0-.3362-.405.8748.8748 0 0 0-.9997.0539.8748.8748 0 0 0-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 0 0-.29-.4412.8748.8748 0 0 0-.9997-.0537.8585.8585 0 0 0-.3362.4049L.4332 9.5015l-.0325.0862a6.0657 6.0657 0 0 0 2.0119 7.0105l.0113.0087.03.0213 4.976 3.7264 2.462 1.8633 1.4995 1.1321a1.0085 1.0085 0 0 0 1.2197 0l1.4995-1.1321 2.4619-1.8633 5.006-3.7489.0125-.01a6.0682 6.0682 0 0 0 2.0094-7.003z"/></svg> #812</span><span class="chip c-open">Open</span><span class="range">feature…main</span><span class="n">12</span></div>
+      <div class="notice n-err"><span class="ic">⚠</span><span class="tx">2 files have conflicts that must be resolved</span><span class="lk">web editor</span></div>
+      <div class="notice n-warn"><span class="ic">⚑</span><span class="tx">Conflicts only</span><span class="lk">on</span></div>
+      <div class="list">
+        <div class="grp" style="color:var(--red)"><span class="car">▼</span>Conflicting files (2)</div>
+        <div class="frow sel"><span class="st st-U">⚠</span><span class="p"><span class="d">src/apps/desktop/src/components/</span><span class="n">AppLayout.vue</span></span></div>
+        <div class="frow"><span class="st st-U">⚠</span><span class="p"><span class="d">src/http_handlers/</span><span class="n">mod.zig</span></span></div>
+        <div class="grp g-violet"><span class="car">▼</span>PR files (0 of 12)</div>
+        <div class="foot">Nothing else — the filter is on.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="cap">shared <code>EmptyState</code> — was four bespoke blocks</div>
+    <div class="panel" style="width:330px;height:330px;">
+      <div class="rail"><div class="seg"><span class="g">▤</span>Explorer</div><div class="seg on"><span class="g">⎇</span>Changes</div><div class="seg"><span class="g">⌁</span>Terminal</div><div class="x">✕</div></div>
+      <div class="strip">
+        <div class="tabs"><div class="tab on">Files<span class="pill">0</span></div><div class="tab">Commits</div><div class="tab">Checks</div><div class="tab">Evals</div></div>
+        <div class="acts"><div class="act">↻</div></div>
+      </div>
+      <div class="ctx"><span><svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"/></svg> <span style="color:var(--text);font-weight:500">main</span></span></div>
+      <div class="list" style="display:flex;align-items:center;justify-content:center;padding:12px">
+        <div style="text-align:center;border:1px dashed var(--border);border-radius:6px;padding:26px 20px;background:var(--bg);width:100%">
+          <div style="font-family:ui-monospace,Menlo,monospace;font-size:24px;color:var(--dim);margin-bottom:10px">✓</div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:6px">Working tree clean</div>
+          <div style="font-size:12px;color:var(--muted)">Branch: main</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ WHAT DOESN'T MOVE ════════════════════════════════ -->
+<h2>7 · What this wireframe deliberately does not change</h2>
+<p class="lede">
+  The panel is pinned by 29 spec files. Every testid, every exact string, every URL param and
+  every source-grep contract survives this redesign — the arrangement moves, the API does not.
+</p>
+<table>
+  <tr><th>Contract</th><th>Pinned by</th><th>Still holds because</th></tr>
+  <tr><td><span class="k">chat-right-sidebar-tab-*</span> · <span class="k">-close</span> · <span class="k">-explorer</span></td>
+      <td><code>ChatRightSidebar.explorer.spec.ts</code> · Playwright <code>terminal_sidebar_ui_test.py</code></td>
+      <td>the rail loops one array; the emitted testids are byte-identical</td></tr>
+  <tr><td>no <code>watch(</code> anywhere in <code>ChatRightSidebar.vue</code></td>
+      <td><code>ChatView.worktreeSidebar.spec.ts:97</code></td>
+      <td>the rail is pure presentational — no reactive state added at that level</td></tr>
+  <tr><td><code>@refresh="() =&gt; emit('refresh')"</code> literal</td>
+      <td><code>ChatView.worktreeSidebar.spec.ts:62</code></td>
+      <td>untouched</td></tr>
+  <tr><td>inline tab <code>:style</code> with <span class="k">var(--semantic-text)</span> + <span class="k">inset 0 -2px</span></td>
+      <td><code>SidebarDiffPanel.tabs.spec.ts:163-168</code></td>
+      <td>only the padding and the label change; the active/inactive mechanism is identical</td></tr>
+  <tr><td>exact texts <span class="k">#42</span> <span class="k">2</span> <span class="k">Merged</span> <span class="k">Open</span> <span class="k">3</span></td>
+      <td><code>pr.spec.ts</code> · <code>prConflict.spec.ts</code> · <code>SidebarDiffPanel.spec.ts</code></td>
+      <td>those five elements keep a single text node — no glyph added inside any of them</td></tr>
+  <tr><td><span class="k">Staged Changes (1)</span> · <span class="k">PR files (0 of 1)</span> · <span class="k">Conflicting files (2)</span></td>
+      <td>same specs</td>
+      <td>group headers keep their wording; the caret is a separate span</td></tr>
+  <tr><td><code>findAll('[data-testid^="sidebar-pr-file-"]').length === 1</code></td>
+      <td><code>prConflict.spec.ts:309</code></td>
+      <td>no new element may take that prefix — the filter input and the caret deliberately avoid it</td></tr>
+  <tr><td><span class="k">sidebar-tab-files</span>/<span class="k">-pr</span> hidden without a <span class="k">prUrl</span></td>
+      <td><code>SidebarDiffPanel.tabs.spec.ts</code></td>
+      <td>still <code>v-if="isPrMode"</code>; commits / checks / evals still ungated</td></tr>
+  <tr><td><span class="k">?panel=</span> <span class="k">?sidebar=</span> <span class="k">?conflicts=</span></td>
+      <td>8 specs</td>
+      <td>untouched — every view switch still lands in the URL. The text filter is transient, so it stays a local ref</td></tr>
+  <tr><td>panels stay <code>v-show</code>-mounted (the PTY survives a tab switch)</td>
+      <td><code>ChatRightSidebar.explorer.spec.ts:84</code></td>
+      <td>untouched</td></tr>
+  <tr><td>exactly 1 <code>local/no-silent-fallback-catch</code> in the rail</td>
+      <td><code>eslint-suppressions.json</code></td>
+      <td>no <code>try</code>/<code>catch</code> added to that file</td></tr>
+</table>
+
+</body>
+</html>
