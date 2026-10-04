@@ -615,14 +615,29 @@ class TestParentEnvIsRestoredExactly:
                 else:
                     os.environ[k] = real[k]
 
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason=(
+            "POSIX asserts the opposite, on purpose. There boot() never "
+            "shadows the parent, so teardown has always restored HOME "
+            "unconditionally -- and that restore is what undoes a test that "
+            "mutated HOME itself. This test asserts a Windows-only "
+            "invariant; the sibling "
+            "`test_a_hand_built_harness_without_a_snapshot_restores_nothing` "
+            "covers the case that IS wrong everywhere (no snapshot at all)."
+        ),
+    )
     def test_a_hand_built_harness_does_not_restore_what_it_never_shadowed(self) -> None:
-        """`_env_shadowed` empty means "I mutated nothing" -- restore nothing.
+        """WINDOWS: `_env_shadowed` empty means "I mutated nothing".
 
         Three suites build a harness by hand and pass a child `env` dict
-        instead of shadowing the parent. Restoring HOME from their own
-        snapshot looks harmless and is not: taken under another harness's
-        shadow, that snapshot is a tempdir that is about to be deleted, so the
-        "restore" injects it into the environment.
+        instead of shadowing the parent. Restoring from their own snapshot
+        looks harmless and is not: taken under another harness's shadow, that
+        snapshot is a tempdir that is about to be deleted, so the "restore"
+        injects a dead path into the environment.
+
+        Originally written without a gate, which made it fail on Linux and
+        macOS -- see the skipif reason.
         """
         from harness import _SHADOWED_ENV_KEYS
 
@@ -845,22 +860,124 @@ class TestStopBinaryKillsTheWholeTree:
                 _kill_quietly(p)
             parent.wait(timeout=30)
 
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason=(
+            "Windows-only ordering: taskkill /T must run before the parent "
+            "exits, because it walks the tree from a live pid. POSIX killpg "
+            "reaches descendants even after the group leader is gone, so the "
+            "graceful path is correct there."
+        ),
+    )
+    def test_stop_binary_kills_the_tree_BEFORE_the_server_exits_on_its_own(self) -> None:
+        """The ordering is the bug, not the kill.
 
-class TestOverlappingBootHarnesses:  # noqa: D101 - see the test docstrings
+        `taskkill /T` walks the process tree from a LIVE pid. The old order
+        was: `/test/shutdown` (which makes nalar exit, in ~50ms in the common
+        case) -> `_wait_dead` sees the direct child gone -> `return`. The tree
+        kill was never reached, so any worker nalar spawned was orphaned,
+        still holding `agent.db`, and teardown failed with:
+
+            PermissionError: [WinError 32] The process cannot access the file
+            because it is being used by another process: ...\\agent.db
+
+        Adding `taskkill /T` to `_signal_group` was not enough on its own --
+        this test is the part that actually closed the failure, because it
+        pins WHERE in the sequence the kill happens.
+
+        Asserted on the call order rather than on a live process, because that
+        is precisely the property that regressed: the kill was present, and
+        correct, and unreachable.
+        """
+        import pathlib
+        import tempfile
+        from typing import Any
+
+        from harness import FunctionalHarness, snapshot_parent_env
+
+        calls: list[str] = []
+
+        h = FunctionalHarness(
+            port=1,
+            nalar_bin=pathlib.Path("nalar-does-not-exist"),
+            temp_dir=pathlib.Path(tempfile.gettempdir()) / "never-created",
+            orig_home=_REAL_HOME,
+            log_path=pathlib.Path(os.devnull),
+            pid=4242,
+            dry_run=True,
+            # Present so the two AST guards in this file see a well-formed
+            # construction site. Neither is exercised here: `_wait_dead` is
+            # stubbed out and `dry_run` skips the rmtree.
+            _proc=None,
+            _env_backup=snapshot_parent_env(),
+            _env_shadowed={},
+        )
+        # Bind the real methods, then observe the sequence.
+        h._signal_group = lambda sig: calls.append("signal")  # type: ignore[method-assign]
+        h._wait_dead = lambda timeout, label="": calls.append(f"wait:{label}") or True  # type: ignore[method-assign]
+
+        import urllib.request as _u
+
+        real_urlopen = _u.urlopen
+
+        def fake_urlopen(*a: Any, **k: Any) -> Any:
+            calls.append("shutdown")
+            raise OSError("no server in this test")
+
+        _u.urlopen = fake_urlopen
+        try:
+            h._stop_binary()
+        finally:
+            _u.urlopen = real_urlopen
+
+        assert calls, "_stop_binary did nothing"
+        assert calls[0] == "signal", (
+            "the tree kill must be the FIRST thing that happens on Windows; "
+            f"got {calls!r}. Anything that lets the server exit first "
+            f"(notably /test/shutdown) orphans its descendants, because "
+            f"taskkill /T can only walk a tree whose root is still alive."
+        )
+        assert "shutdown" not in calls, (
+            f"/test/shutdown must not run before the tree kill: {calls!r}"
+        )
+
+
+class TestOverlappingBootHarnesses:
     """Two LIVE `boot()` harnesses must not poison the parent environment.
 
-    The hand-built-harness tests above pass an explicit `_env_backup`, so they
-    cannot reach the code that decides WHAT the backup is. Only `boot()`
-    does, which is why this needed a real test with real servers: a
-    hand-built harness with a supplied baseline passes whether or not the
-    process-wide baseline exists, and a first attempt at guarding this
-    regression was verified not to fail when the baseline was removed.
+    WINDOWS ONLY, and the gate is load-bearing rather than defensive. The
+    baseline exists because `boot()` shadows the parent env on Windows; on
+    POSIX nothing is shadowed, so `acquire_parent_env_baseline` is never
+    called, `_ENV_BASELINE_OWNERS` stays 0, and
+    `test_baseline_is_released_so_a_later_run_starts_clean` failed on BOTH
+    Linux and macOS with "boot() must register a baseline participant while it
+    is alive" -- a test asserting a Windows-only mechanism as though it were
+    universal.
 
-    Both teardown orders are covered because only one of them was broken, and
-    the broken one is invisible to any test that only checks the intermediate
-    state.
+    That is the same mistake as the bare `strict=True` xfail this branch fixed
+    earlier: an assertion scoped to one platform, written as if it held on all
+    three. `test_every_strict_xfail_is_conditional_on_the_platform` exists to
+    stop that for markers; the principle applies to hand-written tests too,
+    and this class is the second place it slipped.
+
+    Only the two tests that assert the baseline machinery itself are Windows
+    only. The hand-built-harness tests in the other class are NOT skipped,
+    because they state a real invariant on both platforms.
+
+    The tree is built for real here rather than simulated, because the whole
+    question is whether the platform's kill reaches a grandchild -- and the
+    previous version of that test spawned its stand-in from pytest, which made
+    it a non-descendant and asserted the opposite of the truth.
     """
 
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason=(
+            "the process-wide parent-env baseline exists only on Windows, "
+            "where boot() shadows the parent; POSIX shadows nothing, so there "
+            "is no baseline to acquire or release"
+        ),
+    )
     def test_environment_is_pristine_after_both_orders(
         self, default_nalar_bin
     ) -> None:
@@ -896,6 +1013,14 @@ class TestOverlappingBootHarnesses:  # noqa: D101 - see the test docstrings
                     else:
                         os.environ[k] = v
 
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason=(
+            "asserts the process-wide baseline refcount, which only exists "
+            "where boot() shadows the parent env (Windows). POSIX restores "
+            "HOME and nothing else, with no baseline to count."
+        ),
+    )
     def test_baseline_is_released_so_a_later_run_starts_clean(
         self, default_nalar_bin
     ) -> None:
