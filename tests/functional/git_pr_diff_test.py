@@ -17,11 +17,21 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import quote
 
 import pytest
 
 from harness import FunctionalHarness
+
+
+class ForgeRepo(NamedTuple):
+    """The three repos a forge fixture needs: the clone under test, the bare
+    `origin` that publishes the PR ref, and the seed that pushes to it."""
+
+    work: Path
+    origin: Path
+    seed: Path
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -154,7 +164,9 @@ def test_pr_diff_unknown_provider_is_400(
 # `zig build test` fixtures before reusing this shape elsewhere.
 
 
-def _build_forge_repo(root: Path, *, pr_files: int = 0, lines_per_file: int = 0) -> Path:
+def _build_forge_repo(
+    root: Path, *, pr_files: int = 0, lines_per_file: int = 0
+) -> ForgeRepo:
     """A clone whose `origin` publishes `refs/pull/1/head`, like GitHub does.
 
     `pr_files`/`lines_per_file` inflate the PR diff past the 1MB response cap
@@ -198,16 +210,16 @@ def _build_forge_repo(root: Path, *, pr_files: int = 0, lines_per_file: int = 0)
         check=True,
         timeout=30,
     )
-    return work
+    return ForgeRepo(work=work, origin=origin, seed=seed)
 
 
 @pytest.fixture
-def forge_repo(tmp_path: Path) -> Path:
+def forge_repo(tmp_path: Path) -> ForgeRepo:
     return _build_forge_repo(tmp_path / "forge")
 
 
 def test_github_pr_diff_falls_back_to_refspec_when_cli_cannot_answer(
-    harness: FunctionalHarness, forge_repo: Path
+    harness: FunctionalHarness, forge_repo: ForgeRepo
 ) -> None:
     """`gh pr diff` unavailable/oversized -> 200 from origin's pull ref.
 
@@ -218,7 +230,7 @@ def test_github_pr_diff_falls_back_to_refspec_when_cli_cannot_answer(
         "GET",
         "/api/git/pr/diff",
         params={
-            "path": str(forge_repo),
+            "path": str(forge_repo.work),
             "pr_url": "https://github.com/acme/widgets/pull/1",
             "provider": "github",
         },
@@ -243,7 +255,7 @@ def test_oversized_pr_returns_truncated_diff_not_502(
     PR #797's local diff is 3.5MB, so this is the exact shape the user hit:
     the forge cannot serve it, and the refspec fallback must still answer.
     """
-    work = _build_forge_repo(tmp_path / "big", pr_files=60, lines_per_file=2000)
+    work = _build_forge_repo(tmp_path / "big", pr_files=60, lines_per_file=2000).work
     r = harness.http(
         "GET",
         "/api/git/pr/diff",
@@ -288,3 +300,69 @@ def test_github_pr_diff_502_when_both_strategies_fail(
     ).json()
     assert "error" in r, f"got: {r!r}"
     assert "origin" in r["error"], f"message should name the fallback: {r!r}"
+
+
+# ---------------------------------------------------------------------------
+# Force-pushed PR head -> the scratch ref must still update
+# ---------------------------------------------------------------------------
+#
+# `fetchRefRange` parks the PR head in a local scratch ref
+# (`refs/pabrik-pr/1`) that is shared by every worktree and that nobody ever
+# deletes. The very next thing a PR author does is rewrite that head — a
+# rebase, a `git push --force-with-lease`, GitHub's "Update branch" — and the
+# rewritten head is a sibling of the old one, not a descendant. A plain
+# `git fetch origin pull/1/head:refs/pabrik-pr/1` therefore rejects it:
+#
+#   ! [rejected] refs/pull/1/head -> refs/pabrik-pr/1  (non-fast-forward)
+#
+# which exits nonzero, and the handler turns that into a 502 that no later
+# request can clear — the stale ref is still there. The refspec needs the `+`
+# that forces the update.
+#
+# The fixture is built with git only: no network, no forge CLI, no real PR.
+
+
+def _rebase_and_force_push(repo: ForgeRepo) -> None:
+    """Rewrite the PR head off the base and force it into `refs/pull/1/head`.
+
+    `reset --hard HEAD~1` puts `feature` back on the base commit, so the new
+    commit is a sibling of the old PR head — the local shape of a rebase.
+    """
+    seed = repo.seed
+    _git(seed, "reset", "--hard", "HEAD~1")
+    (seed / "added.txt").write_text("rewritten after force-push\n")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "--quiet", "-m", "rewrite the PR head")
+    _git(seed, "push", "--quiet", "--force", "origin", "feature:refs/pull/1/head")
+
+
+def test_force_pushed_pr_head_still_diffs(harness: FunctionalHarness, tmp_path: Path) -> None:
+    """Two PR reads either side of a force-push: 200, 200 — never 502.
+
+    The first read plants the scratch ref; the second has to force it forward
+    onto the rewritten head. Before the fix the second read returned 502
+    "failed to fetch PR diff ... (check the PR URL and that origin can reach
+    pull/N/head)".
+    """
+    repo = _build_forge_repo(tmp_path / "forced")
+    params = {
+        "path": str(repo.work),
+        "pr_url": "https://github.com/acme/widgets/pull/1",
+        "provider": "github",
+    }
+
+    first = harness.http(
+        "GET", "/api/git/pr/diff", params=params, expect=200, timeout_s=30.0
+    ).json()
+    assert "+hello" in first["diff_content"], f"setup fetch did not run: {first!r}"
+
+    _rebase_and_force_push(repo)
+
+    # `expect=200` is the assertion: an un-forced refspec fails the fetch and
+    # the handler answers 502 here, so the status check is the regression.
+    second = harness.http(
+        "GET", "/api/git/pr/diff", params=params, expect=200, timeout_s=30.0
+    ).json()
+    diff = second["diff_content"]
+    assert "+rewritten after force-push" in diff, f"stale head served: {second!r}"
+    assert "+hello" not in diff, f"scratch ref was never force-updated: {second!r}"
