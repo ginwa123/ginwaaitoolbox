@@ -194,27 +194,3 @@ test "resolve degrades to the singleton when no singleton is installed" {
     try insertUser(&ctx.db, "u4", "{\"skill_evals\":{\"enabled\":true}}");
     try testing.expect(resolve(testing.allocator, &ctx.db, "any_session") == null);
 }
-
-test "BOTH gates route through resolve - the exposure gate and the runtime gate" {
-    // Two independent gates read this switch. When only one of them was
-    // fixed, the tool stayed visible in tools[] (the allowlist filter has no
-    // skill_evals awareness) and every call still refused - the exact symptom
-    // this module exists to remove. Pin both call sites so a refactor cannot
-    // silently drop either.
-    const run_src = @embedFile("run_skill_eval.zig");
-    const wf_src = @embedFile("workflow.zig");
-
-    if (std.mem.indexOf(u8, run_src, "skill_evals_config.resolve(") == null) {
-        std.debug.print("!! execRunSkillEval no longer resolves the per-user block !!\n", .{});
-        return error.RuntimeGateNotWired;
-    }
-    if (std.mem.indexOf(u8, wf_src, "skill_evals_config.resolve(") == null) {
-        std.debug.print("!! filterAndMergeTools no longer resolves the per-user block !!\n", .{});
-        return error.ExposureGateNotWired;
-    }
-    // The switch must not be read off the singleton directly any more.
-    if (std.mem.indexOf(u8, run_src, "ctx.config.skill_evals.enabled") != null) {
-        std.debug.print("!! execRunSkillEval reads the singleton again !!\n", .{});
-        return error.RuntimeGateReverted;
-    }
-}

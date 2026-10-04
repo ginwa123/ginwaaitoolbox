@@ -180,7 +180,7 @@ fn countRows(ctx: *DeleteCtx, sql: []const u8, params: []const []const u8) !u64 
 /// logged in" path, and it is the cheapest way to reach a caller that is
 /// allowed to see everything without minting a real session token.
 const NoCookie = struct {
-    fn get(_: @This(), _: []const u8) ?[]const u8 {
+    pub fn get(_: @This(), _: []const u8) ?[]const u8 {
         return null;
     }
 };

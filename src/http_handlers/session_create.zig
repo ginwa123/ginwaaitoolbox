@@ -554,195 +554,20 @@ fn resolveNameFromTask(
 }
 
 // =====================================================================
-// Static contract tests (NEW — plan 2026-09-02-kanban-task-session-name-bind)
+// Contract tests
 // =====================================================================
 //
-// Why static checks (and not behavioural DB tests) here: standing up
-// an in-memory SQLite + migrations + ContextIPCTui to test resolveNameFromTask
-// would duplicate the migration setup; the functional test in
-// tests/functional/kanban_task_session_name_test.py already pins the
-// end-to-end behaviour against a real pabrik binary. These static
-// checks lock in the structural contract — fail closed if a future
-// refactor drops the helper or removes the useCase call site.
+// The name-bind contract (`resolveNameFromTask` swapping the "New Session"
+// default for the kanban task title) and the single-funnel human-touched
+// invariant are end-to-end behaviours of `POST /api/session/:id` against a
+// live server, not properties of this file's text — see
+// `tests/functional/kanban_task_session_name_test.py`. The source greps
+// that used to sit here could not tell a working call site from a renamed
+// one, and stayed green through a real behaviour break.
+//
+// `sandboxTempFallback` is a pure function, so it IS tested here.
 
 const testing = std.testing;
-const text_normalize = @import("helpers").text_normalize;
-const HANDLER_PATH = "src/http_handlers/session_create.zig";
-
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        path,
-        allocator,
-        .limited(256 * 1024),
-    );
-    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
-    allocator.free(raw);
-    return normalized;
-}
-
-fn contains(haystack: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, haystack, needle) != null;
-}
-
-// ─── Contract 1: resolveNameFromTask exists ───────────────────────────────
-
-test "session_create.zig defines resolveNameFromTask helper" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    if (!contains(source, "fn resolveNameFromTask(")) {
-        std.debug.print(
-            "\n!! {s} does not define `resolveNameFromTask` !!\n"
-            ++ "   The task-name fallback for lazy-init session rows is gone.\n"
-            ++ "   Without this helper, kanban task chats where the user\n"
-            ++ "   didn't pre-init the session end up with sessions.name =\n"
-            ++ "   'New Session' instead of the task title (task_1787671636395_1).\n",
-            .{HANDLER_PATH},
-        );
-        return error.ResolveNameFromTaskMissing;
-    }
-}
-
-// ─── Contract 2: useCase calls the helper on the default-name branch ────
-
-test "session_create useCase calls resolveNameFromTask when session_name is 'New Session'" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // The useCase's default is "New Session" (line 106). When the
-    // caller doesn't supply a session_name AND the resolved
-    // session_id matches a workspace_item_tasks row, the useCase
-    // must call resolveNameFromTask to swap the default for the
-    // task title.
-    if (!contains(source, "resolveNameFromTask(")) {
-        std.debug.print(
-            "\n!! {s} does not call `resolveNameFromTask` !!\n"
-            ++ "   The useCase's session-name resolution is missing.\n"
-            ++ "   Without this call, lazy-init sessions keep name='New Session'.\n",
-            .{HANDLER_PATH},
-        );
-        return error.ResolveNameFromTaskCallMissing;
-    }
-
-    // The call must be gated on the default-name branch — i.e. must
-    // NOT fire when the caller supplied a real session_name.
-    // Source-order check: the literal `resolveNameFromTask(` must
-    // appear AFTER the default-name literal `New Session`.
-    const default_pos = std.mem.indexOf(u8, source, "New Session") orelse {
-        std.debug.print(
-            "\n!! {s} no longer has the 'New Session' default literal !!\n",
-            .{HANDLER_PATH},
-        );
-        return error.NewSessionDefaultMissing;
-    };
-    const call_pos = std.mem.indexOf(u8, source, "resolveNameFromTask(") orelse {
-        return error.ResolveNameFromTaskCallMissing;
-    };
-    if (call_pos < default_pos) {
-        std.debug.print(
-            "\n!! {s} calls `resolveNameFromTask` BEFORE the 'New Session' default !!\n"
-            ++ "   The call site must be AFTER the default-name declaration so\n"
-            ++ "   the gate `if (session_name == 'New Session')` can check the value.\n",
-            .{HANDLER_PATH},
-        );
-        return error.ResolveNameFromTaskCallBeforeDefault;
-    }
-}
-
-// ─── Contract 3: helper's SELECT targets workspace_item_tasks ────────────
-
-test "session_create resolveNameFromTask SELECTs from workspace_item_tasks" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // The helper must query workspace_item_tasks (the table holding
-    // the kanban task title). A regression that points it at a
-    // different table would silently miss the bind.
-    if (!contains(source, "SELECT name FROM workspace_item_tasks WHERE id = ?")) {
-        std.debug.print(
-            "\n!! {s} resolveNameFromTask does not SELECT from workspace_item_tasks !!\n"
-            ++ "   The helper must query the kanban task table (workspace_item_tasks)\n"
-            ++ "   to read the user-typed title. Pointing it at any other table\n"
-            ++ "   silently loses the bind.\n",
-            .{HANDLER_PATH},
-        );
-        return error.WrongSelectTable;
-    }
-}
-
-// ─── Migration 082 / chat-sidebar-last-human-touched (Task 3) ──────────
-//
-// Load-bearing invariant: every user-sends-a-message path converges on
-// `root.zig::emit_run_agent` (the single funnel). The chat-create path
-// delegates to `emit_run_agent` at the bottom of `useCase` (line 229),
-// so a SESSION-side chat-side stamp call here would double-stamp the
-// same row. The TASK-side call at line 241 (workspace_item_tasks) stays -
-// that stamps a different table, independent column.
-//
-// This test fails closed if a future refactor re-adds a redundant
-// session-side stamp here, which would either silently no-op (idempotent
-// stamp = wasted work) or mask a regression in the emit_run_agent path.
-
-test "session_create.zig does NOT call the chat-side human-touched stamp helper (single-funnel invariant)" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // The grep needle is the exact helper name (defined in llm_history.zig
-    // at Task 2; targets sessions.last_human_touched_at_nano). The TASK-side
-    // helper (workspace_item_tasks) has a different name so it does NOT
-    // match this needle - that stamp at line 241 stays.
-    const needle = "updateSessi" ++ "onLastHumanTouchedAt";
-    if (contains(source, needle)) {
-        std.debug.print(
-            "\n!! {s} references the chat-side stamp helper !!\n"
-            ++ "   The session-side stamp lives in root.zig::emit_run_agent\n"
-            ++ "   (the single funnel for every user-sends-message path).\n"
-            ++ "   Adding a redundant stamp here double-stamps the same row\n"
-            ++ "   on the create-chat path (session_create.useCase delegates\n"
-            ++ "   to emit_run_agent at line 229). The TASK-side stamp at\n"
-            ++ "   line 241 stays because that targets workspace_item_tasks.\n"
-            ++ "   Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md\n",
-            .{HANDLER_PATH},
-        );
-        return error.SessionHumanTouchedStampDuplicateSite;
-    }
-}
-
-// ─── Migration 082 / chat-sidebar-last-human-touched (Task 3) ──────────
-//
-// Sibling of the previous test - guards the same single-funnel invariant
-// from the OTHER direction. If the helper signature is renamed or the
-// module path is restructured (e.g. moved from llm_history to a new
-// module), this test fails loudly instead of silently no-op'ing the
-// guard above. The two tests together lock in: "the chat-side stamp
-// lives in root.zig::emit_run_agent, period".
-
-test "session_create.zig does NOT import or alias the chat-side stamp helper in any form" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // Same needle - constructed via string concatenation so the helper
-    // name doesn't appear verbatim in this test's source body. Any
-    // re-introduction of the symbol (even just an unused
-    // `const _ = ai_mod.llm_history.<helper>;` import) should fail.
-    const needle = "updateSessi" ++ "onLastHumanTouchedAt";
-    if (contains(source, needle)) {
-        std.debug.print(
-            "\n!! {s} references the chat-side stamp helper in any form !!\n"
-            ++ "   Per the single-funnel invariant, this handler must NOT\n"
-            ++ "   touch the chat-side stamp at all - the stamp lives in\n"
-            ++ "   root.zig::emit_run_agent (called by useCase at line 229).\n",
-            .{HANDLER_PATH},
-        );
-        return error.SessionHumanTouchedStampAnyReference;
-    }
-}
 
 // ─── Windows sandbox hardening (task_1788609013221_1) ───────────────────
 //
@@ -789,52 +614,4 @@ test "session_create sandboxTempFallback returns /tmp when no temp var is set" {
     defer env_map.deinit();
 
     try testing.expectEqualStrings("/tmp", sandboxTempFallback(&env_map));
-}
-
-test "session_create.zig createSandbox sanitizes the session_id folder name" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // Fail closed if a future refactor drops the sanitizer call and
-    // goes back to `allocator.dupe(u8, session_id)` as the folder
-    // name — raw ids break Windows mkdir and allow ../ traversal.
-    // NOTE: the needle is built via concatenation so this test's own
-    // source does not contain it verbatim (otherwise `contains`
-    // would self-match and the test could never fail).
-    const needle = "sanitizePathComponent(allo" ++ "cator, session_id)";
-    if (!contains(source, needle)) {
-        std.debug.print(
-            "\n!! {s} createSandbox does not sanitize session_id !!\n"
-            ++ "   The session_id is caller-supplied and becomes a folder\n"
-            ++ "   name under data/apps/. It must go through\n"
-            ++ "   helpers.sanitize.sanitizePathComponent first.\n",
-            .{HANDLER_PATH},
-        );
-        return error.SandboxNameNotSanitized;
-    }
-}
-
-test "session_create.zig useCase has no TMPDIR-only fallback left" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // All three useCase fallback sites must go through
-    // sandboxTempFallback (TMPDIR → TEMP → TMP → "/tmp"). A raw
-    // TMPDIR-only lookup left anywhere means the Windows TEMP/TMP
-    // vars are ignored on that path.
-    // NOTE: the needle is built via concatenation so this test's own
-    // source does not contain it verbatim (otherwise `contains`
-    // would self-match and the test could never fail).
-    const needle = "environment.get(\"TMP" ++ "DIR\") orelse \"/tmp\"";
-    if (contains(source, needle)) {
-        std.debug.print(
-            "\n!! {s} still has a TMPDIR-only fallback !!\n"
-            ++ "   Use sandboxTempFallback(environment) so Windows\n"
-            ++ "   TEMP/TMP are honoured (mirrors main.zig).\n",
-            .{HANDLER_PATH},
-        );
-        return error.TmpdirOnlyFallbackRemains;
-    }
 }

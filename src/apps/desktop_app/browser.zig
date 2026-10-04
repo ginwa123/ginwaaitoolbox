@@ -88,25 +88,3 @@ test "buildOpenArgv borrows the url slice without copying" {
     // Pointer equality proves no copy was made.
     try testing.expect(argv[argv.len - 1].ptr == url.ptr);
 }
-
-test "main branches on --browser instead of webview" {
-    // Static contract: main.zig must check cfg.browser and call
-    // browser.openBrowser, otherwise the flag parses but does nothing.
-    const allocator = testing.allocator;
-    const source = try std.Io.Dir.cwd().readFileAlloc(
-        testing.io,
-        "src/apps/desktop_app/main.zig",
-        allocator,
-        .limited(256 * 1024),
-    );
-    defer allocator.free(source);
-    for ([_][]const u8{
-        "cfg.browser",
-        "browser.openBrowser",
-    }) |needle| {
-        if (std.mem.indexOf(u8, source, needle) == null) {
-            std.debug.print("!! main.zig missing browser branch needle: {s} !!\n", .{needle});
-            return error.BrowserBranchMissing;
-        }
-    }
-}

@@ -154,110 +154,11 @@ test "useCase: never returns another workspace's documents" {
     try testing.expectEqualStrings("doc_b", theirs.documents[0].id);
 }
 
-// ─── Static route contracts for the whole documents group ───────────────
+// ─── Route contracts ────────────────────────────────────────────────────
 //
-// Lives here, in the group's entry-point handler, rather than in a
-// standalone `documents_routes_test.zig` — this repo keeps an impl file
-// and its tests in ONE file.
-//
-// `matchRoute` walks routes in REGISTRATION ORDER, so a literal segment
-// registered after a `:param` sibling is captured by the param. The
-// frontend then gets a 404 and the browser silently renders an empty
-// list. That failure is invisible to every useCase test above — the
-// useCase is correct, the route table is not — so it is asserted here
-// against the route table as text, and a future sibling that shadows
-// `documents` fails at `zig build test` instead of in a user's browser.
-// The Python functional harness (`tests/functional/harness.py`) covers
-// the real wire round-trip; this is the cheap fail-closed guard that
-// runs on every commit.
-
-const route_src = @embedFile("../http_routes.zig");
-
-const REQUIRED_ROUTES = [_][]const u8{
-    "authed.get(\"/api/workspaces/:workspace_id/documents\"",
-    "authed.post(\"/api/workspaces/:workspace_id/documents\"",
-    "authed.get(\"/api/workspaces/:workspace_id/documents/:document_id\"",
-    "authed.patch(\"/api/workspaces/:workspace_id/documents/:document_id\"",
-    "authed.delete(\"/api/workspaces/:workspace_id/documents/:document_id\"",
-};
-
-test "documents routes: all five verbs are registered in http_routes.zig" {
-    var problems: std.ArrayList([]const u8) = .empty;
-    defer problems.deinit(testing.allocator);
-
-    for (REQUIRED_ROUTES) |needle| {
-        if (std.mem.indexOf(u8, route_src, needle) == null) {
-            problems.append(testing.allocator, needle) catch @panic("OOM");
-        }
-    }
-    if (problems.items.len > 0) {
-        for (problems.items) |missing| {
-            std.debug.print("missing documents route registration: {s}\n", .{missing});
-        }
-    }
-    try testing.expectEqual(@as(usize, 0), problems.items.len);
-}
-
-test "documents routes: the collection routes precede the :document_id routes" {
-    // Registration order is the shadowing axis. The two collection routes
-    // (list + create) must come first so `matchRoute` never reaches the
-    // 4-segment `:document_id` pattern when the path has only 3 segments
-    // after `/api/workspaces`. `matchPathWithParams` does require the
-    // path to be exhausted, so this is belt-and-braces — but the comment
-    // in main.zig claims it, and a claim a test does not check is a claim
-    // that rots.
-    const list_at = std.mem.indexOf(u8, route_src, "authed.get(\"/api/workspaces/:workspace_id/documents\"") orelse
-        return error.ListRouteMissing;
-    const detail_at = std.mem.indexOf(u8, route_src, "authed.get(\"/api/workspaces/:workspace_id/documents/:document_id\"") orelse
-        return error.DetailRouteMissing;
-
-    try testing.expect(list_at < detail_at);
-}
-
-test "documents routes: no GET sibling can capture 'documents' as a :param" {
-    // The shadow that matters: a `GET /api/workspaces/:workspace_id/:param`
-    // registered BEFORE the documents route would match
-    // `GET /api/workspaces/ws_1/documents` with param="documents" and the
-    // documents list handler would never run. Today no such route exists —
-    // the only literal 4th segment is `POST .../default-project`, a
-    // different verb, which cannot collide on GET.
-    //
-    // Asserted by scanning every `authed.get("/api/workspaces/:workspace_id/`
-    // registration and requiring its 4th segment to be a literal, not a
-    // `:param`. Add such a route later and this fails.
-    var it = std.mem.splitSequence(u8, route_src, "authed.get(\"/api/workspaces/:workspace_id/");
-    while (it.next()) |tail| {
-        // Grab the path up to the closing quote.
-        const end = std.mem.indexOfScalar(u8, tail, '"') orelse continue;
-        const path = tail[0..end];
-        if (path.len == 0) continue;
-        // The documents routes are themselves a 4th segment here; skip
-        // them (and the detail routes, which share the prefix).
-        if (std.mem.startsWith(u8, path, "documents")) continue;
-        if (path[0] == ':') {
-            std.debug.print(
-                "SHADOW RISK: `GET /api/workspaces/:workspace_id/{s}` would capture " ++
-                    "the documents collection as a :param. Register the literal " ++
-                    "documents routes BEFORE it, or rename the sibling.\n",
-                .{path},
-            );
-            return error.ParamSiblingShadowsDocuments;
-        }
-    }
-}
-
-test "documents handlers are re-exported from http_handlers/mod.zig" {
-    // A handler wired in main.zig but missing from the barrel fails to
-    // COMPILE, so this is really a guard against the barrel export being
-    // deleted together with its route in one bad refactor.
-    const mod_src = @embedFile("mod.zig");
-    for ([_][]const u8{
-        "documentsListHandler",
-        "documentsCreateHandler",
-        "documentsGetHandler",
-        "documentsUpdateHandler",
-        "documentsDeleteHandler",
-    }) |name| {
-        try testing.expect(std.mem.indexOf(u8, mod_src, name) != null);
-    }
-}
+// `matchRoute` walks one shared table in REGISTRATION ORDER, so whether a
+// literal segment is reachable is a property of that TABLE, not of this
+// file's text. All five documents verbs (plus the `:workspace_id/:param`
+// sibling invariant) are asserted where the table is built:
+// `http_routes.zig` calls `registerAllOn` on a bare `Router` and checks
+// what `matchRoute` returns for each path.

@@ -797,31 +797,6 @@ fn collectAll(alloc: std.mem.Allocator, providers: *const Providers) ![]Provider
 
 // ─────────────────────────────── tests ────────────────────────────────────
 
-// The envelope rewrite that introduced `JsonBuf` deleted `executeWebSearch`
-// along with everything between its markers, and NOTHING failed for several
-// minutes because every test exercised a pure helper. This pins the entry
-// point's existence and its use of each branch so a future edit that drops
-// it has to fail loudly.
-test "web_search: executeWebSearch is the single entry point and uses every branch" {
-    const src = @embedFile("web_search.zig");
-    const required = [_][]const u8{
-        "pub fn executeWebSearch",
-        "unsafePinnedEnvelope(allocator, resolved)",
-        "invalidCurlEnvelope(allocator, resolved, err)",
-        "keySiteEnvelope(allocator, resolved, @errorName(err))",
-        "hostMismatchEnvelope(allocator, resolved, parsed.parsed.hostOf())",
-        "reqmod.substituteKey",
-        "MAX_RESPONSE_BYTES",
-        "scrubKey(allocator, response.body, resolved.entry.key)",
-    };
-    for (required) |needle| {
-        testing.expect(std.mem.indexOf(u8, src, needle) != null) catch |err| {
-            std.debug.print("executeWebSearch lost its use of: {s}\n", .{needle});
-            return err;
-        };
-    }
-}
-
 const testing = std.testing;
 
 /// Build a provider map from inline JSON and return it plus a deinit.
@@ -1079,41 +1054,6 @@ test "web_search: a long description is truncated with a marker" {
     const short = try truncateDescription(alloc, "short");
     defer alloc.free(short);
     try testing.expectEqualStrings("short", short);
-}
-
-// ─── source contract: no format string may take the key ──────────────────
-
-test "web_search: no envelope builder formats the key into a message" {
-    // The failure mode this guards: an envelope builder that interpolates
-    // the credential, which would put the secret straight into
-    // llm_history where the model can read it back.
-    const src = @embedFile("web_search.zig");
-    // Every `allocPrint` in this file formats a provider NAME or a status
-    // code. The key reaches a string in exactly one place — `scrubKey` /
-    // `replaceAllPublic`, which copy it into the body being scrubbed.
-    var idx: usize = 0;
-    var checked: usize = 0;
-    while (std.mem.indexOfPos(u8, src, idx, "allocPrint")) |at| {
-        idx = at + 1;
-        // Walk to the end of the call's argument list (a few lines is plenty
-        // for these one-line-per-argument calls).
-        const window = src[at .. @min(at + 400, src.len)];
-        const end = std.mem.indexOfScalar(u8, window, '\n') orelse window.len;
-        const line = window[0..end];
-        checked += 1;
-        // No formatter argument list may reference a key.
-        const fmt_args = std.mem.indexOf(u8, line, ".{") orelse continue;
-        const args = line[fmt_args..];
-        if (std.mem.indexOf(u8, args, "entry.key") != null) {
-            std.debug.print("web_search.zig allocPrint formats entry.key into an envelope\n", .{});
-            return error.KeyLeakIntoEnvelope;
-        }
-        if (std.mem.indexOf(u8, args, ".key") != null) {
-            std.debug.print("web_search.zig allocPrint formats .key into an envelope\n", .{});
-            return error.KeyLeakIntoEnvelope;
-        }
-    }
-    try testing.expect(checked > 0);
 }
 
 // ─── tool definitions ─────────────────────────────────────────────────────

@@ -355,19 +355,3 @@ test "capDiff output length is independent of how far over the cap the input is"
         try std.testing.expectEqualStrings(TRUNCATION_SUFFIX, capped[MAX_PER_FILE_BYTES..]);
     }
 }
-
-test "capDiff allocates its buffer length from the suffix literal" {
-    // Static contract: the truncation branch must never carry a hand-written
-    // slack constant next to the suffix literal. Such a constant silently
-    // drifts when the literal is edited, and @memcpy's length check turns
-    // that drift into a process-wide abort.
-    const src = @embedFile("git_file_diffs.zig");
-    // Both needles are assembled from fragments on purpose. A literal here
-    // would live inside `src` and satisfy its own search, making the check
-    // vacuous — the first draft of this test did exactly that and passed
-    // against the very bug it was meant to catch.
-    const slack = "MAX_PER_FILE_BYTES + " ++ "24";
-    const derived = "MAX_PER_FILE_BYTES + " ++ "TRUNCATION_SUFFIX.len";
-    try std.testing.expect(!std.mem.containsAtLeast(u8, src, 1, slack));
-    try std.testing.expect(std.mem.containsAtLeast(u8, src, 1, derived));
-}

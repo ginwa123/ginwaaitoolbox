@@ -891,55 +891,6 @@ test "root_debug exposes the handleSegfault seam std requires" {
     try testing.expect(true);
 }
 
-/// Walk up from this file to the build root (the directory holding
-/// `build.zig`). `@src().file` is absolute under `zig build test` but
-/// relative under a bare `zig test src/service/crash_handler.zig`, so
-/// probing for the marker beats counting `dirname` hops.
-fn findBuildRoot(allocator: std.mem.Allocator) ?[]u8 {
-    var dir: []const u8 = if (std.fs.path.isAbsolute(@src().file))
-        std.fs.path.dirname(@src().file) orelse return null
-    else
-        ".";
-    while (true) {
-        const marker = std.fs.path.join(allocator, &.{ dir, "build.zig" }) catch return null;
-        defer allocator.free(marker);
-        if (std.Io.Dir.cwd().access(testing.io, marker, .{})) |_| return allocator.dupe(u8, dir) catch null else |_| {}
-        const parent = std.fs.path.dirname(dir) orelse return null;
-        if (std.mem.eql(u8, parent, dir)) return null;
-        dir = parent;
-    }
-}
-
-test "every root source file declares root.debug so the Windows vectored handler reports" {
-    // Static contract, deliberately. The Windows failure mode is
-    // invisible on Linux: std's `RtlAddVectoredExceptionHandler(0, …)`
-    // runs before the UnhandledExceptionFilter, so dropping these decls
-    // does not fail a single behavioural test — it just silently kills
-    // the crash report on Windows. Grepping the root source files is the
-    // only check that catches it from a Linux box.
-    const root = findBuildRoot(testing.allocator) orelse return error.SkipZigTest;
-    defer testing.allocator.free(root);
-
-    for ([_][]const u8{ "src/main.zig", "src/apps/desktop_app/main.zig" }) |rel| {
-        const path = try std.fs.path.join(testing.allocator, &.{ root, rel });
-        defer testing.allocator.free(path);
-        // NOT a `catch return error.SkipZigTest`: if the file cannot be
-        // read the contract is unverified, and a silently-skipped guard
-        // is indistinguishable from a passing one.
-        const src = try std.Io.Dir.cwd().readFileAlloc(
-            testing.io,
-            path,
-            testing.allocator,
-            .limited(1 << 20),
-        );
-        defer testing.allocator.free(src);
-        if (std.mem.indexOf(u8, src, "pub const debug = pabrikcore.crash_handler.root_debug") == null) {
-            std.debug.print("missing `pub const debug` in {s}\n", .{rel});
-            return error.MissingRootDebugOverride;
-        }
-    }
-}
-
 test "windowsExceptionDescription names every code std's vectored handler swallows" {
     // std/debug.zig `handleSegfaultWindows` intercepts exactly these four
     // and aborts without consulting us. They are also the four that

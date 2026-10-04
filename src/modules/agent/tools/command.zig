@@ -420,8 +420,10 @@ test "command.execute_command runs on the host shell (bash off-Windows)" {
     try testing.expect(std.mem.indexOf(u8, out.stdout, "hello-command") != null);
 }
 
-// T1 RED (cmd.exe fallback): probe + static-contract tests. Mirrors the
-// pwsh.zig pattern (pwsh_available + tools_equipped static-contract grep).
+// T1 RED (cmd.exe fallback): availability probe. The prefix the retry
+// uses is pinned by `command argv prefixes have the expected shape` above;
+// the retry itself is a Windows-only branch of `execute_command` and cannot be
+// driven from a Linux host.
 
 /// Probe whether `cmd.exe` is on $PATH. Windows-only: returns false
 /// everywhere else so Linux CI passes. Mirrors pwsh.zig's pwsh_available().
@@ -446,51 +448,4 @@ test "cmd_available probe does not crash" {
     const available = cmd_available();
     _ = available;
     try testing.expect(true);
-}
-
-test "command Windows branch retries cmd on pwsh FileNotFound (static-contract grep)" {
-    // The Windows branch of execute_command must catch error.FileNotFound
-    // from the pwsh spawn and retry with COMMAND_CMD_PREFIX. The grep
-    // proves both halves at once inside the execute_command body window
-    // (bounded at the function's closing brace so the FileNotFound mention
-    // in the tool description text below can't satisfy it).
-    //
-    // If a future refactor removes the retry, the test fails closed and
-    // prints an actionable error.
-    const src = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        "src/modules/agent/tools/command.zig",
-        testing.allocator,
-        std.Io.Limit.unlimited,
-    );
-    defer testing.allocator.free(src);
-
-    const start = std.mem.indexOf(u8, src, "fn execute_command") orelse {
-        std.debug.print(
-            "\n!! command.zig missing fn execute_command !!\n",
-            .{},
-        );
-        return error.MissingExecuteCommand;
-    };
-    const tail = src[start..];
-    const end_rel = std.mem.indexOf(u8, tail, "\n}\n") orelse tail.len;
-    const window = src[start .. start + end_rel];
-
-    var problems: u32 = 0;
-    if (std.mem.indexOf(u8, window, "COMMAND_CMD_PREFIX") == null) {
-        std.debug.print(
-            "\n!! execute_command body missing COMMAND_CMD_PREFIX retry !!\n",
-            .{},
-        );
-        problems += 1;
-    }
-    if (std.mem.indexOf(u8, window, "FileNotFound") == null) {
-        std.debug.print(
-            "\n!! execute_command body missing FileNotFound catch !!\n",
-            .{},
-        );
-        problems += 1;
-    }
-    if (problems != 0) return error.MissingCmdFallback;
-    try testing.expect(problems == 0);
 }

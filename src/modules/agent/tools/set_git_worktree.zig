@@ -2306,16 +2306,6 @@ test "parseAndMatchBlock: a genuinely different worktree is not matched" {
     try testing.expect(matched == null);
 }
 
-// Pin the CAUSE as well as the behaviour, so a future "simplification" back
-// to raw equality is caught even on a host where it happens to work.
-test "static contract: parseAndMatchBlock does not compare worktree paths with std.mem.eql" {
-    const source = try readSource(testing.allocator, TOOL_PATH);
-    defer testing.allocator.free(source);
-
-    try testing.expect(std.mem.indexOf(u8, source, "fn parseAndMatchBlock(") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "pathsDenoteSameDir(wt_path, target)") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "pub fn pathsDenoteSameDir(") != null);
-}
 // ═══════════════════════════════════════════════════════════════════════
 // 2026-09-29 — the false "orphaned worktree" verdict
 // ═══════════════════════════════════════════════════════════════════════

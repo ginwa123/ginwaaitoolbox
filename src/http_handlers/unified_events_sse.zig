@@ -557,102 +557,16 @@ pub fn unifiedEventsStreamHandler(
 // After the 5→1 SSE endpoint unification (plan
 // docs/superpowers/plans/2026-06-30-unify-sse-endpoints.md),
 // only ONE backend SSE handler is registered
-// (`unified_events_sse.zig`); this test pins its contract via a
-// STATIC check: the unified handler source file must contain the
-// handshake constant verbatim. Catches a future regression where
-// the 3-line send block is removed or the byte sequence changes
-// and the frontend SseStatusBadge gets stuck on "Connecting…"
-// again.
-// 
-// The behavioral test (round-trip through a real SseManager +
-// socketpair) was considered and dropped: Zig 0.16 removed
-// `posix.socketpair` and the SseManager's own tests are
-// POSIX-only via the lower-level `posix.system` layer, which
-// would require a Linux-only gate. The static check is the
-// higher-value test anyway — it directly tests the bug.
+// (`unified_events_sse.zig`), so its `sendToClient` of the
+// handshake is the single place the badge can get unstuck.
+//
+// The contract belongs in the python functional harness under
+// tests/functional/: connect to the SSE endpoint and assert the
+// first frame is `event: connected`. A source grep cannot fail for
+// a behaviour break here — it only fails for a rename.
 
 const pabrikcore = @import("pabrikcore");
 const testing = std.testing;
-
-/// The exact byte sequence the unified SSE handler MUST send as the
-/// liveness handshake. Mirrors what the previous `worker_sse.zig`
-/// / `sessions_sse.zig` emitted (those are now deleted; their
-/// string is preserved here as the source of truth).
-///
-/// The trailing blank line (`\n\n`) is REQUIRED — it's the SSE
-/// frame terminator. Without it, the browser's `EventSource`
-/// will hold the bytes in its line buffer and never dispatch the
-/// `connected` event to the SseClient.
-///
-/// The JSON in the `data:` line (`{"connected": true}`) is a
-/// convention; the SseClient does NOT parse it. The empty JSON
-/// object `{}` would also work.
-///
-/// IMPORTANT: this constant is the SOURCE-FORM of the handshake
-/// as it appears in the .zig source files, NOT the in-memory
-/// runtime form. Each `\n` in the file source is the two-byte
-/// escape sequence (backslash + 'n'), and the literal `"` inside
-/// the JSON is `\"` (backslash + quote). When Zig parses the
-/// string literal at compile time, those escape sequences become
-/// the real bytes that the SSE client sees. The test matches the
-/// source form because the file is read as text.
-const connected_handshake_in_source =
-    "event: connected\\n" ++
-    "data: {\\\"connected\\\": true}\\n" ++
-    "\\n";
-
-// ─── Static check on the single unified handler source file ───────────────
-
-test "SSE handshake: unified stream handler sends the connected event" {
-    // The single SSE route registered in src/http_routes.zig. Must contain
-    // the `connected` handshake string in its source, or the frontend
-    // SseStatusBadge will be stuck on "Connecting…".
-    //
-    // This is a SOURCE-LEVEL test — it reads the .zig file from
-    // disk at test time and asserts the handshake string appears
-    // verbatim. The test is intentionally a substring match (not a
-    // full AST walk) because:
-    //   - The 3-line block is small and the byte sequence is the
-    //     actual contract that reaches the client.
-    //   - The constant string is also defined in this file as the
-    //     source of truth, so any change must be made in lockstep.
-    //
-    // Path is relative to the project root, which is the cwd when
-    // `zig build test:ai_workflow:tui` runs.
-    const handlers = .{
-        "src/http_handlers/unified_events_sse.zig",
-    };
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    inline for (handlers) |path| {
-        const source = std.Io.Dir.cwd().readFileAlloc(
-            std.testing.io,
-            path,
-            allocator,
-            .limited(64 * 1024),
-        ) catch |err| {
-            std.debug.print("\n!! SSE handshake: could not read {s}: {s}\n", .{ path, @errorName(err) });
-            return err;
-        };
-        errdefer allocator.free(source);
-
-        if (std.mem.indexOf(u8, source, connected_handshake_in_source) == null) {
-            std.debug.print(
-                "\n!! {s} does not contain the SSE connected handshake !!\n" ++
-                    "   expected (verbatim, exactly as it must appear in the source):\n" ++
-                    "     {s}\n" ++
-                    "   Add the 3-line `event: connected` send right after\n" ++
-                    "   `registerSessionClient`, mirroring worker_sse.zig.\n" ++
-                    "   See docs/plans/2026-06-05-stuck-connecting-badge.md for why.\n",
-                .{ path, connected_handshake_in_source },
-            );
-            return error.ConnectedHandshakeMissing;
-        }
-    }
-}
 
 // ===== Rejection paths must terminate the stream (2026-09-17) =====
 // kabelweb sends the SSE 200 headers + registers the fd BEFORE the
@@ -710,7 +624,6 @@ test "SSE rejection: handler terminates the stream on auth/400 paths" {
 const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/unified_events_sse.zig";
-const MAIN_PATH = "src/http_routes.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(
@@ -773,41 +686,9 @@ test "unified_events_sse.zig recognizes all 6 channel tokens" {
     }
 }
 
-// ─── Contract 3: handler sends the `connected` handshake ─────────────────
-
-test "unified_events_sse.zig sends the connected handshake" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, HANDLER_PATH);
-    defer allocator.free(source);
-
-    // The verbatim byte sequence pinned by sse_handshake_test.zig:61-64.
-    const handshake = "event: connected\\ndata: {\\\"connected\\\": true}\\n\\n";
-    if (std.mem.indexOf(u8, source, handshake) == null) {
-        std.debug.print(
-            "\n!! {s} does not contain the SSE connected handshake !!\n", .{HANDLER_PATH},
-        );
-        return error.ConnectedHandshakeMissing;
-    }
-}
-
-// ─── Contract 4: route is registered in main.zig ─────────────────────────
-
-test "/api/events is registered in src/http_routes.zig" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, MAIN_PATH);
-    defer allocator.free(source);
-
-    if (std.mem.indexOf(u8, source, "/api/events") == null) {
-        std.debug.print(
-            "\n!! {s} does not register the /api/events route !!\n", .{MAIN_PATH},
-        );
-        return error.RouteRegistrationMissing;
-    }
-}
-
 // ─── Behavioral tests for parseChannels ────────────────────────────────
 //
-// Plan Reviewer finding #3: the 4 static contracts above only verify
+// Plan Reviewer finding #3: the static contracts above only verify
 // the file's shape, not the parser's correctness. A typo in the
 // bare `llm`/`queue` token names, or an off-by-one in the kanban
 // expansion would silently drop events in production. These

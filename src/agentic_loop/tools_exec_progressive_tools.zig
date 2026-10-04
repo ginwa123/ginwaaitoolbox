@@ -320,10 +320,6 @@ pub fn execUseTool(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 }
 
 // ============================================================================
-// Static contracts
-// ============================================================================
-
-// ============================================================================
 // Adapter integration: the real registry + a real (in-memory) DB
 // ============================================================================
 
@@ -534,56 +530,102 @@ test "execSearchTool: limit/offset page the matches and report the true total" {
 
 const testing = std.testing;
 
-test "static contract: the three progressive tools are wired into tools_equipped.zig" {
-    const src = @embedFile("tools_equipped.zig");
+/// One `use_tool` dispatch against the REAL registry and a real (in-memory)
+/// DB, on the same allowlist `searchToolOutput` uses — so the name under
+/// test is registered but not enabled, i.e. discoverable, which is the only
+/// state `use_tool` acts on. A real Logger because `saveProgressiveTool`
+/// logs the insert.
+fn useToolResult(
+    a: std.mem.Allocator,
+    db: *test_sqlite.SqliteBackend,
+    io: std.Io,
+    logger: *pabrikcore.loggermod.Logger,
+    args_json: []const u8,
+) !ToolExecResult {
+    var dummy_f32: f32 = 0.0;
+    var dummy_bool: bool = false;
+    const ctx = ToolExecContext{
+        .allocator = a,
+        .io = io,
+        .db = db,
+        .logger = logger,
+        .session_id = "sess_regex",
+        .model = "test",
+        .cwd = "/tmp",
+        .api_key = "test",
+        .base_url = "test",
+        .config = undefined,
+        .agent_temperature = &dummy_f32,
+        .is_thinking = &dummy_bool,
+        .environment = null,
+        .active_loops = undefined,
+        .allowed_tools = "read_file,search_tool",
+        .is_sub_agent = false,
+    };
+    return execUseTool(ctx, .{ .id = "call_use", .type = "function", .function = .{
+        .name = "use_tool",
+        .arguments = args_json,
+    } });
+}
+
+test "the three progressive tools are offered to the model and resolve to dispatchable registry entries" {
+    // `equips()` is the list the workflow hands the LLM;
+    // UNIFIED_TOOL_REGISTRY() is the dispatcher's table. Both are required —
+    // a registry entry alone is dispatchable but invisible, an equips() entry
+    // alone is visible but undispatchable.
+    const equip = tools_equipped.equips(testing.allocator);
+    defer testing.allocator.free(equip);
 
     for (pmod.PROGRESSIVE_TOOL_NAMES) |name| {
-        // Must appear in equips() AND in UNIFIED_TOOL_REGISTRY(), otherwise
-        // either the LLM cannot see it or dispatch cannot execute it.
-        try testing.expect(std.mem.indexOf(u8, src, name) != null);
+        var in_equips = false;
+        for (equip) |t| {
+            if (std.mem.eql(u8, t.function.name, name)) in_equips = true;
+        }
+        try testing.expect(in_equips);
+
+        // Exactly one dispatch entry, carrying the SAME tool def the model was
+        // shown.
+        var entries: usize = 0;
+        for (tools_equipped.UNIFIED_TOOL_REGISTRY()) |entry| {
+            if (!std.mem.eql(u8, entry.name, name)) continue;
+            entries += 1;
+            try testing.expectEqualStrings(name, entry.tool_def.function.name);
+        }
+        try testing.expectEqual(@as(usize, 1), entries);
+        try testing.expect(tools_equipped.isDispatchableToolName(name));
     }
-    try testing.expect(std.mem.indexOf(u8, src, "progressive_tools_mod") != null);
-    try testing.expect(std.mem.indexOf(u8, src, "execSearchTool") != null);
-    try testing.expect(std.mem.indexOf(u8, src, "execViewTool") != null);
-    try testing.expect(std.mem.indexOf(u8, src, "execUseTool") != null);
 }
 
-test "static contract: progressive exec wrappers are re-exported from tools.zig" {
-    const src = @embedFile("tools.zig");
+test "execUseTool: equipping a catalog tool persists the row and reports it back" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
 
-    try testing.expect(std.mem.indexOf(u8, src, "execSearchTool") != null);
-    try testing.expect(std.mem.indexOf(u8, src, "execViewTool") != null);
-    try testing.expect(std.mem.indexOf(u8, src, "execUseTool") != null);
-}
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    var db: test_sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    try Migration085.up(&db, testing.allocator);
 
-test "static contract: handle_tool persists progressive_tool_save" {
-    const src = @embedFile("handle_tool.zig");
+    // `save_memory` is registered and not in the allowlist, so it is in the
+    // discoverable catalog — proven independently by the regex search test
+    // above, which finds it under `^(list|load|save|search)_`.
+    var logger = pabrikcore.loggermod.Logger.init(a, threaded.io(), .{ .min_level = .err });
+    const res = try useToolResult(a, &db, threaded.io(), &logger, "{\"name\":\"save_memory\"}");
+    try testing.expect(res.output_allocated);
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"success\":true") != null);
 
-    try testing.expect(std.mem.indexOf(u8, src, "progressive_tool_saved") != null);
-    try testing.expect(std.mem.indexOf(u8, src, "saveProgressiveTool") != null);
-}
+    // The field `handle_tool` copies into its `progressive_tool_saved` event.
+    try testing.expect(res.progressive_tool_save != null);
+    try testing.expectEqualStrings("save_memory", res.progressive_tool_save.?.name);
 
-test "static contract: the three tools are injected via the session's tool config, and seeded at creation" {
-    const src = @embedFile("workflow.zig");
-
-    try testing.expect(std.mem.indexOf(u8, src, "progressive_catalog.buildCatalog") != null);
-    // No catalog-size gate and no mode gate: the three are ordinary tools,
-    // present when the session's allowlist names them.
-    try testing.expect(std.mem.indexOf(u8, src, "include_progressive_tools") == null);
-    try testing.expect(std.mem.indexOf(u8, src, "catalog.len > 0 or") == null);
-}
-
-test "static contract: DEFAULT_AGENT_TOOLS carries the three, and only agent/kanban seed it" {
-    const equipped_src = @embedFile("tools_equipped.zig");
-    for (pmod.PROGRESSIVE_TOOL_NAMES) |name| {
-        try testing.expect(std.mem.indexOf(u8, equipped_src, name) != null);
-    }
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "DEFAULT_AGENT_TOOLS") != null);
-
-    // The seed is what scopes the default to agent + kanban mode: those are
-    // the only creation paths that apply it.
-    const agent_src = @embedFile("../http_handlers/workspace_items_create_agent.zig");
-    try testing.expect(std.mem.indexOf(u8, agent_src, "seedDefaultAgentTools") != null);
-    const kanban_src = @embedFile("../http_handlers/workspace_items_create_kanban.zig");
-    try testing.expect(std.mem.indexOf(u8, kanban_src, "seedDefaultKanbanTools") != null);
+    // …and the row really is in session_progressive_tool, which is what the
+    // next turn's allowlist and the catalog both read back. The flag and the
+    // database are asserted together because the flag exists precisely so the
+    // two can never disagree (see ProgressiveToolSaveInfo).
+    const rows = try llm_history.getProgressiveTools(a, &db, "sess_regex");
+    defer for (rows) |r| r.deinit(a);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("save_memory", rows[0].tool_name);
 }

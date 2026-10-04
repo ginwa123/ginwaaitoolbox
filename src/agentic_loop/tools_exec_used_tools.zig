@@ -290,29 +290,29 @@ test "execUsedTools: none sentinel yields count 0" {
     try testing.expect(std.mem.indexOf(u8, result.output, "\"count\":0") != null);
 }
 
-// ─── Static contracts: registry + re-export wiring ───────────────────────────
-// These grep the wiring files so a future refactor that drops the
-// registration fails closed here instead of silently hiding the tool
-// from the LLM.
+// ─── Registration: the tool is actually offered to the model ────────────────
 
-const equipped_src = @embedFile("tools_equipped.zig");
-const tools_src = @embedFile("tools.zig");
-const root_src = @embedFile("../root.zig");
+test "used_tools is offered to the model and resolves to a dispatchable registry entry" {
+    // `equips()` is the list the workflow hands the LLM; dropping the entry
+    // there makes the tool unreachable without any other test noticing.
+    const equip = tools_equipped.equips(testing.allocator);
+    defer testing.allocator.free(equip);
 
-test "static contract: used_tools is wired into tools_equipped.zig" {
-    // Import + equips() entry + UNIFIED_TOOL_REGISTRY() entry + defaults seed.
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "used_tools_mod") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "used_tools_tool") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "\"used_tools\"") != null);
-    try testing.expect(std.mem.indexOf(u8, equipped_src, "execUsedTools") != null);
-}
+    var in_equips = false;
+    for (equip) |t| {
+        if (std.mem.eql(u8, t.function.name, "used_tools")) in_equips = true;
+    }
+    try testing.expect(in_equips);
 
-test "static contract: used_tools exec is re-exported from tools.zig" {
-    try testing.expect(std.mem.indexOf(u8, tools_src, "execUsedTools") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_src, "tools_exec_used_tools.zig") != null);
-}
-
-test "static contract: used_tools pure module is aliased on pabrikcore root" {
-    try testing.expect(std.mem.indexOf(u8, root_src, "used_tools") != null);
-    try testing.expect(std.mem.indexOf(u8, root_src, "modules/agent/tools/used_tools.zig") != null);
+    // Advertised AND dispatchable, carrying the SAME tool def — a registry
+    // entry under a different def means the model sees one schema and the
+    // dispatcher answers with another.
+    var entries: usize = 0;
+    for (tools_equipped.UNIFIED_TOOL_REGISTRY()) |entry| {
+        if (!std.mem.eql(u8, entry.name, "used_tools")) continue;
+        entries += 1;
+        try testing.expectEqualStrings("used_tools", entry.tool_def.function.name);
+    }
+    try testing.expectEqual(@as(usize, 1), entries);
+    try testing.expect(tools_equipped.isDispatchableToolName("used_tools"));
 }

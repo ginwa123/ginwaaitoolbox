@@ -1278,6 +1278,45 @@ pub const CallResponse = struct {
     }
 };
 
+/// Writes the UrlStyle-specific auth headers for one streaming request into
+/// `out` and returns how many it wrote.
+///
+/// Anthropic-style endpoints (native Anthropic API, relays like
+/// api.minimax.io/anthropic, opencode.ai/zen/go) authenticate with
+/// `x-api-key` + `anthropic-version: 2023-06-01`, NOT
+/// `Authorization: Bearer` — mirroring the Test probe in llm_test.zig.
+/// Sending only Bearer makes the upstream answer `{"type":"error",
+/// "error":{"type":"AuthError","message":"Missing API key."}}` on the
+/// stream with 0 chunks, which the SSE loop surfaces as
+/// StreamInterrupted. Every other style keeps its `Authorization: Bearer`
+/// header byte-identical to before.
+///
+/// `auth_value` receives the allocated `"Bearer <key>"` for the
+/// non-anthropic arms and stays null for the anthropic arm, which needs no
+/// allocation. The caller owns it and frees it on scope exit.
+pub fn authHeaders(
+    allocator: std.mem.Allocator,
+    style: []const u8,
+    api_key: []const u8,
+    out: []custom_http_client.Header,
+    auth_value: *?[]u8,
+) !usize {
+    if (!std.mem.eql(u8, style, "anthropic")) {
+        const bearer = try std.mem.concat(allocator, u8, &.{ "Bearer ", api_key });
+        auth_value.* = bearer;
+        out[0] = .{ .name = "authorization", .value = bearer };
+        return 1;
+    }
+    var n: usize = 0;
+    out[n] = .{ .name = "anthropic-version", .value = "2023-06-01" };
+    n += 1;
+    if (api_key.len > 0) {
+        out[n] = .{ .name = "x-api-key", .value = api_key };
+        n += 1;
+    }
+    return n;
+}
+
 pub const Agent = struct {
     name: []const u8 = "",
     apiKey: []const u8 = "",
@@ -2947,25 +2986,11 @@ pub const Agent = struct {
             return error.InvalidUri;
         }
 
-        // 3. Compose auth headers per UrlStyle.
-        // Anthropic-style endpoints (native Anthropic API, relays like
-        // api.minimax.io/anthropic, opencode.ai/zen/go) authenticate with
-        // `x-api-key` + `anthropic-version: 2023-06-01`, NOT
-        // `Authorization: Bearer` — mirroring the Test probe in
-        // llm_test.zig. Sending only Bearer makes the upstream answer
-        // `{"type":"error","error":{"type":"AuthError","message":
-        // "Missing API key."}}` on the stream with 0 chunks, which the
-        // SSE loop below surfaces as StreamInterrupted. OpenAI styles
-        // keep the existing Bearer header byte-identical to before.
-        const is_anthropic = std.mem.eql(u8, self.UrlStyle, "anthropic");
+        // 3. Compose auth headers per UrlStyle. `authHeaders` owns the
+        // anthropic-vs-Bearer split and is pinned by tests against the
+        // header list it emits, not by a grep of this file.
         var auth_value: ?[]u8 = null;
         defer if (auth_value) |v| self.allocator.free(v);
-        if (!is_anthropic) {
-            auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
-                self.log_error("concat auth", err, null);
-                return error.OutOfMemory;
-            };
-        }
 
         // 4. Build the custom_http_client.Request.
         // OpenCode Go / Zen routing requires a stable per-conversation
@@ -2979,17 +3004,17 @@ pub const Agent = struct {
         var header_count: usize = 0;
         header_buf[header_count] = .{ .name = "content-type", .value = "application/json" };
         header_count += 1;
-        if (is_anthropic) {
-            header_buf[header_count] = .{ .name = "anthropic-version", .value = "2023-06-01" };
-            header_count += 1;
-            if (self.apiKey.len > 0) {
-                header_buf[header_count] = .{ .name = "x-api-key", .value = self.apiKey };
-                header_count += 1;
-            }
-        } else {
-            header_buf[header_count] = .{ .name = "authorization", .value = auth_value.? };
-            header_count += 1;
-        }
+        const auth_count = authHeaders(
+            self.allocator,
+            self.UrlStyle,
+            self.apiKey,
+            header_buf[header_count..],
+            &auth_value,
+        ) catch |err| {
+            self.log_error("compose auth headers", err, null);
+            return error.OutOfMemory;
+        };
+        header_count += auth_count;
         header_buf[header_count] = .{ .name = "accept-encoding", .value = "identity" };
         header_count += 1;
         if (self.sessionId.len > 0) {
@@ -3941,21 +3966,48 @@ test "regression: buildJsonOpenAIRequest keeps 'stream_options.include_usage' ve
 // Regression: callStreaming auth headers per UrlStyle
 // ============================================================================
 
-fn agentSourceContainsAnthropicRequest(needle: []const u8) !bool {
-    const raw = try std.Io.Dir.cwd().readFileAlloc(testing.io, "src/modules/agent/Agent.zig", testing.allocator, .limited(1024 * 1024));
-    defer testing.allocator.free(raw);
-    return std.mem.indexOf(u8, raw, needle) != null;
-}
-
 test "callStreaming: anthropic style sends x-api-key + anthropic-version (not only Bearer)" {
     // Regression for `AuthError: Missing API key` on anthropic-style
     // chat (e.g. opencode.ai/zen/go/v1/messages): callStreaming sent
     // only `Authorization: Bearer`, which Anthropic-style upstreams
-    // ignore. The header block must branch on UrlStyle and emit the
-    // Anthropic auth headers, mirroring the Test probe in llm_test.zig.
-    try testing.expect(try agentSourceContainsAnthropicRequest("x-api-key"));
-    try testing.expect(try agentSourceContainsAnthropicRequest("anthropic-version"));
-    try testing.expect(try agentSourceContainsAnthropicRequest("is_anthropic"));
+    // ignore. Assert the header list that actually reaches libcurl —
+    // the wire shape — rather than the spelling of the branch that
+    // builds it.
+    var buf: [4]custom_http_client.Header = undefined;
+    var auth_value: ?[]u8 = null;
+    defer if (auth_value) |v| testing.allocator.free(v);
+
+    const n = try authHeaders(testing.allocator, "anthropic", "sk-anthropic-key", buf[0..], &auth_value);
+    try testing.expectEqual(@as(usize, 2), n);
+    try testing.expectEqualStrings("anthropic-version", buf[0].name);
+    try testing.expectEqualStrings("2023-06-01", buf[0].value);
+    try testing.expectEqualStrings("x-api-key", buf[1].name);
+    try testing.expectEqualStrings("sk-anthropic-key", buf[1].value);
+    // No Bearer alongside it — the anthropic arm allocates nothing.
+    try testing.expect(auth_value == null);
+}
+
+test "callStreaming: a non-anthropic style keeps authorization: Bearer and drops the anthropic pair" {
+    var buf: [4]custom_http_client.Header = undefined;
+    var bearer: ?[]u8 = null;
+    defer if (bearer) |v| testing.allocator.free(v);
+
+    const n = try authHeaders(testing.allocator, "openai", "sk-openai-key", buf[0..], &bearer);
+    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqualStrings("authorization", buf[0].name);
+    try testing.expectEqualStrings("Bearer sk-openai-key", buf[0].value);
+}
+
+test "callStreaming: an anthropic request with no key omits x-api-key but keeps the version" {
+    var buf: [4]custom_http_client.Header = undefined;
+    var auth_value: ?[]u8 = null;
+    defer if (auth_value) |v| testing.allocator.free(v);
+
+    const n = try authHeaders(testing.allocator, "anthropic", "", buf[0..], &auth_value);
+    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqualStrings("anthropic-version", buf[0].name);
+    try testing.expectEqualStrings("2023-06-01", buf[0].value);
+    try testing.expect(auth_value == null);
 }
 
 // ===== Tests merged from call_streaming_test.zig (2026-09-29 flatten) =====

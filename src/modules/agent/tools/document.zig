@@ -943,7 +943,7 @@ test "delete_document: workspace B cannot delete workspace A's document, and the
 
 // ─── Schema contracts ───────────────────────────────────────────────────
 
-test "static contract: the tool schemas carry no workspace_id" {
+test "schema contract: no tool the model sees takes a workspace_id" {
     // The whole isolation argument rests on the model never being able to
     // choose its own workspace. If a future edit adds `workspace_id` to a
     // parameter list, the exec wrapper's `ignore_unknown_fields` would
@@ -959,7 +959,7 @@ test "static contract: the tool schemas carry no workspace_id" {
     }
 }
 
-test "static contract: the input structs carry no workspace_id field" {
+test "schema contract: no input struct has a workspace_id slot to fill" {
     // Belt to the schema braces: even if the schema is left clean, a
     // struct field would be a slot for `ignore_unknown_fields` to fill.
     // The field counts are the guard — `AddDocumentInput` is exactly
@@ -987,7 +987,7 @@ test "static contract: the input structs carry no workspace_id field" {
     }
 }
 
-test "static contract: all four tools carry a behavioral system prompt" {
+test "schema contract: all four tools ship a behavioral system prompt" {
     // The aggregator in prompts_build_messages_for_agent_prompt.zig reads
     // `system_prompt` straight off the schema. An empty one means the
     // model sees the JSON contract but none of the behavioral rules
@@ -1003,7 +1003,7 @@ test "static contract: all four tools carry a behavioral system prompt" {
     try testing.expectEqualStrings("search_documents", search_documents_tool.function.name);
 }
 
-test "static contract: no prompt tells the model a search tool does not exist" {
+test "schema contract: no prompt tells the model a search tool does not exist" {
     // The `edit_document` prompt once said "There is no list/search tool in
     // v1" — and `search_documents` now exists. A prompt that contradicts the
     // live tool set is worse than a missing prompt: the model reads it and

@@ -26,9 +26,11 @@
 // order the routes used to be registered inline. Do not reorder them; add
 // a new route at the END of its domain function instead.
 //
-// Static-contract tests grep THIS FILE for route text and for relative
-// order. They used to point at `src/main.zig`; when a route moved here,
-// repoint their path constant — do not delete the assertion.
+// `registerAllOn` takes the `*Router` rather than the whole server so the
+// table can be built and MATCHED in a unit test: the tests at the bottom of
+// this file build the real table and ask `matchRoute` which handler and
+// params a request path resolves to. Registration order is only observable
+// through that resolution, never through the spelling of this file.
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
@@ -43,24 +45,32 @@ const testing = std.testing;
 /// Register every route pabrik serves on `gs`. Call this exactly once, after
 /// `GinwaServer.init` and before `listen()`.
 pub fn registerAll(gs: *gserverz.GinwaServer) !void {
+    return registerAllOn(&gs.router);
+}
+
+/// The route table itself. Takes the bare `*Router` so a test can build the
+/// exact production table on a stack arena and run `matchRoute` against it —
+/// `GinwaServer` would drag in a listening socket, an SseManager pipe and a
+/// WsManager for a table that never listens.
+pub fn registerAllOn(router: *gserverz.router.Router) !void {
     // Opt-in `--auth`: all `/api` routes registered via `authed` run
     // `authMiddleware` (401 when no valid `pabrik_session` cookie).
-    // Auth endpoints themselves stay on `gs.router` (unprotected) and
+    // Auth endpoints themselves stay on `router` (unprotected) and
     // are registered BEFORE any `:param` routes to avoid matchRoute
     // shadowing (`/api/auth/login` is a literal that must precede
     // `/api/session/:session_id`-style params).
-    var authed = gs.router.group("");
+    var authed = router.group("");
     try authed.use(ai_mod.http_handlers.authMiddleware);
 
     // Order is load-bearing — see the file header. Each function below
     // registers one domain's routes, verbatim and in the order they were
     // registered when this table lived inline in `main`.
-    try registerAuthRoutes(gs);
+    try registerAuthRoutes(router);
     try registerSessionRoutes(&authed);
     try registerWorkerRoutes(&authed);
-    try registerTerminalRoutes(&authed, gs);
-    try registerStreamRoutes(&authed, gs);
-    try registerSystemRoutes(&authed, gs);
+    try registerTerminalRoutes(&authed, router);
+    try registerStreamRoutes(&authed, router);
+    try registerSystemRoutes(&authed, router);
     try registerMemoryRoutes(&authed);
     try registerConfigRoutes(&authed);
     try registerGitRoutes(&authed);
@@ -75,14 +85,14 @@ pub fn registerAll(gs: *gserverz.GinwaServer) !void {
     try registerTestRoutes(&authed);
 }
 
-fn registerAuthRoutes(gs: *gserverz.GinwaServer) !void {
-    try gs.router.post("/api/auth/login", ai_mod.http_handlers.authLoginHandler);
-    try gs.router.post("/api/auth/logout", ai_mod.http_handlers.authLogoutHandler);
-    try gs.router.get("/api/auth/me", ai_mod.http_handlers.authMeHandler);
+fn registerAuthRoutes(router: *gserverz.router.Router) !void {
+    try router.post("/api/auth/login", ai_mod.http_handlers.authLoginHandler);
+    try router.post("/api/auth/logout", ai_mod.http_handlers.authLogoutHandler);
+    try router.get("/api/auth/me", ai_mod.http_handlers.authMeHandler);
     // // try authed.get("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
     // // try authed.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
     // // try authed.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
-    // // try gs.router.options("/api/session", http_handlers.corsPreflightHandler, .{});
+    // // try router.options("/api/session", http_handlers.corsPreflightHandler, .{});
 }
 
 fn registerSessionRoutes(authed: *Group) !void {
@@ -149,7 +159,7 @@ fn registerWorkerRoutes(authed: *Group) !void {
     try authed.get("/api/llm/session/:session_id/background_processes/:pid/log", ai_mod.http_handlers.backgroundProcessLogGetHandler);
 }
 
-fn registerTerminalRoutes(authed: *Group, gs: *gserverz.GinwaServer) !void {
+fn registerTerminalRoutes(authed: *Group, router: *gserverz.router.Router) !void {
     // Right-sidebar terminal (PTY over REST + poll). Fresh
     // `/api/terminal/` prefix — no `:param` siblings exist under it,
     // so no matchRoute shadowing risk (router walks registration
@@ -164,10 +174,10 @@ fn registerTerminalRoutes(authed: *Group, gs: *gserverz.GinwaServer) !void {
     // binary output frames + JSON control frames. First (and only) WS
     // route: fresh `/api/terminal/` prefix, literal `ws` segment, so
     // no matchRoute shadowing risk. HTTP/1.1 only (browsers use h1).
-    try gs.router.ws("/api/terminal/ws", ai_mod.http_handlers.terminalWsHandler);
+    try router.ws("/api/terminal/ws", ai_mod.http_handlers.terminalWsHandler);
 }
 
-fn registerStreamRoutes(authed: *Group, gs: *gserverz.GinwaServer) !void {
+fn registerStreamRoutes(authed: *Group, router: *gserverz.router.Router) !void {
     // In-flight stream snapshot (task_1787673548905_0 stream-resume-on-
     // reselect) — serves `{ active, content }` from the in-memory
     // stream_snapshot registry so a re-mounted ChatView can resume a
@@ -186,18 +196,18 @@ fn registerStreamRoutes(authed: *Group, gs: *gserverz.GinwaServer) !void {
     // queue_messages). Replaces the 5 dedicated routes that previously
     // registered one EventSource per family. See
     // src/http_handlers/unified_events_sse.zig.
-    try gs.router.sse("/api/events", ai_mod.http_handlers.unifiedEventsStreamHandler);
+    try router.sse("/api/events", ai_mod.http_handlers.unifiedEventsStreamHandler);
     // Test-only SSE emit (dev_sse_emit.zig) — gated by PABRIK_TEST_SSE_EMIT=1,
     // 404 when off. Functional UI tests use it to drive the chatview's
     // SSE streaming path without a real LLM.
     try authed.post("/api/dev/sse/emit_llm", ai_mod.http_handlers.devSseEmitLlmHandler);
 }
 
-fn registerSystemRoutes(authed: *Group, gs: *gserverz.GinwaServer) !void {
+fn registerSystemRoutes(authed: *Group, router: *gserverz.router.Router) !void {
     // try authed.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)
-    try gs.router.get("/health", ai_mod.http_handlers.healthHandler);
+    try router.get("/health", ai_mod.http_handlers.healthHandler);
     try authed.get("/api/skills", ai_mod.http_handlers.skillsListHandler);
     try authed.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
     try authed.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
@@ -334,9 +344,10 @@ fn registerWorkspaceRoutes(authed: *Group) !void {
     // was false, and the rename 404'd with `{"error": "Workspace not found"}`
     // before the handler ever ran — only when `--auth` was on.
     //
-    // Static assertions for this ordering live in
-    // `http_handlers/task_update.zig`; the behavioural one is
-    // `tests/functional/task_rename_id_route_auth_test.py`.
+    // The ordering is asserted behaviourally at the bottom of THIS file —
+    // it resolves `PUT /api/workspaces/tasks/<id>` through `matchRoute` and
+    // requires `req.params` to carry NO `workspace_id`. The end-to-end one
+    // is `tests/functional/task_rename_id_route_auth_test.py`.
     try authed.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
     // Idempotent: returns the workspace's default project, creating it
     // (item_type='agent', path=$HOME) when there is none.
@@ -352,9 +363,9 @@ fn registerWorkspaceRoutes(authed: *Group) !void {
     // 4. Every other 3+ segment route under /api/workspaces starts with a
     // literal `items` in that same position, and no
     // `POST /api/workspaces/:workspace_id/:param` route exists, so a param
-    // sibling cannot shadow this. The inline tests at the bottom of
-    // `workspace_items_default.zig` assert both facts statically so a future
-    // sibling cannot.
+    // sibling cannot shadow this. The tests at the bottom of THIS file
+    // assert both facts against the built route table, so a future sibling
+    // cannot land unnoticed.
     try authed.post("/api/workspaces/:workspace_id/default-project", ai_mod.http_handlers.workspaceDefaultProjectHandler);
     try authed.post("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsCreateHandler);
     try authed.get("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsListHandler);
@@ -609,150 +620,259 @@ fn registerTestRoutes(authed: *Group) !void {
     try authed.get("/test/system-prompt/:session_id", ai_mod.http_handlers.systemPromptGetHandler);
 }
 // ---------------------------------------------------------------------------
-// Static contracts (repo convention — see web_port.zig "registered in root.zig"
-// and the `const *_PATH` pattern used across src/http_handlers/).
+// Behavioural route contracts.
 //
-// These do NOT assert a route exists — the per-handler tests do that, and
-// they point at THIS file. These assert the two properties the extraction
-// itself could have broken, which nothing else would notice:
-//
-//   1. `main` still calls registerAll. A route table that is built but never
-//      wired boots a server with zero endpoints and no compile error.
-//   2. registerAll's per-domain calls are in the original order. Splitting one
-//      ordered table across functions is exactly how a `:param` route ends up
-//      ahead of its literal sibling.
+// These build the REAL production table on a bare `Router` and ask kabelweb's
+// `matchRoute` which handler a request path resolves to and which `:params`
+// it wrote. Registration order is only observable through that resolution —
+// never through how this file is spelled — so reordering two routes fails
+// here, while renaming a helper or rewording a comment does not.
 // ---------------------------------------------------------------------------
 
-/// The implementation half of this file — everything above the static-contract
-/// tests. The canaries below must scan THIS, not the whole file: their needles
-/// appear verbatim in their own bodies, so a whole-file scan matches the test
-/// that is doing the matching.
-fn readImplementation(allocator: std.mem.Allocator) ![]u8 {
-    const file = try std.Io.Dir.cwd().openFile(testing.io, "src/http_routes.zig", .{});
-    defer file.close(testing.io);
-    var buf: [4096]u8 = undefined;
-    var reader = file.reader(testing.io, &buf);
-    const whole = try reader.interface.allocRemaining(allocator, .limited(512 * 1024));
-    defer allocator.free(whole);
-    // Cut at the first top-level `test`, not at a banner comment — the banner's
-    // dash count is easy to get wrong, and a cut that lands too late silently
-    // matches the test's own needles.
-    const cut = std.mem.indexOf(u8, whole, "\ntest \"") orelse return error.NoTestBlockFound;
-    return allocator.dupe(u8, whole[0..cut]);
+const HandlerFn = gserverz.router.HandlerFn;
+const MiddlewareFn = gserverz.router.MiddlewareFn;
+
+/// What `matchRoute` resolved: the handler it selected plus the `:params` it
+/// wrote into the request. `params` carries the real signal — a literal that
+/// got captured by a `:param` sibling shows up as an unexpected key.
+const Resolved = struct {
+    handler: HandlerFn,
+    params: std.StringHashMap([]const u8),
+};
+
+/// Build the exact production table on `arena`.
+fn buildRouteTable(arena: std.mem.Allocator) !gserverz.router.Router {
+    var router = gserverz.router.Router.init(arena);
+    try registerAllOn(&router);
+    return router;
 }
 
-fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.Io.Dir.cwd().openFile(testing.io, path, .{});
-    defer file.close(testing.io);
-    var buf: [4096]u8 = undefined;
-    var reader = file.reader(testing.io, &buf);
-    return reader.interface.allocRemaining(allocator, .limited(512 * 1024));
+/// Resolve one (method, path) against a built table. Null when nothing
+/// matched, or when the hit was an SSE / WS route rather than a request
+/// handler.
+fn resolve(arena: std.mem.Allocator, router: *gserverz.router.Router, method: []const u8, path: []const u8) !?Resolved {
+    var req = gserverz.HttpRequest{
+        .method = method,
+        .path = path,
+        .version = "HTTP/1.1",
+        .headers = std.StringHashMap([]const u8).init(arena),
+        .body = "",
+        .raw = "",
+        .params = std.StringHashMap([]const u8).init(arena),
+        .query = std.StringHashMap([]const u8).init(arena),
+        ._client_fd = -1,
+    };
+    const ctx = gserverz.HttpContext{ .allocator = arena, .io = testing.io };
+    const result = router.matchRoute(method, path, &req, ctx) orelse return null;
+    const resolved: ?Resolved = switch (result) {
+        .handler => |h| Resolved{ .handler = h.chain.final_handler, .params = req.params },
+        .sse, .websocket => null,
+    };
+    return resolved;
 }
 
-/// Occurrences of `needle` in CODE only. The file's prose quotes several of
-/// these call shapes verbatim, and a doc comment is not a second group.
-fn countInCode(source: []const u8, needle: []const u8) usize {
-    var n: usize = 0;
-    var it = std.mem.splitScalar(u8, source, '\n');
-    while (it.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t");
-        if (trimmed.len == 0 or trimmed[0] == '/' or trimmed[0] == '*') continue;
-        if (std.mem.indexOf(u8, line, needle) != null) n += 1;
-    }
-    return n;
-}
+test "route table: every /knowledge/reorder literal wins over its :id sibling" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var router = try buildRouteTable(a);
 
-test "http_routes: main.zig still calls registerAll" {
-    const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/main.zig");
-    defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "http_routes.registerAll(gs)") == null) {
-        std.debug.print("\n!! src/main.zig never calls http_routes.registerAll(gs) !!\n" ++
-            "   The route table would compile and link, and the server would\n" ++
-            "   boot with zero endpoints.\n", .{});
-        return error.RegisterAllNotWired;
-    }
-}
-
-test "http_routes: registerAll calls every per-domain function, in table order" {
-    const allocator = testing.allocator;
-    const source = try readImplementation(allocator);
-    defer allocator.free(source);
-
-    // Match on the FUNCTION NAME only, not the argument list. Which of
-    // `authed` / `gs` a domain needs is an implementation detail that changes
-    // whenever a route moves between the group and the root router; the
-    // contract being guarded here is only "called, and called in this order".
-    //
-    // Relative order, not absolute offsets: comparing each call's start
-    // against the previous call's start expresses "each comes after the one
-    // before it". Against the previous call's END it would always fail —
-    // consecutive calls sit on consecutive lines.
-    const order = [_][]const u8{
-        "registerAuthRoutes",
-        "registerSessionRoutes",
-        "registerWorkerRoutes",
-        "registerTerminalRoutes",
-        "registerStreamRoutes",
-        "registerSystemRoutes",
-        "registerMemoryRoutes",
-        "registerConfigRoutes",
-        "registerGitRoutes",
-        "registerFileRoutes",
-        "registerWorkspaceRoutes",
-        "registerAgentRoutes",
-        "registerAgentKanbanRoutes",
-        "registerAgentRoutineRoutes",
-        "registerWorkspaceDocumentRoutes",
-        "registerKanbanRoutes",
-        "registerDesignRoutes",
-        "registerTestRoutes",
+    // Three families register the same `.../knowledge/reorder` +
+    // `.../knowledge/:knowledge_id` pair. `matchRoute` stops at the first
+    // hit, so if the `:param` sibling came first it would capture the
+    // literal: the reorder PATCH would run the update handler with
+    // knowledge_id="reorder" and 404. Assert resolution, not spelling.
+    const families = [_]struct { prefix: []const u8, param: []const u8 }{
+        .{ .prefix = "/api/agents/ag_1/knowledge", .param = "agent_id" },
+        .{ .prefix = "/api/agent-kanbans/kb_1/knowledge", .param = "kanban_id" },
+        .{ .prefix = "/api/agent-routines/rt_1/knowledge", .param = "routine_id" },
+    };
+    const reorder_handlers = [_]HandlerFn{
+        ai_mod.http_handlers.agentKnowledgeReorderHandler,
+        ai_mod.http_handlers.agentKanbanKnowledgeReorderHandler,
+        ai_mod.http_handlers.agentRoutineKnowledgeReorderHandler,
+    };
+    const update_handlers = [_]HandlerFn{
+        ai_mod.http_handlers.agentKnowledgeUpdateHandler,
+        ai_mod.http_handlers.agentKanbanKnowledgeUpdateHandler,
+        ai_mod.http_handlers.agentRoutineKnowledgeUpdateHandler,
     };
 
-    var prev_at: usize = 0;
-    for (order, 0..) |name, i| {
-        // The CALL SITE, not the definition — the `fn name(...)` line above it
-        // would make indexOf match in definition order instead.
-        var needle_buf: [96]u8 = undefined;
-        const needle = std.fmt.bufPrint(&needle_buf, "try {s}(", .{name}) catch unreachable;
-        const at = std.mem.indexOf(u8, source, needle) orelse {
-            std.debug.print("\n!! registerAll no longer calls {s}() !!\n", .{name});
-            return error.DomainCallMissing;
+    for (families, reorder_handlers, update_handlers) |family, want_reorder, want_update| {
+        const literal_path = try std.fmt.allocPrint(a, "{s}/reorder", .{family.prefix});
+        const reorder = (try resolve(a, &router, "PATCH", literal_path)) orelse {
+            std.debug.print("\n!! no route matches PATCH {s} !!\n", .{literal_path});
+            return error.ReorderRouteNotRegistered;
         };
-        if (i > 0 and at <= prev_at) {
-            std.debug.print("\n!! registerAll calls {s}() OUT OF ORDER (call #{d}) !!\n" ++
-                "   Registration order is load-bearing: kabelweb's matchRoute\n" ++
-                "   walks one shared route table top-down, so a literal that\n" ++
-                "   lands after a :param sibling is captured as that param.\n", .{ name, i + 1 });
-            return error.DomainCallOutOfOrder;
-        }
-        prev_at = at;
+        try testing.expect(reorder.handler == want_reorder);
+        // The literal must not leave a half-matched knowledge_id behind.
+        try testing.expect(reorder.params.get("knowledge_id") == null);
+        const scope = reorder.params.get(family.param).?;
+        try testing.expect(scope.len > 0);
+
+        const detail_path = try std.fmt.allocPrint(a, "{s}/know_1", .{family.prefix});
+        const detail = (try resolve(a, &router, "PATCH", detail_path)) orelse {
+            std.debug.print("\n!! no route matches PATCH {s} !!\n", .{detail_path});
+            return error.KnowledgeParamRouteNotRegistered;
+        };
+        try testing.expect(detail.handler == want_update);
+        try testing.expectEqualStrings("know_1", detail.params.get("knowledge_id").?);
     }
 }
 
-test "http_routes: exactly one authed group, created before any use()" {
+test "route table: PUT /api/workspaces/tasks/:task_id resolves with no workspace_id" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var router = try buildRouteTable(a);
+
+    // `api.updateTaskSimple` (chat rename + kanban card rename) PUTs
+    // /api/workspaces/tasks/<id> with no workspace scope. If any
+    // `PUT /api/workspaces/:workspace_id/...` route were tried first,
+    // `matchPathWithParams` would write workspace_id="tasks" into the shared
+    // params map and leave it there after failing on the next literal —
+    // `authMiddleware` then read it, `canSeeWorkspace("tasks")` was false,
+    // and the rename 404'd with {"error": "Workspace not found"}. The
+    // leftover key IS the bug, so assert its absence.
+    const rename = (try resolve(a, &router, "PUT", "/api/workspaces/tasks/task_1")) orelse
+        return error.IdOnlyTaskRouteNotRegistered;
+    const want: HandlerFn = ai_mod.http_handlers.tasksUpdateByIdHandler;
+    try testing.expect(rename.handler == want);
+    try testing.expectEqualStrings("task_1", rename.params.get("task_id").?);
+    try testing.expect(rename.params.get("workspace_id") == null);
+    try testing.expect(rename.params.get("item_id") == null);
+
+    // The workspace-scoped sibling still binds its own scope, so the
+    // assertion above is about THIS literal not stealing anything.
+    const scoped = (try resolve(a, &router, "PUT", "/api/workspaces/ws_1/items/item_1")) orelse
+        return error.WorkspaceItemPutRouteNotRegistered;
+    try testing.expectEqualStrings("ws_1", scoped.params.get("workspace_id").?);
+    try testing.expectEqualStrings("item_1", scoped.params.get("item_id").?);
+}
+
+test "route table: POST /api/workspaces/:workspace_id/default-project keeps a literal segment" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var router = try buildRouteTable(a);
+
+    const hit = (try resolve(a, &router, "POST", "/api/workspaces/ws_1/default-project")) orelse
+        return error.DefaultProjectRouteNotRegistered;
+    const want: HandlerFn = ai_mod.http_handlers.workspaceDefaultProjectHandler;
+    try testing.expect(hit.handler == want);
+    try testing.expectEqualStrings("ws_1", hit.params.get("workspace_id").?);
+}
+
+test "route table: no POST /api/workspaces/:workspace_id/:param sibling exists" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const router = try buildRouteTable(a);
+
+    // The collision has to be IMPOSSIBLE, not merely absent today: a bare
+    // `:param` in the 4th segment would swallow `default-project` (and any
+    // future 4th-segment literal) whenever matchRoute reached it first.
+    // `.../items`, `.../items/agent`, `.../documents` are all literals.
+    const prefix = "/api/workspaces/:workspace_id/";
+    for (router.routes.items) |route| {
+        if (!std.mem.eql(u8, route.method, "POST")) continue;
+        if (!std.mem.startsWith(u8, route.path, prefix)) continue;
+        const tail = route.path[prefix.len..];
+        const segment_end = std.mem.indexOfScalar(u8, tail, '/') orelse tail.len;
+        if (segment_end == 0 or tail[0] != ':') continue;
+        std.debug.print(
+            "\n!! POST {s} puts a bare :param in the 4th segment - it shadows literal siblings !!\n",
+            .{route.path},
+        );
+        return error.ParamSiblingUnderWorkspaceId;
+    }
+}
+
+test "route table: all five documents verbs resolve to their handlers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var router = try buildRouteTable(a);
+
+    const expectations = [_]struct { method: []const u8, path: []const u8, handler: HandlerFn }{
+        .{
+            .method = "GET",
+            .path = "/api/workspaces/ws_1/documents",
+            .handler = ai_mod.http_handlers.documentsListHandler,
+        },
+        .{
+            .method = "POST",
+            .path = "/api/workspaces/ws_1/documents",
+            .handler = ai_mod.http_handlers.documentsCreateHandler,
+        },
+        .{
+            .method = "GET",
+            .path = "/api/workspaces/ws_1/documents/doc_1",
+            .handler = ai_mod.http_handlers.documentsGetHandler,
+        },
+        .{
+            .method = "PATCH",
+            .path = "/api/workspaces/ws_1/documents/doc_1",
+            .handler = ai_mod.http_handlers.documentsUpdateHandler,
+        },
+        .{
+            .method = "DELETE",
+            .path = "/api/workspaces/ws_1/documents/doc_1",
+            .handler = ai_mod.http_handlers.documentsDeleteHandler,
+        },
+    };
+    for (expectations) |want| {
+        const hit = (try resolve(a, &router, want.method, want.path)) orelse {
+            std.debug.print("\n!! no route matches {s} {s} !!\n", .{ want.method, want.path });
+            return error.DocumentsRouteNotRegistered;
+        };
+        try testing.expect(hit.handler == want.handler);
+        try testing.expectEqualStrings("ws_1", hit.params.get("workspace_id").?);
+        if (std.mem.endsWith(u8, want.path, "/doc_1")) {
+            try testing.expectEqualStrings("doc_1", hit.params.get("document_id").?);
+        } else {
+            try testing.expect(hit.params.get("document_id") == null);
+        }
+    }
+}
+
+test "route table: every /api route except the open ones carries authMiddleware" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const router = try buildRouteTable(a);
+
     // `use` only affects routes registered AFTER it, and every `/api` route
     // must carry authMiddleware. A second `group("")` — or a group created
-    // after the routes — would silently serve an unauthenticated table.
-    const allocator = testing.allocator;
-    const source = try readImplementation(allocator);
-    defer allocator.free(source);
-
-    const groups = countInCode(source, "gs.router.group(\"\")");
-    if (groups != 1) {
-        std.debug.print("\n!! http_routes.zig has {d} `gs.router.group(\"\")` calls (want 1) !!\n" ++
-            "   Every route must land in the ONE group that carries\n" ++
-            "   authMiddleware.\n", .{groups});
-        return error.GroupCountWrong;
-    }
-
-    const group_at = std.mem.indexOf(u8, source, "gs.router.group(\"\")").?;
-    const use_at = std.mem.indexOf(u8, source, "authed.use(ai_mod.http_handlers.authMiddleware);") orelse {
-        std.debug.print("\n!! http_routes.zig never installs authMiddleware !!\n", .{});
-        return error.MiddlewareMissing;
+    // after some of the routes — would silently serve an unauthenticated
+    // table, which is what reading `Route.middlewares` proves cannot happen.
+    // The auth endpoints (they ARE the credential check) plus the two
+    // long-lived streams, which mount on the root router on purpose.
+    const open = [_][]const u8{
+        "/api/auth/login",
+        "/api/auth/logout",
+        "/api/auth/me",
+        "/api/events",
+        "/api/terminal/ws",
     };
-    if (use_at < group_at) {
-        std.debug.print("\n!! authMiddleware is installed on a group that does not exist yet !!\n", .{});
-        return error.MiddlewareBeforeGroup;
+    const want: MiddlewareFn = ai_mod.http_handlers.authMiddleware;
+
+    var checked: usize = 0;
+    for (router.routes.items) |route| {
+        if (!std.mem.startsWith(u8, route.path, "/api/")) continue;
+        var is_open = false;
+        for (open) |o| {
+            if (std.mem.eql(u8, route.path, o)) is_open = true;
+        }
+        if (is_open) continue;
+        checked += 1;
+        if (route.middlewares.len != 1 or route.middlewares[0] != want) {
+            std.debug.print(
+                "\n!! {s} {s} carries {d} middleware(s), want exactly authMiddleware !!\n",
+                .{ route.method, route.path, route.middlewares.len },
+            );
+            return error.ApiRouteMissingAuthMiddleware;
+        }
     }
+    try testing.expect(checked > 0);
 }

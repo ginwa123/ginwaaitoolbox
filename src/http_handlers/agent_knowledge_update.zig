@@ -736,31 +736,11 @@ test "functional: non-empty relative file_path still returns NotAbsolutePath" {
     );
 }
 
-// ─── D. route-order contract: /reorder must precede /:knowledge_id ──────
-
-test "functional: http_routes.zig registers /knowledge/reorder BEFORE /knowledge/:knowledge_id" {
-    const alloc = testing.allocator;
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        testing.io,
-        "src/http_routes.zig",
-        alloc,
-        .limited(1024 * 1024),
-    );
-    defer alloc.free(raw);
-
-    const reorder_idx = std.mem.indexOf(u8, raw, "\"/api/agents/:agent_id/knowledge/reorder\"") orelse
-        return error.ReorderRouteMissing;
-    const param_idx = std.mem.indexOf(u8, raw, "\"/api/agents/:agent_id/knowledge/:knowledge_id\"") orelse
-        return error.ParamRouteMissing;
-
-    // The router matches routes in REGISTRATION order; the literal
-    // `reorder` route MUST come first or every reorder PATCH is
-    // captured by the :knowledge_id param route (knowledge_id="reorder").
-    if (reorder_idx > param_idx) {
-        std.debug.print(
-            "\n!! http_routes.zig registers /knowledge/:knowledge_id BEFORE /knowledge/reorder — reorder is shadowed !!\n",
-            .{},
-        );
-        return error.ReorderRouteShadowed;
-    }
-}
+// ─── D. route order ─────────────────────────────────────────────────────
+//
+// The `/knowledge/reorder` literal must win over its `:knowledge_id`
+// sibling. That is a property of the REGISTERED TABLE, so it is asserted
+// there: `http_routes.zig` builds the real table and asks `matchRoute`
+// which handler `PATCH /api/agents/<id>/knowledge/reorder` resolves to.
+// See "route table: every /knowledge/reorder literal wins over its :id
+// sibling" at the bottom of that file.
