@@ -279,7 +279,7 @@ test "useCase: task-linked, cwd-matched, and outside sessions resolve workspace_
 // registration is dropped from main.zig (a missing route otherwise
 // only surfaces as a 404 in the wire suite).
 
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(

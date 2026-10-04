@@ -116,13 +116,16 @@ const initialTab = (): 'files' | 'pr' | 'commits' | 'checks' | 'evals' => {
   let param: 'files' | 'pr' | 'commits' | 'checks' | 'evals' | null = null
   try {
     param = readTabParam()
-  } catch (e) {
-    // Hosts like ChatRightSidebar mount this panel with no router at all
-    // (ChatRightSidebar.spec.ts), where useRoute has no current route —
-    // so there is no query to read and `null` ("no ?panel=") is the correct
-    // answer, not a hidden failure. Logged anyway so a host that DID
-    // install a router and then threw is still visible.
-    console.warn('[sidebar-diff-panel] could not read ?panel=', e)
+  } catch {
+    // This catch exists ONLY for "mounted without a router" — hosts like
+    // ChatRightSidebar mount this panel standalone (ChatRightSidebar.spec.ts),
+    // and `useRoute()` injects nothing there, so `route.query` throws on a
+    // null deref. It cannot reach the user: nothing was fetched, this runs at
+    // mount before any data loads, and with no router there is no URL to keep
+    // in sync. `files` is the documented default, so the fallback is correct
+    // — but the condition is still logged rather than swallowed, because a
+    // mount that silently lost its router is worth seeing in the console.
+    console.warn('[SidebarDiffPanel] mounted without a router; defaulting ?panel to files')
     param = null
   }
   // Evals and checks are reachable regardless of PR mode.
@@ -215,11 +218,13 @@ const conflictsOnly = ref(
   (() => {
     try {
       return readConflictsParam()
-    } catch (e) {
-      // Same router-less mount as readTabParam above: no router means no
-      // query, so "no ?conflicts=1" is the correct answer. Logged so a
-      // genuinely broken host is not indistinguishable from a router-less one.
-      console.warn('[sidebar-diff-panel] could not read ?conflicts=', e)
+    } catch {
+      // Same guard and same reason as initialTab: no router means
+      // `route.query` throws, nothing was fetched, and there is no URL to
+      // keep in sync. `false` = show the full PR file list, this panel's
+      // pre-router default — logged rather than swallowed for the same
+      // reason.
+      console.warn('[SidebarDiffPanel] mounted without a router; defaulting ?conflicts to off')
       return false
     }
   })(),

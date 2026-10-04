@@ -254,7 +254,13 @@ describe('SidebarDiffPanel tabs', () => {
       props: { cwd: '/repo' },
     })
     await flushPromises()
-    expect(wrapper.find('[data-testid="sidebar-tab-commits"]').exists()).toBe(false)
+    // Commits and Evals are NOT PR-only: the tab bar renders without a
+    // prUrl (`showTabs || showEvals || !isPrMode`), and only the Files and PR
+    // tabs are gated on `isPrMode` — they need a PR to have anything to show.
+    // The header toggle below is the second path to commits.
+    expect(wrapper.find('[data-testid="sidebar-tab-files"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sidebar-tab-pr"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sidebar-tab-commits"]').exists()).toBe(true)
     await wrapper.get('[data-testid="sidebar-diff-commits-toggle"]').trigger('click')
     await flushPromises()
     expect(r.currentRoute.value.query.panel).toBe('commits')

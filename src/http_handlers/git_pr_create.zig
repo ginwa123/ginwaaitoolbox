@@ -371,7 +371,7 @@ const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/http_handlers/git_pr_create.zig";
 const MOD_PATH = "src/http_handlers/mod.zig";
-const MAIN_PATH = "src/main.zig";
+const MAIN_PATH = "src/http_routes.zig";
 const HTTP_RESP_PATH = "src/http_handlers/http_response.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -405,11 +405,11 @@ test "git_pr_create route is registered in main.zig" {
     const source = try readSource(allocator, MAIN_PATH);
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "/api/git/pr") == null) {
-        std.debug.print("!! main.zig does not register /api/git/pr !!\n", .{});
+        std.debug.print("!! http_routes.zig does not register /api/git/pr !!\n", .{});
         return error.GitPrCreateRouteMissing;
     }
     if (std.mem.indexOf(u8, source, "gitPrCreateHandler") == null) {
-        std.debug.print("!! main.zig does not reference gitPrCreateHandler !!\n", .{});
+        std.debug.print("!! http_routes.zig does not reference gitPrCreateHandler !!\n", .{});
         return error.GitPrCreateHandlerRefMissing;
     }
 }

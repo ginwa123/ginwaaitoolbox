@@ -718,10 +718,10 @@ test "git_pr_status handler is exported from mod.zig" {
 
 test "git_pr_status route is registered in main.zig" {
     const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/main.zig");
+    const source = try readSource(allocator, "src/http_routes.zig");
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "/api/git/pr/status") == null) {
-        std.debug.print("!! main.zig does not register /api/git/pr/status !!\n", .{});
+        std.debug.print("!! http_routes.zig does not register /api/git/pr/status !!\n", .{});
         return error.NotRegistered;
     }
 }

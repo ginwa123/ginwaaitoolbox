@@ -536,24 +536,27 @@ test "git_pr_checks handler is exported from mod.zig" {
     }
 }
 
-test "git_pr_checks route is registered in main.zig" {
+test "git_pr_checks route is registered in the route table" {
     const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/main.zig");
+    // Was `src/main.zig`; PR #793 extracted the route table into
+    // `src/http_routes.zig`, and the handler must follow it there or the
+    // endpoint stops existing. Read the file the routes ACTUALLY live in.
+    const source = try readSource(allocator, "src/http_routes.zig");
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "/api/git/pr/checks") == null) {
-        std.debug.print("!! main.zig does not register /api/git/pr/checks !!\n", .{});
+        std.debug.print("!! http_routes.zig does not register /api/git/pr/checks !!\n", .{});
         return error.NotRegistered;
     }
 }
 
 test "git_pr_checks has no /api/git/pr/:param sibling to shadow it" {
-    // matchRoute walks routes in registration order, so a literal added below a
-    // param route would never be reached.
+    // matchRoute walks routes in registration order, so a literal added
+    // below a param route would never be reached.
     const allocator = testing.allocator;
-    const source = try readSource(allocator, "src/main.zig");
+    const source = try readSource(allocator, "src/http_routes.zig");
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "/api/git/pr/:") != null) {
-        std.debug.print("!! main.zig has a /api/git/pr/:param sibling !!\n", .{});
+        std.debug.print("!! http_routes.zig has a /api/git/pr/:param sibling !!\n", .{});
         return error.ParamShadowingRisk;
     }
 }
