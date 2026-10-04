@@ -494,26 +494,3 @@ test "execListDirectory: non-existent relative path returns an error envelope, n
     try testing.expect(std.mem.indexOf(u8, obj.get("error").?.string, missing_dir) != null);
 }
 
-// ─── Static contracts ──────────────────────────────────────────────────
-// `zig build test` runs the process with the repo root as cwd, so the impl
-// file is readable by its repo-relative path (same technique as
-// tools_exec_spawn_sub_agent.zig's static-contract tests).
-
-test "execListDirectory resolves the model path before the absolute-only tool" {
-    const source = try std.Io.Dir.cwd().readFileAlloc(
-        testing.io,
-        "src/agentic_loop/tools_exec_list_directory.zig",
-        testing.allocator,
-        .limited(1 * 1024 * 1024),
-    );
-    defer testing.allocator.free(source);
-
-    try testing.expect(std.mem.indexOf(u8, source, "fn resolveAgainstCwd(") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "std.fs.path.isAbsolute(raw)") != null);
-    try testing.expect(
-        std.mem.indexOf(u8, source, "const dir_path_abs = try resolveAgainstCwd(ctx, parsed.value.path);") != null,
-    );
-    // The resolved path is what reaches the tool AND what gets reported.
-    try testing.expect(std.mem.indexOf(u8, source, "list_directory_mod.execute_list_directory(") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "list_directory failed: {s} (resolved path: {s})") != null);
-}

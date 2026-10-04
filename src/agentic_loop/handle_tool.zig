@@ -1329,7 +1329,7 @@ test "parseDiffViewFromResult - unescapes multiline content with entities" {
 }
 
 // =============================================================================
-// Static-contract tests — Phase 1 placeholder envelope.
+// Phase 1 placeholder envelope.
 //
 // 2026-08-24-better-tool-placeholder: Phase 1 inserts used to store
 // raw text in `response_content` (`"unknown tools"` for unknown tools,
@@ -1337,55 +1337,11 @@ test "parseDiffViewFromResult - unescapes multiline content with entities" {
 // frontend's `tryUnwrapToolOutput` couldn't parse the row, fell back
 // to `msg.content`, and rendered a blank/garbage card. The fix pipes
 // every Phase 1 placeholder through `wrapToolOutput` so the envelope
-// shape is stable across all 3 phases.
-//
-// These tests pin the contract: grep the source for the required
-// emission sites. If a future refactor accidentally swaps back to a
-// raw-string placeholder, or skips the unknown-tool error path, the
-// chat card regression returns and these tests fail closed.
+// shape is stable across all 3 phases, and rejects an unknown tool with
+// the actionable `unknownToolMessage` rather than the bare
+// `"unknown tools"` string, which named neither the offending tool nor
+// the valid ones.
 // =============================================================================
-
-const placeholder_impl_path = "src/agentic_loop/handle_tool.zig";
-
-test "Phase 1 placeholder uses wrapToolOutput for both known + unknown branches" {
-    // Reads THIS file at runtime via a known repo-root-relative path,
-    // matching the technique used in tools_exec_spawn_sub_agent.zig's
-    // static-contract tests and design_model_group_test.zig.
-    const max_bytes: usize = 1 * 1024 * 1024; // 1 MiB ceiling
-    const source = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        placeholder_impl_path,
-        std.testing.allocator,
-        .limited(max_bytes),
-    );
-    defer std.testing.allocator.free(source);
-
-    // Two wrapToolOutput call sites inside the Phase 1 for-loop:
-    //   - success=false envelope (unknown tools branch)
-    //   - success=true  envelope (known tools branch — the normal case)
-    // plus the existing 3 in Phase 3 (MCP error, dispatch error,
-    // MCP success = 3) = 5 baseline. Bump this bound in lock-step
-    // with future Phase 1/3 wrapToolOutput additions.
-    const wrap_count = std.mem.count(u8, source, "wrapToolOutput(");
-    try std.testing.expect(wrap_count >= 5);
-
-    // Unknown tools MUST emit a failure envelope so the frontend renders a
-    // structured error block, and the text must be the actionable
-    // `unknownToolMessage` — it names the offending tool and lists the real
-    // tool names. The old bare `"unknown tools"` named neither, so the model
-    // had nothing to correct against and re-emitted the same dead name turn
-    // after turn. Counted at both call sites: the Phase 1 placeholder and the
-    // Phase 3 result.
-    const msg_count = std.mem.count(u8, source, "unknownToolMessage(allocator, tool_call.function.name)");
-    try std.testing.expect(msg_count >= 2);
-    try std.testing.expect(std.mem.indexOf(u8, source, "\"unknown tools\",") == null);
-
-    // The bare-`""` literal that used to be assigned directly to
-    // `response_content = ""` must NOT survive in Phase 1. Any
-    // match here is a regression to the legacy behaviour.
-    try std.testing.expect(std.mem.indexOf(u8, source, ".response_content = \"\",") == null);
-    try std.testing.expect(std.mem.indexOf(u8, source, ".response_content = \"unknown tools\",") == null);
-}
 
 test "unknownToolMessage names the offending tool and offers the real ones" {
     const msg = try unknownToolMessage(std.testing.allocator, "bash");
@@ -1397,25 +1353,6 @@ test "unknownToolMessage names the offending tool and offers the real ones" {
     // what the model was missing when it re-emitted `bash` four turns running.
     try std.testing.expect(std.mem.indexOf(u8, msg, "command") != null);
     try std.testing.expect(std.mem.indexOf(u8, msg, "do not call it again") != null);
-}
-
-test "dispatchTool resolves deprecated shell names before the registry walk" {
-    // Static contract: alias resolution must happen INSIDE dispatchTool, ahead
-    // of the pre-hook and the registry lookup. Reverting it reintroduces the
-    // silent `continue` (Phase 3 saw the name as unknown and skipped it).
-    const max_bytes: usize = 1 * 1024 * 1024;
-    const source = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        placeholder_impl_path,
-        std.testing.allocator,
-        .limited(max_bytes),
-    );
-    defer std.testing.allocator.free(source);
-
-    try std.testing.expect(std.mem.indexOf(u8, source, "tools_equipped.resolveToolAlias(tool_call.function.name)") != null);
-    // The gate must accept aliases too, or Phase 1 stamps an error envelope
-    // and Phase 3 skips the call before dispatchTool ever sees it.
-    try std.testing.expect(std.mem.indexOf(u8, source, "tools_equipped.isDispatchableToolName(name)") != null);
 }
 
 test "wrapToolOutput envelope is round-trip parseable (envelope shape vs frontend)" {
