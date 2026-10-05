@@ -57,6 +57,28 @@ fn handleShutdownSignal() void {
     if (shutdown_server) |gs| gs.shutdown();
 }
 
+/// Print the live SQLite connection's settings at boot.
+///
+/// A future "database is locked" report then carries the connection's
+/// ACTUAL configuration instead of a guess — including whether the
+/// writer-slot wait is really 15 s and whether the WAL file is bounded.
+/// No-op on a postgres build (`-Ddb_used=sqlite,postgres`): that backend
+/// has no pragmas and no `readConfig`.
+fn logSqliteConfig(allocator: std.mem.Allocator, db: *database.Db) void {
+    if (database.backend_is_postgres) return;
+    const applied = db.readConfig(allocator) catch |err| {
+        std.log.warn("sqlite: could not read back connection config ({s})", .{@errorName(err)});
+        return;
+    };
+    std.log.info("sqlite: journal_mode={s} busy_timeout={d}ms synchronous={d} wal_autocheckpoint={d} journal_size_limit={d}", .{
+        applied.journalMode(),
+        applied.busy_timeout_ms,
+        applied.synchronous,
+        applied.wal_autocheckpoint_pages,
+        applied.journal_size_limit_bytes,
+    });
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const environment = init.environ_map;
@@ -173,7 +195,15 @@ pub fn main(init: std.process.Init) !void {
 
     var dbSqlite: database.Db = .{};
     defer dbSqlite.deinit();
-    try database.open(&dbSqlite, io, .{ .sqlite_path = db_path });
+    // `.synchronous = .normal` is the ONLY knob this app sets; everything
+    // else (15 s busy_timeout, journal_size_limit, wal_autocheckpoint, and
+    // BEGIN IMMEDIATE in `begin()`) is the databases package's own default.
+    // Rationale is in `ruangsql`'s `Sqlite.Config` doc comment — the short
+    // version: in WAL mode a contended write that cannot take the single
+    // writer slot is LOST, not delayed, and `synchronous=FULL` fsyncs the
+    // WAL on every commit.
+    try database.openWithConfig(&dbSqlite, io, .{ .sqlite_path = db_path }, .{ .synchronous = .normal });
+    logSqliteConfig(allocator, &dbSqlite);
 
     var migrationManager = migration.MigrationManager.init(allocator, &dbSqlite);
     defer migrationManager.deinit();
@@ -729,7 +759,7 @@ fn dispatchCreateAdmin(
     defer allocator.free(db_path);
     var dbSqlite: database.Db = .{};
     defer dbSqlite.deinit();
-    try database.open(&dbSqlite, io, .{ .sqlite_path = db_path });
+    try database.openWithConfig(&dbSqlite, io, .{ .sqlite_path = db_path }, .{ .synchronous = .normal });
     var mm = migration.MigrationManager.init(allocator, &dbSqlite);
     defer mm.deinit();
     try migration.registerAllMigrations(&mm);
