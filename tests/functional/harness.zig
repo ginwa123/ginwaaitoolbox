@@ -141,13 +141,29 @@ fn entropyPrng(io: Io) std.Random.DefaultPrng {
 }
 
 fn entropySeed(io: Io) u64 {
-    // Zig 0.16 removed `std.time.milliTimestamp`; the clock is reached
-    // through the Io handle now (`Io.Clock.real.now(io)`).
-    const ts: u64 = @bitCast(@as(i64, Io.Timestamp.now(io, .real).toMilliseconds()));
+    // NANOSECONDS, not milliseconds. This was `toMilliseconds()`, which
+    // quantises the seed to 1 ms — and `findFreePortRandom` builds a
+    // FRESH PRNG from it on every call. Two calls inside the same
+    // millisecond therefore produced bit-identical output and returned
+    // the SAME port. Measured: 8 consecutive picks all returned 24658;
+    // picks 2 ms apart varied. `makeTempDir` drew from the same seed, so
+    // two tempdirs minted in one millisecond collided on name and burned
+    // one of its 32 retries.
+    //
+    // The process-wide COUNTER is the other half. Nanoseconds alone does
+    // not save the Windows cell, whose default timer granularity is
+    // ~15 ms; the counter makes successive calls distinct regardless.
+    // `toNanoseconds()` widens to i96; truncate to the low 64 bits — a
+    // seed only needs to differ between calls, not to be monotonic.
+    const ts: u64 = @truncate(@as(u96, @bitCast(Io.Timestamp.now(io, .real).toNanoseconds())));
     const pid: u64 = if (is_windows) 0 else @intCast(std.os.linux.getpid());
-    const addr = @intFromPtr(&ts);
-    return ts ^ (pid << 32) ^ addr;
+    const seq = seed_counter.fetchAdd(1, .monotonic);
+    return (ts << 8) ^ (pid << 32) ^ seq ^ @intFromPtr(&ts);
 }
+
+/// Monotonic tie-breaker for `entropySeed`, so two seeds taken in the
+/// same clock tick are still distinct.
+var seed_counter = std.atomic.Value(u64).init(0);
 
 // ============================================================================
 // Errors
@@ -191,16 +207,66 @@ pub const FunctionalHarnessError = error{
 /// this function has always assumed and never actually got. On POSIX
 /// both calls are near-identity.
 pub fn canonical(io: Io, allocator: Allocator, path: []const u8) ![]u8 {
+    // A symlink is resolved to its TARGET, never trusted as itself.
+    //
+    // This is the whole reason the function exists in this shape. On a
+    // DANGLING symlink — `/tmp/pabrik-func-x/sneaky -> /home/alice` —
+    // `realPathFile` does NOT error: it resolves the parent (which
+    // exists), re-appends the name, and returns the LINK's own path.
+    // `isSafeTmp` then sees a tmp-root path carrying the namespace
+    // marker and answers YES, which means a later `deleteTree` would
+    // follow the link out of the tmp root. Python's `os.path.realpath`
+    // resolves as far as it can and returns `/home/alice`, so it answers
+    // NO — the Python harness was right and this was a hole in mine.
+    //
+    // Routing symlinks explicitly also fixes the LIVE-target case for
+    // free: `sneaky -> $HOME` canonicalises to the home directory, which
+    // the "equals orig_home" check then rejects.
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.Io.Dir.cwd().readLink(io, path, &link_buf)) |link_len| {
+        const target = link_buf[0..link_len];
+        const parent = std.fs.path.dirname(path) orelse target;
+        const resolved = if (std.fs.path.isAbsolute(target))
+            try allocator.dupe(u8, target)
+        else
+            try std.fs.path.join(allocator, &.{ parent, target });
+        defer allocator.free(resolved);
+        return allocator.dupe(u8, normcaseSlice(resolved));
+    } else |_| {
+        // Not a symlink — fall through to the normal realpath below.
+    }
+
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const len = std.Io.Dir.cwd().realPathFile(io, path, &buf) catch |err| switch (err) {
-        // A non-existent path has no realpath. Fall back to the input
-        // so the caller's own prefix / absolute-path checks still run
-        // (they fail closed for anything unsafe — a path that does not
-        // exist is not one we are about to delete).
-        error.FileNotFound, error.NameTooLong => return allocator.dupe(u8, path),
+        // The path does not exist. Anchor on the parent's canonical form
+        // and re-append the basename, so the result still reflects a real
+        // directory prefix rather than an unresolved string.
+        error.FileNotFound, error.NameTooLong => return canonicalMissing(io, allocator, path),
         else => return err,
     };
     return allocator.dupe(u8, normcaseSlice(buf[0..len]));
+}
+
+/// Canonicalise a path whose final component does not exist. Resolves
+/// the parent and re-appends the basename; if the parent is gone too,
+/// returns the input unchanged so the caller's prefix and namespace
+/// checks still run against it.
+fn canonicalMissing(io: Io, allocator: Allocator, path: []const u8) ![]u8 {
+    const base = std.fs.path.basename(path);
+    if (base.len == 0 or std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) {
+        return allocator.dupe(u8, path);
+    }
+    const parent = std.fs.path.dirname(path) orelse return allocator.dupe(u8, path);
+    if (parent.len == 0) return allocator.dupe(u8, path);
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = std.Io.Dir.cwd().realPathFile(io, parent, &buf) catch |err| switch (err) {
+        error.FileNotFound, error.NameTooLong => return allocator.dupe(u8, path),
+        else => return err,
+    };
+    const out = try std.fs.path.join(allocator, &.{ buf[0..len], base });
+    defer allocator.free(out);
+    return allocator.dupe(u8, normcaseSlice(out));
 }
 
 fn normcaseSlice(s: []const u8) []const u8 {
@@ -558,6 +624,9 @@ pub const Harness = struct {
     pid: ?u32,
     dry_run: bool,
     stopped: bool = false,
+    /// Set once `deinit` has run, so a second call is a no-op even
+    /// though `freeAll` poisons the struct.
+    dedeinit: bool = false,
     /// Windows-only original env snapshots; empty on POSIX.
     orig_userprofile: []u8,
     orig_appdata: []u8,
@@ -795,7 +864,12 @@ pub const Harness = struct {
     /// `spawn` directly and the parent's env is never touched, so there
     /// is nothing to restore.
     pub fn deinit(self: *Harness, io: Io) !void {
-        if (self.stopped and self.temp_dir.len == 0) return;
+        // Idempotency: `freeAll` ends with `self.* = undefined`, so a
+        // second call would read POISONED memory for `temp_dir.len` and
+        // take the stop/dealloc path again. The flag is checked FIRST
+        // and short-circuits, so `undefined` is never dereferenced.
+        if (self.dedeinit) return;
+        self.dedeinit = true;
         const gpa = self.allocator;
         const temp_dir = self.temp_dir;
 

@@ -30,6 +30,7 @@ const agent_add_mcp_server_test = @import("agent_add_mcp_server_test.zig");
 const agent_create_kanban_task_session_test = @import("agent_create_kanban_task_session_test.zig");
 const agent_kanbans_test = @import("agent_kanbans_test.zig");
 const agent_knowledge_edit_test = @import("agent_knowledge_edit_test.zig");
+const agent_list_directory_relative_path_test = @import("agent_list_directory_relative_path_test.zig");
 const agent_present_files_test = @import("agent_present_files_test.zig");
 const agent_routines_test = @import("agent_routines_test.zig");
 const agent_system_prompt_test = @import("agent_system_prompt_test.zig");
@@ -45,6 +46,7 @@ const background_processes_api_test = @import("background_processes_api_test.zig
 const chat_right_sidebar_git_test = @import("chat_right_sidebar_git_test.zig");
 const command_tool_test = @import("command_tool_test.zig");
 const config_simplify_test = @import("config_simplify_test.zig");
+const config_tools_test = @import("config_tools_test.zig");
 const cross_project_cwd_prompt_test = @import("cross_project_cwd_prompt_test.zig");
 const default_workspace_provisioning_test = @import("default_workspace_provisioning_test.zig");
 const desktop_webapp_404_test = @import("desktop_webapp_404_test.zig");
@@ -57,27 +59,38 @@ const git_file_relative_path_crash_test = @import("git_file_relative_path_crash_
 const git_pr_checks_test = @import("git_pr_checks_test.zig");
 const git_pr_conflicts_test = @import("git_pr_conflicts_test.zig");
 const git_pr_diff_test = @import("git_pr_diff_test.zig");
+const git_pr_gitlab_test = @import("git_pr_gitlab_test.zig");
 const git_pr_status_branch_test = @import("git_pr_status_branch_test.zig");
 const git_pr_status_crash_test = @import("git_pr_status_crash_test.zig");
 const git_pr_status_test = @import("git_pr_status_test.zig");
 const graceful_shutdown_test = @import("graceful_shutdown_test.zig");
+const harness_orphan_reap_test = @import("harness_orphan_reap_test.zig");
+const harness_port_random_test = @import("harness_port_random_test.zig");
+const harness_safety_test = @import("harness_safety_test.zig");
 const hook_zig_fmt_test = @import("hook_zig_fmt_test.zig");
 const hooks_lua_test = @import("hooks_lua_test.zig");
 const kanban_column_run_all_agents_test = @import("kanban_column_run_all_agents_test.zig");
+const kanban_lifecycle_test = @import("kanban_lifecycle_test.zig");
+const kanban_task_create_message_format_test = @import("kanban_task_create_message_format_test.zig");
 const kanban_task_get_test = @import("kanban_task_get_test.zig");
 const kanban_task_image_urls_test = @import("kanban_task_image_urls_test.zig");
 const kanban_task_long_description_test = @import("kanban_task_long_description_test.zig");
 const list_sub_agent_test = @import("list_sub_agent_test.zig");
 const llm_history_model_not_empty_test = @import("llm_history_model_not_empty_test.zig");
 const llm_stream_get_test = @import("llm_stream_get_test.zig");
+const llm_test_test = @import("llm_test_test.zig");
 const mcp_server_toggle_test = @import("mcp_server_toggle_test.zig");
 const mcp_stdio_hang_test = @import("mcp_stdio_hang_test.zig");
+const mcp_stdio_test = @import("mcp_stdio_test.zig");
+const memories_skills_test = @import("memories_skills_test.zig");
+const model_thinking_test = @import("model_thinking_test.zig");
 const new_chat_session_not_found_test = @import("new_chat_session_not_found_test.zig");
 const pabrik_config_test = @import("pabrik_config_test.zig");
 const platform_gates_test = @import("platform_gates_test.zig");
 const progressive_tool_search_regex_test = @import("progressive_tool_search_regex_test.zig");
 const progressive_tool_search_test = @import("progressive_tool_search_test.zig");
 const read_file_raw_content_test = @import("read_file_raw_content_test.zig");
+const responses_tool_output_sanitize_test = @import("responses_tool_output_sanitize_test.zig");
 const server_port_bind_test = @import("server_port_bind_test.zig");
 const session_human_touched_at_test = @import("session_human_touched_at_test.zig");
 const session_list_workspace_test = @import("session_list_workspace_test.zig");
@@ -95,6 +108,7 @@ const smoke_boot_test = @import("smoke_boot_test.zig");
 const spawn_sub_agent_tools_required_test = @import("spawn_sub_agent_tools_required_test.zig");
 const sse_auth_test = @import("sse_auth_test.zig");
 const sse_endtoend_test = @import("sse_endtoend_test.zig");
+const sse_isolation_test = @import("sse_isolation_test.zig");
 const subagent_identity_test = @import("subagent_identity_test.zig");
 const subagent_peek_test = @import("subagent_peek_test.zig");
 const subagent_refresh_test = @import("subagent_refresh_test.zig");
@@ -117,12 +131,14 @@ const web_launch_toggle_test = @import("web_launch_toggle_test.zig");
 const web_search_config_test = @import("web_search_config_test.zig");
 const workspace_isolation_test = @import("workspace_isolation_test.zig");
 const workspace_lifecycle_test = @import("workspace_lifecycle_test.zig");
+const workspace_members_sharing_test = @import("workspace_members_sharing_test.zig");
 
 pub const suites = .{
     agent_add_mcp_server_test,
     agent_create_kanban_task_session_test,
     agent_kanbans_test,
     agent_knowledge_edit_test,
+    agent_list_directory_relative_path_test,
     agent_present_files_test,
     agent_routines_test,
     agent_system_prompt_test,
@@ -138,6 +154,7 @@ pub const suites = .{
     chat_right_sidebar_git_test,
     command_tool_test,
     config_simplify_test,
+    config_tools_test,
     cross_project_cwd_prompt_test,
     default_workspace_provisioning_test,
     desktop_webapp_404_test,
@@ -150,27 +167,38 @@ pub const suites = .{
     git_pr_checks_test,
     git_pr_conflicts_test,
     git_pr_diff_test,
+    git_pr_gitlab_test,
     git_pr_status_branch_test,
     git_pr_status_crash_test,
     git_pr_status_test,
     graceful_shutdown_test,
+    harness_orphan_reap_test,
+    harness_port_random_test,
+    harness_safety_test,
     hook_zig_fmt_test,
     hooks_lua_test,
     kanban_column_run_all_agents_test,
+    kanban_lifecycle_test,
+    kanban_task_create_message_format_test,
     kanban_task_get_test,
     kanban_task_image_urls_test,
     kanban_task_long_description_test,
     list_sub_agent_test,
     llm_history_model_not_empty_test,
     llm_stream_get_test,
+    llm_test_test,
     mcp_server_toggle_test,
     mcp_stdio_hang_test,
+    mcp_stdio_test,
+    memories_skills_test,
+    model_thinking_test,
     new_chat_session_not_found_test,
     pabrik_config_test,
     platform_gates_test,
     progressive_tool_search_regex_test,
     progressive_tool_search_test,
     read_file_raw_content_test,
+    responses_tool_output_sanitize_test,
     server_port_bind_test,
     session_human_touched_at_test,
     session_list_workspace_test,
@@ -188,6 +216,7 @@ pub const suites = .{
     spawn_sub_agent_tools_required_test,
     sse_auth_test,
     sse_endtoend_test,
+    sse_isolation_test,
     subagent_identity_test,
     subagent_peek_test,
     subagent_refresh_test,
@@ -210,6 +239,7 @@ pub const suites = .{
     web_search_config_test,
     workspace_isolation_test,
     workspace_lifecycle_test,
+    workspace_members_sharing_test,
 };
 
 test {
