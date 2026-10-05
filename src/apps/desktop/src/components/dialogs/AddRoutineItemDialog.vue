@@ -14,6 +14,7 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = defineProps<{ show: boolean }>()
 
@@ -103,7 +104,7 @@ onBeforeUnmount(() => {
         >
           <div class="px-5 pt-5 pb-4">
             <h3 id="add-routine-title" class="text-lead font-semibold flex items-center gap-2" style="color: var(--semantic-text);">
-              <span aria-hidden="true">⏰</span>
+              <UiIcon name="stopwatch" />
               Add Routine
             </h3>
             <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
@@ -148,7 +149,7 @@ onBeforeUnmount(() => {
                 {{ selectedPath || 'Choose folder...' }}
               </span>
               <span v-if="selectedPath" class="text-dense shrink-0" style="color: var(--semantic-text-dim);">Browse</span>
-              <span v-else class="text-dense shrink-0" style="color: var(--semantic-text-dim);">📂</span>
+              <UiIcon v-else name="folder-open" class="w-4 h-4 shrink-0" style="color: var(--semantic-text-dim);" />
             </button>
             <p v-if="pathError" class="text-dense mt-1" style="color: var(--color-red);">{{ pathError }}</p>
           </div>

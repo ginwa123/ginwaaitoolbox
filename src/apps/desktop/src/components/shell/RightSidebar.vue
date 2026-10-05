@@ -3,6 +3,8 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import FolderExplorer from '../file/FolderExplorer.vue'
 import RightSideBarSkillList from './RightSideBarSkillList.vue'
 import GitCommits from '../git/GitCommits.vue'
+import UiIcon from '../ui/UiIcon.vue'
+import type { UiIconName } from '../ui/icons'
 import type { FolderEntry } from '../../api'
 import * as api from '../../api'
 
@@ -90,16 +92,16 @@ const hasChanges = computed(
 const changesCount = computed(() => stagedFiles.value.length + unstagedFiles.value.length)
 
 // Get status display helpers
-const getStatusIcon = (status: string): string => {
-  const icons: Record<string, string> = {
-    M: '📝',
-    A: '➕',
-    D: '🗑️',
-    R: '🔄',
-    C: '📋',
-    '??': '❓',
+const getStatusIcon = (status: string): UiIconName => {
+  const icons: Record<string, UiIconName> = {
+    M: 'note',
+    A: 'plus',
+    D: 'trash',
+    R: 'refresh',
+    C: 'clipboard',
+    '??': 'circle',
   }
-  return icons[status] || '📄'
+  return icons[status] || 'file'
 }
 
 const getStatusText = (status: string): string => {
@@ -114,12 +116,12 @@ const getStatusText = (status: string): string => {
   return texts[status] || 'Changed'
 }
 
-const getDisplayStatus = (file: api.GitFileChange): { icon: string; text: string } => {
+const getDisplayStatus = (file: api.GitFileChange): { icon: UiIconName; text: string } => {
   const indexStatus = file.index_status === ' ' ? '' : file.index_status
   const worktreeStatus = file.worktree_status === ' ' ? '' : file.worktree_status
 
   if (file.index_status === '??') {
-    return { icon: '❓', text: 'Untracked' }
+    return { icon: 'circle', text: 'Untracked' }
   }
 
   if (indexStatus) {
@@ -130,7 +132,7 @@ const getDisplayStatus = (file: api.GitFileChange): { icon: string; text: string
     return { icon: getStatusIcon(worktreeStatus), text: getStatusText(worktreeStatus) }
   }
 
-  return { icon: '📄', text: 'Changed' }
+  return { icon: 'file', text: 'Changed' }
 }
 
 // Load git status
@@ -288,7 +290,7 @@ const handleSkillClick = (skill: api.Skill) => {
               activeTab === 'skills' ? '2px solid var(--color-violet)' : '2px solid transparent',
           }"
         >
-          🧠 Skills
+          <UiIcon name="brain" /> Skills
         </button>
       </div>
     </div>
@@ -342,7 +344,7 @@ const handleSkillClick = (skill: api.Skill) => {
           v-else-if="!isGitRepo || !hasInput"
           class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         >
-          <span class="text-display mb-3">🌿</span>
+          <UiIcon name="leaf" size-class="w-6 h-6" class="mb-3" />
           <p class="text-dense" style="color: var(--semantic-text-dim)">
             {{ !hasInput ? 'Select a workspace to view git status' : 'Not a git repository' }}
           </p>
@@ -394,7 +396,7 @@ const handleSkillClick = (skill: api.Skill) => {
                 class="px-3 py-2 text-dense flex items-center gap-2"
                 style="border-bottom: 1px solid var(--color-border)"
               >
-                <span style="color: var(--semantic-text-muted)">🌿</span>
+                <UiIcon name="leaf" style="color: var(--semantic-text-muted)" />
                 <span style="color: var(--semantic-text)">{{ branch }}</span>
                 <button
                   @click="refreshGitStatus"
@@ -432,7 +434,7 @@ const handleSkillClick = (skill: api.Skill) => {
                   class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:opacity-80"
                   @click="handleFileClick(file, true)"
                 >
-                  <span class="text-lead">{{ getDisplayStatus(file).icon }}</span>
+                  <UiIcon :name="getDisplayStatus(file).icon" size-class="w-4 h-4" />
                   <span class="flex-1 truncate text-left" style="color: var(--semantic-text)">
                     {{ file.path }}
                   </span>
@@ -459,7 +461,7 @@ const handleSkillClick = (skill: api.Skill) => {
                   class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:opacity-80"
                   @click="handleFileClick(file, false)"
                 >
-                  <span class="text-lead">{{ getDisplayStatus(file).icon }}</span>
+                  <UiIcon :name="getDisplayStatus(file).icon" size-class="w-4 h-4" />
                   <span class="flex-1 truncate text-left" style="color: var(--semantic-text)">
                     {{ file.path }}
                   </span>
@@ -486,7 +488,7 @@ const handleSkillClick = (skill: api.Skill) => {
                   class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:opacity-80"
                   @click="handleFileClick(file, false)"
                 >
-                  <span class="text-lead">❓</span>
+                  <UiIcon name="circle" size-class="w-4 h-4" />
                   <span class="flex-1 truncate text-left" style="color: var(--semantic-text-muted)">
                     {{ file.path }}
                   </span>

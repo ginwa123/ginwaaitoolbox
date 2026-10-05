@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import PabrikSettings from '../PabrikSettings.vue'
 import SkillsSettings from '../preview/SkillsSettings.vue'
 import MemoriesSettings from '../memory/MemoriesSettings.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const router = useRouter()
 
@@ -76,7 +77,7 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
-          <span class="text-title-sm">🤖</span>
+          <UiIcon name="robot" size-class="w-4.5 h-4.5" />
           <span>Pabrik</span>
         </button>
 
@@ -87,7 +88,7 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
-          <span class="text-title-sm">🛠️</span>
+          <UiIcon name="tools" size-class="w-4.5 h-4.5" />
           <span>Skills</span>
         </button>
 
@@ -98,7 +99,7 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
-          <span class="text-title-sm">🧠</span>
+          <UiIcon name="brain" size-class="w-4.5 h-4.5" />
           <span>Memories</span>
         </button>
       </nav>

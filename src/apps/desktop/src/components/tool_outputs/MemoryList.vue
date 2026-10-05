@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import UiIcon from '../ui/UiIcon.vue'
 import { getMemories, type Memory } from '../../api'
 
 const props = defineProps<{
@@ -93,7 +94,7 @@ defineExpose({
         @click="openMemory(mem)"
       >
         <div class="flex items-start gap-3">
-          <span class="text-title-sm mt-0.5">🧠</span>
+          <UiIcon name="brain" class="w-5 h-5 mt-0.5" />
           <div class="flex-1 min-w-0">
             <h3 class="text-body font-medium truncate" style="color: var(--semantic-text);">
               {{ mem.title }}

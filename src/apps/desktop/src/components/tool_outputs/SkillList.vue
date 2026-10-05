@@ -9,6 +9,7 @@
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import UiIcon from '../ui/UiIcon.vue'
 import { Effect } from 'effect'
 import { getSkills, type Skill } from '../../api'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -129,7 +130,7 @@ defineExpose({
         @click="openSkillDetail(skill)"
       >
         <div class="flex items-start gap-3">
-          <span class="text-title-sm mt-0.5">🧠</span>
+          <UiIcon name="brain" class="w-5 h-5 mt-0.5" />
           <div class="flex-1 min-w-0">
             <h3 class="text-body font-medium truncate" style="color: var(--semantic-text)">
               {{ skill.name }}

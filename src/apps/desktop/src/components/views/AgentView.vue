@@ -18,6 +18,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import * as api from '../../api'
 import { useAgentToolsStore } from '../../stores/agentTools'
 import type { WorkspaceItem } from '../../stores/workspaces'
+import UiIcon from '../ui/UiIcon.vue'
 
 /** Agnostic row types — AgentView is reused for `item_type='agent'`, kanban boards and routines.
  *  Agent rows use `agent_id`, kanban rows use `kanban_id`, routine rows use
@@ -240,7 +241,7 @@ function handleClearAllVisible() {
             <input
               v-model="searchQuery"
               type="text"
-              placeholder="🔍 Search tools…"
+              placeholder="Search tools…"
               aria-label="Search tools by name or description"
               class="w-full px-2 py-1.5 pr-7 rounded text-dense outline-none focus:ring-1"
               style="
@@ -449,7 +450,7 @@ function handleClearAllVisible() {
       <section data-testid="agent-system-prompt-panel" class="rounded-xl p-4" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
         <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
-            <span aria-hidden="true" class="text-body">📝</span>
+            <UiIcon name="note" size-class="w-3.5 h-3.5" />
             <h3 class="text-body font-semibold" style="color: var(--semantic-text);">System Prompt</h3>
             <span
               class="text-micro font-semibold px-1.5 py-0.5 rounded-full"
@@ -472,7 +473,7 @@ function handleClearAllVisible() {
         </div>
 
         <div v-if="systemPrompts.length === 0" class="text-dense text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
-          <div class="text-title-sm mb-1" aria-hidden="true">📝</div>
+          <UiIcon name="note" size-class="w-4.5 h-4.5" class="mb-1" />
           <div>No system prompts yet.</div>
           <div class="mt-1">Add one to give this Agent a persona or standing instructions.</div>
         </div>
@@ -540,7 +541,7 @@ function handleClearAllVisible() {
       <section data-testid="agent-knowledge-panel" class="rounded-xl p-4" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
         <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
-            <span aria-hidden="true" class="text-body">📚</span>
+            <UiIcon name="books" size-class="w-3.5 h-3.5" />
             <h2 class="text-body font-semibold" style="color: var(--semantic-text);">
               Knowledge
             </h2>
@@ -567,7 +568,7 @@ function handleClearAllVisible() {
           </button>
         </div>
         <div v-if="knowledge.length === 0" class="text-dense text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
-          <div class="text-title-sm mb-1" aria-hidden="true">📚</div>
+          <UiIcon name="books" size-class="w-4.5 h-4.5" class="mb-1" />
           <div>No knowledge files yet.</div>
           <div class="mt-1">Click <strong>+ Add</strong> to attach a markdown file the agent will read on every chat start.</div>
         </div>
@@ -670,7 +671,7 @@ function handleClearAllVisible() {
 
 
       <div class="text-dense p-3 rounded-xl text-center" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);">
-        <span aria-hidden="true">💡</span> Start a conversation from the sidebar. The system prompt is injected first, then knowledge files are loaded into context, and only the tools you've enabled will be available.
+        <UiIcon name="tip" size-class="w-3 h-3" /> Start a conversation from the sidebar. The system prompt is injected first, then knowledge files are loaded into context, and only the tools you've enabled will be available.
       </div>
     </div>
   </div>

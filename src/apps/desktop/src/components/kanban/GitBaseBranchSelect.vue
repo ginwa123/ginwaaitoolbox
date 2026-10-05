@@ -20,6 +20,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { listGitBranches, type GitBranchEntry } from '@/api'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -191,7 +192,7 @@ watch(
       data-testid="git-base-branch-select-trigger"
       @click.stop="toggleOpen"
     >
-      <span aria-hidden="true">🌿</span>
+      <UiIcon name="leaf" />
       <span class="font-medium">Base branch</span>
       <span
         class="font-mono truncate max-w-[200px] inline-block align-middle"

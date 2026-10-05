@@ -43,7 +43,7 @@
       fetched source (≤ 512 KB, sliced to 200k chars) rendered via
       `PreviewContentRenderer` — markdown for `.md`, code + language for
       known code extensions, plain text otherwise.
-    - everything else: generic 📄 row (icon + name + size + mime + ⬇).
+    - everything else: generic file row (icon + name + size + mime + ⬇).
 
   Header (always visible):
     `present_files → N files ✓` (success)
@@ -59,6 +59,7 @@ import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
 import PreviewContentRenderer from '../preview/PreviewContentRenderer.vue'
+import UiIcon from '../ui/UiIcon.vue'
 import {
   autoResizeScript,
   findSenderFrame,
@@ -451,7 +452,7 @@ const openInNewTab = (f: ParsedPresentFile) => {
               @click="openFullscreen(f)"
               @error="(e) => ((e.target as HTMLImageElement).style.display = 'none')"
             />
-            <span v-else class="shrink-0 text-lead leading-none" aria-hidden="true">📄</span>
+            <UiIcon v-else name="file" class="shrink-0 w-4 h-4 leading-none" />
             <div class="flex min-w-0 flex-1 flex-col">
               <a
                 :href="downloadUrl(f)"

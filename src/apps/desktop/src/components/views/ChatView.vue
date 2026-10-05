@@ -128,6 +128,8 @@ import CreatePrDialog from '../dialogs/CreatePrDialog.vue'
 import CreateWorktreeDialog from '../dialogs/CreateWorktreeDialog.vue'
 import { parseSpawnSubAgentArgs } from '../../helpers/parseSpawnSubAgentArgs'
 import type { SubAgentArgs } from '../../helpers/parseSpawnSubAgentArgs'
+import { ICON_PATHS } from '../ui/icons'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = defineProps<{
   chatId: string
@@ -239,7 +241,10 @@ const setupCodeBlockCopyButtons = () => {
       const content = code.textContent || ''
       const btn = document.createElement('button')
       btn.className = 'code-copy-btn'
-      btn.innerHTML = '📋'
+      // Built imperatively (post-render decoration), so it cannot mount a
+      // <UiIcon>; it renders the registry's own `clipboard` paths instead of
+      // a hand-copied <path>, so the copy button stays on the one geometry.
+      btn.innerHTML = `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS.clipboard.map((d) => `<path d="${d}"/>`).join('')}</svg>`
       btn.title = 'Copy code'
       btn.style.cssText =
         'position: absolute; top: 8px; right: 8px; padding: 4px 8px; font-size: 12px; cursor: pointer; border: none; background: rgba(255,255,255,0.1); border-radius: 4px; opacity: 0.7; transition: opacity 0.2s;'
@@ -1728,7 +1733,7 @@ const userPills = computed((): UserPill[] => {
       .map((m) => m.content || '')
       .join('\n')
       .trim()
-    const preview = text.slice(0, 60) || '📷 Image'
+    const preview = text.slice(0, 60) || 'Image'
     pills.push({ groupIndex: i, key: groupKey(g), preview, title: `${preview}` })
   })
   return pills
@@ -4625,7 +4630,7 @@ const compactSession = async () => {
             class="w-16 h-16 rounded-2xl mb-4 flex items-center justify-center text-display"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue))"
           >
-            💬
+            <UiIcon name="chat" size-class="w-7 h-7" />
           </div>
           <h3 class="text-title-sm font-medium mb-2" style="color: var(--semantic-text)">
             How can I help you?

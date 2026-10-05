@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import LocalMemoryDetailView from './LocalMemoryDetailView.vue'
+import UiIcon from '../ui/UiIcon.vue'
 import {
   listLocalMemories,
   type Memory,
@@ -94,7 +95,7 @@ watch(
     >
       <div class="flex flex-col min-w-0">
         <div class="flex items-center gap-2">
-          <span aria-hidden="true" class="text-body">🧠</span>
+          <UiIcon name="brain" size-class="w-3.5 h-3.5" />
           <h3 class="text-body font-semibold truncate" style="color: var(--semantic-text);">
             {{ itemName || 'Local Memories' }}
           </h3>
@@ -199,7 +200,7 @@ watch(
       style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);"
       data-testid="workspace-item-memories-empty"
     >
-      <div class="text-title-sm mb-1" aria-hidden="true">🧠</div>
+      <UiIcon name="brain" size-class="w-4.5 h-4.5" class="mb-1" />
       <p class="text-dense font-medium" style="color: var(--semantic-text-dim);">
         No memories yet
       </p>
@@ -228,7 +229,7 @@ watch(
             :data-testid="`workspace-item-memories-row-${mem.name}`"
           >
             <div class="flex items-start gap-2 min-w-0">
-              <span class="text-lead">🧠</span>
+              <UiIcon name="brain" size-class="w-4 h-4" />
               <div class="flex-1 min-w-0">
                 <h3
                   class="text-body font-medium truncate"

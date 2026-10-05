@@ -42,6 +42,7 @@ import { ref, watch, nextTick } from 'vue'
 import { createLocalMemory, getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import { useNotificationStore } from '../../stores/notifications'
 import FilePickerDialog from '../FilePickerDialog.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = withDefaults(defineProps<{
   show: boolean
@@ -259,7 +260,7 @@ watch(() => props.show, async (show) => {
               class="text-lead font-semibold flex items-center gap-2"
               style="color: var(--semantic-text);"
             >
-              <span aria-hidden="true">📝</span>
+              <UiIcon name="note" />
               Add Markdown
             </h3>
             <p
@@ -306,12 +307,12 @@ watch(() => props.show, async (show) => {
                 style="color: var(--semantic-text-dim);"
                 aria-hidden="true"
               >Browse</span>
-              <span
+              <UiIcon
                 v-else
-                class="text-dense shrink-0"
+                name="folder-open"
+                class="w-4 h-4 shrink-0"
                 style="color: var(--semantic-text-dim);"
-                aria-hidden="true"
-              >📂</span>
+              />
             </button>
           </div>
 

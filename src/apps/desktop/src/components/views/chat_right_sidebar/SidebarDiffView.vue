@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import UiIcon from '../../ui/UiIcon.vue'
 import DiffCommentBox, {
   copyTextToClipboard,
   deleteSavedComment,
@@ -265,7 +266,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
     </div>
 
     <div v-else-if="lines.length === 0" class="flex flex-col items-center justify-center p-4">
-      <span class="text-title-lg mb-2">📄</span>
+      <UiIcon name="file" size-class="w-6 h-6" class="mb-2" />
       <p class="text-dense" style="color: var(--semantic-text-dim)">No changes detected</p>
     </div>
 

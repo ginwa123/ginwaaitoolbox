@@ -28,6 +28,7 @@
 import { ref, computed, onMounted, nextTick, onBeforeUnmount } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = defineProps<{
   /** Absolute path used as the initial parent directory (typically the session cwd). */
@@ -167,7 +168,7 @@ onBeforeUnmount(() => {
               class="text-lead font-semibold flex items-center gap-2"
               style="color: var(--semantic-text);"
             >
-              <span aria-hidden="true">🌳</span>
+              <UiIcon name="tree" />
               Create a worktree
             </h3>
             <p
@@ -219,12 +220,19 @@ onBeforeUnmount(() => {
               {{ parentDir === '/' ? 'Choose parent directory…' : parentDir }}
             </span>
             <span
+              v-if="parentDir && parentDir !== '/'"
               class="text-dense shrink-0"
               style="color: var(--semantic-text-dim);"
               aria-hidden="true"
             >
-              {{ parentDir && parentDir !== '/' ? 'Change' : '📂' }}
+              Change
             </span>
+            <UiIcon
+              v-else
+              name="folder-open"
+              class="w-4 h-4 shrink-0"
+              style="color: var(--semantic-text-dim);"
+            />
           </button>
         </div>
 

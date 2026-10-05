@@ -114,10 +114,14 @@ describe('SetGitWorktree', () => {
     expect(wrapper.text()).toContain('Worktree binding removed and directory deleted.')
   })
 
-  it('does NOT include the 🌳 emoji in the header (matches other tool components which are emoji-free)', () => {
+  it('draws no icon at all, unlike the components that lead with one', () => {
     wrapper = mount(SetGitWorktree, {
       props: { content: SET_SUCCESS },
     })
-    expect(wrapper.text()).not.toContain('🌳')
+    // `UiIcon` stamps every icon it renders with data-testid="ui-icon",
+    // so one assertion covers every glyph instead of a per-emoji blacklist
+    // that goes stale the moment someone adds a name to the registry.
+    expect(wrapper.find('[data-testid="ui-icon"]').exists()).toBe(false)
+    expect(wrapper.find('[data-icon="tree"]').exists()).toBe(false)
   })
 })

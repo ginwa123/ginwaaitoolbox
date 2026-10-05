@@ -62,6 +62,14 @@ const props = withDefaults(
 // backticks — the inline-code styling takes over.
 const FILE_PATH_REGEX = /@?(\/[^\s)\]}>,"'<`]+)/g
 
+// The chip is built as an HTML string and injected with v-html, so a Vue
+// component cannot draw its leading mark. These are the `file` subpaths from
+// `components/ui/icons.ts`, inlined once so the chip and
+// `<UiIcon name="file">` render the same shape. Both subpaths share one
+// `<path>` — a multi-subpath `d` draws identically to two sibling paths.
+const FILE_CHIP_MARK =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2zM14 2v5a1 1 0 0 0 1 1h5"/></svg>'
+
 // Private-use Unicode char used as a sentinel in the source before it
 // is fed to marked. Marked treats unknown chars as plain text and
 // passes them through verbatim, so the placeholder survives the
@@ -143,7 +151,7 @@ const renderedHtml = computed<string>(() => {
   for (let i = 0; i < chips.length; i++) {
     const placeholder = `${PLACEHOLDER_PREFIX}${i}${PLACEHOLDER_SUFFIX}`
     const path = chips[i] ?? ''
-    const chip = `<span class="md-file-chip" data-file-path="${path}">📄 ${path}</span>`
+    const chip = `<span class="md-file-chip" data-file-path="${path}">${FILE_CHIP_MARK} ${path}</span>`
     html = html.split(placeholder).join(chip)
   }
   for (let i = 0; i < dataUrls.length; i++) {

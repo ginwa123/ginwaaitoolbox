@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { SkillInfo } from '../../api'
+import UiIcon from '../ui/UiIcon.vue'
 
 defineProps<{
   show: boolean
@@ -56,7 +57,7 @@ const formatDate = (ts: number | undefined): string => {
             style="border-bottom: 1px solid var(--color-border);"
           >
             <div class="flex items-center gap-2">
-              <span class="text-title">🧠</span>
+              <UiIcon name="brain" size-class="w-5 h-5" />
               <h3
                 class="text-lead font-semibold"
                 style="color: var(--semantic-text);"
@@ -84,7 +85,7 @@ const formatDate = (ts: number | undefined): string => {
           <!-- Skills List -->
           <div class="flex-1 overflow-y-auto p-3">
             <div v-if="skills.length === 0" class="text-center py-8">
-              <span class="text-display mb-2 block">📭</span>
+              <UiIcon name="inbox" size-class="w-7 h-7" class="mb-2" />
               <p class="text-body" style="color: var(--semantic-text-dim);">
                 No skills loaded for this session
               </p>
@@ -99,7 +100,7 @@ const formatDate = (ts: number | undefined): string => {
                 style="background-color: var(--semantic-active-bg); border: 1px solid var(--color-border);"
               >
                 <div class="flex items-start gap-3">
-                  <span class="text-title mt-0.5">📜</span>
+                  <UiIcon name="scroll" size-class="w-5 h-5" class="mt-0.5" />
                   <div class="flex-1 min-w-0">
                     <h4
                       class="text-body font-medium truncate"

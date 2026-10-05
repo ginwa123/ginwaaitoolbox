@@ -25,6 +25,7 @@ import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsView from './views/KanbanSettingsView.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
+import UiIcon from './ui/UiIcon.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useTabsStore } from '../stores/tabs'
 import { sameRouteQuery, withTabParam } from '../helpers/tabTarget'
@@ -2956,7 +2957,7 @@ defineExpose({
               </svg>
             </button>
             <h2 class="text-lead font-semibold" style="color: var(--semantic-text)">
-              🧠 {{ skillViewerSkill?.name }}
+              <UiIcon name="brain" class="w-4 h-4" /> {{ skillViewerSkill?.name }}
             </h2>
           </div>
         </div>

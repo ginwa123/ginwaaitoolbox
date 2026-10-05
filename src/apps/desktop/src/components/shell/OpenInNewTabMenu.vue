@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import UiIcon from '../ui/UiIcon.vue'
 /**
  * Shared right-click menu for kanban task cards.
  * Teleported to body so overflow ancestors (virtual scrollers,
@@ -102,7 +103,7 @@ const emit = defineEmits<{
         class="block w-full text-left px-3 py-1.5 hover:opacity-80"
         @click="emit('settings')"
       >
-        <span aria-hidden="true" class="mr-2 opacity-70">⚙</span>Go to settings
+        <UiIcon name="settings" class="mr-2 opacity-70" />Go to settings
       </button>
     </div>
   </Teleport>

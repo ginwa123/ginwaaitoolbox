@@ -6,9 +6,9 @@
     emits:  update:modelValue [value: string]
 
   Behaviour:
-    - Compact input (w-48 ≈ 192px). Sits to the LEFT of the ⚙️ Settings
+    - Compact input (w-48 ≈ 192px). Sits to the LEFT of the Settings
       button in the kanban header.
-    - Placeholder: "🔍 Search tasks…".
+    - Placeholder: "Search tasks…", behind a leading search mark.
     - On input → emits update:modelValue with the new value.
     - On Esc keydown → emits update:modelValue with '' (clears).
     - ✕ clear button appears inside the input when value is non-empty;
@@ -20,6 +20,8 @@
   Plan: docs/superpowers/plans/2026-07-30-kanban-task-search.md Chunk 5
 -->
 <script setup lang="ts">
+import UiIcon from '../ui/UiIcon.vue'
+
 defineProps<{ modelValue: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
@@ -45,13 +47,18 @@ const onKeyDown = (e: KeyboardEvent) => {
     class="relative flex items-center"
     data-testid="kanban-search-input-container"
   >
+    <UiIcon
+      name="search"
+      class="absolute left-2 w-3.5 h-3.5 pointer-events-none"
+      style="color: var(--semantic-text-dim);"
+    />
     <input
       :value="modelValue"
       @input="onInput"
       @keydown="onKeyDown"
       type="text"
-      placeholder="🔍 Search tasks…"
-      class="w-48 px-2 py-1 pr-7 rounded text-dense outline-none focus:ring-1"
+      placeholder="Search tasks…"
+      class="w-48 pl-7 pr-7 py-1 rounded text-dense outline-none focus:ring-1"
       style="
         background-color: var(--semantic-card-bg);
         border: 1px solid var(--color-border);

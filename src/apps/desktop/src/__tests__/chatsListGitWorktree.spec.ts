@@ -203,7 +203,7 @@ describe('ChatsList git icon', () => {
     await nextTick()
 
     expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('🤖')
+    expect(wrapper.find('[data-icon="robot"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('gpt-4o')
   })
 
