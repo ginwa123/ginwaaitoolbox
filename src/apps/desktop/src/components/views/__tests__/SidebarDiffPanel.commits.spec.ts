@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
 const { getGitChangesMock, getGitCommitsMock, getGitCommitDetailMock, getGitCommitFileDiffMock } =
   vi.hoisted(() => ({
@@ -17,6 +18,7 @@ vi.mock('../../../api', async () => {
     ...actual,
     getGitChanges: getGitChangesMock,
     getGitFileDiff: vi.fn(),
+    getGitFolderDiffs: vi.fn(async () => ({ diffs: [] })),
     getGitCommits: getGitCommitsMock,
     getGitCommitDetail: getGitCommitDetailMock,
     getGitCommitFileDiff: getGitCommitFileDiffMock,
@@ -69,6 +71,7 @@ const mountOnCommits = async () => {
 
 describe('SidebarDiffPanel commits file click', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue({
       is_git_repo: true,

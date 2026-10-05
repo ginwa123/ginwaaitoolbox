@@ -11,15 +11,17 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
 const testRouter = createRouter({
   history: createMemoryHistory(),
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock } = vi.hoisted(() => ({
+const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock } = vi.hoisted(() => ({
   getGitChangesMock: vi.fn(),
   getGitFileDiffMock: vi.fn(),
+  getGitFolderDiffsMock: vi.fn(),
 }))
 
 vi.mock('../../../api', async () => {
@@ -28,6 +30,7 @@ vi.mock('../../../api', async () => {
     ...actual,
     getGitChanges: getGitChangesMock,
     getGitFileDiff: getGitFileDiffMock,
+    getGitFolderDiffs: getGitFolderDiffsMock,
     stageGitFiles: vi.fn(),
     unstageGitFiles: vi.fn(),
   }
@@ -44,9 +47,11 @@ const CHANGES = {
 
 describe('SidebarDiffPanel branch source of truth', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
     getGitFileDiffMock.mockResolvedValue({ path: '', diff_content: '', staged: false })
+    getGitFolderDiffsMock.mockResolvedValue({ diffs: [] })
   })
 
   it('prefers the drilled branch prop over the fetched branch', async () => {

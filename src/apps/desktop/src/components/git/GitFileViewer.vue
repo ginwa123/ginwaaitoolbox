@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import * as api from '../../api'
 import type { GitFileDiff } from '../../api'
-import DiffCommentBox, { type DiffCommentSavePayload } from '../views/chat_right_sidebar/DiffCommentBox.vue'
+import { fetchFolderDiff } from '../../helpers/folderDiffCache'
+import DiffCommentBox, {
+  type DiffCommentSavePayload,
+} from '../views/chat_right_sidebar/DiffCommentBox.vue'
 import {
   escapeDiffHtml,
   parseUnifiedDiff,
@@ -51,36 +53,41 @@ const openMiniChat = (event: MouseEvent, line: DiffLine) => {
   console.log('[GitFileViewer] openMiniChat called', line.type, line.content.substring(0, 30))
   event.preventDefault()
   event.stopPropagation()
-  
+
   // Get click position
   miniChatPosition.value = {
     x: event.clientX,
-    y: event.clientY
+    y: event.clientY,
   }
-  
+
   // Build diff context (include nearby lines for context)
   const lineIdx = diffLines.value.indexOf(line)
   const startIdx = Math.max(0, lineIdx - 3)
   const endIdx = Math.min(diffLines.value.length, lineIdx + 4)
-  
+
   const contextLines = diffLines.value.slice(startIdx, endIdx)
-  
+
   // Guard: ensure contextLines is not empty
   if (contextLines.length === 0) return
-  
+
   // Store file path and line numbers for review header
   miniChatFilePath.value = props.filePath
   miniChatFileName.value = props.fileName
   miniChatStartLine.value = contextLines[0]!.newLineNum || contextLines[0]!.oldLineNum || 0
-  miniChatEndLine.value = contextLines[contextLines.length - 1]!.newLineNum || contextLines[contextLines.length - 1]!.oldLineNum || 0
-  
+  miniChatEndLine.value =
+    contextLines[contextLines.length - 1]!.newLineNum ||
+    contextLines[contextLines.length - 1]!.oldLineNum ||
+    0
+
   // Build content with line numbers
-  miniChatContent.value = contextLines.map(l => {
-    const prefix = l.type === 'add' ? '+' : l.type === 'remove' ? '-' : ' '
-    const lineNum = l.newLineNum || l.oldLineNum || ''
-    return `${lineNum} ${prefix}${l.content}`
-  }).join('\n')
-  
+  miniChatContent.value = contextLines
+    .map((l) => {
+      const prefix = l.type === 'add' ? '+' : l.type === 'remove' ? '-' : ' '
+      const lineNum = l.newLineNum || l.oldLineNum || ''
+      return `${lineNum} ${prefix}${l.content}`
+    })
+    .join('\n')
+
   console.log('[GitFileViewer] showMiniChat set to true')
   showMiniChat.value = true
 }
@@ -118,19 +125,14 @@ const loadDiff = async () => {
   error.value = null
 
   try {
-    console.log('[GitFileViewer] Fetching diff for:', props.filePath, 'staged:', props.staged)
-    diff.value = await api.getGitFileDiff(props.cwd, props.filePath, props.staged)
-    
-    console.log('[GitFileViewer] Got diff response:', {
-      path: diff.value.path,
-      diffLength: diff.value.diff_content.length,
-      diffPreview: diff.value.diff_content.substring(0, 500),
-    })
-    
+    // Folder mode, via the shared snapshot: the diff panel primes this cache
+    // for the whole repo, so opening a file it already listed costs ZERO
+    // requests. On a miss this is ONE folder request (deduped across every
+    // reader for this cwd), not a per-file one.
+    diff.value = await fetchFolderDiff(props.cwd, props.filePath, props.staged)
+
     // Parse the unified diff
     applyParsedDiff(diff.value.diff_content)
-    
-    console.log('[GitFileViewer] Parsed lines:', diffLines.value.length, 'stats:', stats.value)
   } catch (err) {
     console.error('[GitFileViewer] Failed to load diff:', err)
     error.value = 'Failed to load file diff'
@@ -140,9 +142,12 @@ const loadDiff = async () => {
 }
 
 // Watch for changes
-watch(() => [props.cwd, props.filePath, props.staged], () => {
-  loadDiff()
-})
+watch(
+  () => [props.cwd, props.filePath, props.staged],
+  () => {
+    loadDiff()
+  },
+)
 
 onMounted(() => {
   loadDiff()
@@ -150,18 +155,18 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="git-file-viewer flex flex-col h-full" style="background: var(--semantic-card-bg);">
+  <div class="git-file-viewer flex flex-col h-full" style="background: var(--semantic-card-bg)">
     <!-- Header -->
     <div
       class="flex items-center h-10 px-4 shrink-0 gap-3"
-      style="background: var(--color-bg-m2); border-bottom: 1px solid var(--color-border);"
+      style="background: var(--color-bg-m2); border-bottom: 1px solid var(--color-border)"
     >
       <!-- File icon and name -->
       <div class="flex items-center gap-2 flex-1 min-w-0">
         <span class="text-body">📄</span>
         <span
           class="text-body font-medium truncate"
-          style="color: var(--semantic-text);"
+          style="color: var(--semantic-text)"
           :title="filePath"
         >
           {{ fileName }}
@@ -169,7 +174,7 @@ onMounted(() => {
         <span
           v-if="staged"
           class="text-dense px-1.5 py-0.5 rounded"
-          style="background: rgba(135, 169, 135, 0.15); color: var(--color-green);"
+          style="background: rgba(135, 169, 135, 0.15); color: var(--color-green)"
         >
           Staged
         </span>
@@ -177,8 +182,8 @@ onMounted(() => {
 
       <!-- Stats -->
       <div class="flex items-center gap-3 text-dense font-mono">
-        <span style="color: var(--color-green);">+{{ stats.added }}</span>
-        <span style="color: var(--color-red);">-{{ stats.removed }}</span>
+        <span style="color: var(--color-green)">+{{ stats.added }}</span>
+        <span style="color: var(--color-red)">-{{ stats.removed }}</span>
       </div>
 
       <!-- Close button -->
@@ -187,28 +192,48 @@ onMounted(() => {
         class="p-1.5 rounded hover:opacity-70 transition-opacity"
         title="Close"
       >
-        <svg class="w-4 h-4" style="color: var(--semantic-text-dim);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        <svg
+          class="w-4 h-4"
+          style="color: var(--semantic-text-dim)"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M6 18L18 6M6 6l12 12"
+          />
         </svg>
       </button>
     </div>
 
     <!-- Loading -->
     <div v-if="isLoading" class="flex-1 flex items-center justify-center">
-      <svg class="animate-spin w-6 h-6" style="color: var(--color-aqua);" viewBox="0 0 24 24" fill="none">
-        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+      <svg
+        class="animate-spin w-6 h-6"
+        style="color: var(--color-aqua)"
+        viewBox="0 0 24 24"
+        fill="none"
+      >
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+        <path
+          class="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+        />
       </svg>
     </div>
 
     <!-- Error -->
     <div v-else-if="error" class="flex-1 flex flex-col items-center justify-center p-4">
       <span class="text-display mb-3">⚠️</span>
-      <p class="text-body" style="color: var(--semantic-error);">{{ error }}</p>
+      <p class="text-body" style="color: var(--semantic-error)">{{ error }}</p>
       <button
         @click="loadDiff"
         class="mt-3 px-3 py-1.5 text-body rounded"
-        style="background: var(--color-green); color: var(--color-bg);"
+        style="background: var(--color-green); color: var(--color-bg)"
       >
         Retry
       </button>
@@ -220,8 +245,8 @@ onMounted(() => {
       class="flex-1 flex flex-col items-center justify-center p-4"
     >
       <span class="text-display mb-3">📄</span>
-      <p class="text-body" style="color: var(--semantic-text-dim);">No changes detected</p>
-      <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
+      <p class="text-body" style="color: var(--semantic-text-dim)">No changes detected</p>
+      <p class="text-dense mt-1" style="color: var(--semantic-text-dim)">
         File may be identical to the committed version
       </p>
     </div>
@@ -232,109 +257,109 @@ onMounted(() => {
       class="flex-1 overflow-auto diff-wrap"
       :style="{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }"
     >
-      <table class="w-full border-collapse" style="font-size: var(--text-dense); line-height: 20px;">
+      <table class="w-full border-collapse" style="font-size: var(--text-dense); line-height: 20px">
         <tbody>
           <template v-for="(line, idx) in diffLines" :key="idx">
             <!-- Hunk header -->
-            <tr
-              v-if="line.type === 'hunk'"
-              class="hunk-header"
-            >
+            <tr v-if="line.type === 'hunk'" class="hunk-header">
               <td
                 colspan="3"
                 class="px-3 py-1"
-                style="background: rgba(139, 164, 176, 0.1); color: var(--color-blue);"
+                style="background: rgba(139, 164, 176, 0.1); color: var(--color-blue)"
               >
                 {{ line.content }}
               </td>
             </tr>
-            
+
             <!-- Empty line placeholder -->
             <tr
               v-else-if="line.type === 'empty'"
-              style="background: var(--semantic-card-bg); height: 20px;"
+              style="background: var(--semantic-card-bg); height: 20px"
             >
               <td class="w-12"></td>
               <td class="w-12"></td>
-              <td style="border-left: 3px solid transparent;"></td>
+              <td style="border-left: 3px solid transparent"></td>
             </tr>
-            
+
             <!-- Added line -->
             <tr
               v-else-if="line.type === 'add'"
               class="diff-line diff-line-add"
               @click="openMiniChat($event, line)"
-              style="cursor: pointer;"
+              style="cursor: pointer"
             >
               <td
                 class="w-12 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none;"
+                style="color: var(--semantic-text-dim); user-select: none"
               >
                 {{ line.newLineNum || '' }}
               </td>
               <td
                 class="w-12 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none;"
-              >
-              </td>
+                style="color: var(--semantic-text-dim); user-select: none"
+              ></td>
               <td
                 class="px-2"
-                style="border-left: 3px solid var(--color-green); background: rgba(135, 169, 135, 0.15); color: var(--semantic-text);"
+                style="
+                  border-left: 3px solid var(--color-green);
+                  background: rgba(135, 169, 135, 0.15);
+                  color: var(--semantic-text);
+                "
               >
-                <span style="color: var(--color-green); font-weight: bold;">+</span>
+                <span style="color: var(--color-green); font-weight: bold">+</span>
                 <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
-            
+
             <!-- Removed line -->
             <tr
               v-else-if="line.type === 'remove'"
               class="diff-line diff-line-remove"
               @click="openMiniChat($event, line)"
-              style="cursor: pointer;"
+              style="cursor: pointer"
             >
               <td
                 class="w-12 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none;"
-              >
-              </td>
+                style="color: var(--semantic-text-dim); user-select: none"
+              ></td>
               <td
                 class="w-12 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none;"
+                style="color: var(--semantic-text-dim); user-select: none"
               >
                 {{ line.oldLineNum || '' }}
               </td>
               <td
                 class="px-2"
-                style="border-left: 3px solid var(--color-red); background: rgba(196, 116, 110, 0.15); color: var(--semantic-text);"
+                style="
+                  border-left: 3px solid var(--color-red);
+                  background: rgba(196, 116, 110, 0.15);
+                  color: var(--semantic-text);
+                "
               >
-                <span style="color: var(--color-red); font-weight: bold;">-</span>
+                <span style="color: var(--color-red); font-weight: bold">-</span>
                 <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
-            
+
             <!-- Context line -->
-            <tr
-              v-else-if="line.type === 'context'"
-              class="diff-line diff-line-context"
-            >
+            <tr v-else-if="line.type === 'context'" class="diff-line diff-line-context">
               <td
                 class="w-12 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none;"
+                style="color: var(--semantic-text-dim); user-select: none"
               >
                 {{ line.oldLineNum || '' }}
               </td>
               <td
                 class="w-12 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none;"
+                style="color: var(--semantic-text-dim); user-select: none"
               >
                 {{ line.newLineNum || '' }}
               </td>
               <td
                 class="px-2"
-                style="border-left: 3px solid transparent; color: var(--semantic-text);"
+                style="border-left: 3px solid transparent; color: var(--semantic-text)"
               >
-                <span style="color: var(--semantic-text-dim);"> </span>
+                <span style="color: var(--semantic-text-dim)"> </span>
                 <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
@@ -345,18 +370,33 @@ onMounted(() => {
 
     <!-- Mini Chat Popup (floating near clicked line) -->
     <Teleport to="body">
-      <div v-if="showMiniChat" 
+      <div
+        v-if="showMiniChat"
         class="mini-chat-popup"
         :style="{
           left: miniChatPosition.x + 'px',
           top: miniChatPosition.y + 'px',
-        }">
+        }"
+      >
         <div class="mini-chat-header">
-          <span style="color: var(--color-green);">💬</span>
-          <span class="text-body font-medium" style="color: var(--semantic-text);">Review this code</span>
+          <span style="color: var(--color-green)">💬</span>
+          <span class="text-body font-medium" style="color: var(--semantic-text)"
+            >Review this code</span
+          >
           <button @click="closeMiniChat" class="ml-auto p-1 rounded hover:opacity-70">
-            <svg class="w-4 h-4" style="color: var(--semantic-text-dim);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            <svg
+              class="w-4 h-4"
+              style="color: var(--semantic-text-dim)"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
         </div>

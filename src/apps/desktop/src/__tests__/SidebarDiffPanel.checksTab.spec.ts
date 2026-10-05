@@ -10,6 +10,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import SidebarDiffPanel from '../components/views/chat_right_sidebar/SidebarDiffPanel.vue'
+import { clearFolderDiffCache } from '../helpers/folderDiffCache'
 
 // The panel's children fetch on mount; stub them so the spec is about the
 // tab contract, not about the network.
@@ -45,7 +46,7 @@ vi.mock('../api', async () => {
         modified_files: [],
         untracked_files: [],
       }),
-    getGitFileDiff: vi.fn().mockResolvedValue({ diff_content: '' }),
+    getGitFolderDiffs: vi.fn(async () => ({ diffs: [] })),
     getPrDiff: vi
       .fn()
       .mockResolvedValue({ pr_url: '', base: '', head: '', diff_content: '', truncated: false }),
@@ -91,6 +92,7 @@ const PR_URL = 'https://github.com/acme/app/pull/42'
 
 describe('SidebarDiffPanel — the Checks tab', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
   })
 

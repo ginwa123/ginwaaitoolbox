@@ -4835,20 +4835,10 @@ export interface GitFileDiff {
   staged: boolean
 }
 
-export async function getGitFileDiff(
-  cwd: string,
-  filePath: string,
-  staged: boolean = false,
-): Promise<GitFileDiff> {
-  return await apiFetch<GitFileDiff>(
-    `/git/file/diff?path=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}&staged=${staged}`,
-  )
-}
-
 // Batch file diffs — one POST replaces N parallel GET /git/file/diff.
 // Collapses the SidebarDiffPanel fan-out (20 files = 20 git spawns
 // holding 20 Io workers) into at most 2 server-side `git diff`
-// invocations. Falls back to per-file fetches on older servers.
+// invocations. LIST mode: the client names the paths.
 export interface GitFileDiffsBatchItem {
   file: string
   staged: boolean

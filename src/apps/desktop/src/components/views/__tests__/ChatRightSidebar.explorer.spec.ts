@@ -5,6 +5,7 @@ import { defineComponent, h, provide } from 'vue'
 import ChatRightSidebar from '../chat_right_sidebar/ChatRightSidebar.vue'
 import { OPEN_IN_CODE_EDITOR_KEY, type OpenInCodeEditorFn } from '@/composables/useCodeEditor'
 import { makeLocalStorageStub } from '../../../__tests__/helpers'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
 const { getGitChangesMock, listFolderMock } = vi.hoisted(() => ({
   getGitChangesMock: vi.fn(),
@@ -16,7 +17,7 @@ vi.mock('../../../api', async () => {
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: vi.fn().mockResolvedValue({ path: '', diff_content: '', staged: false }),
+    getGitFolderDiffs: vi.fn(async () => ({ diffs: [] })),
     listFolder: listFolderMock,
     stageGitFiles: vi.fn(),
     unstageGitFiles: vi.fn(),
@@ -49,6 +50,7 @@ const makeRouter = (sidebar?: string) => {
 
 describe('ChatRightSidebar explorer tab', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
       writable: true,

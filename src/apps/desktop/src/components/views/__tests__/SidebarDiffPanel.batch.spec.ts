@@ -1,13 +1,16 @@
 /**
- * Folder-mode batch diff (server-lag fix): worktree mode prefers ONE
- * POST /git/file/diffs with `folder: ""` — the server enumerates the changed
- * paths itself — over N parallel GET /git/file/diff. The per-file fallback
- * exists only for a pre-batch server, so it must be BOUNDED and it must LOG;
- * an unbounded silent fallback is what produced 1009 diff requests a session.
+ * Folder-mode diff, end to end in the panel.
+ *
+ * The contract this pins: the frontend reads diffs ONLY through folder mode.
+ * `loadFullList` makes ONE POST for the whole repo and primes the shared
+ * snapshot, so clicking a file row costs ZERO further requests. There is no
+ * per-file fallback left to degrade into — that fallback is what produced a
+ * session's worth of `diff?path=…&file=…` rows.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
+import { clearFolderDiffCache, readFolderDiff } from '../../../helpers/folderDiffCache'
 import { createRouter, createMemoryHistory } from 'vue-router'
 
 const testRouter = createRouter({
@@ -15,29 +18,20 @@ const testRouter = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const {
-  getGitChangesMock,
-  getGitFileDiffMock,
-  getGitFileDiffsMock,
-  getGitFolderDiffsMock,
-  getPrDiffMock,
-  getPrStatusMock,
-} = vi.hoisted(() => ({
-  getGitChangesMock: vi.fn(),
-  getGitFileDiffMock: vi.fn(),
-  getGitFileDiffsMock: vi.fn(),
-  getGitFolderDiffsMock: vi.fn(),
-  getPrDiffMock: vi.fn(),
-  getPrStatusMock: vi.fn(),
-}))
+const { getGitChangesMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
+  () => ({
+    getGitChangesMock: vi.fn(),
+    getGitFolderDiffsMock: vi.fn(),
+    getPrDiffMock: vi.fn(),
+    getPrStatusMock: vi.fn(),
+  }),
+)
 
 vi.mock('../../../api', async () => {
   const actual = await vi.importActual<typeof import('../../../api')>('../../../api')
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: getGitFileDiffMock,
-    getGitFileDiffs: getGitFileDiffsMock,
     getGitFolderDiffs: getGitFolderDiffsMock,
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,
@@ -56,9 +50,9 @@ const CHANGES = {
 const diffFor = (path: string) =>
   `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+new`
 
-// What the SERVER returns for folder mode: every changed path, staged side
-// first for anything both-staged-and-modified, regardless of what the client
-// asked for — the client named a folder, not a file list.
+// What the server answers for `folder: ""` — the whole repo, staged side
+// first for anything both-staged-and-modified. The client named a folder,
+// not a file list.
 const FOLDER_RESULT = {
   diffs: [
     { path: 'staged.txt', diff_content: diffFor('staged.txt'), staged: true },
@@ -71,26 +65,41 @@ const mountPanel = () =>
   mount(SidebarDiffPanel, {
     global: { plugins: [testRouter] },
     props: { cwd: '/repo' },
+    attachTo: document.body,
   })
+
+/** Click a file row in the panel's own list, the way a user does. */
+const clickFileRow = async (wrapper: ReturnType<typeof mountPanel>, label: string) => {
+  const row = wrapper
+    .findAll('.diff-file-row, [data-testid="file-row"]')
+    .find((r) => r.text().includes(label))
+  // The rows carry no stable class in every build; fall back to the first
+  // clickable element whose text names the file.
+  const target =
+    row ??
+    wrapper.findAll('button').find((b) => b.text().includes(label)) ??
+    wrapper.findAll('[role="button"]').find((b) => b.text().includes(label))
+  expect(target).toBeTruthy()
+  await (target as { trigger: (e: string) => Promise<unknown> }).trigger('click')
+}
 
 describe('SidebarDiffPanel folder diff', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // The snapshot is module-level on purpose (that is what makes a click
+    // free), so it must be dropped between tests or one test's repo leaks
+    // into the next.
+    clearFolderDiffCache()
     getGitChangesMock.mockResolvedValue(CHANGES)
     getGitFolderDiffsMock.mockResolvedValue(FOLDER_RESULT)
-    getGitFileDiffMock.mockImplementation((cwd: string, path: string, staged: boolean) =>
-      Promise.resolve({ path, diff_content: diffFor(path), staged }),
-    )
   })
 
-  it('uses ONE folder call instead of N per-file fetches', async () => {
+  it('uses ONE folder call for the whole repo instead of N per-file fetches', async () => {
     const wrapper = mountPanel()
     await flushPromises()
     // Whole repo, no file list — the server walks it.
     expect(getGitFolderDiffsMock).toHaveBeenCalledTimes(1)
     expect(getGitFolderDiffsMock).toHaveBeenCalledWith('/repo')
-    expect(getGitFileDiffsMock).not.toHaveBeenCalled()
-    expect(getGitFileDiffMock).not.toHaveBeenCalled()
     const listed = wrapper.emitted('show-diff-list')
     expect(listed).toHaveLength(1)
     const files = listed![0]![0] as Array<{ path: string; lines: unknown[] }>
@@ -98,22 +107,47 @@ describe('SidebarDiffPanel folder diff', () => {
     expect(files.every((f) => f.lines.length > 0)).toBe(true)
   })
 
-  it('says so when it degrades to per-file fetches', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    getGitFolderDiffsMock.mockRejectedValue(new Error('404'))
+  it('primes the shared snapshot so a file click costs zero requests', async () => {
     const wrapper = mountPanel()
     await flushPromises()
-    expect(getGitFileDiffMock).toHaveBeenCalledTimes(3)
-    const listed = wrapper.emitted('show-diff-list')
-    expect(listed).toHaveLength(1)
-    // The flood was invisible for a long time; the reason must be in the console.
-    expect(warn).toHaveBeenCalled()
-    expect(String(warn.mock.calls[0]![0])).toContain('folder diff failed')
-    warn.mockRestore()
+    expect(getGitFolderDiffsMock).toHaveBeenCalledTimes(1)
+
+    // The snapshot is what a click reads. Prime-and-read is the contract the
+    // click handler depends on, so assert it directly rather than only
+    // inferring it from request counts.
+    expect(readFolderDiff('/repo', 'dirty.txt', false)?.diff_content).toContain('+new')
+    // Staged and unstaged are separate entries — same path, both sides.
+    expect(readFolderDiff('/repo', 'staged.txt', true)?.diff_content).toContain('+new')
+    expect(readFolderDiff('/repo', 'staged.txt', false)).toBeNull()
+
+    const before = getGitFolderDiffsMock.mock.calls.length
+    await clickFileRow(wrapper, 'dirty.txt')
+    await flushPromises()
+    expect(getGitFolderDiffsMock.mock.calls.length).toBe(before)
+    expect(wrapper.emitted('show-diff')).toBeTruthy()
   })
 
-  it('caps the degraded per-file fan-out', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  it('renders error rows when the folder call fails, and never retries per file', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    getGitFolderDiffsMock.mockRejectedValue(new Error('boom'))
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    expect(getGitFolderDiffsMock).toHaveBeenCalledTimes(1)
+    // The failure must be visible, not silently swallowed into empty rows.
+    expect(error).toHaveBeenCalled()
+    const listed = wrapper.emitted('show-diff-list')
+    expect(listed).toHaveLength(1)
+    const files = listed![0]![0] as Array<{ path: string; error?: string }>
+    // Every row is reported, marked failed — no file quietly disappears and
+    // no second wave of per-file requests goes out.
+    expect(files.map((f) => f.path)).toEqual(['staged.txt', 'dirty.txt', 'new.txt'])
+    expect(files.every((f) => !!f.error)).toBe(true)
+    expect(getGitFolderDiffsMock).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+
+  it('scales: 60 changed files are still one request', async () => {
     const many = Array.from({ length: 60 }, (_, i) => ({
       index_status: ' ',
       worktree_status: 'M',
@@ -127,15 +161,14 @@ describe('SidebarDiffPanel folder diff', () => {
       modified_files: many,
       untracked_files: [],
     })
-    getGitFolderDiffsMock.mockRejectedValue(new Error('404'))
+    getGitFolderDiffsMock.mockResolvedValue({
+      diffs: many.map((f) => ({ ...f, diff_content: diffFor(f.path), staged: false })),
+    })
     const wrapper = mountPanel()
     await flushPromises()
-    // 60 changed files must NOT become 60 requests, once per 30s poll.
-    expect(getGitFileDiffMock.mock.calls.length).toBeLessThan(60)
-    // …and every row is still emitted, so the UI shows a degraded file rather
-    // than a file that silently vanished.
+
+    expect(getGitFolderDiffsMock).toHaveBeenCalledTimes(1)
     const listed = wrapper.emitted('show-diff-list')
-    const files = listed![0]![0] as Array<{ path: string }>
-    expect(files).toHaveLength(60)
+    expect(listed![0]![0]).toHaveLength(60)
   })
 })

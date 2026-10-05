@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
 import { ApiError } from '../../../api'
 import { createRouter, createMemoryHistory } from 'vue-router'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
 const testRouter = createRouter({
   history: createMemoryHistory(),
@@ -22,6 +23,7 @@ vi.mock('../../../api', async () => {
     ...actual,
     getGitChanges: getGitChangesMock,
     getGitFileDiff: vi.fn(),
+    getGitFolderDiffs: vi.fn(async () => ({ diffs: [] })),
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,
     stageGitFiles: stageGitFilesMock,
@@ -46,6 +48,7 @@ index 0000000..abc1234
 
 describe('SidebarDiffPanel PR mode', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue({
       is_git_repo: true,

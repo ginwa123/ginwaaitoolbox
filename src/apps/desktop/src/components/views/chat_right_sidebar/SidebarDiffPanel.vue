@@ -5,6 +5,7 @@ import * as api from '../../../api'
 import { openInNewTab } from '../../../helpers/openInNewTab'
 import { conflictsUrl, forgeWording } from '../../../helpers/forgeWording'
 import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
+import { fetchFolderDiff, folderDiffKey, primeFolderDiffs } from '../../../helpers/folderDiffCache'
 import { useContextMenu } from '../../../composables/useContextMenu'
 import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
 import SpinnerIcon from '../../shell/SpinnerIcon.vue'
@@ -695,18 +696,17 @@ const loadGitStatus = async () => {
 }
 
 // Stacked center view: fetch every changed file so the center column
-// renders all diffs without per-click round-trips. Uses the folder-mode
-// batch endpoint (POST /git/file/diffs with `folder: ""` → the WHOLE repo,
-// 3 git spawns no matter how many files changed) instead of N parallel
-// GET /git/file/diff — the old fan-out held N Io workers for 6-10s each
-// and starved cheap routes like queue_messages.
+// renders all diffs without per-click round-trips. FOLDER mode
+// (POST /git/file/diffs with `folder: ""` → the WHOLE repo) covers all of
+// them in ONE request and 3 git spawns, no matter how many files changed —
+// the old per-file fan-out held N Io workers for 6-10s each and starved
+// cheap routes like queue_messages.
 //
-// The per-file fallback below exists only for a server that predates the
-// batch route. It is BOUNDED and it LOGS: an unbounded silent fallback is
-// what produced 1009 `diff?path=…&file=…` requests in one session, once per
-// 30s poll, with nothing in the console to say why.
-const DIFF_BATCH_CONCURRENCY = 4
-const DIFF_FALLBACK_MAX_FILES = 40
+// The payload is also primed into `folderDiffCache`, which is what makes a
+// click on a file cost ZERO requests: `loadDiff` below reads the snapshot
+// this call already produced. There is deliberately no per-file fallback
+// left — the frontend and the backend ship together, and the old unbounded
+// silent fallback is precisely what turned one failed request into 1009.
 const loadFullList = async (cwd: string = props.cwd) => {
   if (!cwd) return
   const seq = loadSeq
@@ -745,53 +745,24 @@ const loadFullList = async (cwd: string = props.cwd) => {
     // three fields wide whether the worktree has 3 dirty files or 300.
     const batch = await api.getGitFolderDiffs(cwd)
     if (seq !== loadSeq) return
-    const byKey = new Map(batch.diffs.map((d) => [`${d.staged ? 1 : 0}:${d.path}`, d.diff_content]))
+    // Hand the payload to every other reader (the file rows' click handler
+    // and the standalone GitFileViewer) before rendering, so a click landing
+    // in the next few milliseconds is already a cache hit.
+    primeFolderDiffs(cwd, batch.diffs)
+    const byKey = new Map(batch.diffs.map((d) => [folderDiffKey(d.staged, d.path), d.diff_content]))
     const list: DiffSelection[] = targets.map((t) => {
-      const content = byKey.get(`${t.staged ? 1 : 0}:${t.path}`)
+      const content = byKey.get(folderDiffKey(t.staged, t.path))
       if (content !== undefined) return toSelection(t, content)
       return toError(t)
     })
     emit('show-diff-list', list)
-    return
   } catch (err) {
-    console.warn(
-      `[SidebarDiffPanel] folder diff failed, falling back to ${Math.min(
-        targets.length,
-        DIFF_FALLBACK_MAX_FILES,
-      )} per-file requests of ${targets.length} changed files:`,
-      err,
-    )
-  }
-  if (seq !== loadSeq) return
-  // Past the cap the remaining rows render as errors instead of firing more
-  // requests — a degraded panel is better than an unbounded request storm.
-  const fallback = targets.slice(0, DIFF_FALLBACK_MAX_FILES)
-  const results: ({ status: 'fulfilled'; value: api.GitFileDiff } | { status: 'rejected' })[] =
-    Array.from({ length: fallback.length }) as (
-      | {
-          status: 'fulfilled'
-          value: api.GitFileDiff
-        }
-      | { status: 'rejected' }
-    )[]
-  for (let i = 0; i < fallback.length; i += DIFF_BATCH_CONCURRENCY) {
+    // Error rows, not a quieter retry: a visible failure is what stops this
+    // from turning back into a silent per-file request storm.
+    console.error(`[SidebarDiffPanel] folder diff failed for ${cwd}:`, err)
     if (seq !== loadSeq) return
-    const chunk = fallback.slice(i, i + DIFF_BATCH_CONCURRENCY)
-    const settled = await Promise.allSettled(
-      chunk.map((t) => api.getGitFileDiff(cwd, t.path, t.staged)),
-    )
-    settled.forEach((r, j) => {
-      results[i + j] =
-        r.status === 'fulfilled' ? { status: 'fulfilled', value: r.value } : { status: 'rejected' }
-    })
+    emit('show-diff-list', targets.map(toError))
   }
-  if (seq !== loadSeq) return
-  const list: DiffSelection[] = targets.map((t, i) => {
-    const r = results[i]
-    if (r && r.status === 'fulfilled') return toSelection(t, r.value.diff_content)
-    return toError(t)
-  })
-  emit('show-diff-list', list)
 }
 
 // Per-tab lazy load: each side fetches once until cwd/prUrl changes.
@@ -825,7 +796,12 @@ const loadDiff = async () => {
   if (showPr.value) return
   if (!props.cwd || !selectedPath.value) return
   try {
-    const diff = await api.getGitFileDiff(props.cwd, selectedPath.value, selectedStaged.value)
+    // `loadFullList` already fetched every changed file in this cwd and
+    // primed the shared snapshot, so this is a map read on the hot path. On
+    // a miss (snapshot expired between polls, or the file changed after the
+    // fetch) this costs ONE folder request — deduped against any other
+    // reader — never one per file.
+    const diff = await fetchFolderDiff(props.cwd, selectedPath.value, selectedStaged.value)
     const parsed = parseUnifiedDiff(diff.diff_content)
     emit('show-diff', {
       path: selectedPath.value,
