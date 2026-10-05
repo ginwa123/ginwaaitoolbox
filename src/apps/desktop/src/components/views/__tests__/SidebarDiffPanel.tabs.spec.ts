@@ -143,15 +143,24 @@ describe('SidebarDiffPanel tabs', () => {
     expect(getPrDiffMock).toHaveBeenCalledTimes(1)
   })
 
-  it('without prUrl shows no tabs', async () => {
+  it('without prUrl the Files tab is the only file-list tab, and PR is hidden', async () => {
     const wrapper = mount(SidebarDiffPanel, {
       global: { plugins: [testRouter] },
       props: { cwd: '/repo' },
     })
     await flushPromises()
-    expect(wrapper.find('[data-testid="sidebar-tab-files"]').exists()).toBe(false)
+    // The Files tab carries the WORKING TREE list, which exists with or
+    // without a PR — gating it on isPrMode is what forced the old
+    // `Files | Commits` header toggle to exist as the only way back.
+    expect(wrapper.find('[data-testid="sidebar-tab-files"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="sidebar-tab-files"]').attributes('aria-selected')).toBe(
+      'true',
+    )
+    // Only the PR tab needs a PR.
     expect(wrapper.find('[data-testid="sidebar-tab-pr"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(true)
+    // And there is no second control for the same two destinations.
+    expect(wrapper.find('[data-testid="sidebar-diff-commits-toggle"]').exists()).toBe(false)
   })
 
   it('active tab is bright with an underline, inactive stays readable', async () => {
@@ -242,7 +251,7 @@ describe('SidebarDiffPanel tabs', () => {
     expect(getGitChangesMock).not.toHaveBeenCalled()
   })
 
-  it('without prUrl the header toggle switches to commits and syncs the URL', async () => {
+  it('without prUrl the Commits tab round-trips to Files and syncs the URL', async () => {
     const r = createRouter({
       history: createMemoryHistory(),
       routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
@@ -254,18 +263,17 @@ describe('SidebarDiffPanel tabs', () => {
       props: { cwd: '/repo' },
     })
     await flushPromises()
-    // Commits and Evals are NOT PR-only: the tab bar renders without a
-    // prUrl (`showTabs || showEvals || !isPrMode`), and only the Files and PR
-    // tabs are gated on `isPrMode` — they need a PR to have anything to show.
-    // The header toggle below is the second path to commits.
-    expect(wrapper.find('[data-testid="sidebar-tab-files"]').exists()).toBe(false)
+    // Commits is NOT PR-only — history exists with or without a PR — so the
+    // strip renders and Commits is clickable. Only the PR tab is gated.
     expect(wrapper.find('[data-testid="sidebar-tab-pr"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="sidebar-tab-commits"]').exists()).toBe(true)
-    await wrapper.get('[data-testid="sidebar-diff-commits-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="sidebar-tab-commits"]').trigger('click')
     await flushPromises()
     expect(r.currentRoute.value.query.panel).toBe('commits')
     expect(getGitCommitsMock).toHaveBeenCalledWith('/repo', 100, 0)
-    await wrapper.get('[data-testid="sidebar-diff-commits-toggle"]').trigger('click')
+    // Back to the working tree, via the tab that is always there — no second
+    // "Files" button is needed now that Files is not gated on isPrMode.
+    await wrapper.get('[data-testid="sidebar-tab-files"]').trigger('click')
     await flushPromises()
     expect(r.currentRoute.value.query.panel).toBe('files')
     expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(true)
