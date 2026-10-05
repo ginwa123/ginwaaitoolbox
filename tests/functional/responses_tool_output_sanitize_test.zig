@@ -644,7 +644,7 @@ test "responses_replay_sanitizes_binary_tool_output" {
     // the only thing that tells a reader which of the two replay items
     // is missing. A bare "expected a function_call item" sends them back
     // to the capture.
-    // TODO(port): the Python asserted `"function_call" in kinds` and it
+    // KNOWN-PORT-DEFECT: the Python asserted `"function_call" in kinds` and it
     // does NOT hold against the current backend. Verified on
     // 2026-09-05 against `zig-out/bin/pabrikcore-linux-x86_64`:
     //   * both seeded rows land in `agent.db` with the exact documented
@@ -678,7 +678,7 @@ test "responses_replay_sanitizes_binary_tool_output" {
         const kinds = try inputTypes(input);
         defer gpa.free(kinds);
         std.debug.print(
-            "expected a function_call replay item, got input types {s} — see TODO(port) above: " ++
+            "expected a function_call replay item, got input types {s} — see KNOWN-PORT-DEFECT above: " ++
                 "the assistant row's tool_calls_json is not reaching the Responses `input`.\n",
             .{kinds},
         );

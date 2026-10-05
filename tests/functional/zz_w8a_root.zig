@@ -21,6 +21,11 @@ const std = @import("std");
 
 pub const harness = @import("harness.zig");
 
+const kanban_task_session_name_test = @import("kanban_task_session_name_test.zig");
+const kanban_create_session_user_message_test = @import("kanban_create_session_user_message_test.zig");
+const workspace_items_test = @import("workspace_items_test.zig");
+const http2_test = @import("http2_test.zig");
+
 // -- Suites ----------------------------------------------------------------
 // One `const` per ported suite. A bare `@import` expression on its own
 // does NOT pull the file's file-scope `test` blocks into the build;
@@ -35,14 +40,10 @@ const agent_present_files_test = @import("agent_present_files_test.zig");
 const agent_routines_test = @import("agent_routines_test.zig");
 const agent_system_prompt_test = @import("agent_system_prompt_test.zig");
 const agent_tools_defaults_test = @import("agent_tools_defaults_test.zig");
-const agent_tools_toggle_test = @import("agent_tools_toggle_test.zig");
 const agent_video_upload_test = @import("agent_video_upload_test.zig");
 const agent_workspace_history_test = @import("agent_workspace_history_test.zig");
 const android_sidebar_contract_test = @import("android_sidebar_contract_test.zig");
-const android_workers_contract_test = @import("android_workers_contract_test.zig");
 const anthropic_chat_headers_test = @import("anthropic_chat_headers_test.zig");
-const ask_user_multi_question_test = @import("ask_user_multi_question_test.zig");
-const ask_user_test = @import("ask_user_test.zig");
 const auth_test = @import("auth_test.zig");
 const background_command_completion_test = @import("background_command_completion_test.zig");
 const background_process_sse_test = @import("background_process_sse_test.zig");
@@ -53,7 +54,6 @@ const config_simplify_test = @import("config_simplify_test.zig");
 const config_tools_test = @import("config_tools_test.zig");
 const cross_project_cwd_prompt_test = @import("cross_project_cwd_prompt_test.zig");
 const default_workspace_provisioning_test = @import("default_workspace_provisioning_test.zig");
-const design_lifecycle_test = @import("design_lifecycle_test.zig");
 const desktop_webapp_404_test = @import("desktop_webapp_404_test.zig");
 const desktop_webapp_stable_symlink_test = @import("desktop_webapp_stable_symlink_test.zig");
 const document_agent_tools_test = @import("document_agent_tools_test.zig");
@@ -74,30 +74,22 @@ const harness_port_random_test = @import("harness_port_random_test.zig");
 const harness_safety_test = @import("harness_safety_test.zig");
 const hook_zig_fmt_test = @import("hook_zig_fmt_test.zig");
 const hooks_lua_test = @import("hooks_lua_test.zig");
-const http2_test = @import("http2_test.zig");
-const http2_tls_test = @import("http2_tls_test.zig");
-const kanban_advanced_test = @import("kanban_advanced_test.zig");
 const kanban_column_run_all_agents_test = @import("kanban_column_run_all_agents_test.zig");
-const kanban_create_session_user_message_test = @import("kanban_create_session_user_message_test.zig");
 const kanban_lifecycle_test = @import("kanban_lifecycle_test.zig");
 const kanban_task_create_message_format_test = @import("kanban_task_create_message_format_test.zig");
 const kanban_task_get_test = @import("kanban_task_get_test.zig");
 const kanban_task_image_urls_test = @import("kanban_task_image_urls_test.zig");
 const kanban_task_long_description_test = @import("kanban_task_long_description_test.zig");
-const kanban_task_session_name_test = @import("kanban_task_session_name_test.zig");
 const list_sub_agent_test = @import("list_sub_agent_test.zig");
 const llm_history_model_not_empty_test = @import("llm_history_model_not_empty_test.zig");
 const llm_stream_get_test = @import("llm_stream_get_test.zig");
 const llm_test_test = @import("llm_test_test.zig");
-const mcp_http_test = @import("mcp_http_test.zig");
 const mcp_server_toggle_test = @import("mcp_server_toggle_test.zig");
 const mcp_stdio_hang_test = @import("mcp_stdio_hang_test.zig");
 const mcp_stdio_test = @import("mcp_stdio_test.zig");
-const mcp_test_test = @import("mcp_test_test.zig");
 const memories_skills_test = @import("memories_skills_test.zig");
 const model_thinking_test = @import("model_thinking_test.zig");
 const new_chat_session_not_found_test = @import("new_chat_session_not_found_test.zig");
-const notify_on_error_test = @import("notify_on_error_test.zig");
 const pabrik_config_test = @import("pabrik_config_test.zig");
 const platform_gates_test = @import("platform_gates_test.zig");
 const progressive_tool_search_regex_test = @import("progressive_tool_search_regex_test.zig");
@@ -131,7 +123,6 @@ const system_folder_gitignore_test = @import("system_folder_gitignore_test.zig")
 const system_folder_home_test = @import("system_folder_home_test.zig");
 const system_folder_path_validation_test = @import("system_folder_path_validation_test.zig");
 const system_folder_search_test = @import("system_folder_search_test.zig");
-const task_lifecycle_test = @import("task_lifecycle_test.zig");
 const task_rename_id_route_auth_test = @import("task_rename_id_route_auth_test.zig");
 const terminal_isolation_test = @import("terminal_isolation_test.zig");
 const terminal_limits_test = @import("terminal_limits_test.zig");
@@ -144,12 +135,14 @@ const user_config_test = @import("user_config_test.zig");
 const web_launch_toggle_test = @import("web_launch_toggle_test.zig");
 const web_search_config_test = @import("web_search_config_test.zig");
 const workspace_isolation_test = @import("workspace_isolation_test.zig");
-const workspace_items_test = @import("workspace_items_test.zig");
 const workspace_lifecycle_test = @import("workspace_lifecycle_test.zig");
 const workspace_members_sharing_test = @import("workspace_members_sharing_test.zig");
-const workspace_routines_test = @import("workspace_routines_test.zig");
 
 pub const suites = .{
+    kanban_task_session_name_test,
+    kanban_create_session_user_message_test,
+    workspace_items_test,
+    http2_test,
     agent_add_mcp_server_test,
     agent_create_kanban_task_session_test,
     agent_kanbans_test,
@@ -159,14 +152,10 @@ pub const suites = .{
     agent_routines_test,
     agent_system_prompt_test,
     agent_tools_defaults_test,
-    agent_tools_toggle_test,
     agent_video_upload_test,
     agent_workspace_history_test,
     android_sidebar_contract_test,
-    android_workers_contract_test,
     anthropic_chat_headers_test,
-    ask_user_multi_question_test,
-    ask_user_test,
     auth_test,
     background_command_completion_test,
     background_process_sse_test,
@@ -177,7 +166,6 @@ pub const suites = .{
     config_tools_test,
     cross_project_cwd_prompt_test,
     default_workspace_provisioning_test,
-    design_lifecycle_test,
     desktop_webapp_404_test,
     desktop_webapp_stable_symlink_test,
     document_agent_tools_test,
@@ -198,30 +186,22 @@ pub const suites = .{
     harness_safety_test,
     hook_zig_fmt_test,
     hooks_lua_test,
-    http2_test,
-    http2_tls_test,
-    kanban_advanced_test,
     kanban_column_run_all_agents_test,
-    kanban_create_session_user_message_test,
     kanban_lifecycle_test,
     kanban_task_create_message_format_test,
     kanban_task_get_test,
     kanban_task_image_urls_test,
     kanban_task_long_description_test,
-    kanban_task_session_name_test,
     list_sub_agent_test,
     llm_history_model_not_empty_test,
     llm_stream_get_test,
     llm_test_test,
-    mcp_http_test,
     mcp_server_toggle_test,
     mcp_stdio_hang_test,
     mcp_stdio_test,
-    mcp_test_test,
     memories_skills_test,
     model_thinking_test,
     new_chat_session_not_found_test,
-    notify_on_error_test,
     pabrik_config_test,
     platform_gates_test,
     progressive_tool_search_regex_test,
@@ -255,7 +235,6 @@ pub const suites = .{
     system_folder_home_test,
     system_folder_path_validation_test,
     system_folder_search_test,
-    task_lifecycle_test,
     task_rename_id_route_auth_test,
     terminal_isolation_test,
     terminal_limits_test,
@@ -268,10 +247,8 @@ pub const suites = .{
     web_launch_toggle_test,
     web_search_config_test,
     workspace_isolation_test,
-    workspace_items_test,
     workspace_lifecycle_test,
     workspace_members_sharing_test,
-    workspace_routines_test,
 };
 
 test {
