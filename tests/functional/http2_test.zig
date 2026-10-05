@@ -243,13 +243,22 @@ fn setRecvTimeout(stream: *Io.net.Stream, seconds: i64) void {
 /// accumulated — the same empty-or-partial outcome.
 fn rawProbe(port: u16, payload: []const u8) ![]u8 {
     const addr: Io.net.IpAddress = .{ .ip4 = .loopback(port) };
+    // `.timeout = .none` IS MANDATORY ON POSIX. `Io.net.connect` panics
+    // outright when a timeout is requested:
+    //
+    //     std/Io/Threaded.zig
+    //       netConnectIpPosix: if (options.timeout != .none)
+    //           @panic("TODO implement netConnectIpPosix with timeout");
+    //
+    // So `catch` cannot save it — the process aborts. Python's
+    // `socket.create_connection(..., timeout=10)` has no analogue here.
+    // The connect budget is enforced by `setRecvTimeout` below plus the
+    // caller's own deadline, which is where a real timeout belongs
+    // anyway: it bounds the READ, not the TCP handshake to a loopback
+    // address that either answers immediately or is not listening.
     var stream = addr.connect(io, .{
         .mode = .stream,
-        // Python: `socket.create_connection(..., timeout=10)`.
-        .timeout = .{ .duration = .{
-            .raw = .{ .nanoseconds = 10 * std.time.ns_per_s },
-            .clock = .awake,
-        } },
+        .timeout = .none,
     }) catch |err| {
         std.debug.print("raw probe could not connect to 127.0.0.1:{d}: {s}\n", .{ port, @errorName(err) });
         return error.TestUnexpectedResult;
