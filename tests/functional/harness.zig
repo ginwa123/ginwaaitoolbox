@@ -112,9 +112,23 @@ fn testingIo() Io {
 /// consumer is the tempdir-suffix picker, which additionally retries up
 /// to 32 times on a name collision, and the port picker, which probes
 /// the socket and retries 50 times.
-fn entropyRandom(io: Io) std.Random {
-    var prng: std.Random.DefaultPrng = .init(entropySeed(io));
-    return prng.random();
+/// Seed a `DefaultPrng` from the best entropy available without a
+/// dependency on `pabrikcore`.
+///
+/// Returns the PRNG ITSELF, not a `Random` view of it: a `Random` borrows
+/// the parent's state by pointer, so returning one from a function that
+/// also returns the state leaves a dangling `ptr`. The caller holds the
+/// PRNG in its own frame and calls `.random()` there, which is the only
+/// arrangement that cannot dangle.
+fn entropyPrng(io: Io) std.Random.DefaultPrng {
+    // Zig 0.16 removed the old `std.crypto.random.int`; the portable
+    // replacement is the OS entropy source. Seeding from
+    // `Timestamp ^ pid ^ &stack` is what the app's own
+    // `helpers/random.zig` does, and it is sufficient here: the only
+    // consumers are the tempdir-suffix picker (which retries 32 times
+    // on a name collision) and the port picker (which probes the socket
+    // and retries 50 times).
+    return .init(entropySeed(io));
 }
 
 fn entropySeed(io: Io) u64 {
@@ -146,6 +160,10 @@ pub const FunctionalHarnessError = error{
     TeardownRefused,
     /// The response status was not in the expected set.
     UnexpectedStatus,
+    /// A `pabrik` subcommand failed to spawn or wait.
+    RunFailed,
+    /// A `pabrik` subcommand outlived its `timeout_ms` and was killed.
+    RunTimedOut,
 };
 
 // ============================================================================
@@ -320,17 +338,62 @@ pub fn harnessPath(allocator: Allocator, temp_dir: []const u8, parts: []const []
 // Response
 // ============================================================================
 
+/// One HTTP header. Module scope (not nested in `Harness`) because both
+/// `Response.headers` and `Harness.HttpOptions.extra_headers` use it.
+///
+/// `name` and `value` must NOT contain `\r\n` — `std.http.Client`
+/// asserts this in debug builds, and a header injection attempt should
+/// fail loudly rather than smuggle a second header onto the wire.
+pub const Header = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
 /// A typed HTTP response from the  pabrik API.
 ///
 /// Owns `body`; free it (or call `deinit`) once done.
 pub const Response = struct {
     status: u16,
     body: []u8,
+    /// Response headers, in wire order.
+    ///
+    /// A LIST, not a map: `Set-Cookie` may legitimately repeat, and a
+    /// map would silently drop the second one — which is exactly the
+    /// header the auth suites read. `header` returns the FIRST match.
+    ///
+    /// Needed by the auth suites, which assert on `Set-Cookie` — the
+    /// login flow's whole contract is "the server hands back an HttpOnly
+    /// session cookie whose token is then replayed in a `Cookie` header".
+    headers: std.ArrayList(Header) = .empty,
+
     allocator: Allocator,
 
     pub fn deinit(self: *Response) void {
         self.allocator.free(self.body);
+        for (self.headers.items) |h| {
+            self.allocator.free(h.name);
+            self.allocator.free(h.value);
+        }
+        self.headers.deinit(self.allocator);
         self.* = undefined;
+    }
+
+    /// Case-insensitive header lookup, first match. Header names are
+    /// case-insensitive per RFC 9110, and the Python suites spelled them
+    /// every way (`Set-Cookie`, `set-cookie`), so matching must not be
+    /// either.
+    pub fn header(self: *const Response, name: []const u8) ?[]const u8 {
+        for (self.headers.items) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
+        }
+        return null;
+    }
+
+    /// Every value for `name`, in wire order. Use for `Set-Cookie`.
+    pub fn headerAll(self: *const Response, name: []const u8, out: *std.ArrayList([]const u8), gpa: Allocator) !void {
+        for (self.headers.items) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, name)) try out.append(gpa, h.value);
+        }
     }
 
     /// Parse the body as JSON into an OWNING `std.json.Parsed(Value)`.
@@ -812,6 +875,22 @@ pub const Harness = struct {
         /// Accepted status codes. Empty means "200" (Python's default).
         expect: []const u16 = &.{200},
         timeout_s: f64 = 5.0,
+        /// Extra request headers. Used by the auth suites for `Cookie`
+        /// and by the workspace-sharing suites for bearer tokens.
+        ///
+        /// These are sent IN ADDITION to the harness-managed ones, so a
+        /// test can override `Content-Type` by listing it here.
+        extra_headers: []const Header = &.{},
+        /// Set false to accept ANY status. Default true.
+        ///
+        /// Needed where the STATUS ITSELF is the assertion — the auth
+        /// suites check "this route returns 401 without a cookie", which
+        /// `expect = &.{401}` expresses fine, but the ported helper for
+        /// "call this and let me look at the number" does not. Without
+        /// this flag such a helper would have to re-implement the whole
+        /// client, which is how a suite ends up with a private copy of
+        /// the harness's HTTP path.
+        assert_status: bool = true,
     };
 
     /// One URL query parameter. `value` is percent-encoded.
@@ -845,10 +924,19 @@ pub const Harness = struct {
         var client: std.http.Client = .{ .allocator = gpa, .io = io };
         defer client.deinit();
 
+        // A fixed Content-Type when there is no body, plus whatever the
+        // caller added. `std.http.Header` is `{ name, value }`.
+        var extra: std.ArrayList(std.http.Header) = .empty;
+        defer extra.deinit(gpa);
+        try extra.append(gpa, .{ .name = "Content-Type", .value = "application/json" });
+        for (opts.extra_headers) |h| {
+            try extra.append(gpa, .{ .name = h.name, .value = h.value });
+        }
+
         var req = try client.request(
             method.toStdMethod(),
             try std.Uri.parse(url),
-            .{ .redirect_behavior = .unhandled },
+            .{ .redirect_behavior = .unhandled, .extra_headers = extra.items },
         );
         defer req.deinit();
 
@@ -858,26 +946,54 @@ pub const Harness = struct {
             try body_writer.writer.writeAll(b);
             try body_writer.end();
             try req.connection.?.flush();
+        } else if (method.toStdMethod().requestHasBody()) {
+            // A bodiless POST/PUT/PATCH still needs the framing.
+            // `sendBodiless` ASSERTS that the method cannot have a body,
+            // and that assert is reachable from ordinary API traffic —
+            // `POST /api/auth/logout` takes no body at all. Send a
+            // zero-length body instead, which is what a server sees
+            // either way.
+            req.transfer_encoding = .{ .content_length = 0 };
+            var body_writer = try req.sendBodyUnflushed(&.{});
+            try body_writer.end();
+            try req.connection.?.flush();
         } else {
             try req.sendBodiless();
         }
 
         var resp = try req.receiveHead(&.{});
 
+        // Headers FIRST, body second — and the order is load-bearing.
+        // `resp.reader()` calls `head.invalidateStrings()`, so reading
+        // `head.bytes` after touching the body is a use-after-free that
+        // shows up as a general-protection fault in `mem.eqlBytes`.
+        var resp_headers: std.ArrayList(Header) = .empty;
+        {
+            var hit = resp.head.iterateHeaders();
+            while (hit.next()) |kv| {
+                try resp_headers.append(gpa, .{
+                    .name = try gpa.dupe(u8, kv.name),
+                    .value = try gpa.dupe(u8, kv.value),
+                });
+            }
+        }
+
+        const status: u16 = @intFromEnum(resp.head.status);
+
         const reader = resp.reader(&.{});
         _ = try reader.streamRemaining(w);
         try w.flush();
 
-        const status: u16 = @intFromEnum(resp.head.status);
-
         var expected = opts.expect;
         if (expected.len == 0) expected = &.{200};
 
-        var ok = false;
-        for (expected) |e| {
-            if (e == status) {
-                ok = true;
-                break;
+        var ok = !opts.assert_status;
+        if (!ok) {
+            for (expected) |e| {
+                if (e == status) {
+                    ok = true;
+                    break;
+                }
             }
         }
         if (!ok) {
@@ -902,7 +1018,12 @@ pub const Harness = struct {
 
         const owned = try out.toOwnedSlice();
         gpa.free(url);
-        return .{ .status = status, .body = owned, .allocator = gpa };
+        return .{
+            .status = status,
+            .body = owned,
+            .headers = resp_headers,
+            .allocator = gpa,
+        };
     }
 
     /// Return true iff `/health` returns 200 with `status == "ok"`.
@@ -990,10 +1111,6 @@ pub const Harness = struct {
 // ============================================================================
 
 /// HTTP verbs the suites use.
-///
-/// The tag names are deliberately identical to `std.http.Method`'s, so
-/// `toStdMethod` is a zero-cost `@enumFromInt` rather than a switch that
-/// would need a new arm every time a verb is added to this list.
 pub const HttpMethod = enum {
     GET,
     POST,
@@ -1007,8 +1124,26 @@ pub const HttpMethod = enum {
         return @tagName(self);
     }
 
+    /// Map onto `std.http.Method` by NAME.
+    ///
+    /// NOT `@enumFromInt`: the two enums do NOT have the same
+    /// discriminants. `std.http.Method` is GET, HEAD, POST, PUT,
+    /// DELETE, CONNECT, OPTIONS, TRACE, PATCH — so an ordinal cast
+    /// silently turned this suite's `POST` into a `HEAD`, and
+    /// `sendBodyUnflushed` then asserted with "HEAD cannot have a
+    /// body". An explicit switch fails loudly when a verb is added to
+    /// one enum and not the other; an ordinal cast fails silently and
+    /// only once a body is attached.
     fn toStdMethod(self: HttpMethod) std.http.Method {
-        return @enumFromInt(@intFromEnum(self));
+        return switch (self) {
+            .GET => .GET,
+            .POST => .POST,
+            .PUT => .PUT,
+            .PATCH => .PATCH,
+            .DELETE => .DELETE,
+            .HEAD => .HEAD,
+            .OPTIONS => .OPTIONS,
+        };
     }
 };
 
@@ -1077,7 +1212,8 @@ pub fn portIsFreeWithReuse(io: Io, port: u16) bool {
 /// wins. Practically unreachable to fail on any sane host.
 pub fn findFreePortRandom(gpa: Allocator) !u16 {
     const range_size = RANDOM_PORT_END - RANDOM_PORT_START + 1;
-    const rand = entropyRandom(testingIo());
+    var prng = entropyPrng(testingIo());
+    const rand = prng.random();
     for (0..RANDOM_PORT_ATTEMPTS) |_| {
         const port = RANDOM_PORT_START + rand.uintLessThan(u16, range_size);
         var reserved = false;
@@ -1304,7 +1440,8 @@ fn makeTempDir(io: Io, gpa: Allocator) ![]u8 {
     const base = try tmpRoot(gpa);
     defer gpa.free(base);
 
-    const rand = entropyRandom(testingIo());
+    var prng = entropyPrng(testingIo());
+    const rand = prng.random();
 
     var attempt: usize = 0;
     while (attempt < 32) : (attempt += 1) {
@@ -1490,6 +1627,164 @@ pub fn writeStubLlmProfile(io: Io, gpa: Allocator, temp_dir: []const u8) !void {
 // ============================================================================
 // Convenience
 // ============================================================================
+
+/// The outcome of a `pabrik` subcommand run against a harness's HOME.
+pub const RunResult = struct {
+    /// Exit code, or null if the child was killed by a signal.
+    exit_code: ?u8,
+    stdout: []u8,
+    stderr: []u8,
+
+    pub fn deinit(self: *RunResult, gpa: Allocator) void {
+        gpa.free(self.stdout);
+        gpa.free(self.stderr);
+        self.* = undefined;
+    }
+};
+
+/// Run a `pabrik` SUBCOMMAND (not the server) against `home`, capturing
+/// stdout+stderr.
+///
+/// 40 of the 132 Python suites shell out to the binary — `create-admin`,
+/// `pabrik config get`, `pabrik mcp ...`. This is the Zig equivalent of
+/// Python's `subprocess.run(..., env={**os.environ, "HOME": temp_dir},
+/// capture_output=True, timeout=30)`.
+///
+/// `home` is the harness's isolated tempdir, so a subcommand that writes
+/// config writes it where the test can read it — exactly like the server
+/// itself. `timeout_ms` bounds the wait: exceeding it kills the child and
+/// returns `error.RunTimedOut` rather than hanging the suite.
+///
+/// WHY FILES AND NOT PIPES: `std.process.spawn` with `.pipe` gives the
+/// parent two pipes it must drain BEFORE `wait`, or a chatty child fills
+/// the 64 KiB pipe buffer and deadlocks against its own `wait`. Draining
+/// concurrently needs two reader threads plus a kill watchdog plus a
+/// join-ordering discipline. Writing to two scratch files inside the
+/// harness tempdir has none of those failure modes and the files are
+/// removed with the tempdir anyway.
+pub fn runPabrikCommand(
+    io: Io,
+    gpa: Allocator,
+    home: []const u8,
+    argv: []const []const u8,
+    timeout_ms: u32,
+) !RunResult {
+    const bin = try resolvePabrikBin(io, gpa);
+    defer gpa.free(bin);
+
+    // Same isolation the server gets: HOME plus the XDG vars, all
+    // pointing inside the harness tempdir.
+    const xdg_config = try std.fs.path.join(gpa, &.{ home, ".config" });
+    defer gpa.free(xdg_config);
+    const xdg_state = try std.fs.path.join(gpa, &.{ home, ".local", "state" });
+    defer gpa.free(xdg_state);
+    const xdg_data = try std.fs.path.join(gpa, &.{ home, ".local", "share" });
+    defer gpa.free(xdg_data);
+    const xdg_cache = try std.fs.path.join(gpa, &.{ home, ".cache" });
+    defer gpa.free(xdg_cache);
+
+    var env_map = try std.process.Environ.createMap(currentEnviron(), gpa);
+    defer env_map.deinit();
+    try env_map.put("HOME", home);
+    try env_map.put("XDG_CONFIG_HOME", xdg_config);
+    try env_map.put("XDG_STATE_HOME", xdg_state);
+    try env_map.put("XDG_DATA_HOME", xdg_data);
+    try env_map.put("XDG_CACHE_HOME", xdg_cache);
+
+    const out_path = try std.fs.path.join(gpa, &.{ home, ".cmd-stdout" });
+    defer gpa.free(out_path);
+    const err_path = try std.fs.path.join(gpa, &.{ home, ".cmd-stderr" });
+    defer gpa.free(err_path);
+
+    var out_file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
+    defer out_file.close(io);
+    var err_file = try std.Io.Dir.cwd().createFile(io, err_path, .{});
+    defer err_file.close(io);
+
+    var full: std.ArrayList([]const u8) = .empty;
+    defer full.deinit(gpa);
+    try full.append(gpa, bin);
+    try full.appendSlice(gpa, argv);
+
+    var child = try std.process.spawn(io, .{
+        .argv = full.items,
+        .environ_map = &env_map,
+        .stdout = .{ .file = out_file },
+        .stderr = .{ .file = err_file },
+    });
+
+    // Bound the wait. `Child.wait` blocks, so the deadline is enforced by
+    // a watchdog thread that kills the child if it overruns. `timed_out`
+    // is what distinguishes "we killed it" from "it crashed" — both
+    // surface as a non-`.exited` term, and only the first is an error
+    // the caller should hear about.
+    // The flag is set only when the watchdog's `kill` was the thing that
+    // ended the child. Setting it unconditionally on wake would misfire
+    // for a child that finished in the same millisecond as the deadline
+    // — the wait returns, and a flag set microseconds later reports a
+    // timeout for a run that completed.
+    var timed_out = std.atomic.Value(bool).init(false);
+    const watchdog = try std.Thread.spawn(.{}, struct {
+        fn killAfter(c: *std.process.Child, w_io: Io, ms: u32, flag: *std.atomic.Value(bool)) void {
+            Io.sleep(w_io, .fromMilliseconds(ms), .awake) catch return;
+            // `Child.kill` is a NO-OP once the child has been reaped —
+            // `child.id` is null then. So: set the flag, kill, and let
+            // the parent's `wait` be the arbiter of what actually
+            // happened. If the child was already gone, `wait` returns
+            // `.exited` with its real code and the flag is cleared.
+            flag.store(true, .release);
+            c.kill(w_io);
+        }
+    }.killAfter, .{ &child, io, timeout_ms, &timed_out });
+
+    const term = child.wait(io) catch {
+        watchdog.join();
+        return error.RunFailed;
+    };
+    watchdog.join();
+
+    // A clean exit is a clean exit even if the watchdog woke during it.
+    const exited_normally = switch (term) {
+        .exited => true,
+        else => false,
+    };
+    if (!exited_normally and timed_out.load(.acquire)) return error.RunTimedOut;
+
+    const code: ?u8 = switch (term) {
+        .exited => |c| c,
+        // Killed by a signal the harness did not send — a genuine crash.
+        else => null,
+    };
+
+    // Read the captures back. They live in the tempdir, which `deinit`
+    // removes, so nothing here outlives the harness.
+    const stdout_bytes = std.Io.Dir.cwd().readFileAlloc(io, out_path, gpa, .limited(1 << 20)) catch try gpa.dupe(u8, "");
+    const stderr_bytes = std.Io.Dir.cwd().readFileAlloc(io, err_path, gpa, .limited(1 << 20)) catch try gpa.dupe(u8, "");
+
+    return .{
+        .exit_code = code,
+        .stdout = stdout_bytes,
+        .stderr = stderr_bytes,
+    };
+}
+
+/// Return the text AFTER the first occurrence of `delim`, or `null`.
+///
+/// THE reason this exists: `std.mem.splitSequence(hay, delim).next()`
+/// returns the text BEFORE the delimiter, not after. Reaching "what
+/// comes after" therefore takes TWO `next()` calls — and the
+/// first `next()` of a temporary iterator reads as "get me the value"
+/// to anyone expecting Python's `s.split(delim, 1)[1]` semantics.
+///
+/// That mistake cost a debugging round on the auth port: the extracted
+/// "session token" was the `Set-Cookie` ATTRIBUTE list (`Path=/;
+/// HttpOnly`), which then failed `token.len > 16` for a reason that had
+/// nothing to do with tokens.
+pub fn afterFirst(haystack: []const u8, delim: []const u8) ?[]const u8 {
+    var it = std.mem.splitSequence(u8, haystack, delim);
+    _ = it.next() orelse return null; // the before-part
+    return it.next(); // the after-part
+}
 
 /// Return `error.SkipZigTest` unless a `pabrik` binary is resolvable.
 ///

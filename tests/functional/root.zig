@@ -21,9 +21,11 @@ pub const harness = @import("harness.zig");
 // naming it as a `const` and referencing that const inside a `test`
 // block is what makes the file's tests reachable.
 const smoke_boot_test = @import("smoke_boot_test.zig");
+const auth_test = @import("auth_test.zig");
 
 pub const suites = .{
     smoke_boot_test,
+    auth_test,
 };
 
 test {
