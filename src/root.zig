@@ -60,6 +60,12 @@ pub const sqlite = @import("databases").sqlite;
 // `Db` IS `SqliteBackend` when sqlite-only, so existing
 // `*sqlite.SqliteBackend` signatures keep compiling during migration.
 pub const database = @import("databases").database;
+// Connection pragmas the app owns — `busy_timeout`, `synchronous`, WAL
+// bounds. `SqliteBackend.init` (vendored, URL-pinned) sets only
+// `journal_mode=WAL` + `busy_timeout=5000`, which is what makes a
+// contended write fail outright instead of waiting. Module header has the
+// reproduction.
+pub const sqlite_pragmas = @import("sqlite_pragmas.zig");
 pub const bash_tool = @import("modules/agent/tools/bash.zig");
 pub const pwsh_tool = @import("modules/agent/tools/pwsh.zig");
 pub const command_tool = @import("modules/agent/tools/command.zig");
@@ -252,6 +258,10 @@ pub const migrations_mod = @import("migrations/mod.zig");
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
     _ = @import("modules/agent/test_runner.zig");
+    // Connection-pragma behaviour (the "database is locked" fix). Its
+    // tests open TWO `SqliteBackend` handles on one file-backed DB and
+    // race a writer, which `:memory:` cannot express.
+    _ = @import("sqlite_pragmas.zig");
     // Agent Mode helpers: impl + tests in one file. Importing these
     // makes their inline `test` blocks discoverable by `zig build test`.
     _ = @import("agentic_loop/agent_tools_allowed.zig");

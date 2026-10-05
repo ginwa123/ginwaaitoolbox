@@ -17,6 +17,7 @@ pub const debug = pabrikcore.crash_handler.root_debug;
 const ai_mod = pabrikcore.ai_mod;
 const sqlite = pabrikcore.sqlite;
 const database = pabrikcore.database;
+const sqlite_pragmas = pabrikcore.sqlite_pragmas;
 // `helpers` is now its own Zig module (see `src/helpers/build.zig`);
 // promoted out of `pabrikcore` so multiple sub-packages can share a
 // single module instance. The root build.zig wires it via
@@ -174,6 +175,25 @@ pub fn main(init: std.process.Init) !void {
     var dbSqlite: database.Db = .{};
     defer dbSqlite.deinit();
     try database.open(&dbSqlite, io, .{ .sqlite_path = db_path });
+    // The vendored backend sets only `journal_mode=WAL` + `busy_timeout=5000`.
+    // A write that cannot take WAL's single writer slot inside 5 s comes back
+    // as `database is locked` and is dropped, so raise the wait and bound the
+    // WAL. Logged so a future "database is locked" report carries the live
+    // connection's actual settings.
+    sqlite_pragmas.apply(allocator, &dbSqlite, .{}) catch |err| {
+        std.log.warn("startup: sqlite pragmas not applied ({s}); writes stay at the 5s default busy_timeout", .{@errorName(err)});
+    };
+    if (sqlite_pragmas.readBack(allocator, &dbSqlite)) |applied| {
+        std.log.info("sqlite: journal_mode={s} busy_timeout={d}ms synchronous={d} wal_autocheckpoint={d} journal_size_limit={d}", .{
+            applied.journal_mode(),
+            applied.busy_timeout_ms,
+            applied.synchronous,
+            applied.wal_autocheckpoint_pages,
+            applied.journal_size_limit_bytes,
+        });
+    } else |err| {
+        std.log.warn("sqlite: could not read back pragmas ({s})", .{@errorName(err)});
+    }
 
     var migrationManager = migration.MigrationManager.init(allocator, &dbSqlite);
     defer migrationManager.deinit();
@@ -730,6 +750,11 @@ fn dispatchCreateAdmin(
     var dbSqlite: database.Db = .{};
     defer dbSqlite.deinit();
     try database.open(&dbSqlite, io, .{ .sqlite_path = db_path });
+    // Same pragma set the server boot applies — `create-admin` writes to
+    // the same file and can run while a server is live.
+    sqlite_pragmas.apply(allocator, &dbSqlite, .{}) catch |err| {
+        std.log.warn("create-admin: sqlite pragmas not applied ({s})", .{@errorName(err)});
+    };
     var mm = migration.MigrationManager.init(allocator, &dbSqlite);
     defer mm.deinit();
     try migration.registerAllMigrations(&mm);
