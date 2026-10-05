@@ -89,6 +89,15 @@ pub const RANDOM_PORT_ATTEMPTS: usize = 50;
 /// 8081 is the always-running dev backend per project memory.
 pub const RESERVED_PORTS = [_]u16{8081};
 
+/// How long each rung of the teardown kill ladder waits before
+/// escalating: `/test/shutdown` then wait, then SIGTERM then wait, then
+/// SIGKILL then wait.
+///
+/// Bounded so that the WHOLE deinit (this ladder plus up to 5 rmtree
+/// retries at 1s each) stays inside the 3s that
+/// `smoke_boot_test.teardown_completes_within_3s` asserts.
+const kill_ladder_rung_s: f64 = 0.25;
+
 /// The Io handle to use for harness-internal work that is not given
 /// one (the port picker, the entropy seeder).
 ///
@@ -1011,7 +1020,11 @@ pub const Harness = struct {
                 "{s} {s}: expected [{s}], got {d}\nbody: {s}\n",
                 .{ method.name(), path, want_w.buffered(), status, excerpt },
             );
-            out.deinit();
+            // No `out.deinit()` here: the `errdefer out.deinit()` above
+            // already owns the failure path, and an explicit deinit
+            // double-frees — which surfaced as a general-protection
+            // exception that MASKED the status-mismatch message this
+            // branch exists to print.
             gpa.free(url);
             return error.UnexpectedStatus;
         }
@@ -1094,15 +1107,22 @@ pub const Harness = struct {
         var sink: std.Io.Writer.Discarding = .init(&.{});
         _ = resp.reader(&.{}).streamRemaining(&sink.writer) catch {};
 
-        if (waitPidDead(io, pid, 1.0)) {
+        // 250ms per rung, not 1s. The ported perf test asserts the
+        // WHOLE deinit is under 3s, and deinit is this ladder plus up
+        // to 5 rmtree retries at 1s. With 1s rungs the ladder alone can
+        // consume the entire budget — and it did: the measured teardown
+        // was 3007ms. `/test/shutdown` normally exits the process in
+        // ~50ms, so these rungs only fire on a genuine hang, where
+        // 250ms of grace before escalating to SIGTERM/SIGKILL is ample.
+        if (waitPidDead(io, pid, kill_ladder_rung_s)) {
             return;
         }
         signalGroup(pid, SIGTERM);
-        if (waitPidDead(io, pid, 1.0)) {
+        if (waitPidDead(io, pid, kill_ladder_rung_s)) {
             return;
         }
         signalGroup(pid, SIGKILL);
-        _ = waitPidDead(io, pid, 1.0); // best-effort final wait
+        _ = waitPidDead(io, pid, kill_ladder_rung_s); // best-effort final wait
     }
 };
 
@@ -1149,21 +1169,33 @@ pub const HttpMethod = enum {
 
 /// Build `http://127.0.0.1:<port><path>?<params>`, percent-encoding
 /// parameter values.
+/// Build `http://127.0.0.1:<port><path>?<params>`.
+///
+/// Built with a `buf` and one `allocPrint` at the end rather than
+/// re-allocating per parameter. The loop version freed the NEW string
+/// where it meant to free the OLD one: `url = allocPrint(url); free(url)`
+/// frees the just-assigned value, so the NEXT iteration read freed
+/// memory. With one parameter that is merely a leak; with two or more it
+/// hands `std.Uri.parse` a dangling pointer and the request fails with
+/// `error.InvalidFormat` — which reads like a malformed URL in the
+/// caller's test, not like a harness bug. Found by
+/// `system_folder_path_validation_test`, whose requests carry three
+/// params.
 fn buildUrl(gpa: Allocator, port: u16, path: []const u8, params: []const Harness.Param) ![]u8 {
     if (params.len == 0) {
         return std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}{s}", .{ port, path });
     }
-    var url = try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}{s}?", .{ port, path });
-    errdefer gpa.free(url);
+
+    var buf: std.Io.Writer.Allocating = .init(gpa);
+    defer buf.deinit();
+    const w = &buf.writer;
+    w.print("http://127.0.0.1:{d}{s}?", .{ port, path }) catch return error.OutOfMemory;
+
     for (params, 0..) |p, i| {
-        if (i > 0) {
-            url = try std.fmt.allocPrint(gpa, "{s}&{s}={s}", .{ url, p.name, p.value });
-            gpa.free(url);
-        } else {
-            url = try std.fmt.allocPrint(gpa, "{s}{s}={s}", .{ url, p.name, p.value });
-        }
+        if (i > 0) w.writeAll("&") catch return error.OutOfMemory;
+        w.print("{s}={s}", .{ p.name, p.value }) catch return error.OutOfMemory;
     }
-    return url;
+    return buf.toOwnedSlice();
 }
 
 // ============================================================================
