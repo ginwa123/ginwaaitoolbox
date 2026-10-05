@@ -292,8 +292,13 @@ pub fn isSafeTmp(io: Io, allocator: Allocator, path: []const u8, orig_home: []co
     }
     if (!allowed) return false;
 
-    // (2) Namespace substring.
-    if (std.mem.indexOf(u8, real, REQUIRED_TMP_SUBSTR) == null) return false;
+    // (2) Namespace substring. Two prefixes are accepted: the harness's
+    //    own (`pabrik-func-`) and the suite-fixture one (`pabrik-fix-`).
+    //    `reapOrphanTestPids` only ever matches the FIRST, which is what
+    //    keeps a live fixture from being reaped — see `makeScratchDir`.
+    const has_marker = std.mem.indexOf(u8, real, REQUIRED_TMP_SUBSTR) != null or
+        std.mem.indexOf(u8, real, SCRATCH_PREFIX) != null;
+    if (!has_marker) return false;
 
     // (3) Not the real `$HOME`.
     if (orig_home.len > 0) {
@@ -915,6 +920,13 @@ pub const Harness = struct {
         const gpa = self.allocator;
 
         const url = try buildUrl(gpa, self.port, path, opts.params);
+        // Freed on EVERY exit, including the error paths below. A
+        // `try client.request(...)` that fails (connect refused — which
+        // a suite deliberately provokes when it points at a dead port)
+        // returns straight out of this function, so without this the URL
+        // is leaked and `testing.allocator` reports it against whatever
+        // test happened to exercise that path.
+        defer gpa.free(url);
 
         var body: ?[]const u8 = opts.json_body;
         defer if (body != null) gpa.free(body.?);
@@ -1025,12 +1037,10 @@ pub const Harness = struct {
             // double-frees — which surfaced as a general-protection
             // exception that MASKED the status-mismatch message this
             // branch exists to print.
-            gpa.free(url);
             return error.UnexpectedStatus;
         }
 
         const owned = try out.toOwnedSlice();
-        gpa.free(url);
         return .{
             .status = status,
             .body = owned,
@@ -1072,7 +1082,7 @@ pub const Harness = struct {
             if (data[j] == '\n') to_skip -= 1;
             start = j + 1;
         }
-        return gpa.dupe(u8, std.mem.trimRight(u8, data[start..], "\n"));
+        return gpa.dupe(u8, std.mem.trimEnd(u8, data[start..], "\n"));
     }
 
     // ---- private ----------------------------------------------------------
@@ -1723,6 +1733,24 @@ pub fn runPabrikCommand(
     try env_map.put("XDG_DATA_HOME", xdg_data);
     try env_map.put("XDG_CACHE_HOME", xdg_cache);
 
+    // The capture files live inside `home` — normally the harness
+    // tempdir, which teardown removes anyway. But `home` is a CALLER
+    // argument, and a caller may pass a directory it just created:
+    // between creating it and getting here, a LATER `Harness.boot` can
+    // run `reapOrphanTestPids`, which sees a `pabrik-func-` entry with no
+    // live `.harness.pid` and deletes it. The observed symptom was an
+    // intermittent `error.FileNotFound` out of `createFile` in one auth
+    // test — order-dependent, so it looked like a flake in the test
+    // rather than a race with the reaper.
+    //
+    // Recreating the directory is the right repair rather than a retry:
+    // the child needs `home` to exist anyway, and a missing HOME is
+    // exactly what the stub-LLM bootstrap below has to handle.
+    std.Io.Dir.cwd().createDirPath(io, home) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
     const out_path = try std.fs.path.join(gpa, &.{ home, ".cmd-stdout" });
     defer gpa.free(out_path);
     const err_path = try std.fs.path.join(gpa, &.{ home, ".cmd-stderr" });
@@ -1798,6 +1826,167 @@ pub fn runPabrikCommand(
         .stdout = stdout_bytes,
         .stderr = stderr_bytes,
     };
+}
+
+comptime {
+    // Body-analysis barrier. See the note above: an unreferenced
+    // function is never type-checked, so a stdlib rename inside one is
+    // invisible until a caller appears. These references make every
+    // public entry point's body part of the build.
+    _ = harnessPath;
+    _ = tmpRoot;
+    _ = canonical;
+    _ = isSafeTmp;
+    _ = afterFirst;
+    _ = harnessPath;
+    _ = requirePabrikBin;
+    _ = runPabrikCommand;
+    _ = reapOrphanTestPids;
+    _ = signalGroup;
+    _ = findFreePort;
+    _ = findFreePortSequential;
+    _ = findFreePortRandom;
+    _ = portIsFreeWithReuse;
+    _ = resolvePabrikBin;
+    _ = mcpHelloWorldBin;
+    _ = mcpHttpHelloWorldBin;
+    _ = writeStubLlmProfile;
+    _ = randomSuffix;
+    _ = makeScratchDir;
+    _ = makeScratchDir;
+    _ = debugString;
+    _ = cleanupExtraDir;
+    _ = run;
+    _ = Response.json;
+    _ = Response.header;
+    _ = Response.headerAll;
+    _ = Harness.boot;
+    _ = Harness.deinit;
+    _ = Harness.http;
+    _ = Harness.health;
+    _ = Harness.tailLog;
+    _ = Json.get;
+    _ = Json.str;
+    _ = Json.int;
+    _ = Json.boolean;
+    _ = Json.array;
+    _ = Json.object;
+    _ = Json.number;
+}
+
+/// Allocate a scratch directory for a suite's OWN fixture (a git repo, a
+/// design tree), OUTSIDE the harness's tempdir namespace.
+///
+/// WHY NOT INSIDE `temp_dir`, AND WHY A DIFFERENT PREFIX:
+///
+/// `reapOrphanTestPids` runs on EVERY boot and deletes any directory
+/// under the OS temp root whose name starts with `REQUIRED_TMP_SUBSTR`
+/// (`pabrik-func-`) and whose `.harness.pid` names a dead process. That
+/// is correct for the harness's own tempdirs. It is actively harmful for
+/// a fixture: a suite that builds a git repo at
+/// `/tmp/pabrik-func-<hex>/repo` has its fixture reaped by the NEXT
+/// boot, mid-test, because the fixture directory matches the prefix and
+/// carries no live pid of its own. The symptom is spectacular and
+/// misleading — the request returns three well-formed rows with EMPTY
+/// `diff_content`, because `git -C <deleted>` exits non-zero and the
+/// handler swallows spawn failures.
+///
+/// So fixtures get their own prefix (`pabrik-fix-`) and their own
+/// `isSafeTmp`-gated delete (`cleanupExtraDir`). That is also what
+/// pytest's `tmp_path` does: it is a sibling of the harness tempdir,
+/// never a child of it.
+pub fn makeScratchDir(gpa: Allocator) ![]u8 {
+    const base = try tmpRoot(gpa);
+    defer gpa.free(base);
+
+    var prng = entropyPrng(testingIo());
+    const rand = prng.random();
+    var attempt: usize = 0;
+    while (attempt < 32) : (attempt += 1) {
+        const suffix = rand.int(u64);
+        const dir = try std.fmt.allocPrint(gpa, "{s}{s}{s}{x}", .{
+            base, std.fs.path.sep_str, SCRATCH_PREFIX, suffix,
+        });
+        // No `defer gpa.free(dir)`: this slice IS the return value.
+        std.Io.Dir.cwd().createDirPath(testingIo(), dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {
+                gpa.free(dir);
+                continue;
+            },
+            else => {
+                gpa.free(dir);
+                return err;
+            },
+        };
+        return dir;
+    }
+    return error.OutOfMemory;
+}
+
+/// The namespace marker a suite's own fixture directory must carry.
+///
+/// Deliberately NOT `REQUIRED_TMP_SUBSTR`: `isSafeTmp` accepts either,
+/// so `cleanupExtraDir` still gates the delete, but a fixture named
+/// with this prefix is invisible to `reapOrphanTestPids`, which only
+/// looks for `pabrik-func-`.
+pub const SCRATCH_PREFIX = "pabrik-fix-";
+
+/// A short random hex string, for a scratch-dir or fixture name.
+///
+/// Suites need their OWN tempdir when the subject under test is
+/// filesystem state (a git fixture repo, a design file tree) rather than
+/// server state — the server's tempdir is the HOME it boots under, and a
+/// test that writes a repo there would be testing the wrong isolation.
+/// `std.testing.tmpDir` is NOT a substitute: it allocates under
+/// `<cwd>/.zig-cache/tmp/`, which for this package is inside the git
+/// worktree, and `git symbolic-ref` walks UP — so a fixture repo created
+/// there resolves to the WORKTREE's branch and any assertion about
+/// branches passes for the wrong reason.
+pub fn randomSuffix(gpa: Allocator) ![]u8 {
+    var prng = entropyPrng(testingIo());
+    return std.fmt.allocPrint(gpa, "{x}", .{prng.random().int(u64)});
+}
+
+/// Remove a directory the TEST created, after checking it is under the
+/// OS temp root and carries the `REQUIRED_TMP_SUBSTR` marker.
+///
+/// `Harness.deinit` deletes `temp_dir` — the HOME the server booted under.
+/// A suite's own scratch dirs (git fixtures, design trees) are outside
+/// that tree, so they need their own gated delete. `deleteTree` here is
+/// NOT gated by the caller's judgment: `isSafeTmp` is, and a refusal is
+/// printed rather than fatal so a cleanup problem never masks the test's
+/// real failure.
+pub fn cleanupExtraDir(io: Io, gpa: Allocator, path: []const u8) void {
+    const safe = isSafeTmp(io, gpa, path, "") catch false;
+    if (!safe) {
+        std.debug.print(
+            "refusing to delete {s}: not a tmpdir carrying the {s} or {s} marker\n",
+            .{ path, REQUIRED_TMP_SUBSTR, SCRATCH_PREFIX },
+        );
+        return;
+    }
+    std.Io.Dir.cwd().deleteTree(io, path) catch |err| {
+        std.debug.print("cleanup of {s} failed: {s}\n", .{ path, @errorName(err) });
+    };
+}
+
+/// Render `s` with non-printable bytes escaped, for a diagnostic.
+///
+/// Zig 0.16 removed the old `std.zig.fmtEscapes`. Suites used it to
+/// quote a needle in a failure message — a description that fails
+/// because it does not contain a REGEX metacharacter is unreadable
+/// without knowing which byte was being looked for. This returns an
+/// OWNED buffer; a `{s}` format arg borrows it only for the call.
+pub fn debugString(gpa: Allocator, s: []const u8) ![]u8 {
+    var buf: std.Io.Writer.Allocating = .init(gpa);
+    errdefer buf.deinit();
+    for (s) |c| {
+        switch (c) {
+            0x20...0x21, 0x23...0x5B, 0x5D...0x7E => try buf.writer.writeByte(c),
+            else => try buf.writer.print("\\x{x:0>2}", .{c}),
+        }
+    }
+    return buf.toOwnedSlice();
 }
 
 /// Return the text AFTER the first occurrence of `delim`, or `null`.
