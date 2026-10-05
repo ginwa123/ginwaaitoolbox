@@ -219,9 +219,28 @@ fn readEvents(s: *SseStream) void {
     while (!s.stop.load(.acquire)) {
         // One LINE, not the whole stream: this is what makes the read
         // incremental. `error.EndOfStream` is a clean server close.
-        const raw_line = reader.takeDelimiterExclusive('\n') catch |err| {
+        //
+        // `takeDelimiter` — NOT `takeDelimiterExclusive`. The Exclusive
+        // variant advances "up to (BUT NOT PAST) the delimiter", so the
+        // `\n` stays in the buffer; the next call finds a delimiter at
+        // position 0 and returns a ZERO-LENGTH slice, forever. The loop
+        // livelocks at full speed and never reaches `error.EndOfStream`,
+        // so a closed stream reads as still-open.
+        //
+        // It went unnoticed because the only frame this suite waits for
+        // is the `connected` handshake, which is the FIRST line — and the
+        // first line dispatches correctly. Two independent agents found
+        // this while porting SSE suites that assert on PUSHED events,
+        // which is where the livelock becomes visible.
+        //
+        // `takeDelimiter` consumes the delimiter and maps clean EOF to
+        // `null`, which is exactly Python's `readline()` returning `b""`.
+        const raw_line_opt = reader.takeDelimiter('\n') catch |err| {
+            // `takeDelimiter` has a NARROWER error set than the
+            // delimiter-splitting variants: clean EOF is `null`, not
+            // `error.EndOfStream`. Only real I/O failures and an
+            // over-long line reach here.
             const msg = switch (err) {
-                error.EndOfStream => "stream ended",
                 error.ReadFailed => "read failed",
                 error.StreamTooLong => "line exceeded the transfer buffer",
             };
@@ -231,6 +250,18 @@ fn readEvents(s: *SseStream) void {
             s.mutex.unlock(io);
             return;
         };
+        // A clean server close: `null` here, not `error.EndOfStream`.
+        // Reported through the SAME `read_error` channel as a failure —
+        // the test only needs to know the reader stopped, and it already
+        // polls that.
+        if (raw_line_opt == null) {
+            const owned = gpa.dupe(u8, "stream ended") catch return;
+            s.mutex.lockUncancelable(io);
+            s.read_error = owned;
+            s.mutex.unlock(io);
+            return;
+        }
+        const raw_line = raw_line_opt.?;
         const line = std.mem.trimEnd(u8, raw_line, "\r");
 
         if (line.len == 0) {
