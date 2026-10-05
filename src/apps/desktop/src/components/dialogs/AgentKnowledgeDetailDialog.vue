@@ -33,6 +33,7 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry, type AgentKnowledgeRow } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -177,7 +178,7 @@ watch(
                 :style="mode === 'file'
                   ? 'background: var(--color-violet); color: var(--color-bg);'
                   : 'background: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'">
-                📄 File
+                <UiIcon name="file" /> File
               </button>
               <button type="button" role="tab" :aria-selected="mode === 'text'"
                 @click="mode = 'text'" :disabled="props.busy"
@@ -186,7 +187,7 @@ watch(
                 :style="mode === 'text'
                   ? 'background: var(--color-violet); color: var(--color-bg);'
                   : 'background: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'">
-                ✍️ Text
+                <UiIcon name="write" /> Text
               </button>
             </div>
           </div>
@@ -215,7 +216,7 @@ watch(
                   style="background: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);"
                   :disabled="props.busy"
                 >
-                  📂 Browse…
+                  <UiIcon name="folder-open" /> Browse…
                 </button>
               </div>
               <input

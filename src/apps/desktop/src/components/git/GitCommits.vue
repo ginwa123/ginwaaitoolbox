@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import * as api from '../../api'
+import UiIcon from '../ui/UiIcon.vue'
+import type { UiIconName } from '../ui/icons'
 import {
   escapeDiffHtml,
   parseUnifiedDiff,
@@ -151,9 +153,15 @@ const ensureDetail = async (commit: api.GitCommit) => {
   }
 }
 
-const statusIcon = (status: string): string => {
-  const icons: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄', C: '📋' }
-  return icons[status] ?? '📄'
+const statusIcon = (status: string): UiIconName => {
+  const icons: Record<string, UiIconName> = {
+    M: 'note',
+    A: 'plus',
+    D: 'trash',
+    R: 'refresh',
+    C: 'clipboard',
+  }
+  return icons[status] ?? 'file'
 }
 
 const toggleFile = (commit: api.GitCommit, file: api.GitCommitFile) => {
@@ -250,7 +258,7 @@ defineExpose({ refresh })
       v-else-if="!isGitRepo || !hasInput"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
-      <span class="text-display mb-3">🌿</span>
+      <UiIcon name="leaf" size-class="w-6 h-6" class="mb-3" />
       <p class="text-dense" style="color: var(--semantic-text-dim)">
         {{ !hasInput ? 'Select a workspace to view commits' : 'Not a git repository' }}
       </p>
@@ -261,7 +269,7 @@ defineExpose({ refresh })
       v-else-if="commits.length === 0"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
-      <span class="text-display mb-3">📭</span>
+      <UiIcon name="inbox" size-class="w-6 h-6" class="mb-3" />
       <p class="text-dense" style="color: var(--semantic-text-dim)">No commits yet</p>
       <p v-if="branch" class="text-dense mt-1" style="color: var(--semantic-text-dim)">
         Branch: {{ branch }}
@@ -274,7 +282,7 @@ defineExpose({ refresh })
         class="px-3 py-2 text-dense flex items-center gap-2 shrink-0"
         style="border-bottom: 1px solid var(--color-border)"
       >
-        <span style="color: var(--semantic-text-muted)">🌿</span>
+        <UiIcon name="leaf" style="color: var(--semantic-text-muted)" />
         <span class="truncate" style="color: var(--semantic-text)">{{ branch }}</span>
         <button
           class="ml-auto p-1 rounded hover:opacity-70 transition-opacity"
@@ -365,7 +373,7 @@ defineExpose({ refresh })
                   :title="`Show diff at ${commit.short_sha}`"
                   @click="toggleFile(commit, file)"
                 >
-                  <span>{{ statusIcon(file.status) }}</span>
+                  <UiIcon :name="statusIcon(file.status)" />
                   <span
                     class="flex-1 truncate"
                     style="color: var(--semantic-text)"

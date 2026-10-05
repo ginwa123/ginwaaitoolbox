@@ -15,6 +15,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { Effect } from 'effect'
+import UiIcon from '../ui/UiIcon.vue'
 import { getSkillDetail, deleteSkill, type SkillDetail } from '../../api'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { SyncRemoteError } from '../../sync/SyncError'
@@ -179,7 +180,7 @@ const handleDelete = async () => {
       <div class="p-4 shrink-0" style="border-bottom: 1px solid var(--color-border)">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-3">
-            <span class="text-title-sm">🛠️</span>
+            <UiIcon name="tools" size-class="w-4.5 h-4.5" />
             <h3 class="text-lead font-semibold" style="color: var(--semantic-text)">
               {{ skillDetail.name }}
             </h3>

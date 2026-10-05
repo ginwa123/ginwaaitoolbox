@@ -23,6 +23,7 @@ import SessionSlider from '../SessionSlider.vue'
 import ChatRowContextMenu from '../shell/ChatRowContextMenu.vue'
 import RenameTaskModal from '../dialogs/RenameTaskModal.vue'
 import GitBranchMenu from '../shell/GitBranchMenu.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const router = useRouter()
 
@@ -1128,7 +1129,7 @@ defineExpose({
                 :title="
                   item.parent_session_id ? 'Sub-agent of ' + item.parent_session_id : 'Sub-agent'
                 "
-                >🔧 {{ item.sub_agent_name }}</span
+                ><UiIcon name="tools" size-class="w-3 h-3" /> {{ item.sub_agent_name }}</span
               >
             </span>
             <!-- Migration 082 - replace AI-tainted updated_at with the human

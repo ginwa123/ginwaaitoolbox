@@ -2,6 +2,8 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { detectLanguage, highlightLine } from '@/helpers/codeHighlight'
 import { displayPathFor } from '@/composables/useCodeEditorSession'
+import UiIcon from '../ui/UiIcon.vue'
+import type { UiIconName } from '../ui/icons'
 
 /**
  * Read-only code viewer for `?view=code-editor`.
@@ -106,34 +108,34 @@ watch(
 const displayPath = computed(() => displayPathFor(props.cwd, props.filePath))
 
 // File icon for display
-const getFileIcon = (fileName: string): string => {
+const getFileIcon = (fileName: string): UiIconName => {
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
-  const iconMap: Record<string, string> = {
-    js: '📜',
-    jsx: '⚛️',
-    ts: '📘',
-    tsx: '⚛️',
-    vue: '💚',
-    html: '🌐',
-    htm: '🌐',
-    css: '🎨',
-    scss: '🎨',
-    less: '🎨',
-    json: '📋',
-    md: '📝',
-    markdown: '📝',
-    xml: '📄',
-    yaml: '⚙️',
-    yml: '⚙️',
-    py: '🐍',
-    zig: '⚡',
-    rs: '🦀',
-    go: '🔵',
-    txt: '📄',
-    gitignore: '🔒',
-    env: '🔐',
+  const iconMap: Record<string, UiIconName> = {
+    js: 'scroll',
+    jsx: 'atom',
+    ts: 'book',
+    tsx: 'atom',
+    vue: 'code',
+    html: 'globe',
+    htm: 'globe',
+    css: 'palette',
+    scss: 'palette',
+    less: 'palette',
+    json: 'clipboard',
+    md: 'note',
+    markdown: 'note',
+    xml: 'file',
+    yaml: 'settings',
+    yml: 'settings',
+    py: 'code',
+    zig: 'code',
+    rs: 'code',
+    go: 'circle',
+    txt: 'file',
+    gitignore: 'lock',
+    env: 'key',
   }
-  return iconMap[ext] || '📄'
+  return iconMap[ext] ?? 'file'
 }
 
 const handleClose = () => {
@@ -176,7 +178,7 @@ const handleClose = () => {
             />
           </svg>
         </button>
-        <span class="text-title-sm shrink-0">{{ getFileIcon(fileName) }}</span>
+        <UiIcon :name="getFileIcon(fileName)" class="w-5 h-5" />
         <div class="flex items-center gap-2 min-w-0">
           <span
             class="text-body font-medium truncate"

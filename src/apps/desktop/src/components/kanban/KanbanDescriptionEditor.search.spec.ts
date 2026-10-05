@@ -106,8 +106,8 @@ describe('KanbanDescriptionEditor — @ picker server search (Task 3)', () => {
     expect(searchFilesMock).toHaveBeenCalledTimes(1)
     // The old raw-walk read `entry.isDirectory` (camelCase) → undefined.
     // The port must accept `is_directory ?? isDirectory`.
-    expect(wrapper.find('.file-picker-list').text()).toContain('📁')
-    expect(wrapper.find('.file-picker-list').text()).not.toContain('📄')
+    expect(wrapper.find('.file-picker-list').findAll('[data-icon="folder"]').length).toBe(1)
+    expect(wrapper.find('.file-picker-list').findAll('[data-icon="file"]').length).toBe(0)
   })
 
   it('typing @comp calls api.searchFiles once (no N-fetch full-tree walk)', async () => {

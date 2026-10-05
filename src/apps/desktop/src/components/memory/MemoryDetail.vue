@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import UiIcon from '../ui/UiIcon.vue'
 import {
   getMemoryDetail,
   createMemory,
@@ -282,7 +283,7 @@ defineExpose({ startCreate })
       <div class="p-4 shrink-0" style="border-bottom: 1px solid var(--color-border);">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-3 min-w-0">
-            <span class="text-title-sm">🧠</span>
+            <UiIcon name="brain" size-class="w-4.5 h-4.5" />
             <h3
               class="text-lead font-semibold truncate"
               style="color: var(--semantic-text);"

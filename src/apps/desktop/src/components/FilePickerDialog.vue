@@ -37,6 +37,8 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRecentFoldersStore } from '../stores/recentFolders'
 import { formatRelativeTime } from '../helpers/relativeTime'
+import UiIcon from './ui/UiIcon.vue'
+import type { UiIconName } from './ui/icons'
 
 type Mode = 'folder' | 'file' | 'both'
 type FilterMode = 'all' | 'folders' | 'files'
@@ -46,7 +48,7 @@ interface ContentItem {
   path: string
   label: string
   subtitle: string
-  icon: string
+  icon: UiIconName
   expandable: boolean
   hidden: boolean
 }
@@ -77,8 +79,9 @@ const props = defineProps<{
   labelFor?: (item: T) => string
   /** Secondary text (e.g. size, modified date). Falls back to ''. */
   subtitleFor?: (item: T) => string
-  /** Emoji or short string. Falls back to 📁 / 📄 based on isExpandable. */
-  iconFor?: (item: T) => string
+  /** A key of the `UiIcon` registry. Falls back to `folder` / `file`
+   *  based on isExpandable. */
+  iconFor?: (item: T) => UiIconName
 
   showHidden?: boolean
   closeOnSelect?: boolean
@@ -211,8 +214,8 @@ function parentPath(path: string): string {
   return parent || '/'
 }
 
-function defaultIconFor(item: T): string {
-  return props.isExpandable(item) ? '📁' : '📄'
+function defaultIconFor(item: T): UiIconName {
+  return props.isExpandable(item) ? 'folder' : 'file'
 }
 
 function getLabel(item: T): string {
@@ -223,7 +226,7 @@ function getSubtitle(item: T): string {
   return props.subtitleFor ? props.subtitleFor(item) : ''
 }
 
-function getIcon(item: T): string {
+function getIcon(item: T): UiIconName {
   return props.iconFor ? props.iconFor(item) : defaultIconFor(item)
 }
 
@@ -943,7 +946,7 @@ onBeforeUnmount(() => {
               class="text-body font-semibold flex items-center gap-2"
               style="color: var(--semantic-text)"
             >
-              <span aria-hidden="true">📂</span>
+              <UiIcon name="folder-open" />
               <slot name="header">
                 {{ title || (mode === 'file' ? 'Select File' : mode === 'both' ? 'Select Item' : 'Select Folder') }}
               </slot>
@@ -1055,7 +1058,7 @@ onBeforeUnmount(() => {
               title="Type a path (Enter to go, Esc to cancel)"
               aria-label="Edit path"
             >
-              ✏️ Go
+              <UiIcon name="pencil" /> Go
             </button>
 
             <button
@@ -1163,12 +1166,11 @@ onBeforeUnmount(() => {
                   color: var(--semantic-text);
                 "
               />
-              <span
-                class="absolute left-2 top-1/2 -translate-y-1/2 text-dense pointer-events-none"
+              <UiIcon
+                name="search"
+                class="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none"
                 style="color: var(--semantic-text-dim)"
-                aria-hidden="true"
-                >🔍</span
-              >
+              />
             </div>
 
             <!-- Filter chips (only in 'both' mode) -->
@@ -1220,7 +1222,7 @@ onBeforeUnmount(() => {
               :title="showHiddenLocal ? 'Hide hidden files' : 'Show hidden files'"
               :aria-pressed="showHiddenLocal"
             >
-              👁
+              <UiIcon name="eye" />
             </button>
 
             <!-- Refresh -->
@@ -1231,7 +1233,7 @@ onBeforeUnmount(() => {
               style="color: var(--semantic-text-dim)"
               title="Refresh"
             >
-              🔄
+              <UiIcon name="refresh" />
             </button>
 
             <slot name="toolbar" />
@@ -1296,7 +1298,7 @@ onBeforeUnmount(() => {
                 v-else-if="treeFlat.length === 0"
                 class="px-3 py-4 text-center"
               >
-                <div class="text-title-lg mb-1">📂</div>
+                <UiIcon name="folder-open" class="w-6 h-6 mb-1" />
                 <p class="text-dense" style="color: var(--semantic-text-dim)">
                   No folders
                 </p>
@@ -1329,7 +1331,7 @@ onBeforeUnmount(() => {
                     @click.stop="toggleTreeNode(row.path)"
                     :data-testid="`file-picker-tree-toggle-${row.path}`"
                   >▶</span>
-                  <span>{{ getIcon(row.item) }}</span>
+                  <UiIcon :name="getIcon(row.item)" />
                   <span class="truncate">{{ getLabel(row.item) }}</span>
                 </button>
               </template>
@@ -1386,7 +1388,7 @@ onBeforeUnmount(() => {
                 class="px-3 py-8 text-center"
               >
                 <slot name="empty">
-                  <div class="text-title-lg mb-1">📭</div>
+                  <UiIcon name="inbox" class="w-6 h-6 mb-1" />
                   <p class="text-dense" style="color: var(--semantic-text-dim)">
                     {{
                       searchQuery
@@ -1428,7 +1430,7 @@ onBeforeUnmount(() => {
                     :item="entry.item"
                     :selected="selectedPath === entry.path"
                   >
-                    <span class="text-lead shrink-0">{{ entry.icon }}</span>
+                    <UiIcon :name="entry.icon" class="w-4 h-4 shrink-0" />
                     <span class="flex-1 truncate">{{ entry.label }}</span>
                     <span
                       v-if="entry.subtitle"
@@ -1461,7 +1463,7 @@ onBeforeUnmount(() => {
               class="flex-1 flex flex-col items-center justify-center gap-3 px-5 py-8 text-center"
               data-testid="file-picker-recent-empty"
             >
-              <div class="text-display" aria-hidden="true">📁</div>
+              <UiIcon name="folder" class="w-6 h-6" />
               <p class="text-body" style="color: var(--semantic-text)">
                 No recent folders yet
               </p>
@@ -1499,7 +1501,7 @@ onBeforeUnmount(() => {
                 style="color: var(--semantic-text);"
               >
                 <!-- Folder icon -->
-                <span class="text-lead shrink-0" aria-hidden="true">📁</span>
+                <UiIcon name="folder" class="w-4 h-4 shrink-0" />
                 <!-- Name + path stack -->
                 <span class="flex-1 min-w-0 flex flex-col gap-0.5">
                   <span class="font-medium truncate">
@@ -1509,7 +1511,7 @@ onBeforeUnmount(() => {
                       class="ml-1 text-micro px-1.5 py-0.5 rounded uppercase font-semibold"
                       style="background-color: var(--color-violet); color: var(--color-bg);"
                       data-testid="file-picker-recent-pinned-badge"
-                    >⭐ PINNED</span>
+                    ><UiIcon name="star" /> PINNED</span>
                   </span>
                   <span
                     class="text-dense font-mono truncate"

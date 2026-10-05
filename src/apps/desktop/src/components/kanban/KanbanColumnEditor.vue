@@ -21,6 +21,8 @@
 -->
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, onBeforeUnmount } from 'vue'
+import UiIcon from '../ui/UiIcon.vue'
+import type { UiIconName } from '../ui/icons'
 
 type Mode = 'add' | 'rename' | 'delete'
 
@@ -74,9 +76,9 @@ const descriptionText = computed(() => {
 })
 
 // The header icon — matches the visual style of AddKanbanDialog.
-const headerIcon = computed(() => {
-  if (props.mode === 'delete') return '🗑️'
-  return '📋'
+const headerIcon = computed<UiIconName>(() => {
+  if (props.mode === 'delete') return 'trash'
+  return 'clipboard'
 })
 
 // Show the name input for add / rename modes only; the delete mode
@@ -198,7 +200,7 @@ onBeforeUnmount(() => {
               class="text-lead font-semibold flex items-center gap-2"
               style="color: var(--semantic-text);"
             >
-              <span aria-hidden="true">{{ headerIcon }}</span>
+              <UiIcon :name="headerIcon" />
               {{ headerText }}
             </h3>
             <p

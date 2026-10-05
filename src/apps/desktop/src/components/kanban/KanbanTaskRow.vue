@@ -8,7 +8,7 @@
   is the primary content and is wide enough to carry a second line, so
   this component owns its own layout:
 
-    ▌  Fix the login redirect on refresh            📌 ✎ ⋯ ✕
+    ▌  Fix the login redirect on refresh            pin · edit · ⋯ · ✕
        ⑂ worktree/fix-login · #bug · 2h ago
 
   Why it no longer wraps <WorkspaceItemTaskRow>: restyling a component
@@ -52,6 +52,7 @@ import { useAgentErrorStore } from '../../stores/agentError'
 import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import { formatTaskTimestamp, taskTimestampTooltip } from '../../helpers/formatTaskTimestamp'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
+import UiIcon from '../ui/UiIcon.vue'
 import type { Task } from '../../stores/workspaces'
 
 export type KanbanRowDensity = 'comfortable' | 'compact'
@@ -283,7 +284,7 @@ const openTaskMenuInBackground = () => {
           title="Pinned"
           data-testid="kanban-row-pin-indicator"
           aria-hidden="true"
-          >📌</span
+          ><UiIcon name="pin" /></span
         >{{ props.task.name }}
       </div>
 

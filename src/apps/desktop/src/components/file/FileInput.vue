@@ -4,6 +4,7 @@ import * as api from '../../api'
 import { getActivePinia } from 'pinia'
 import { useTabsStore } from '../../stores/tabs'
 import FilePreview from './FilePreview.vue'
+import UiIcon from '../ui/UiIcon.vue'
 import { parseBackgroundCommandOutput } from '@/helpers/isBackgroundCommandOutput'
 
 export interface QueuedMessage {
@@ -687,7 +688,7 @@ const sendMessage = () => {
       class="mb-3 px-4 py-2 rounded-lg flex items-center gap-2"
       style="background: rgba(135, 169, 135, 0.15); border: 1px solid var(--color-green)"
     >
-      <span style="color: var(--color-green)">💬</span>
+      <UiIcon name="chat" style="color: var(--color-green)" />
       <span class="text-body font-medium" style="color: var(--color-green)">Review Mode</span>
       <span class="text-dense" style="color: var(--semantic-text-dim)"
         >- Submit your code review comment</span
@@ -731,7 +732,7 @@ const sendMessage = () => {
           "
           @mouseenter="selectedFileIndex = idx"
         >
-          <span>{{ file.isDirectory ? '📁' : '📄' }}</span>
+          <UiIcon :name="file.isDirectory ? 'folder' : 'file'" size-class="w-3.5 h-3.5" />
           <span class="truncate font-mono text-dense">{{ file.path }}</span>
         </button>
       </div>

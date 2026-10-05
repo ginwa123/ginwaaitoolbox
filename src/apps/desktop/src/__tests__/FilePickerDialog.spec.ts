@@ -672,7 +672,7 @@ describe('FilePickerDialog — agnostic data source (non-folder example)', () =>
         pathFor: (b: Branch) => `/${b.ref}`,
         isExpandable: (_b: Branch) => true, // all branches have children in this mock
         labelFor: (b: Branch) => b.ref,
-        iconFor: () => '🌿',
+        iconFor: () => 'leaf',
         title: 'Pick a branch',
         initialPath: '/main',
       },

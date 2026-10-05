@@ -36,6 +36,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { DesignElement } from '../../api'
+import UiIcon from '../ui/UiIcon.vue'
+import type { UiIconName } from '../ui/icons'
 
 /**
  * One node in the design-page layers tree. Each `DesignElement` can
@@ -128,15 +130,21 @@ const hasChildren = computed(() => props.node.children.length > 0)
 
 // Type icon — same mapping as the original LayersPanel. Kept here so
 // the row is self-contained (no need to forward a helper from parent).
-const typeIcon = (type: DesignElement['type']): string => {
+//
+// The row's type mark is the only thing identifying it, so it comes from
+// the shared `UiIcon` registry like every other icon in the app: one
+// pixel box, one palette, and a name a spec can pin (`data-icon="note"`)
+// instead of a box-drawing codepoint that renders at three different
+// heights depending on the platform font.
+const typeIcon = (type: DesignElement['type']): UiIconName => {
   switch (type) {
-    case 'rectangle': return '▭'
-    case 'ellipse':   return '◯'
-    case 'text':      return 'T'
-    case 'image':     return '🖼'
-    case 'frame':     return '◳'
-    case 'group':     return '◫'
-    default:          return '◇'
+    case 'rectangle': return 'circle'
+    case 'ellipse':   return 'circle'
+    case 'text':      return 'note'
+    case 'image':     return 'image'
+    case 'frame':     return 'box'
+    case 'group':     return 'cards'
+    default:          return 'circle'
   }
 }
 
@@ -301,11 +309,11 @@ const handleDragEnd = (event: DragEvent): void => {
     ></span>
 
     <!-- Type icon. -->
-    <span
-      class="text-lead font-mono w-4 text-center shrink-0"
-      aria-hidden="true"
+    <UiIcon
+      :name="typeIcon(node.element.type)"
+      class="w-4 h-4"
       style="color: var(--color-violet);"
-    >{{ typeIcon(node.element.type) }}</span>
+    />
 
     <!-- Element name. (The "(unnamed)" placeholder used to live here,
          but it leaked into the drop-zone rows that share this template

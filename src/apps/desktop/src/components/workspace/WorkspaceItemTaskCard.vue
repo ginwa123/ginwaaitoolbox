@@ -46,6 +46,7 @@ import {
   branchUrlFromPrUrl,
 } from '../../helpers/prStatusCache'
 import { formatTaskTimestamp as formatRelativeTime } from '../../helpers/formatTaskTimestamp'
+import UiIcon from '../ui/UiIcon.vue'
 
 // Kanban task tags palette (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
@@ -773,7 +774,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
       style="color: var(--semantic-text-muted)"
       data-testid="task-media-badge"
     >
-      <span aria-hidden="true">🖼</span>
+      <UiIcon name="image" size-class="w-3 h-3" />
       <span>has media</span>
     </div>
     <!-- Tags row (Migration 067 — kanban task tags feature).

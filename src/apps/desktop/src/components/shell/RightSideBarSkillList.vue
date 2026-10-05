@@ -16,6 +16,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { Effect } from 'effect'
+import UiIcon from '../ui/UiIcon.vue'
 import { getSkills, type Skill } from '../../api'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -158,7 +159,7 @@ watch(
         class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         data-testid="skills-list-no-workspace"
       >
-        <span class="text-display mb-3">🧠</span>
+        <UiIcon name="brain" size-class="w-6 h-6" class="mb-3" />
         <p class="text-dense" style="color: var(--semantic-text-dim)">
           Select a workspace to see its skills
         </p>
@@ -170,7 +171,7 @@ watch(
         class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         data-testid="skills-list-empty"
       >
-        <span class="text-display mb-3">🧠</span>
+        <UiIcon name="brain" size-class="w-6 h-6" class="mb-3" />
         <p class="text-dense" style="color: var(--semantic-text-dim)">No skills available</p>
       </div>
 
@@ -183,7 +184,7 @@ watch(
           @click="sidebarStore.toggleSkillsExpanded"
           data-testid="skills-list-section-toggle"
         >
-          <span>🧠 Skills ({{ skills.length }})</span>
+          <UiIcon name="brain" /> Skills ({{ skills.length }})
           <svg
             class="w-3 h-3 shrink-0 transition-transform duration-200"
             :class="{ 'rotate-90': sidebarStore.skillsExpanded }"

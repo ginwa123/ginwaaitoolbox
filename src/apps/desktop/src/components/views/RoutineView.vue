@@ -39,6 +39,7 @@ import WorkspaceItemMemoriesView from './WorkspaceItemMemoriesView.vue'
 import AgentKnowledgeDialog from '../dialogs/AgentKnowledgeDialog.vue'
 import AgentKnowledgeDetailDialog from '../dialogs/AgentKnowledgeDetailDialog.vue'
 import AgentSystemPromptDialog from '../dialogs/AgentSystemPromptDialog.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = defineProps<{
   item: WorkspaceItem
@@ -439,7 +440,7 @@ watch(
 <template>
   <div class="flex flex-col gap-4 p-5 max-w-2xl" data-testid="routine-view">
     <div class="flex items-center gap-2">
-      <span aria-hidden="true" class="text-title-sm">⏰</span>
+      <UiIcon name="stopwatch" size-class="w-4.5 h-4.5" />
       <h2 class="text-lead font-semibold" style="color: var(--semantic-text)">
         {{ item.name ?? 'Routine' }}
       </h2>
@@ -470,7 +471,7 @@ watch(
         "
         @click="activeTab = 'agent'"
       >
-        🤖 Agent
+        <UiIcon name="robot" size-class="w-3.5 h-3.5" /> Agent
       </button>
     </div>
 
@@ -635,7 +636,7 @@ watch(
               "
               data-testid="routine-agent-memories-no-path"
             >
-              <div class="text-title-sm mb-1" aria-hidden="true">📁</div>
+              <UiIcon name="folder" size-class="w-4.5 h-4.5" class="mb-1" />
               <div>No directory is set on this routine.</div>
               <div class="mt-1">Pick one when creating the routine to enable local memories.</div>
             </div>

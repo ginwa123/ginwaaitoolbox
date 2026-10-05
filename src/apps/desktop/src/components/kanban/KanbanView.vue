@@ -787,6 +787,7 @@ const handleOpenCreateDialog = () => {
 import { getSystemFolder, listFolder, updateTaskSimple, type FolderEntry } from '../../api'
 import { updateSession as apiUpdateSession } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const showPathPicker = ref(false)
 const pathPickerBusy = ref(false)
@@ -1554,7 +1555,7 @@ const handleCreateTaskSave = async (payload: {
           "
           @click="handleOpenCreateDialog"
         >
-          <span aria-hidden="true">➕</span>
+          <UiIcon name="plus" />
           <span class="ml-1">Add task</span>
         </button>
 
@@ -1570,7 +1571,7 @@ const handleCreateTaskSave = async (payload: {
           @click="handleOpenSettings"
           title="Open board settings (add columns, edit descriptions)"
         >
-          <span aria-hidden="true">⚙️</span>
+          <UiIcon name="settings" />
           <span class="ml-1">Settings</span>
         </button>
 
@@ -1592,7 +1593,7 @@ const handleCreateTaskSave = async (payload: {
           @click="handleOpenAgentSettings"
           title="Open agent config in board settings"
         >
-          <span aria-hidden="true">🤖</span>
+          <UiIcon name="robot" />
           <span class="ml-1">Agent</span>
         </button>
       </header>

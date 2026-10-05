@@ -19,6 +19,7 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = defineProps<{
   show: boolean
@@ -152,7 +153,7 @@ onBeforeUnmount(() => {
               class="text-lead font-semibold flex items-center gap-2"
               style="color: var(--semantic-text);"
             >
-              <span aria-hidden="true">📁</span>
+              <UiIcon name="folder" />
               Add Project
             </h3>
             <p
@@ -233,12 +234,12 @@ onBeforeUnmount(() => {
                 style="color: var(--semantic-text-dim);"
                 aria-hidden="true"
               >Browse</span>
-              <span
+              <UiIcon
                 v-else
-                class="text-dense shrink-0"
+                name="folder-open"
+                class="w-4 h-4 shrink-0"
                 style="color: var(--semantic-text-dim);"
-                aria-hidden="true"
-              >📂</span>
+              />
             </button>
           </div>
 

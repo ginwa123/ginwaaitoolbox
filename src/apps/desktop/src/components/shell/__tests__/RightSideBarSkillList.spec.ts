@@ -106,8 +106,11 @@ describe('RightSideBarSkillList — one list, scoped to the active workspace', (
     // The two collapsible sections, their icons and the row paths are gone.
     expect(wrapper.text()).not.toContain('Global Skills')
     expect(wrapper.text()).not.toContain('Local Skills')
-    expect(wrapper.text()).not.toContain('🌐')
-    expect(wrapper.text()).not.toContain('📁')
+    // Positive control first: the toggle itself still draws an icon, so
+    // the two absences below cannot pass because the selector is dead.
+    expect(wrapper.find('[data-icon="brain"]').exists()).toBe(true)
+    expect(wrapper.find('[data-icon="globe"]').exists()).toBe(false)
+    expect(wrapper.find('[data-icon="folder"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('SKILL.MD')
     expect(wrapper.find('[data-testid="skills-list-count"]').text()).toBe('2 skills')
   })
