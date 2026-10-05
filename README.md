@@ -50,18 +50,34 @@ already running:
 ./zig-out/bin/pabrik-desktop
 ```
 
-**Server only** — run it yourself, then open <http://127.0.0.1:8081>:
+**Web app in a browser** — the server serves the UI itself once you point it at a
+built web app, so there is nothing else to start. Build the UI once:
 
 ```bash
-./zig-out/bin/pabrik --port 8081
+cd src/apps/desktop
+pnpm install
+pnpm run build          # → dist/
+cd -
 ```
+
+Then start the server with `--static-dir`:
+
+```bash
+./zig-out/bin/pabrik --port 8081 --static-dir src/apps/desktop/dist
+```
+
+Open <http://127.0.0.1:8081/app>.
+
+**API only** — drop `--static-dir` and you get the REST + SSE API on
+<http://127.0.0.1:8081> with no UI. That is what the terminal clients and any
+script talk to.
 
 > On Linux the plain `zig build` output is named `pabrikcore-linux-x86_64`. Run
 > `zig build install:linux:system` first if you want the binary called `pabrik`.
 
-The server comes up on an empty config: every screen works, chat does not. Add a
-model under **Settings → Profiles** — a `base_url`, a `model` and an `api_key` for
-any Anthropic- or OpenAI-compatible provider.
+The server starts on an empty config, so the UI loads but chat cannot answer yet.
+Add a model under **Settings → Profiles** — a `base_url`, a `model` and an
+`api_key` for any Anthropic- or OpenAI-compatible provider.
 
 ## Development
 
