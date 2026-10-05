@@ -1201,11 +1201,44 @@ fn buildUrl(gpa: Allocator, port: u16, path: []const u8, params: []const Harness
     const w = &buf.writer;
     w.print("http://127.0.0.1:{d}{s}?", .{ port, path }) catch return error.OutOfMemory;
 
+    // NAME AND VALUE ARE PERCENT-ENCODED, as Python's
+    // `urllib.parse.urlencode` did. Writing them verbatim means a value
+    // containing a space, `&`, `=`, `#` or `?` silently becomes part of
+    // the URL's STRUCTURE rather than its data — the server then parses
+    // a different query than the test asked for, and the test passes or
+    // fails for a reason that has nothing to do with the server.
+    //
+    // Two porting agents independently worked around this by hand-writing
+    // a local `enc()` helper per suite. That is the wrong place for the
+    // fix: every suite then carries a private copy of query encoding, and
+    // `path_with_spaces_survives_url_encoding` ends up testing the
+    // SUITE's encoder instead of the server's URL handling.
     for (params, 0..) |p, i| {
         if (i > 0) w.writeAll("&") catch return error.OutOfMemory;
-        w.print("{s}={s}", .{ p.name, p.value }) catch return error.OutOfMemory;
+        try writePercentEncoded(w, p.name);
+        w.writeAll("=") catch return error.OutOfMemory;
+        try writePercentEncoded(w, p.value);
     }
     return buf.toOwnedSlice();
+}
+
+/// Percent-encode one query component.
+///
+/// Everything outside the RFC 3986 unreserved set is escaped, INCLUDING
+/// `+`. Python's `quote_plus` maps a space to `+`; we map it to `%20`,
+/// which is what every browser and every HTTP framework emits and what a
+/// server's own decoder must therefore handle. The important property is
+/// that the bytes are unambiguous — `%20` and `+` both decode to a space
+/// under `application/x-www-form-urlencoded`, but ONLY `%20` is correct
+/// under RFC 3986, and a suite testing a git path with a space in it is
+/// exactly the case that would notice.
+fn writePercentEncoded(w: *Io.Writer, s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '-', '_', '.', '~' => try w.writeByte(c),
+            else => try w.print("%{X:0>2}", .{c}),
+        }
+    }
 }
 
 // ============================================================================
