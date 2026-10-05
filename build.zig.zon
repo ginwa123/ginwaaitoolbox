@@ -8,8 +8,14 @@
         // Pinned by URL + hash; exposes a single `databases` module;
         // consumers `@import("databases")` to use it.
         .databases = .{
-            .url = "https://github.com/ginwa123/ruangsql/archive/0dc2010da6df643471687ea328132dc2f5d6ad21.tar.gz",
-            .hash = "databases-0.0.0-vy-BCG1iBAAzeOdFZ6dHzUnb1ZLUOxYXK44fuHRsZgbr",
+            // 2f7b5c4 — "take the WAL writer slot up front instead of
+            // losing writes": busy_timeout 5s -> 15s, a real Config
+            // (journal_size_limit / wal_autocheckpoint), `BEGIN IMMEDIATE`
+            // in `begin()`, and `database.openWithConfig` for per-app
+            // policy. Before this, a contended write FAILED with
+            // "database is locked" and was lost.
+            .url = "https://github.com/ginwa123/ruangsql/archive/2f7b5c4f332257b32820b821d5f956fef22cd80f.tar.gz",
+            .hash = "databases-0.0.0-vy-BCM27BADcpTw1v1KDNOEh60zJ1YvRilW-9OOKjPtQ",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Exposes a single `kabelweb` module

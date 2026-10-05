@@ -17,7 +17,6 @@ pub const debug = pabrikcore.crash_handler.root_debug;
 const ai_mod = pabrikcore.ai_mod;
 const sqlite = pabrikcore.sqlite;
 const database = pabrikcore.database;
-const sqlite_pragmas = pabrikcore.sqlite_pragmas;
 // `helpers` is now its own Zig module (see `src/helpers/build.zig`);
 // promoted out of `pabrikcore` so multiple sub-packages can share a
 // single module instance. The root build.zig wires it via
@@ -56,6 +55,28 @@ var shutdown_requested: std.atomic.Value(bool) = .init(false);
 fn handleShutdownSignal() void {
     shutdown_requested.store(true, .seq_cst);
     if (shutdown_server) |gs| gs.shutdown();
+}
+
+/// Print the live SQLite connection's settings at boot.
+///
+/// A future "database is locked" report then carries the connection's
+/// ACTUAL configuration instead of a guess — including whether the
+/// writer-slot wait is really 15 s and whether the WAL file is bounded.
+/// No-op on a postgres build (`-Ddb_used=sqlite,postgres`): that backend
+/// has no pragmas and no `readConfig`.
+fn logSqliteConfig(allocator: std.mem.Allocator, db: *database.Db) void {
+    if (database.backend_is_postgres) return;
+    const applied = db.readConfig(allocator) catch |err| {
+        std.log.warn("sqlite: could not read back connection config ({s})", .{@errorName(err)});
+        return;
+    };
+    std.log.info("sqlite: journal_mode={s} busy_timeout={d}ms synchronous={d} wal_autocheckpoint={d} journal_size_limit={d}", .{
+        applied.journalMode(),
+        applied.busy_timeout_ms,
+        applied.synchronous,
+        applied.wal_autocheckpoint_pages,
+        applied.journal_size_limit_bytes,
+    });
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -174,26 +195,15 @@ pub fn main(init: std.process.Init) !void {
 
     var dbSqlite: database.Db = .{};
     defer dbSqlite.deinit();
-    try database.open(&dbSqlite, io, .{ .sqlite_path = db_path });
-    // The vendored backend sets only `journal_mode=WAL` + `busy_timeout=5000`.
-    // A write that cannot take WAL's single writer slot inside 5 s comes back
-    // as `database is locked` and is dropped, so raise the wait and bound the
-    // WAL. Logged so a future "database is locked" report carries the live
-    // connection's actual settings.
-    sqlite_pragmas.apply(allocator, &dbSqlite, .{}) catch |err| {
-        std.log.warn("startup: sqlite pragmas not applied ({s}); writes stay at the 5s default busy_timeout", .{@errorName(err)});
-    };
-    if (sqlite_pragmas.readBack(allocator, &dbSqlite)) |applied| {
-        std.log.info("sqlite: journal_mode={s} busy_timeout={d}ms synchronous={d} wal_autocheckpoint={d} journal_size_limit={d}", .{
-            applied.journal_mode(),
-            applied.busy_timeout_ms,
-            applied.synchronous,
-            applied.wal_autocheckpoint_pages,
-            applied.journal_size_limit_bytes,
-        });
-    } else |err| {
-        std.log.warn("sqlite: could not read back pragmas ({s})", .{@errorName(err)});
-    }
+    // `.synchronous = .normal` is the ONLY knob this app sets; everything
+    // else (15 s busy_timeout, journal_size_limit, wal_autocheckpoint, and
+    // BEGIN IMMEDIATE in `begin()`) is the databases package's own default.
+    // Rationale is in `ruangsql`'s `Sqlite.Config` doc comment — the short
+    // version: in WAL mode a contended write that cannot take the single
+    // writer slot is LOST, not delayed, and `synchronous=FULL` fsyncs the
+    // WAL on every commit.
+    try database.openWithConfig(&dbSqlite, io, .{ .sqlite_path = db_path }, .{ .synchronous = .normal });
+    logSqliteConfig(allocator, &dbSqlite);
 
     var migrationManager = migration.MigrationManager.init(allocator, &dbSqlite);
     defer migrationManager.deinit();
@@ -749,12 +759,7 @@ fn dispatchCreateAdmin(
     defer allocator.free(db_path);
     var dbSqlite: database.Db = .{};
     defer dbSqlite.deinit();
-    try database.open(&dbSqlite, io, .{ .sqlite_path = db_path });
-    // Same pragma set the server boot applies — `create-admin` writes to
-    // the same file and can run while a server is live.
-    sqlite_pragmas.apply(allocator, &dbSqlite, .{}) catch |err| {
-        std.log.warn("create-admin: sqlite pragmas not applied ({s})", .{@errorName(err)});
-    };
+    try database.openWithConfig(&dbSqlite, io, .{ .sqlite_path = db_path }, .{ .synchronous = .normal });
     var mm = migration.MigrationManager.init(allocator, &dbSqlite);
     defer mm.deinit();
     try migration.registerAllMigrations(&mm);

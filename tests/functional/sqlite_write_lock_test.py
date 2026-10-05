@@ -25,9 +25,12 @@ POSTs the exact `/api/logs` body the desktop logger sends.
 
 The hold is deliberately ~6.5 s — past the old 5 s ceiling — because a
 shorter hold passes on the unfixed binary too and would prove nothing.
-With `busy_timeout=15000` (applied at boot by `sqlite_pragmas.apply`)
-the POST waits and lands; on the unfixed build it returns
-`500 {"error": "Failed to persist log"}` and the row never exists.
+The fix lives in the `databases` (ruangsql) package: `Config` raises the
+writer-slot wait to 15 s and bounds the WAL, and `begin()` emits
+`BEGIN IMMEDIATE`. The app opts into WAL's documented `synchronous=NORMAL`
+via `database.openWithConfig`. With that, the POST waits and lands; on the
+unfixed build it returns `500 {"error": "Failed to persist log"}` and the
+row never exists.
 
 This is the SLOW test in the suite (~8 s wall clock). It is the only
 place the number 5_000 vs 15_000 is observable from outside the process.
@@ -163,10 +166,10 @@ def test_log_post_waits_out_a_competing_writer_instead_of_failing(harness: Funct
 def test_boot_logs_the_connection_pragma_policy(harness: FunctionalHarness) -> None:
     """The live connection's settings are visible in the boot log.
 
-    `main.zig` prints the read-back of `sqlite_pragmas.readBack` right
-    after `database.open`. This is the assertion a future "database is
-    locked" report can be read against, instead of guessing what the
-    connection was configured with.
+    `main.zig` calls `logSqliteConfig` right after `database.openWithConfig`,
+    which prints `SqliteBackend.readConfig` for the live connection. This is
+    the assertion a future "database is locked" report can be read against,
+    instead of guessing what the connection was configured with.
     """
     r = harness.http("GET", "/health", expect=200)
     assert r.json().get("status") == "ok"
@@ -174,3 +177,9 @@ def test_boot_logs_the_connection_pragma_policy(harness: FunctionalHarness) -> N
     log = harness.tail_log(400)
     assert "journal_mode=wal" in log, f"no sqlite pragma line in boot log:\n{log}"
     assert "busy_timeout=15000ms" in log, f"busy_timeout not the configured value:\n{log}"
+    # `synchronous=NORMAL` (1) is the app's own opt-in via
+    # `database.openWithConfig(..., .{ .synchronous = .normal })`; the rest
+    # of the set is the databases package's default.
+    assert "synchronous=1 " in log or log.rstrip().endswith("synchronous=1"), (
+        f"the app did not opt into synchronous=NORMAL:\n{log}"
+    )
