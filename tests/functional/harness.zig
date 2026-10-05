@@ -1,0 +1,1535 @@
+//! Functional test harness for pabrik — Zig port of `tests/functional/harness.py`.
+//!
+//! Boots a real `pabrik` binary against an isolated tmpdir HOME and
+//! provides a typed HTTP client for the API. Every byte of state (DB,
+//! config, design files, attachments) lives under the tempdir allocated
+//! at boot; teardown deletes that tempdir, never anything else.
+//!
+//! ⛔  SAFETY INVARIANTS — DO NOT WEAKEN WITHOUT REVIEW  ⛔
+//!
+//! 1. `isSafeTmp(path, orig_home)` is the SINGLE source of truth for
+//!    "may this path be deleted by the harness". Every recursive
+//!    delete MUST be gated by it. There is no second code path.
+//!
+//! 2. The harness NEVER reads the ambient `HOME` inside teardown. It
+//!    uses the captured `temp_dir` field, which is set once at boot and
+//!    not subject to mid-test mutation.
+//!
+//! 3. The harness NEVER uses `~`, expanduser, or relative paths for
+//!    anything it deletes. All paths are absolute and captured.
+//!
+//! 4. If `isSafeTmp` returns false, teardown ERRORS instead of
+//!    deleting. The tempdir is leaked; the developer's home is never
+//!    touched. This is the correct trade-off.
+//!
+//! 5. `orig_home` is captured BEFORE the child env shadows `HOME` and
+//!    restored as the first step of teardown.
+//!
+//! 6. `XDG_CONFIG_HOME` / `XDG_STATE_HOME` / `XDG_DATA_HOME` /
+//!    `XDG_CACHE_HOME` (plus `USERPROFILE` / `APPDATA` /
+//!    `LOCALAPPDATA` on Windows) are shadowed in the CHILD env on every
+//!    platform. On Linux `getDefaultConfigDir` resolves
+//!    `$XDG_CONFIG_HOME/pabrik` BEFORE `$HOME/.config/pabrik`, so a
+//!    child that inherited the runner's real `XDG_CONFIG_HOME` would
+//!    write config.json into the real home while every test reads
+//!    `<temp_dir>/.config`.
+//!
+//! The negative tests in `harness_safety_test.zig` guard these
+//! invariants against regression.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const Io = std.Io;
+const Allocator = std.mem.Allocator;
+const posix = std.posix;
+
+const is_windows = builtin.os.tag == .windows;
+
+// ============================================================================
+// Safety constants
+// ============================================================================
+
+/// Substring that every harness-allocated tmpdir must contain. Acts as
+/// a "namespace" so a buggy caller that points the tempdir allocation
+/// at a non-tmpdir path is rejected.
+pub const REQUIRED_TMP_SUBSTR = "pabrik-func-";
+
+/// Last-resort kill signal. Windows has no SIGKILL — it maps SIGTERM to
+/// TerminateProcess there, which is the correct fallback.
+pub const SIGKILL: posix.SIG = if (is_windows) @enumFromInt(15) else @enumFromInt(9);
+pub const SIGTERM: posix.SIG = @enumFromInt(15);
+
+/// Legacy sequential scan bounds (see `_find_free_port_sequential`).
+pub const DEFAULT_PORT: u16 = 8080;
+pub const PORT_SCAN_END: u16 = 8199;
+
+/// Random-port range used by the modern picker.
+///
+/// The previous range was 40000-60000, chosen for headroom against
+/// TIME_WAIT. But Linux's default `net.ipv4.ip_local_port_range` is
+/// 32768-60999, so 40000-60000 sits ENTIRELY INSIDE the pool the
+/// kernel hands out as *source* ports for outgoing connections. Every
+/// `bind()` probe the harness does, plus every pnpm / vite / zig / git
+/// on the box, draws from that same pool. The picker closes its probe
+/// socket and returns the number; the `pabrik` child binds the real
+/// listener tens of ms later, and in between the port can be taken.
+///
+/// 20000-32000 gives 12,000 ports that no ephemeral allocation can reach
+/// under a default `ip_local_port_range` and stays clear of the
+/// documented dev ports (8080/8081) and the sequential 8080-8199 window.
+pub const RANDOM_PORT_START: u16 = 20000;
+pub const RANDOM_PORT_END: u16 = 32000;
+
+/// Number of random attempts before giving up. With 12,000 ports and a
+/// busy CI runner holding a few hundred listeners, 50 consecutive
+/// collisions is vanishingly unlikely — safely "never happens".
+pub const RANDOM_PORT_ATTEMPTS: usize = 50;
+
+/// Ports the random picker MUST skip regardless of bind() success.
+/// 8081 is the always-running dev backend per project memory.
+pub const RESERVED_PORTS = [_]u16{8081};
+
+/// The Io handle to use for harness-internal work that is not given
+/// one (the port picker, the entropy seeder).
+///
+/// Inside a test this is `std.testing.io`, which the test runner
+/// initialises. The two call sites that need it are the port pickers,
+/// which `Harness.boot` already reaches with the caller's own `io` —
+/// this indirection only exists so the standalone `findFreePort*`
+/// entry points stay callable from a plain script.
+fn testingIo() Io {
+    return std.testing.io;
+}
+
+/// A PRNG seeded from the best entropy the stdlib exposes without a
+/// dependency on `pabrikcore`.
+///
+/// Zig 0.16 removed the old `std.crypto.random.int`; the portable
+/// replacement is the OS CSPRNG, reached here through
+/// `Io.Threaded`'s per-call random stream. Seeding from
+/// `std.time.milliTimestamp()` ^ pid is what the app's own
+/// `helpers/random.zig` does, and it is sufficient here: the only
+/// consumer is the tempdir-suffix picker, which additionally retries up
+/// to 32 times on a name collision, and the port picker, which probes
+/// the socket and retries 50 times.
+fn entropyRandom(io: Io) std.Random {
+    var prng: std.Random.DefaultPrng = .init(entropySeed(io));
+    return prng.random();
+}
+
+fn entropySeed(io: Io) u64 {
+    // Zig 0.16 removed `std.time.milliTimestamp`; the clock is reached
+    // through the Io handle now (`Io.Clock.real.now(io)`).
+    const ts: u64 = @bitCast(@as(i64, Io.Timestamp.now(io, .real).toMilliseconds()));
+    const pid: u64 = if (is_windows) 0 else @intCast(std.os.linux.getpid());
+    const addr = @intFromPtr(&ts);
+    return ts ^ (pid << 32) ^ addr;
+}
+
+// ============================================================================
+// Errors
+// ============================================================================
+
+/// Raised when the harness cannot safely proceed.
+///
+/// Distinct from `error.TestUnexpectedResult` (which is what API-level
+/// assertions raise) so a caller can treat this as a SETUP failure
+/// rather than a test failure.
+pub const FunctionalHarnessError = error{
+    HomeNotSet,
+    UnsafePath,
+    BinaryNotFound,
+    BinaryNotExecutable,
+    BootFailed,
+    NotReady,
+    NoFreePort,
+    TeardownRefused,
+    /// The response status was not in the expected set.
+    UnexpectedStatus,
+};
+
+// ============================================================================
+// Safety validator
+// ============================================================================
+
+/// `realpath` + `normcase` — the ONE spelling every comparison here uses.
+///
+/// Both halves are load-bearing. `realpath` canonicalises the
+/// candidate, which on Windows expands 8.3 SHORT names to long ones: a
+/// runner's `%TEMP%` of `C:\Users\RUNNER~1\AppData\Local\Temp` comes
+/// back as `C:\Users\runneradmin\AppData\Local\Temp`, so comparing the
+/// canonicalised candidate against the RAW allow-list failed for the
+/// harness's own tempdir on every test in the job. `normcase` supplies
+/// the other half: Windows path comparison is case-insensitive, which
+/// this function has always assumed and never actually got. On POSIX
+/// both calls are near-identity.
+pub fn canonical(io: Io, allocator: Allocator, path: []const u8) ![]u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = std.Io.Dir.cwd().realPathFile(io, path, &buf) catch |err| switch (err) {
+        // A non-existent path has no realpath. Fall back to the input
+        // so the caller's own prefix / absolute-path checks still run
+        // (they fail closed for anything unsafe — a path that does not
+        // exist is not one we are about to delete).
+        error.FileNotFound, error.NameTooLong => return allocator.dupe(u8, path),
+        else => return err,
+    };
+    return allocator.dupe(u8, normcaseSlice(buf[0..len]));
+}
+
+fn normcaseSlice(s: []const u8) []const u8 {
+    if (!is_windows) return s;
+    for (s) |*c| {
+        if (c.* >= 'A' and c.* <= 'Z') c.* += 32;
+    }
+    return s;
+}
+
+/// Absolute-path prefixes that count as "tmpdir".
+///
+/// `std.fs.getAppDataDir` / the OS temp dir is probed at runtime via
+/// `tmpRoot`; these are the POSIX spellings that must be present even
+/// when the runtime probe disagrees (e.g. a cross-compiled test binary
+/// reporting the host's temp).
+pub const POSIX_TMP_PREFIXES = [_][]const u8{
+    "/tmp/",
+    "/private/tmp/",
+    "/private/var/folders/",
+    "/var/folders/",
+};
+
+/// The OS temp directory (`$TMPDIR`, falling back to `/tmp` on POSIX
+/// and `%TEMP%` on Windows).
+pub fn tmpRoot(allocator: Allocator) ![]u8 {
+    if (builtin.os.tag == .windows) {
+        if (getEnvOrEmpty(allocator, "TEMP")) |v| {
+        defer allocator.free(v);
+        if (v.len > 0) return allocator.dupe(u8, v);
+    } else |_| {}
+    if (getEnvOrEmpty(allocator, "TMP")) |v| {
+        defer allocator.free(v);
+        if (v.len > 0) return allocator.dupe(u8, v);
+    } else |_| {}
+    return allocator.dupe(u8, "C:\\Windows\\Temp");
+    }
+    if (getEnvOrEmpty(allocator, "TMPDIR")) |v| {
+        defer allocator.free(v);
+        if (v.len > 0) return allocator.dupe(u8, v);
+    } else |_| {}
+    return allocator.dupe(u8, "/tmp");
+}
+
+/// Return true iff `path` is a tmpdir the harness is allowed to delete.
+///
+/// Returns false for:
+///   - empty strings
+///   - non-absolute paths
+///   - paths outside the allow-list of tmpdir prefixes
+///   - paths missing the `REQUIRED_TMP_SUBSTR` namespace
+///   - paths that resolve to the real `$HOME` (catches symlinks)
+///
+/// This function is the single source of truth for "may this be
+/// deleted". ANY recursive delete in the harness MUST be gated by it.
+pub fn isSafeTmp(io: Io, allocator: Allocator, path: []const u8, orig_home: []const u8) !bool {
+    if (path.len == 0) return false;
+    if (!std.fs.path.isAbsolute(path)) return false;
+
+    const real = try canonical(io, allocator, path);
+    defer allocator.free(real);
+
+    // (1) Prefix allow-list. `tmpRoot` is probed first because a
+    // custom `%TEMP%` is authoritative; the POSIX spellings are
+    // appended as fixed fallbacks.
+    var allowed = false;
+    {
+        const root = tmpRoot(allocator) catch null;
+        if (root) |r| {
+            defer allocator.free(r);
+            const rcanon = canonical(io, allocator, r) catch null;
+            if (rcanon) |rc| {
+                defer allocator.free(rc);
+                // `tempfile.gettempdir() + "/"` — note the trailing
+                // separator, so `/tmpfoo` does not match `/tmp`.
+                if (hasDirPrefix(real, rc)) allowed = true;
+            }
+        }
+    }
+    if (!allowed) {
+        for (POSIX_TMP_PREFIXES) |p| {
+            const pcanon = canonical(io, allocator, p) catch continue;
+            defer allocator.free(pcanon);
+            if (hasDirPrefix(real, pcanon)) {
+                allowed = true;
+                break;
+            }
+        }
+    }
+    if (!allowed) return false;
+
+    // (2) Namespace substring.
+    if (std.mem.indexOf(u8, real, REQUIRED_TMP_SUBSTR) == null) return false;
+
+    // (3) Not the real `$HOME`.
+    if (orig_home.len > 0) {
+        const real_home = canonical(io, allocator, orig_home) catch return false;
+        defer allocator.free(real_home);
+        if (std.mem.eql(u8, real, real_home)) return false;
+    }
+    return true;
+}
+
+/// `haystack` starts with `dir` AND `dir` ended at a path boundary
+/// (so `/tmpfoo` does not match prefix `/tmp`).
+fn hasDirPrefix(haystack: []const u8, dir: []const u8) bool {
+    var d = dir;
+    while (d.len > 1 and (d[d.len - 1] == '/' or d[d.len - 1] == '\\')) d = d[0 .. d.len - 1];
+    if (d.len == 0) return false;
+    if (!std.mem.startsWith(u8, haystack, d)) return false;
+    if (haystack.len == d.len) return true;
+    const next = haystack[d.len];
+    return next == '/' or next == '\\';
+}
+
+/// Return an absolute path under `h`'s isolated tempdir.
+///
+/// Use this for any path a test PUTS INTO A JSON BODY that the server
+/// resolves — an agent/routine item `path`, a knowledge `file_path`, a
+/// session `cwd`, a command `workdir`.
+///
+/// The reason is not tidiness. The server validates these with
+/// `std.fs.path.isAbsolute` and rejects a relative one with 400
+/// `NotAbsolutePath`, and `isAbsolute` is platform-relative: on
+/// windows-2022 `"/tmp/a.md"` is NOT absolute, so a literal that is
+/// correct on ubuntu-24.04 fails at the HTTP door and the test reports
+/// a server regression that does not exist. Deriving from `h.temp_dir`
+/// (itself a real tempdir allocation) is absolute on every platform.
+///
+/// Passing no `parts` returns the tempdir itself.
+pub fn harnessPath(allocator: Allocator, temp_dir: []const u8, parts: []const []const u8) ![]u8 {
+    // Built by hand rather than with `std.fs.path.join`: `join` treats
+    // every argument as a path component, which is right, but the
+    // `[temp_dir] ++ parts` splice is not comptime-known here (parts
+    // arrives at runtime), so the list is assembled at runtime.
+    var all = try allocator.alloc([]const u8, parts.len + 1);
+    defer allocator.free(all);
+    all[0] = temp_dir;
+    for (parts, 0..) |part, i| all[i + 1] = part;
+    return std.fs.path.join(allocator, all);
+}
+
+// ============================================================================
+// Response
+// ============================================================================
+
+/// A typed HTTP response from the  pabrik API.
+///
+/// Owns `body`; free it (or call `deinit`) once done.
+pub const Response = struct {
+    status: u16,
+    body: []u8,
+    allocator: Allocator,
+
+    pub fn deinit(self: *Response) void {
+        self.allocator.free(self.body);
+        self.* = undefined;
+    }
+
+    /// Parse the body as JSON into an OWNING `std.json.Parsed(Value)`.
+    ///
+    /// The Zig analogue of Python's `r.json()`. The difference that
+    /// matters: Zig's parse allocates into the arena inside `Parsed`, so
+    /// the caller must `deinit` it — hence the wrapper type below
+    /// rather than a bare `Value`, whose strings would dangle.
+    ///
+    /// Errors on invalid JSON, mirroring Python raising rather than
+    /// returning a null-ish value the next line would deref.
+    pub fn json(self: *const Response) !Json {
+        return .{ .parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, self.body, .{}) };
+    }
+
+    /// The body as UTF-8 text (always valid — HTTP bodies here are
+    /// text or base64, never raw binary, but invalid bytes are replaced
+    /// rather than propagated).
+    pub fn text(self: *const Response) []const u8 {
+        return self.body;
+    }
+};
+
+/// An owned, parsed JSON document — the return type of
+/// `Response.json()`.
+///
+/// WHY A WRAPPER INSTEAD OF A BARE `std.json.Value`: the std parser
+/// allocates every string and number it produces into an arena owned by
+/// the `Parsed`. Handing the caller a bare `Value` would let them
+/// `defer parsed.deinit()`-forget it and read freed memory, and would
+/// give the type system no way to say "you now own this". Naming the
+/// ownership makes the required `defer` obvious at every call site:
+///
+///     var doc = try r.json();
+///     defer doc.deinit();
+///     try testing.expectEqualStrings("ws_1", doc.str("id"));
+///
+/// `value` exposes the raw tree for the cases the accessors do not
+/// cover (arrays, nested walks, iteration).
+pub const Json = struct {
+    parsed: std.json.Parsed(std.json.Value),
+
+    pub fn deinit(self: *Json) void {
+        self.parsed.deinit();
+        self.* = undefined;
+    }
+
+    /// The root value. Borrow only — it dies with `deinit`.
+    pub fn value(self: *const Json) *const std.json.Value {
+        return &self.parsed.value;
+    }
+
+    /// Look up a key on a JSON OBJECT root. `null` if absent, or if the
+    /// root is not an object (so a test asserting on an error body
+    /// fails with a clear "expected string, got null" rather than a
+    /// union-tag panic).
+    pub fn get(self: *const Json, key: []const u8) ?std.json.Value {
+        return switch (self.parsed.value) {
+            .object => |o| o.get(key),
+            else => null,
+        };
+    }
+
+    /// The string at `key`, or `null` if absent or not a string.
+    pub fn str(self: *const Json, key: []const u8) ?[]const u8 {
+        const v = self.get(key) orelse return null;
+        return switch (v) {
+            .string => |s| s,
+            else => null,
+        };
+    }
+
+    /// The integer at `key`, or `null` if absent or not an integer.
+    pub fn int(self: *const Json, key: []const u8) ?i64 {
+        const v = self.get(key) orelse return null;
+        return switch (v) {
+            .integer => |i| i,
+            else => null,
+        };
+    }
+
+    /// The boolean at `key`, or `null` if absent or not a bool.
+    ///
+    /// Named `boolean` rather than `bool`: `bool` is a primitive type
+    /// name and Zig rejects a declaration that shadows one, so a
+    /// ported test reads `doc.boolean("enabled")`.
+    pub fn boolean(self: *const Json, key: []const u8) ?bool {
+        const v = self.get(key) orelse return null;
+        return switch (v) {
+            .bool => |b| b,
+            else => null,
+        };
+    }
+
+    /// The array at `key`, or `null` if absent or not an array.
+    pub fn array(self: *const Json, key: []const u8) ?std.json.Array {
+        const v = self.get(key) orelse return null;
+        return switch (v) {
+            .array => |a| a,
+            else => null,
+        };
+    }
+
+    /// The object at `key`, or `null` if absent or not an object.
+    pub fn object(self: *const Json, key: []const u8) ?std.json.ObjectMap {
+        const v = self.get(key) orelse return null;
+        return switch (v) {
+            .object => |o| o,
+            else => null,
+        };
+    }
+
+    /// The number at `key` as `f64`, or `null` if absent or not a
+    /// number. Accepts an integer payload too, so a ported assertion
+    /// does not have to care whether the server sent `3` or `3.0`.
+    pub fn number(self: *const Json, key: []const u8) ?f64 {
+        const v = self.get(key) orelse return null;
+        return switch (v) {
+            .float => |f| f,
+            .integer => |i| @floatFromInt(i),
+            else => null,
+        };
+    }
+};
+
+// ============================================================================
+// Harness
+// ============================================================================
+
+/// A booted `pabrik` instance bound to an isolated tmpdir.
+///
+/// Lifecycle (Zig has no `try/finally`, so `deinit` is the single
+/// teardown path and every test uses `defer h.deinit(io)`):
+///
+///     var h = try Harness.boot(io, allocator, .{});
+///     defer h.deinit(io) catch |e| { std.debug.print("teardown: {s}\n", .{@errorName(e)}); };
+///     const r = try h.http(io, .GET, "/api/workspaces", .{});
+///
+/// The tempdir is validated BEFORE deletion runs. If validation fails,
+/// `deinit` errors and refuses to delete anything.
+pub const Harness = struct {
+    allocator: Allocator,
+    port: u16,
+    pabrik_bin: []u8,
+    temp_dir: []u8,
+    orig_home: []u8,
+    log_path: []u8,
+    pid: ?u32,
+    dry_run: bool,
+    stopped: bool = false,
+    /// Windows-only original env snapshots; empty on POSIX.
+    orig_userprofile: []u8,
+    orig_appdata: []u8,
+    orig_localappdata: []u8,
+    orig_xdg_config_home: []u8,
+    orig_xdg_state_home: []u8,
+    orig_xdg_data_home: []u8,
+    orig_xdg_cache_home: []u8,
+
+    /// Boot options. Defaults mirror Python's keyword-only args.
+    pub const BootOptions = struct {
+        /// Explicit port. `null` (the default) picks a RANDOM free
+        /// port from `[RANDOM_PORT_START, RANDOM_PORT_END]`. Pass an
+        /// integer to fall back to the legacy sequential scan.
+        port: ?u16 = null,
+        ready_timeout_s: f64 = 30.0,
+        /// Pre-create a stub LLM profile so the binary boots without a
+        /// real API key.
+        stub_llm_profile: bool = false,
+        /// Extra CLI flags appended after `--port` (e.g. `&.{"--http2"}`).
+        extra_args: []const []const u8 = &.{},
+    };
+
+    /// Boot a fresh `pabrik` binary against an isolated tmpdir HOME.
+    ///
+    /// Resolves the binary via `resolvePabrikBin` unless `$PABRIK_BIN`
+    /// is set. Returns `error.BinaryNotFound` when no candidate exists
+    /// — a fresh worktree has no `zig-out/`, so callers that want a
+    /// skip should check `resolvePabrikBin` first.
+    pub fn boot(io: Io, allocator: Allocator, opts: BootOptions) !Harness {
+        const gpa = allocator;
+
+        // 1. Snapshot HOME BEFORE we shadow it. On Windows HOME is not
+        // set by default; USERPROFILE is.
+        var orig_home = getEnvOrEmpty(gpa, "HOME") catch try gpa.dupe(u8, "");
+        if (orig_home.len == 0) {
+            gpa.free(orig_home);
+            orig_home = getEnvOrEmpty(gpa, "USERPROFILE") catch try gpa.dupe(u8, "");
+        }
+        if (orig_home.len == 0) {
+            gpa.free(orig_home);
+            return error.HomeNotSet;
+        }
+
+        errdefer gpa.free(orig_home);
+
+        // Snapshot the env vars we shadow in the child. If the parent
+        // shell has e.g. XDG_CONFIG_HOME=/home/user/.config, the child
+        // must NOT inherit it.
+        const orig_userprofile = try getEnvOrEmpty(gpa, "USERPROFILE");
+        errdefer gpa.free(orig_userprofile);
+        const orig_appdata = try getEnvOrEmpty(gpa, "APPDATA");
+        errdefer gpa.free(orig_appdata);
+        const orig_localappdata = try getEnvOrEmpty(gpa, "LOCALAPPDATA");
+        errdefer gpa.free(orig_localappdata);
+        const orig_xdg_config_home = try getEnvOrEmpty(gpa, "XDG_CONFIG_HOME");
+        errdefer gpa.free(orig_xdg_config_home);
+        const orig_xdg_state_home = try getEnvOrEmpty(gpa, "XDG_STATE_HOME");
+        errdefer gpa.free(orig_xdg_state_home);
+        const orig_xdg_data_home = try getEnvOrEmpty(gpa, "XDG_DATA_HOME");
+        errdefer gpa.free(orig_xdg_data_home);
+        const orig_xdg_cache_home = try getEnvOrEmpty(gpa, "XDG_CACHE_HOME");
+        errdefer gpa.free(orig_xdg_cache_home);
+
+        // 2. Reap orphans from prior aborted runs BEFORE picking a
+        //    port, so the random pick sees a clean slate. Failure here
+        //    is non-fatal — a slightly leakier state beats aborting.
+        _ = reapOrphanTestPids(io, gpa) catch 0;
+
+        // 3. Pick a free port.
+        const chosen_port: u16 = if (opts.port) |p|
+            try findFreePortSequential(io, p)
+        else
+            try findFreePortRandom(gpa);
+
+        // 4. Allocate the tempdir. Atomic, fresh.
+        const temp_dir = try makeTempDir(io, gpa);
+        errdefer gpa.free(temp_dir);
+
+        // 5. Validate BEFORE shadowing anything. If this fails, abort
+        //    and leak the tempdir. Leaking is preferable to corrupting
+        //    state.
+        if (!try isSafeTmp(io, gpa, temp_dir, orig_home)) {
+            return error.UnsafePath;
+        }
+
+        // 6. Optionally pre-create a stub LLM profile.
+        if (opts.stub_llm_profile) {
+            try writeStubLlmProfile(io, gpa, temp_dir);
+        }
+
+        // 7. Resolve the binary.
+        const bin_path = try resolvePabrikBin(io, gpa);
+        errdefer gpa.free(bin_path);
+
+        // 8. Prepare the child env.
+        const xdg_config = try std.fs.path.join(gpa, &.{ temp_dir, ".config" });
+        defer gpa.free(xdg_config);
+        const xdg_state = try std.fs.path.join(gpa, &.{ temp_dir, ".local", "state" });
+        defer gpa.free(xdg_state);
+        const xdg_data = try std.fs.path.join(gpa, &.{ temp_dir, ".local", "share" });
+        defer gpa.free(xdg_data);
+        const xdg_cache = try std.fs.path.join(gpa, &.{ temp_dir, ".cache" });
+        defer gpa.free(xdg_cache);
+
+        // Created on every platform: the child inherits these paths
+        // from the env block below and the server expects the parent dir
+        // to exist before it writes config.json / state / cache beneath.
+        try std.Io.Dir.cwd().createDirPath(io, xdg_config);
+        try std.Io.Dir.cwd().createDirPath(io, xdg_state);
+        try std.Io.Dir.cwd().createDirPath(io, xdg_data);
+        try std.Io.Dir.cwd().createDirPath(io, xdg_cache);
+
+        const log_path = try std.fs.path.join(gpa, &.{ temp_dir, "pabrik.log" });
+        errdefer gpa.free(log_path);
+
+        // 9. Build the child environment. Copy the parent's, then
+        //    shadow the isolation-critical vars. On POSIX we do NOT
+        //    mutate OUR OWN process env — only the child's — which is
+        //    what lets a parent test keep its real HOME.
+        var env_map = try std.process.Environ.createMap(currentEnviron(), gpa);
+        defer env_map.deinit();
+        try env_map.put("HOME", temp_dir);
+        try env_map.put("XDG_CONFIG_HOME", xdg_config);
+        try env_map.put("XDG_STATE_HOME", xdg_state);
+        try env_map.put("XDG_DATA_HOME", xdg_data);
+        try env_map.put("XDG_CACHE_HOME", xdg_cache);
+        if (is_windows) {
+            try env_map.put("USERPROFILE", temp_dir);
+            const roaming = try std.fs.path.join(gpa, &.{ temp_dir, "AppData", "Roaming" });
+            defer gpa.free(roaming);
+            const local = try std.fs.path.join(gpa, &.{ temp_dir, "AppData", "Local" });
+            defer gpa.free(local);
+            try std.Io.Dir.cwd().createDirPath(io, roaming);
+            try std.Io.Dir.cwd().createDirPath(io, local);
+            try env_map.put("APPDATA", roaming);
+            try env_map.put("LOCALAPPDATA", local);
+        }
+
+        // 10. Spawn.
+        const log_file = try std.Io.Dir.cwd().createFile(io, log_path, .{});
+        defer log_file.close(io);
+
+        const port_str = try std.fmt.allocPrint(gpa, "{d}", .{chosen_port});
+        defer gpa.free(port_str);
+
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(gpa);
+        try argv.append(gpa, bin_path);
+        try argv.append(gpa, "--port");
+        try argv.append(gpa, port_str);
+        try argv.appendSlice(gpa, opts.extra_args);
+
+        var child = try std.process.spawn(io, .{
+            .argv = argv.items,
+            .environ_map = &env_map,
+            .stdout = .{ .file = log_file },
+            .stderr = .{ .file = log_file },
+            // Own process group, so a killpg reaches any subprocess
+            // the binary spawned (a PTY a terminal test drives).
+            .pgid = if (is_windows) null else 0,
+        });
+        const child_pid: u32 = if (is_windows) @intCast(child.id.?) else @intCast(child.id.?);
+
+        // 11. Record pids so a subsequent boot can reap us if we die.
+        //     Format is "<harness_pid> <pabrik_pid>\n" — the same
+        //     contract `reapOrphanTestPids` reads.
+        const self_pid: u32 = if (is_windows) 0 else @intCast(std.os.linux.getpid());
+        const pidfile = try std.fs.path.join(gpa, &.{ temp_dir, ".harness.pid" });
+        defer gpa.free(pidfile);
+        writePidfile(io, gpa, pidfile, self_pid, child_pid) catch {};
+
+        // 12. Wait for readiness. On failure, kill the child and
+        //     propagate — the caller never gets a half-live harness.
+        waitReady(io, gpa, chosen_port, opts.ready_timeout_s, child_pid, log_path) catch |err| {
+            child.kill(io);
+            _ = child.wait(io) catch {};
+            return err;
+        };
+
+        const dry_run = blk: {
+            const v = getEnvOrEmpty(gpa, "PABRIK_FUNCTIONAL_DRY_RUN") catch break :blk false;
+            defer gpa.free(v);
+            break :blk std.mem.eql(u8, v, "1");
+        };
+
+        // Hand the child to the harness. Ownership of `child` moves
+        // into `stopBinary` — we keep the pid only, because the Python
+        // harness signals by process group and does not `wait()` the
+        // child (it uses `os.waitpid(WNOHANG)` polling instead).
+        //
+        // Reaping: a `std.process.Child` we never `wait()` on leaves a
+        // zombie on POSIX. `stopBinary` polls `kill(pid, 0)` which
+        // reports zombies as ALIVE, so it would spin the full SIGTERM /
+        // SIGKILL budget on every teardown. `reapChild` (below) drains
+        // the zombie once the pid is confirmed gone.
+
+        return .{
+            .allocator = gpa,
+            .port = chosen_port,
+            .pabrik_bin = bin_path,
+            .temp_dir = temp_dir,
+            .orig_home = orig_home,
+            .log_path = log_path,
+            .pid = child_pid,
+            .dry_run = dry_run,
+            .orig_userprofile = orig_userprofile,
+            .orig_appdata = orig_appdata,
+            .orig_localappdata = orig_localappdata,
+            .orig_xdg_config_home = orig_xdg_config_home,
+            .orig_xdg_state_home = orig_xdg_state_home,
+            .orig_xdg_data_home = orig_xdg_data_home,
+            .orig_xdg_cache_home = orig_xdg_cache_home,
+        };
+    }
+
+    /// Tear down: stop the binary, then delete the isolated tempdir.
+    ///
+    /// Order matters:
+    ///   1. Validate the tempdir with `isSafeTmp`; ERROR if it fails.
+    ///      The tempdir is leaked in that case — the correct trade-off
+    ///      vs. deleting the wrong tree.
+    ///   2. Stop the binary (SIGTERM, then SIGKILL fallback).
+    ///   3. Remove the pidfile BEFORE rmtree so the next boot doesn't
+    ///      see this entry.
+    ///   4. Recursively delete the validated tempdir (or skip if
+    ///      `dry_run`).
+    ///
+    /// Idempotent: safe to call twice.
+    ///
+    /// NOTE: unlike the Python version this does NOT restore `HOME`.
+    /// Zig has no process-wide mutable env to shadow — the Python
+    /// harness mutated `os.environ` only so `~` in downstream test code
+    /// expanded to the tempdir; here the child env is passed to
+    /// `spawn` directly and the parent's env is never touched, so there
+    /// is nothing to restore.
+    pub fn deinit(self: *Harness, io: Io) !void {
+        if (self.stopped and self.temp_dir.len == 0) return;
+        const gpa = self.allocator;
+        const temp_dir = self.temp_dir;
+
+        // Stop the binary first: the child may still be writing into
+        // the tempdir, and deleting under it produces ENOTEMPTY.
+        if (self.pid != null and !self.stopped) {
+            self.stopped = true;
+            self.stopBinary(io) catch {};
+        }
+
+        // Validate. THIS IS THE SAFETY NET.
+        if (!try isSafeTmp(io, gpa, temp_dir, self.orig_home)) {
+            std.debug.print(
+                "REFUSING to rmtree unsafe path: {s}\n" ++
+                    "This is a bug in the harness; the tempdir did not\n" ++
+                    "pass isSafeTmp() validation. Manual cleanup required.\n" ++
+                    "  orig_home = {s}\n" ++
+                    "  temp_dir  = {s}\n",
+                .{ temp_dir, self.orig_home, temp_dir },
+            );
+            self.freeAll(gpa);
+            return error.TeardownRefused;
+        }
+
+        // Remove the pidfile BEFORE rmtree. Without this, the next boot
+        // would see an entry whose harness pid is now dead and try to
+        // reap an already-dead child.
+        const pidfile = std.fs.path.join(gpa, &.{ temp_dir, ".harness.pid" }) catch {
+            self.freeAll(gpa);
+            return;
+        };
+        defer gpa.free(pidfile);
+        std.Io.Dir.cwd().deleteFile(io, pidfile) catch {};
+
+        if (self.dry_run) {
+            std.debug.print("[dry-run] would rmtree: {s}\n", .{temp_dir});
+        } else {
+            // The child tree is dead, but "dead" is not "finished
+            // writing": a shell the binary spawned can still be
+            // flushing its last writes into the temp HOME, and POSIX
+            // rmtree surfaces that as ENOTEMPTY — a directory that got
+            // a new entry between the scan and the delete. Retry with
+            // backoff rather than leaking on the first failure.
+            var last_err: ?anyerror = null;
+            const retries: usize = if (is_windows) 10 else 5;
+            for (0..retries) |_| {
+                std.Io.Dir.cwd().deleteTree(io, temp_dir) catch |err| {
+                    last_err = err;
+                    Io.sleep(io, .fromMilliseconds(1000), .awake) catch {};
+                    continue;
+                };
+                last_err = null;
+                break;
+            }
+            if (last_err) |err| {
+                std.debug.print(
+                    "harness teardown: could not delete {s} after {d} attempts: {s}\n",
+                    .{ temp_dir, retries, @errorName(err) },
+                );
+                self.freeAll(gpa);
+                return error.TeardownRefused;
+            }
+        }
+
+        self.freeAll(gpa);
+    }
+
+    fn freeAll(self: *Harness, gpa: Allocator) void {
+        gpa.free(self.pabrik_bin);
+        gpa.free(self.temp_dir);
+        gpa.free(self.orig_home);
+        gpa.free(self.log_path);
+        gpa.free(self.orig_userprofile);
+        gpa.free(self.orig_appdata);
+        gpa.free(self.orig_localappdata);
+        gpa.free(self.orig_xdg_config_home);
+        gpa.free(self.orig_xdg_state_home);
+        gpa.free(self.orig_xdg_data_home);
+        gpa.free(self.orig_xdg_cache_home);
+        self.* = undefined;
+    }
+
+    // ---- HTTP client ------------------------------------------------------
+
+    /// HTTP request options. Mirrors Python's keyword-only args.
+    pub const HttpOptions = struct {
+        /// Serialised as the body with `Content-Type: application/json`.
+        json_body: ?[]const u8 = null,
+        /// URL query parameters. Percent-encoded by the harness.
+        params: []const Param = &.{},
+        /// Accepted status codes. Empty means "200" (Python's default).
+        expect: []const u16 = &.{200},
+        timeout_s: f64 = 5.0,
+    };
+
+    /// One URL query parameter. `value` is percent-encoded.
+    pub const Param = struct { name: []const u8, value: []const u8 };
+
+    /// Issue an HTTP request to the harness's `pabrik` instance.
+    ///
+    /// Returns a `Response` the caller owns. Errors with
+    /// `error.UnexpectedStatus` when the status is not in `opts.expect`;
+    /// the error message carries the first 500 bytes of the body, which
+    /// is what makes a failure readable without opening the log.
+    pub fn http(self: *Harness, io: Io, method: HttpMethod, path: []const u8, opts: HttpOptions) !Response {
+        const gpa = self.allocator;
+
+        const url = try buildUrl(gpa, self.port, path, opts.params);
+
+        var body: ?[]const u8 = opts.json_body;
+        defer if (body != null) gpa.free(body.?);
+
+        if (opts.json_body) |jb| {
+            body = try gpa.dupe(u8, jb);
+        }
+
+        // `std.Io.Writer.Allocating` is the 0.16 replacement for the
+        // old `ArrayList(u8).writer(gpa)` idiom: an auto-growing sink
+        // that hands back an owned slice via `toOwnedSlice`.
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        errdefer out.deinit();
+        const w = &out.writer;
+
+        var client: std.http.Client = .{ .allocator = gpa, .io = io };
+        defer client.deinit();
+
+        var req = try client.request(
+            method.toStdMethod(),
+            try std.Uri.parse(url),
+            .{ .redirect_behavior = .unhandled },
+        );
+        defer req.deinit();
+
+        if (body) |b| {
+            req.transfer_encoding = .{ .content_length = b.len };
+            var body_writer = try req.sendBodyUnflushed(&.{});
+            try body_writer.writer.writeAll(b);
+            try body_writer.end();
+            try req.connection.?.flush();
+        } else {
+            try req.sendBodiless();
+        }
+
+        var resp = try req.receiveHead(&.{});
+
+        const reader = resp.reader(&.{});
+        _ = try reader.streamRemaining(w);
+        try w.flush();
+
+        const status: u16 = @intFromEnum(resp.head.status);
+
+        var expected = opts.expect;
+        if (expected.len == 0) expected = &.{200};
+
+        var ok = false;
+        for (expected) |e| {
+            if (e == status) {
+                ok = true;
+                break;
+            }
+        }
+        if (!ok) {
+            const got = out.written();
+            const excerpt = if (got.len > 500) got[0..500] else got;
+            // Spell out the accepted codes so the failure says what
+            // would have passed — the Python harness printed the tuple.
+            var want_buf: [128]u8 = undefined;
+            var want_w: Io.Writer = .fixed(&want_buf);
+            for (expected, 0..) |e, i| {
+                want_w.print("{d}", .{e}) catch break;
+                if (i + 1 < expected.len) want_w.writeAll(", ") catch break;
+            }
+            std.debug.print(
+                "{s} {s}: expected [{s}], got {d}\nbody: {s}\n",
+                .{ method.name(), path, want_w.buffered(), status, excerpt },
+            );
+            out.deinit();
+            gpa.free(url);
+            return error.UnexpectedStatus;
+        }
+
+        const owned = try out.toOwnedSlice();
+        gpa.free(url);
+        return .{ .status = status, .body = owned, .allocator = gpa };
+    }
+
+    /// Return true iff `/health` returns 200 with `status == "ok"`.
+    pub fn health(self: *Harness, io: Io) bool {
+        var r = self.http(io, .GET, "/health", .{ .expect = &.{200} }) catch return false;
+        defer r.deinit();
+        var doc = r.json() catch return false;
+        defer doc.deinit();
+        const st = doc.str("status") orelse return false;
+        return std.mem.eql(u8, st, "ok");
+    }
+
+    /// Return the last `n` lines of the `pabrik` log (useful on failure).
+    pub fn tailLog(self: *Harness, io: Io, gpa: Allocator, n: usize) ![]u8 {
+        const data = std.Io.Dir.cwd().readFileAlloc(io, self.log_path, gpa, .limited(1 << 20)) catch |err| switch (err) {
+            error.FileNotFound => return gpa.dupe(u8, ""),
+            else => return err,
+        };
+        defer gpa.free(data);
+
+        // Take the last `n` lines of the (decoded-as-bytes) log.
+        var line_count: usize = 0;
+        var i = data.len;
+        while (i > 0) {
+            i -= 1;
+            if (data[i] == '\n') line_count += 1;
+        }
+        // Skip forward past the lines we do not want.
+        var to_skip = if (line_count > n) line_count - n else 0;
+        var start: usize = 0;
+        var j: usize = 0;
+        while (j < data.len and to_skip > 0) : (j += 1) {
+            if (data[j] == '\n') to_skip -= 1;
+            start = j + 1;
+        }
+        return gpa.dupe(u8, std.mem.trimRight(u8, data[start..], "\n"));
+    }
+
+    // ---- private ----------------------------------------------------------
+
+    /// Stop the `pabrik` binary: graceful shutdown, SIGTERM, SIGKILL.
+    ///
+    /// Teardown budget is 3s total, safe because `/test/shutdown` exits
+    /// the process within ~50ms in the common case; the SIGTERM/SIGKILL
+    /// steps are the safety net for a rare blocked shutdown handler.
+    fn stopBinary(self: *Harness, io: Io) !void {
+        const gpa = self.allocator;
+        const pid = self.pid orelse return;
+
+        // Graceful exit first; tolerate any failure.
+        var client: std.http.Client = .{ .allocator = gpa, .io = io };
+        defer client.deinit();
+        const url = try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}/test/shutdown", .{self.port});
+        defer gpa.free(url);
+        var req = client.request(.POST, std.Uri.parse(url) catch return, .{}) catch return;
+        defer req.deinit();
+        // POST needs a body: Zig's `sendBodiless` asserts that the
+        // method cannot have one. Python's `urlopen(..., data=b"")`
+        // sent an empty body, which is what we mirror here.
+        req.transfer_encoding = .{ .content_length = 0 };
+        var body_writer = req.sendBodyUnflushed(&.{}) catch return;
+        body_writer.end() catch return;
+        req.connection.?.flush() catch return;
+        var resp = req.receiveHead(&.{}) catch return;
+        // Drain the body so the connection is released cleanly. Zig
+        // 0.16's `Response` has no `deinit` — `req.deinit` (the outer
+        // defer) owns everything.
+        var sink: std.Io.Writer.Discarding = .init(&.{});
+        _ = resp.reader(&.{}).streamRemaining(&sink.writer) catch {};
+
+        if (waitPidDead(io, pid, 1.0)) {
+            return;
+        }
+        signalGroup(pid, SIGTERM);
+        if (waitPidDead(io, pid, 1.0)) {
+            return;
+        }
+        signalGroup(pid, SIGKILL);
+        _ = waitPidDead(io, pid, 1.0); // best-effort final wait
+    }
+};
+
+// ============================================================================
+// HTTP helpers
+// ============================================================================
+
+/// HTTP verbs the suites use.
+///
+/// The tag names are deliberately identical to `std.http.Method`'s, so
+/// `toStdMethod` is a zero-cost `@enumFromInt` rather than a switch that
+/// would need a new arm every time a verb is added to this list.
+pub const HttpMethod = enum {
+    GET,
+    POST,
+    PUT,
+    PATCH,
+    DELETE,
+    HEAD,
+    OPTIONS,
+
+    pub fn name(self: HttpMethod) []const u8 {
+        return @tagName(self);
+    }
+
+    fn toStdMethod(self: HttpMethod) std.http.Method {
+        return @enumFromInt(@intFromEnum(self));
+    }
+};
+
+/// Build `http://127.0.0.1:<port><path>?<params>`, percent-encoding
+/// parameter values.
+fn buildUrl(gpa: Allocator, port: u16, path: []const u8, params: []const Harness.Param) ![]u8 {
+    if (params.len == 0) {
+        return std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}{s}", .{ port, path });
+    }
+    var url = try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}{s}?", .{ port, path });
+    errdefer gpa.free(url);
+    for (params, 0..) |p, i| {
+        if (i > 0) {
+            url = try std.fmt.allocPrint(gpa, "{s}&{s}={s}", .{ url, p.name, p.value });
+            gpa.free(url);
+        } else {
+            url = try std.fmt.allocPrint(gpa, "{s}{s}={s}", .{ url, p.name, p.value });
+        }
+    }
+    return url;
+}
+
+// ============================================================================
+// Port allocation
+// ============================================================================
+
+/// Sequential port scan from `start` to `PORT_SCAN_END`. Legacy path,
+/// kept for the orphan-reap TIME_WAIT regression test which depends on
+/// the deterministic "first free port = target_port" behaviour.
+pub fn findFreePortSequential(io: Io, start: u16) !u16 {
+    var s = start;
+    if (s == 8081) s = 8082;
+    var port: u16 = s;
+    while (port <= PORT_SCAN_END) : (port += 1) {
+        if (port == 8081) continue;
+        if (portIsFreeWithReuse(io, port)) return port;
+    }
+    return error.NoFreePort;
+}
+
+/// Return true iff `port` can be bound on 127.0.0.1 with SO_REUSEADDR.
+///
+/// SO_REUSEADDR lets the probe bind TIME_WAIT ports; the subsequent
+/// `pabrik` listener sets the same flag so it can also bind the port
+/// despite lingering server-side TIME_WAITs. Without it, rapid test runs
+/// saturate the scan window with TIME_WAIT entries.
+pub fn portIsFreeWithReuse(io: Io, port: u16) bool {
+    // Bind a throwaway listener on 127.0.0.1:<port>. Success ⇒ nothing
+    // is listening there. `reuse_address` sets SO_REUSEADDR (and
+    // SO_REUSEPORT where available), which is what lets the probe take
+    // a port still in TIME_WAIT; the `pabrik` listener sets the same
+    // flag, so it can bind it too moments later.
+    //
+    // Zig 0.16 removed `std.posix.socket`/`bind`; the portable path is
+    // `Io.net`, which routes through the Io implementation's vtable.
+    const addr: Io.net.IpAddress = .{ .ip4 = .loopback(port) };
+    var server = addr.listen(io, .{ .reuse_address = true }) catch return false;
+    server.deinit(io);
+    return true;
+}
+
+/// Pick a random free port from a wide range, avoiding reserved ports.
+///
+/// `attempts` independent random picks within `[range_start,
+/// range_end]`; the first that binds without error and is not reserved
+/// wins. Practically unreachable to fail on any sane host.
+pub fn findFreePortRandom(gpa: Allocator) !u16 {
+    const range_size = RANDOM_PORT_END - RANDOM_PORT_START + 1;
+    const rand = entropyRandom(testingIo());
+    for (0..RANDOM_PORT_ATTEMPTS) |_| {
+        const port = RANDOM_PORT_START + rand.uintLessThan(u16, range_size);
+        var reserved = false;
+        for (RESERVED_PORTS) |r| {
+            if (port == r) reserved = true;
+        }
+        if (reserved) continue;
+        if (portIsFreeWithReuse(testingIo(), port)) return port;
+    }
+    _ = gpa;
+    return error.NoFreePort;
+}
+
+/// Find a free port. `start = null` → random pick; otherwise the legacy
+/// sequential scan from `start`.
+pub fn findFreePort(start: ?u16) !u16 {
+    if (start) |s| return findFreePortSequential(testingIo(), s);
+    return findFreePortRandom(std.heap.page_allocator);
+}
+
+// ============================================================================
+// Process helpers
+// ============================================================================
+
+/// Milliseconds on the monotonic clock.
+///
+/// Zig 0.16 removed `std.time.milliTimestamp()`; a monotonic deadline
+/// is now `Io.Clock.now(io, .monotonic)`. Everything that needs a
+/// wall-clock comparison (the readiness poll, the kill ladder) wants
+/// MONOTONIC, not real — a wall-clock step backwards (NTP) would
+/// otherwise hang the wait forever.
+fn monotonicMs(io: Io) i64 {
+    // `.awake`, not `.real`: Zig 0.16 renamed the monotonic clock, and
+    // a wall-clock step backwards (NTP) would otherwise hang the wait.
+    return Io.Timestamp.now(io, .awake).toMilliseconds();
+}
+
+/// Return true iff `pid` exited within `timeout_s`.
+///
+/// Uses `kill(pid, 0)` as a liveness probe. ESRCH ⇒ dead. On POSIX a
+/// zombie also answers 0, so a caller that owns the `Child` should
+/// `wait()` it; the harness signals by process group and uses this
+/// probe, accepting a possible one-shot false "alive" that the next
+/// SIGKILL round resolves.
+fn waitPidDead(io: Io, pid: u32, timeout_s: f64) bool {
+    const deadline = monotonicMs(io) + @as(i64, @intFromFloat(timeout_s * 1000.0));
+    while (monotonicMs(io) < deadline) {
+        if (!pidAlive(pid)) return true;
+        Io.sleep(io, .fromMilliseconds(50), .awake) catch {};
+    }
+    return false;
+}
+
+/// `kill(pid, 0)` liveness probe. Swallows every error: EPERM means
+/// alive-but-not-ours, which for our purposes is the same as "not
+/// ours to signal" and we treat it as alive so we escalate.
+fn pidAlive(pid: u32) bool {
+    if (is_windows) return true; // No POSIX probe; Windows path uses SIGTERM=TerminateProcess.
+    const p: posix.pid_t = @intCast(pid);
+    // `kill(pid, 0)` is the liveness probe: signal 0 performs error
+    // checking but delivers nothing. EPERM means alive-but-not-ours
+    // (treat as alive so we escalate); ESRCH means gone.
+    posix.kill(p, @as(posix.SIG, @enumFromInt(0))) catch |err| switch (err) {
+        error.PermissionDenied => return true,
+        else => return false,
+    };
+    return true;
+}
+
+/// Signal the whole process group on POSIX, or the pid on Windows.
+///
+/// Every error is swallowed — the process can die between our queries,
+/// the OS may have recycled the pgid, or we may not own the pid. None
+/// of those are the harness's concerns.
+pub fn signalGroup(pid: u32, sig: posix.SIG) void {
+    if (is_windows) return;
+    const p: posix.pid_t = @intCast(pid);
+    // `killpg(pgid, sig)` where pgid == pid (the child was spawned with
+    // `pgid = 0`, making it a group leader). Fall back to `kill` if the
+    // group signal fails.
+    posix.kill(-p, sig) catch posix.kill(p, sig) catch {};
+}
+
+/// Kill orphaned `pabrik` children from prior aborted runs. Idempotent.
+///
+/// Scan `<tmpdir>/pabrik-func-*/.harness.pid`. Each pidfile contains
+/// `"<harness_pid> <pabrik_pid>\n"`. If the harness parent is dead, the
+/// tempdir is an orphan: the `pabrik` child survived in its own process
+/// group and is still holding its TCP port. Kill the child, then delete
+/// the tempdir via the SAME `isSafeTmp` gate teardown uses.
+pub fn reapOrphanTestPids(io: Io, gpa: Allocator) !usize {
+    var reaped: usize = 0;
+    const base = try tmpRoot(gpa);
+    defer gpa.free(base);
+
+    var dir = std.Io.Dir.cwd().openDir(io, base, .{ .iterate = true }) catch return 0;
+    defer dir.close(io);
+
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, REQUIRED_TMP_SUBSTR)) continue;
+
+        const entry_path = try std.fs.path.join(gpa, &.{ base, entry.name });
+        defer gpa.free(entry_path);
+
+        const pidfile = try std.fs.path.join(gpa, &.{ entry_path, ".harness.pid" });
+        defer gpa.free(pidfile);
+
+        const text = std.Io.Dir.cwd().readFileAlloc(io, pidfile, gpa, .limited(256)) catch continue;
+        defer gpa.free(text);
+
+        // Parse "<harness_pid> <pabrik_pid>". Anything else → skip.
+        var it2 = std.mem.tokenizeAny(u8, text, " \t\r\n");
+        const h_tok = it2.next() orelse continue;
+        const p_tok = it2.next() orelse continue;
+        if (it2.next() != null) continue; // more than two tokens → skip.
+        const harness_pid = std.fmt.parseInt(u32, h_tok, 10) catch continue;
+        const pabrik_pid = std.fmt.parseInt(u32, p_tok, 10) catch continue;
+
+        // If the harness is alive, this test is still in progress —
+        // a concurrent scan must NOT kill it.
+        if (pidAlive(harness_pid)) continue;
+
+        // Harness is dead. Kill the `pabrik` child if alive.
+        const self_pid: u32 = if (is_windows) 0 else @intCast(std.os.linux.getpid());
+        if (pabrik_pid != 0 and pabrik_pid != self_pid) {
+            posix.kill(@intCast(pabrik_pid), SIGTERM) catch {};
+            if (!waitPidDead(io, pabrik_pid, 1.0)) {
+                posix.kill(@intCast(pabrik_pid), SIGKILL) catch {};
+            }
+        }
+
+        // Delete via the SAME safety gate teardown uses. For an orphan
+        // we don't know the original HOME, so pass "" — that disables
+        // the "matches HOME" check but keeps prefix + substring.
+        if (try isSafeTmp(io, gpa, entry_path, "")) {
+            std.Io.Dir.cwd().deleteTree(io, entry_path) catch continue;
+            reaped += 1;
+        }
+    }
+    return reaped;
+}
+
+fn writePidfile(io: Io, gpa: Allocator, path: []const u8, harness_pid: u32, pabrik_pid: u32) !void {
+    const text = try std.fmt.allocPrint(gpa, "{d} {d}\n", .{ harness_pid, pabrik_pid });
+    defer gpa.free(text);
+    var f = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer f.close(io);
+    try f.writeStreamingAll(io, text);
+}
+
+/// Poll `/health` every 100ms until `status == "ok"` or timeout.
+fn waitReady(io: Io, gpa: Allocator, port: u16, timeout_s: f64, pid: u32, log_path: []const u8) !void {
+    const deadline = monotonicMs(io) + @as(i64, @intFromFloat(timeout_s * 1000.0));
+    const url = try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}/health", .{port});
+    defer gpa.free(url);
+
+    var last_err: []const u8 = "none";
+    while (monotonicMs(io) < deadline) {
+        if (!pidAlive(pid)) {
+            const tail = readTail(io, gpa, log_path, 30) catch "";
+            defer if (tail.len > 0) gpa.free(tail);
+            std.debug.print(
+                "pabrik exited during boot\n--- last 30 lines of log ---\n{s}\n",
+                .{tail},
+            );
+            return error.BootFailed;
+        }
+        if (probeHealth(io, gpa, url)) return;
+
+        last_err = "connection refused";
+        Io.sleep(io, .fromMilliseconds(100), .awake) catch {};
+    }
+    const tail = readTail(io, gpa, log_path, 30) catch "";
+    defer if (tail.len > 0) gpa.free(tail);
+    std.debug.print(
+        "pabrik did not become ready in {d}s (last_err={s})\n--- last 30 lines of log ---\n{s}\n",
+        .{ @as(u32, @intFromFloat(timeout_s)), last_err, tail },
+    );
+    return error.NotReady;
+}
+
+fn probeHealth(io: Io, gpa: Allocator, url: []const u8) bool {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var req = client.request(.GET, std.Uri.parse(url) catch return false, .{}) catch return false;
+    defer req.deinit();
+    req.sendBodiless() catch return false;
+    var resp = req.receiveHead(&.{}) catch return false;
+    _ = resp.reader(&.{}).streamRemaining(&out.writer) catch return false;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, out.written(), .{}) catch return false;
+    defer parsed.deinit();
+    const st = parsed.value.object.get("status") orelse return false;
+    return std.mem.eql(u8, st.string, "ok");
+}
+
+fn readTail(io: Io, gpa: Allocator, path: []const u8, n: usize) ![]u8 {
+    const data = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20));
+    defer gpa.free(data);
+    var kept: std.ArrayList([]const u8) = .empty;
+    defer kept.deinit(gpa);
+    var lines: std.mem.SplitIterator(u8, .scalar) = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        try kept.append(gpa, line);
+    }
+    const start = if (kept.items.len > n) kept.items.len - n else 0;
+    return std.mem.join(gpa, "\n", kept.items[start..]);
+}
+
+// ============================================================================
+// Temp dir
+// ============================================================================
+
+/// Allocate a fresh tempdir named `pabrik-func-<random>` under the OS
+/// temp root. Atomic (O_EXCL-style) — no TOCTOU window between choosing
+/// a name and creating it.
+fn makeTempDir(io: Io, gpa: Allocator) ![]u8 {
+    const base = try tmpRoot(gpa);
+    defer gpa.free(base);
+
+    const rand = entropyRandom(testingIo());
+
+    var attempt: usize = 0;
+    while (attempt < 32) : (attempt += 1) {
+        const suffix: u32 = rand.int(u32);
+        // No `defer gpa.free(name)` here: this slice IS the return
+        // value, and a `defer` would free it before the caller ever
+        // reads it. Ownership transfers to the caller instead.
+        const name = try std.fmt.allocPrint(gpa, "{s}{s}{s}{x}", .{ base, std.fs.path.sep_str, REQUIRED_TMP_SUBSTR, suffix });
+        std.Io.Dir.cwd().createDirPath(io, name) catch |err| switch (err) {
+            // Already exists → free this attempt and try a new suffix.
+            error.PathAlreadyExists => {
+                gpa.free(name);
+                continue;
+            },
+            else => {
+                gpa.free(name);
+                return err;
+            },
+        };
+        return name;
+    }
+    return error.BootFailed;
+}
+
+// ============================================================================
+// Binary resolution
+// ============================================================================
+
+/// Candidate binary paths, in resolution order. `$PABRIK_BIN` is
+/// handled by the caller before this list is consulted.
+const BIN_CANDIDATES = [_][]const u8{
+    "zig-out/bin/pabrik",
+    "zig-out/bin/pabrik.exe",
+    "zig-out/bin/pabrikcore-linux-x86_64",
+    "zig-out/bin/pabrikcore-macos-aarch64",
+    "zig-out/bin/pabrikcore-macos-x86_64",
+    "zig-out/bin/pabrikcore-windows-x86_64",
+    "zig-out/bin/pabrikcore-windows-x86_64.exe",
+};
+
+/// Resolve the `pabrik` binary the suite boots.
+///
+/// Order: `$PABRIK_BIN`, then the known `zig-out/bin/*` spellings. The
+/// build step runs with cwd = repo root so the relative paths resolve.
+pub fn resolvePabrikBin(io: Io, gpa: Allocator) ![]u8 {
+    if (getEnvOrEmpty(gpa, "PABRIK_BIN")) |env_bin| {
+        defer gpa.free(env_bin);
+        if (env_bin.len > 0) {
+            const resolved = resolveRelative(io, gpa, env_bin) catch env_bin;
+            if (isExecutable(io, resolved)) return resolved;
+        }
+    } else |_| {}
+    for (BIN_CANDIDATES) |c| {
+        const resolved = try resolveRelative(io, gpa, c);
+        if (isExecutable(io, resolved)) return resolved;
+    }
+    return error.BinaryNotFound;
+}
+
+/// Resolve the `mcp-hello-world` test MCP server (stdio transport),
+/// built by `zig build mcp-hello-world`.
+pub fn mcpHelloWorldBin(io: Io, gpa: Allocator) ![]u8 {
+    if (getEnvOrEmpty(gpa, "MCP_HELLO_WORLD_BIN")) |env_bin| {
+        defer gpa.free(env_bin);
+        if (env_bin.len > 0) {
+            const resolved = resolveRelative(io, gpa, env_bin) catch env_bin;
+            if (isExecutable(io, resolved)) return resolved;
+        }
+    } else |_| {}
+    for ([_][]const u8{
+        "zig-out/bin/mcp-hello-world",
+        "zig-out/bin/mcp-hello-world-linux-x86_64",
+    }) |c| {
+        const resolved = try resolveRelative(io, gpa, c);
+        if (isExecutable(io, resolved)) return resolved;
+    }
+    return error.BinaryNotFound;
+}
+
+/// Resolve the `mcp-http-hello-world` test MCP server (HTTP transport).
+/// Per the project convention "one binary per transport", this is a
+/// distinct binary from the stdio one, not a flag on it.
+pub fn mcpHttpHelloWorldBin(io: Io, gpa: Allocator) ![]u8 {
+    if (getEnvOrEmpty(gpa, "MCP_HTTP_HELLO_WORLD_BIN")) |env_bin| {
+        defer gpa.free(env_bin);
+        if (env_bin.len > 0) {
+            const resolved = resolveRelative(io, gpa, env_bin) catch env_bin;
+            if (isExecutable(io, resolved)) return resolved;
+        }
+    } else |_| {}
+    for ([_][]const u8{
+        "zig-out/bin/mcp-http-hello-world",
+        "zig-out/bin/mcp-http-hello-world-linux-x86_64",
+    }) |c| {
+        const resolved = try resolveRelative(io, gpa, c);
+        if (isExecutable(io, resolved)) return resolved;
+    }
+    return error.BinaryNotFound;
+}
+
+fn resolveRelative(io: Io, gpa: Allocator, path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) return gpa.dupe(u8, path);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = std.Io.Dir.cwd().realPathFile(io, path, &buf) catch |err| switch (err) {
+        error.FileNotFound, error.NameTooLong => return gpa.dupe(u8, path),
+        else => return err,
+    };
+    return gpa.dupe(u8, buf[0..len]);
+}
+
+fn isExecutable(io: Io, path: []const u8) bool {
+    // `access(.{ .execute = true })` asks the OS directly. Zig 0.16's
+    // `Io.File.Stat` carries a typed `Permissions` (an enum on Windows,
+    // a mode wrapper elsewhere) rather than a raw `mode`, so testing
+    // the execute bit by hand would be platform-branching for no gain:
+    // the OS already knows the answer.
+    std.Io.Dir.cwd().access(io, path, .{ .execute = true }) catch return false;
+    return true;
+}
+
+/// Read an environment variable from the CURRENT process, or `""`.
+///
+/// Zig 0.16 removed `std.process.getEnvVarOwned`; the supported read
+/// path in a test is `std.testing.environ` (a `std.process.Environ`),
+/// which is populated by the test runner. Outside a test the global
+/// block is the equivalent — see `currentEnviron`.
+fn getEnvOrEmpty(gpa: Allocator, name: []const u8) ![]u8 {
+    if (currentEnviron().getAlloc(gpa, name)) |v| return v else |_| return gpa.dupe(u8, "");
+}
+
+/// The current process's environment as a `Map` view we can read from.
+///
+/// `std.testing.environ` is only defined under `builtin.is_test`; the
+/// process-global block is the non-test equivalent.
+fn currentEnviron() std.process.Environ {
+    if (builtin.is_test) return std.testing.environ;
+    return std.process.Environ{ .block = .global };
+}
+
+// ============================================================================
+// Stub LLM profile
+// ============================================================================
+
+/// Pre-create a stub LLM profile at every platform-correct config path
+/// so the binary boots without a real `api_key`.
+///
+/// The `base_url` points at a port that never responds, so a session
+/// create fails at runtime when it calls the LLM — which is fine, since
+/// the functional tests assert on the wire, not on LLM responses.
+///
+/// Written to all three locations so the helper works regardless of
+/// which platform's `getDefaultConfigDir` the binary uses.
+pub fn writeStubLlmProfile(io: Io, gpa: Allocator, temp_dir: []const u8) !void {
+    const payload =
+        \\{
+        \\  "profiles_models": {
+        \\    "stub": {
+        \\      "model": "stub-model",
+        \\      "base_url": "http://127.0.0.1:1",
+        \\      "api_key": "stub-key-not-real"
+        \\    }
+        \\  },
+        \\  "selected_profile_model": "stub"
+        \\}
+    ;
+    const dirs = [_][]const []const u8{
+        &.{ ".config", "pabrik" },
+        &.{ "AppData", "Roaming", "pabrik" },
+        &.{ "Library", "Application Support", "pabrik" },
+    };
+    for (dirs) |parts| {
+        const dir = try harnessPath(gpa, temp_dir, parts);
+        defer gpa.free(dir);
+        std.Io.Dir.cwd().createDirPath(io, dir) catch continue;
+        const file = try std.fs.path.join(gpa, &.{ dir, "config.json" });
+        defer gpa.free(file);
+        var f = std.Io.Dir.cwd().createFile(io, file, .{}) catch continue;
+        defer f.close(io);
+        f.writeStreamingAll(io, payload) catch continue;
+    }
+}
+
+// ============================================================================
+// Convenience
+// ============================================================================
+
+/// Return `error.SkipZigTest` unless a `pabrik` binary is resolvable.
+///
+/// THE FIRST LINE OF EVERY SUITE THAT BOOTS A HARNESS. A fresh
+/// worktree has no `zig-out/`, and the ~758 tests in this package each
+/// boot their own binary — without this guard a missing binary would
+/// be 758 red tests instead of one skipped suite, and the signal that
+/// matters ("build the binary first") drowns in the noise.
+///
+///     test "workspace_create_returns_201" {
+///         try harness.requirePabrikBin(testing.io, gpa);
+///         var h = try Harness.boot(testing.io, gpa, .{});
+///         defer h.deinit(testing.io) catch {};
+///         ...
+///     }
+pub fn requirePabrikBin(io: Io, gpa: Allocator) !void {
+    const bin = resolvePabrikBin(io, gpa) catch |err| switch (err) {
+        error.BinaryNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    gpa.free(bin);
+}
+
+/// Boot a harness and run `f`, then tear it down — the Zig analogue of
+/// Python's `run_quick` context manager.
+///
+///     try harness.run(io, gpa, .{}, struct {
+///         fn body(io: Io, h: *Harness) !void {
+///             ...
+///         }
+///     }.body);
+pub fn run(
+    io: Io,
+    gpa: Allocator,
+    opts: Harness.BootOptions,
+    comptime f: fn (Io, *Harness) anyerror!void,
+) !void {
+    var h = try Harness.boot(io, gpa, opts);
+    defer h.deinit(io) catch |err| {
+        std.debug.print("harness teardown: {s}\n", .{@errorName(err)});
+    };
+    try f(io, &h);
+}

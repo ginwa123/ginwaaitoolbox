@@ -1,0 +1,22 @@
+.{
+    .name = .pabrik_functional_tests,
+    .version = "0.0.0",
+    .fingerprint = 0xea829952780d8e21,
+    .minimum_zig_version = "0.16.0",
+    // Intentionally EMPTY. The functional suite is black-box: it boots
+    // a real `pabrik` binary as a child process and drives it over
+    // HTTP. It must NOT link the app module — see build.zig's header
+    // for why an `@import("pabrikcore")` here would let a test "pass"
+    // without ever crossing the wire.
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "root.zig",
+        "harness.zig",
+        "README.md",
+        // Every ported suite: `*_test.zig`, plus the support modules
+        // they share (`*_support.zig`).
+        "**",
+    },
+}
