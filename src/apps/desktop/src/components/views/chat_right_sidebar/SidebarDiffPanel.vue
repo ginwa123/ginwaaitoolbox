@@ -695,12 +695,18 @@ const loadGitStatus = async () => {
 }
 
 // Stacked center view: fetch every changed file so the center column
-// renders all diffs without per-click round-trips. Uses the batch
-// endpoint (POST /git/file/diffs, <=2 git spawns) instead of N parallel
+// renders all diffs without per-click round-trips. Uses the folder-mode
+// batch endpoint (POST /git/file/diffs with `folder: ""` → the WHOLE repo,
+// 3 git spawns no matter how many files changed) instead of N parallel
 // GET /git/file/diff — the old fan-out held N Io workers for 6-10s each
-// and starved cheap routes like queue_messages. Falls back to a
-// concurrency-limited per-file fetch (pool of 4) on older servers.
+// and starved cheap routes like queue_messages.
+//
+// The per-file fallback below exists only for a server that predates the
+// batch route. It is BOUNDED and it LOGS: an unbounded silent fallback is
+// what produced 1009 `diff?path=…&file=…` requests in one session, once per
+// 30s poll, with nothing in the console to say why.
 const DIFF_BATCH_CONCURRENCY = 4
+const DIFF_FALLBACK_MAX_FILES = 40
 const loadFullList = async (cwd: string = props.cwd) => {
   if (!cwd) return
   const seq = loadSeq
@@ -735,10 +741,9 @@ const loadFullList = async (cwd: string = props.cwd) => {
     error: 'Failed to load file diff',
   })
   try {
-    const batch = await api.getGitFileDiffs(
-      cwd,
-      targets.map((t) => ({ file: t.path, staged: t.staged })),
-    )
+    // Folder mode: the server walks the repo itself, so this body stays
+    // three fields wide whether the worktree has 3 dirty files or 300.
+    const batch = await api.getGitFolderDiffs(cwd)
     if (seq !== loadSeq) return
     const byKey = new Map(batch.diffs.map((d) => [`${d.staged ? 1 : 0}:${d.path}`, d.diff_content]))
     const list: DiffSelection[] = targets.map((t) => {
@@ -748,21 +753,30 @@ const loadFullList = async (cwd: string = props.cwd) => {
     })
     emit('show-diff-list', list)
     return
-  } catch {
-    // Older server without the batch route — fall through to limited fetch.
+  } catch (err) {
+    console.warn(
+      `[SidebarDiffPanel] folder diff failed, falling back to ${Math.min(
+        targets.length,
+        DIFF_FALLBACK_MAX_FILES,
+      )} per-file requests of ${targets.length} changed files:`,
+      err,
+    )
   }
   if (seq !== loadSeq) return
+  // Past the cap the remaining rows render as errors instead of firing more
+  // requests — a degraded panel is better than an unbounded request storm.
+  const fallback = targets.slice(0, DIFF_FALLBACK_MAX_FILES)
   const results: ({ status: 'fulfilled'; value: api.GitFileDiff } | { status: 'rejected' })[] =
-    Array.from({ length: targets.length }) as (
+    Array.from({ length: fallback.length }) as (
       | {
           status: 'fulfilled'
           value: api.GitFileDiff
         }
       | { status: 'rejected' }
     )[]
-  for (let i = 0; i < targets.length; i += DIFF_BATCH_CONCURRENCY) {
+  for (let i = 0; i < fallback.length; i += DIFF_BATCH_CONCURRENCY) {
     if (seq !== loadSeq) return
-    const chunk = targets.slice(i, i + DIFF_BATCH_CONCURRENCY)
+    const chunk = fallback.slice(i, i + DIFF_BATCH_CONCURRENCY)
     const settled = await Promise.allSettled(
       chunk.map((t) => api.getGitFileDiff(cwd, t.path, t.staged)),
     )

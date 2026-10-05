@@ -4869,6 +4869,22 @@ export async function getGitFileDiffs(
   })
 }
 
+// Folder mode — one POST for a whole folder. The server enumerates the
+// changed paths itself (`git status --porcelain -uall -- <folder>`), so the
+// caller neither has to fetch `GET /api/git/changes` first nor send a
+// path-per-file body. Cost is 3 git spawns regardless of how many files
+// changed; `folder: ''` means the whole repo.
+export async function getGitFolderDiffs(
+  cwd: string,
+  folder: string = '',
+): Promise<GitFileDiffsResponse> {
+  return await apiFetch<GitFileDiffsResponse>(`/git/file/diffs`, {
+    method: 'POST',
+    body: { path: cwd, folder },
+    silent: true,
+  })
+}
+
 export async function readGitFile(
   cwd: string,
   filePath: string,

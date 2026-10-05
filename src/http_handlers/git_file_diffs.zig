@@ -18,9 +18,18 @@ pub const BatchFileItem = struct {
     staged: bool = false,
 };
 
+/// Request body. Two modes, picked by which field the client sends:
+///   - LIST mode  — `files` present: diff exactly those paths.
+///   - FOLDER mode — `folder` present (even `""`): the server enumerates
+///     every changed path under that folder itself, so the client does not
+///     have to call `GET /api/git/changes` first. `folder: ""` means the
+///     whole repo.
+/// `files` is optional so folder mode can omit it entirely; both absent is
+/// a 400 rather than a silent "no changes".
 pub const BatchDiffBody = struct {
     path: []const u8,
-    files: []BatchFileItem,
+    files: ?[]BatchFileItem = null,
+    folder: ?[]const u8 = null,
 };
 
 pub const BatchDiffEntry = struct {
@@ -89,6 +98,73 @@ fn extractDiffPath(chunk: []const u8) ?[]const u8 {
         }
     }
     return null;
+}
+
+/// True when `folder` is usable as a `git diff -- <pathspec>` argument.
+///
+/// It is spliced straight into argv, so it must not be absolute and must not
+/// walk out of the repo with `..` — `git diff -- ../../elsewhere` happily
+/// diffs a path the caller never named. Empty is allowed and means "the whole
+/// repo", which is why this returns true for `""` rather than short-circuiting.
+pub fn isSafeRelativeFolder(folder: []const u8) bool {
+    if (std.fs.path.isAbsolute(folder)) return false;
+    // Windows-style absolute ("C:\x", "\\server\share") is not isAbsolute on
+    // every platform this builds for.
+    if (std.mem.indexOf(u8, folder, "\\") != null) return false;
+    var it = std.mem.tokenizeScalar(u8, folder, '/');
+    while (it.next()) |seg| {
+        if (std.mem.eql(u8, seg, "..")) return false;
+    }
+    return true;
+}
+
+/// Turn `git status --porcelain` output into the same (file, staged) target
+/// list a LIST-mode caller would have sent.
+///
+/// A path that is staged AND further modified appears twice — once per side —
+/// exactly as `GET /api/git/changes` reports it, so a folder-mode caller sees
+/// the same shape it saw when it did the enumeration itself.
+/// Returns duped strings; the caller frees them with `freeTargetList`.
+pub fn parseStatusTargets(allocator: std.mem.Allocator, porcelain: []const u8) ![]BatchFileItem {
+    var targets = std.ArrayList(BatchFileItem).empty;
+    errdefer freeTargetList(allocator, targets.items);
+
+    var start: usize = 0;
+    while (start < porcelain.len) {
+        const nl = std.mem.indexOfScalar(u8, porcelain[start..], '\n') orelse (porcelain.len - start);
+        const line = porcelain[start .. start + nl];
+        start += nl + 1;
+        // Porcelain v1 is "XY<space><path>"; short lines are junk.
+        if (line.len < 4) continue;
+        const x = line[0];
+        const y = line[1];
+        var file = std.mem.trim(u8, line[3..], " \t\r");
+        if (file.len == 0) continue;
+        // Rename/copy porcelain prints "old -> new". Diff against the new
+        // side, which is what `+++ b/` carries too.
+        if (std.mem.indexOf(u8, file, " -> ")) |arrow| file = std.mem.trim(u8, file[arrow + 4 ..], " \t\r");
+        if (file.len == 0) continue;
+
+        const untracked = x == '?' and y == '?';
+        if (!untracked and x != ' ') {
+            const dup = try allocator.dupe(u8, file);
+            try targets.append(allocator, .{ .file = dup, .staged = true });
+        }
+        if (y != ' ' and !untracked) {
+            const dup = try allocator.dupe(u8, file);
+            try targets.append(allocator, .{ .file = dup, .staged = false });
+        }
+        if (untracked) {
+            const dup = try allocator.dupe(u8, file);
+            try targets.append(allocator, .{ .file = dup, .staged = false });
+        }
+    }
+    return try targets.toOwnedSlice(allocator);
+}
+
+pub fn freeTargetList(allocator: std.mem.Allocator, targets: []const BatchFileItem) void {
+    for (targets) |t| allocator.free(t.file);
+    allocator.free(targets);
 }
 
 /// Marker appended to a diff that exceeded MAX_PER_FILE_BYTES.
@@ -164,8 +240,14 @@ fn syntheticFallback(allocator: std.mem.Allocator, io: std.Io, repo_path: []cons
     return try buildNewFileDiff(allocator, file, content);
 }
 
-/// POST /api/git/file/diffs — batch diffs for N files in <=2 spawns.
-/// Body: `{ "path": "<repo>", "files": [{ "file": "<rel>", "staged": bool }] }`.
+/// POST /api/git/file/diffs — batch diffs in a fixed number of git spawns.
+///
+/// LIST mode   — `{ "path": "<repo>", "files": [{ "file": "<rel>", "staged": bool }] }`
+/// FOLDER mode — `{ "path": "<repo>", "folder": "src/app" }` (`""` = whole repo).
+///   The server enumerates the changed paths itself, so the caller never has
+///   to fetch `GET /api/git/changes` first and never issues one request per
+///   file. FOLDER mode costs 3 spawns (status + cached diff + worktree diff)
+///   no matter how many files changed.
 pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const io = ctx.io;
@@ -187,34 +269,88 @@ pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     if (!std.fs.path.isAbsolute(parsed.path)) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "path must be an absolute directory") });
     }
-    if (parsed.files.len == 0) {
+    const no_files: []const BatchFileItem = &.{};
+    const list_mode_files: []const BatchFileItem = parsed.files orelse no_files;
+    // Folder mode only when the caller sent `folder` and did NOT send a file
+    // list. A caller that sends both gets list mode — it named the paths.
+    const folder_mode = parsed.folder != null and list_mode_files.len == 0;
+    if (!folder_mode and list_mode_files.len == 0) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "No files") });
     }
-    if (parsed.files.len > MAX_BATCH_FILES) {
+    if (list_mode_files.len > MAX_BATCH_FILES) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "Too many files (max 200)") });
     }
+
+    // FOLDER mode: one `git status` gives the target list. Owned here, freed
+    // on exit — `defer` reads the variable at scope exit, so it sees the
+    // slice the spawn assigned, not the empty one it started as.
+    const folder = parsed.folder orelse "";
+    if (folder_mode and !isSafeRelativeFolder(folder)) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "folder must be a repo-relative path without '..'") });
+    }
+    var owned_targets: []const BatchFileItem = &.{};
+    defer freeTargetList(allocator, owned_targets);
 
     var staged = std.ArrayList([]const u8).empty;
     defer staged.deinit(allocator);
     var unstaged = std.ArrayList([]const u8).empty;
     defer unstaged.deinit(allocator);
-    for (parsed.files) |f| {
-        if (f.file.len == 0) continue;
-        if (f.staged) {
-            staged.append(allocator, f.file) catch continue;
-        } else {
-            unstaged.append(allocator, f.file) catch continue;
+
+    if (folder_mode) {
+        var argv = std.ArrayList([]const u8).empty;
+        defer argv.deinit(allocator);
+        // `-uall` lists untracked FILES, not the untracked directory that
+        // `git status --porcelain` reports by default — otherwise every
+        // untracked folder collapses to one `dir/` entry and gets no diff.
+        argv.appendSlice(allocator, &.{ "git", "-C", parsed.path, "status", "--porcelain", "-uall" }) catch {};
+        if (folder.len > 0) {
+            argv.appendSlice(allocator, &.{ "--", folder }) catch {};
+        }
+        if (std.process.run(allocator, io, .{ .argv = argv.items })) |result| {
+            defer allocator.free(result.stderr);
+            defer allocator.free(result.stdout);
+            if (result.term.exited == 0 or result.term.exited == 1) {
+                owned_targets = parseStatusTargets(allocator, result.stdout) catch &.{};
+            }
+        } else |_| {}
+        for (owned_targets) |t| {
+            if (t.staged) {
+                staged.append(allocator, t.file) catch continue;
+            } else {
+                unstaged.append(allocator, t.file) catch continue;
+            }
+        }
+        // Nothing changed under the folder: that is a real answer, not a
+        // client error — return an empty list rather than a 400.
+        if (owned_targets.len == 0) {
+            const empty = std.json.Stringify.valueAlloc(allocator, BatchDiffResponse{ .diffs = &.{} }, .{}) catch return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeGitStatusErrorResponse(allocator, "serialize failed") });
+            return res.jsonResponse(.{ .status_code = 200, .data = empty });
+        }
+    } else {
+        for (list_mode_files) |f| {
+            if (f.file.len == 0) continue;
+            if (f.staged) {
+                staged.append(allocator, f.file) catch continue;
+            } else {
+                unstaged.append(allocator, f.file) catch continue;
+            }
         }
     }
 
+    // Two git processes, never N. FOLDER mode passes the folder as the
+    // pathspec so argv stays 7 entries however many files changed; LIST mode
+    // passes the paths the caller named.
     var staged_out: []u8 = &.{};
     var unstaged_out: []u8 = &.{};
-    // Run at most 2 git processes instead of N.
     if (staged.items.len > 0) {
         var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(allocator);
         argv.appendSlice(allocator, &.{ "git", "-C", parsed.path, "diff", "--cached", "--" }) catch {};
-        argv.appendSlice(allocator, staged.items) catch {};
+        if (folder_mode) {
+            if (folder.len > 0) argv.append(allocator, folder) catch {};
+        } else {
+            argv.appendSlice(allocator, staged.items) catch {};
+        }
         if (std.process.run(allocator, io, .{ .argv = argv.items })) |result| {
             defer allocator.free(result.stderr);
             if (result.term.exited == 0 or result.term.exited == 1) {
@@ -228,7 +364,11 @@ pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
         var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(allocator);
         argv.appendSlice(allocator, &.{ "git", "-C", parsed.path, "diff", "--" }) catch {};
-        argv.appendSlice(allocator, unstaged.items) catch {};
+        if (folder_mode) {
+            if (folder.len > 0) argv.append(allocator, folder) catch {};
+        } else {
+            argv.appendSlice(allocator, unstaged.items) catch {};
+        }
         if (std.process.run(allocator, io, .{ .argv = argv.items })) |result| {
             defer allocator.free(result.stderr);
             if (result.term.exited == 0 or result.term.exited == 1) {
@@ -248,9 +388,10 @@ pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     var unstaged_map = try splitCombinedDiff(allocator, unstaged_out);
     defer unstaged_map.deinit();
 
+    const targets: []const BatchFileItem = if (folder_mode) owned_targets else list_mode_files;
     var entries = std.ArrayList(BatchDiffEntry).empty;
     defer entries.deinit(allocator);
-    for (parsed.files) |f| {
+    for (targets) |f| {
         if (f.file.len == 0) continue;
         const map = if (f.staged) &staged_map else &unstaged_map;
         var content: []const u8 = map.get(f.file) orelse "";
@@ -302,6 +443,79 @@ test "splitCombinedDiff empty input" {
     var map = try splitCombinedDiff(allocator, "");
     defer map.deinit();
     try std.testing.expectEqual(@as(usize, 0), map.count());
+}
+
+test "isSafeRelativeFolder accepts repo-relative paths and the whole-repo empty string" {
+    try std.testing.expect(isSafeRelativeFolder(""));
+    try std.testing.expect(isSafeRelativeFolder("src"));
+    try std.testing.expect(isSafeRelativeFolder("src/app"));
+    try std.testing.expect(isSafeRelativeFolder("src/agentic_loop/tools"));
+    // A filename that merely CONTAINS dots is not an escape.
+    try std.testing.expect(isSafeRelativeFolder("src/a..b/c"));
+}
+
+test "isSafeRelativeFolder rejects absolute and parent-escaping paths" {
+    // These become `git diff -- <folder>` argv entries, and `..` would walk
+    // the pathspec out of the repo the caller named.
+    try std.testing.expect(!isSafeRelativeFolder("/etc"));
+    try std.testing.expect(!isSafeRelativeFolder(".."));
+    try std.testing.expect(!isSafeRelativeFolder("../sibling"));
+    try std.testing.expect(!isSafeRelativeFolder("src/../../etc"));
+    try std.testing.expect(!isSafeRelativeFolder("src\\windows"));
+}
+
+test "parseStatusTargets routes each porcelain row to the side it belongs to" {
+    const allocator = std.testing.allocator;
+    // M  staged-and-modified → BOTH sides;  M  worktree-only → unstaged;
+    // ?? untracked → unstaged;  A  added → staged.
+    const porcelain =
+        "MM src/both.txt\n" ++
+        " M src/worktree.txt\n" ++
+        "A  src/added.txt\n" ++
+        "?? src/new.txt\n";
+    const targets = try parseStatusTargets(allocator, porcelain);
+    defer freeTargetList(allocator, targets);
+
+    try std.testing.expectEqual(@as(usize, 5), targets.len);
+    try std.testing.expectEqualStrings("src/both.txt", targets[0].file);
+    try std.testing.expect(targets[0].staged);
+    try std.testing.expectEqualStrings("src/both.txt", targets[1].file);
+    try std.testing.expect(!targets[1].staged);
+    try std.testing.expectEqualStrings("src/worktree.txt", targets[2].file);
+    try std.testing.expect(!targets[2].staged);
+    try std.testing.expectEqualStrings("src/added.txt", targets[3].file);
+    try std.testing.expect(targets[3].staged);
+    try std.testing.expectEqualStrings("src/new.txt", targets[4].file);
+    try std.testing.expect(!targets[4].staged);
+}
+
+test "parseStatusTargets never emits an untracked file as staged" {
+    const allocator = std.testing.allocator;
+    const targets = try parseStatusTargets(allocator, "?? new/a.txt\n?? new/b.txt\n");
+    defer freeTargetList(allocator, targets);
+    try std.testing.expectEqual(@as(usize, 2), targets.len);
+    for (targets) |t| try std.testing.expect(!t.staged);
+}
+
+test "parseStatusTargets takes the new side of a rename" {
+    const allocator = std.testing.allocator;
+    // `+++ b/` in the diff carries the destination too, so a rename must be
+    // keyed on the destination or the lookup misses and the file falls back
+    // to a synthetic (wrong) new-file diff.
+    const targets = try parseStatusTargets(allocator, "R  old/name.txt -> new/name.txt\n");
+    defer freeTargetList(allocator, targets);
+    try std.testing.expectEqual(@as(usize, 1), targets.len);
+    try std.testing.expectEqualStrings("new/name.txt", targets[0].file);
+    try std.testing.expect(targets[0].staged);
+}
+
+test "parseStatusTargets skips junk lines and returns nothing for a clean tree" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 0), (try parseStatusTargets(allocator, "")).len);
+    try std.testing.expectEqual(@as(usize, 0), (try parseStatusTargets(allocator, "XY\n")).len);
+    const padded = try parseStatusTargets(allocator, "?? name with spaces.txt\n");
+    defer freeTargetList(allocator, padded);
+    try std.testing.expectEqualStrings("name with spaces.txt", padded[0].file);
 }
 
 test "capDiff passes through content at or below the cap" {
