@@ -6,6 +6,7 @@ pub const process_status = @import("process_status.zig");
 pub const random = @import("random.zig");
 pub const dir = @import("dir.zig");
 pub const sanitize = @import("sanitize.zig");
+pub const ansi = @import("ansi.zig");
 pub const image = @import("image.zig");
 pub const video = @import("video.zig");
 pub const xml_escape = @import("xml_escape.zig").xmlEscape;

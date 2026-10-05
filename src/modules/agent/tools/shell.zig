@@ -866,16 +866,30 @@ fn spawn_background(
 /// Returned to the LLM as the inner `data` of the standard JSON envelope
 /// (`wrapToolOutput` embeds it in `"data"` on the agentic-loop side).
 pub fn result_to_json(allocator: std.mem.Allocator, result: ShellOutput) ![]u8 {
-    // Binary stdout (e.g. `head $(which qs)` dumping the ELF header)
+    // Strip terminal escape sequences FIRST. MSBuild, PowerShell's
+    // Write-Host, cargo, pytest and friends colour their diagnostics even
+    // when stdout is a pipe, so a captured log is laced with `ESC[7m` /
+    // `ESC[0m`. `sanitizeControlChars` maps ESC (0x1B) to U+FFFD, but the
+    // CSI parameters around it are printable ASCII and survive — which is
+    // how `ESC[7mwarning ESC[0m` reaches the UI as the literal text
+    // `�[7mwarning �[0m`. The flattening is one-way, so the escape has to
+    // be recognised and dropped while it is still an escape.
+    //
+    // Then: binary stdout (e.g. `head $(which qs)` dumping the ELF header)
     // embeds NUL + C0 controls that truncate SQLite TEXT at the first NUL
-    // and are illegal in JSON strings. Sanitize everything to U+FFFD first;
+    // and are illegal in JSON strings. Sanitize everything to U+FFFD;
     // `std.json` then handles the remaining `<>&"'` natively (no escaping
     // layer — markup stays raw so the LLM and frontend read it directly).
+    const ansi_stdout = try helpers.ansi.stripAnsi(allocator, result.stdout);
+    defer allocator.free(ansi_stdout);
+    const ansi_stderr = try helpers.ansi.stripAnsi(allocator, result.stderr);
+    defer allocator.free(ansi_stderr);
+
     const clean_command = try sanitizeControlChars(allocator, result.command);
     defer allocator.free(clean_command);
-    const clean_stdout = try sanitizeControlChars(allocator, result.stdout);
+    const clean_stdout = try sanitizeControlChars(allocator, ansi_stdout);
     defer allocator.free(clean_stdout);
-    const clean_stderr = try sanitizeControlChars(allocator, result.stderr);
+    const clean_stderr = try sanitizeControlChars(allocator, ansi_stderr);
     defer allocator.free(clean_stderr);
     return try std.json.Stringify.valueAlloc(allocator, ShellOutput{
         .command = clean_command,
@@ -1125,6 +1139,76 @@ test "result_to_json sanitizes binary ELF stdout into valid JSON" {
     try testing.expect(std.mem.indexOfScalar(u8, payload, 0x7F) == null);
     // Replacement char present proves sanitization ran.
     try testing.expect(std.mem.indexOf(u8, payload, "�") != null);
+}
+
+test "result_to_json: MSBuild colour codes become plain text, not ?[7m" {
+    // User report: a `dotnet build … | Select-String …` on Windows came
+    // back as a wall of `?[7mwarning ?[0m`. MSBuild colours its
+    // diagnostics; ESC is a C0 control, so sanitizeControlChars turned it
+    // into U+FFFD and left the printable CSI parameters (`[7m`) behind as
+    // literal text. The words were all there — wrapped in escape soup.
+    //
+    // This drives the real serialiser end to end and asserts what the UI
+    // reads out of the JSON envelope.
+    const msbuild_stdout =
+        "C:\\src\\Microsoft.Common.CurrentVersion.targets(4919,5): " ++
+        "\x1b[7mwarning \x1b[0m\x1b[1mMSB\x1b[0m3026: " ++
+        "\x1b[0m\x1b[7m\x1b[0mCould not copy the file";
+    const out = shell.ShellOutput{
+        .command = "dotnet build PriceCatalog.csproj",
+        .stdout = msbuild_stdout,
+        .stderr = "No errors.",
+        .exit_code = 1,
+        .truncated = false,
+        .timeout = false,
+        .stdout_lines = 1,
+        .stderr_lines = 0,
+    };
+    const payload = try shell.result_to_json(testing.allocator, out);
+    defer testing.allocator.free(payload);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const stdout = parsed.value.object.get("stdout").?.string;
+
+    // The diagnostic reads as prose again.
+    try testing.expectEqualStrings(
+        "C:\\src\\Microsoft.Common.CurrentVersion.targets(4919,5): " ++
+            "warning MSB3026: Could not copy the file",
+        stdout,
+    );
+    // No escape residue of any kind.
+    try testing.expect(std.mem.indexOfScalar(u8, stdout, 0x1B) == null);
+    try testing.expect(std.mem.indexOf(u8, stdout, "[7m") == null);
+    try testing.expect(std.mem.indexOf(u8, stdout, "[0m") == null);
+    // And no U+FFFD run — the visual signature of the bug report.
+    try testing.expect(std.mem.indexOf(u8, stdout, "�") == null);
+}
+
+test "result_to_json: stderr escapes are stripped too, binary controls still scrubbed" {
+    // The two sanitising passes must not undo each other: an ESC-laden
+    // stderr loses its colour codes, while a genuine NUL (binary stdout)
+    // still becomes U+FFFD rather than silently vanishing.
+    const out = shell.ShellOutput{
+        .command = "build.ps1",
+        .stdout = "\x1b[31merror CS1002\x1b[0m;",
+        .stderr = "\x1b[1mFAILED\x1b[0m \x00 tail",
+        .exit_code = 1,
+        .truncated = false,
+        .timeout = false,
+        .stdout_lines = 1,
+        .stderr_lines = 1,
+    };
+    const payload = try shell.result_to_json(testing.allocator, out);
+    defer testing.allocator.free(payload);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+
+    try testing.expectEqualStrings("error CS1002;", obj.get("stdout").?.string);
+    try testing.expectEqualStrings("FAILED � tail", obj.get("stderr").?.string);
+    try testing.expect(std.mem.indexOfScalar(u8, payload, 0x1B) == null);
 }
 
 test "xmlEscape replaces NUL and C0 controls with U+FFFD" {

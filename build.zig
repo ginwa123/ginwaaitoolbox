@@ -3593,6 +3593,30 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     b.step("test:helpers:test_path", "Run test_path helper tests")
         .dependOn(&run_test_path_tests.step);
 
+    // Same story for `ansi.zig`: the `helpers` PACKAGE is a separate
+    // module, so its inline tests are not reachable from `src/root.zig`
+    // and the `mod_tests` binary never compiles them. Without this step
+    // `zig build test` is silently green even if every `stripAnsi`
+    // assertion is wrong — the shard SCANNER still finds their names
+    // (it walks `src/` textually) and assigns them to a shard whose
+    // `--test-filter` matches nothing. Verified: breaking an assertion
+    // here left `zig build test` at exit 0 until this step existed.
+    //
+    // These are load-bearing: `stripAnsi` is what keeps `ESC[7m` from
+    // being flattened to U+FFFD in every command result this app ever
+    // shows. The file imports only `std`, so it builds standalone.
+    const ansi_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/helpers/ansi.zig"),
+            .target = test_target,
+            .optimize = optimize,
+        }),
+    });
+    const run_ansi_tests = b.addRunArtifact(ansi_tests);
+    test_step.dependOn(&run_ansi_tests.step);
+    b.step("test:helpers:ansi", "Run ansi (ANSI escape stripper) helper tests")
+        .dependOn(&run_ansi_tests.step);
+
     // kabelweb's own suites (server + client) run in the kabelweb
     // repo's CI (github.com/ginwa123/kabelweb), not here — it's an
     // external URL dependency, and a consumer build never runs a
