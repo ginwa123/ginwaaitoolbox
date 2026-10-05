@@ -10,17 +10,25 @@ database on your own machine.
 One Zig backend, five ways to use it: a web app, a desktop app, two terminal
 clients, and an Android phone.
 
+## Status
+
+Chat, kanban, memory and the web app are the settled parts. These still work,
+but expect them to break and change:
+
+> **Preview (alpha)** — the desktop app, the terminal UI (`pabrik-tui`), the
+> Android app, and Design mode (the Figma-like canvas).
+
 ## What you get
 
 - 💬 **Chat** — a tool-calling agent loop, conversation compaction, and
   full-text search over your history
 - 📋 **Kanban** — columns, tasks, drag-to-reorder, pins, and routines
-- 🎨 **Design canvas** — pages of elements that the agent can read and edit
+- 🎨 **Design canvas** _(preview)_ — pages of elements that the agent can read and edit
 - 🧠 **Memory** — append-only agent memories, skills, and sub-agents
 - 🔌 **Integrations** — MCP servers over stdio or HTTP, plus any
   Anthropic- or OpenAI-compatible model
-- 🖥️ **Clients** — web app, native desktop app, `pabrikcli`, `pabrik-tui`,
-  and a native Kotlin app for Android
+- 🖥️ **Clients** — web app and `pabrikcli` are stable; the desktop app,
+  `pabrik-tui` and the native Kotlin app for Android are still preview
 
 ## Installation
 
@@ -43,8 +51,8 @@ Node + pnpm are only needed if you want to work on the web app itself.
 
 ## Usage
 
-**Desktop app** — opens a window, and starts the server for you if it is not
-already running:
+**Desktop app** _(preview)_ — opens a window, and starts the server for you if
+it is not already running:
 
 ```bash
 ./zig-out/bin/pabrik-desktop

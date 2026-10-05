@@ -3,6 +3,9 @@
 The long version of the [README](../README.md). Every build step, flag, test
 command and architectural detail lives here, so the README can stay short.
 
+**Status:** items marked _preview (alpha)_ below are not stable yet — the
+[README](../README.md#status) has the short list.
+
 **Pabrik** is an AI agent workspace. Chat with LLMs that can actually *do things*
 (read/write files, search code, run shell commands, manage kanban boards, draw on
 a design canvas), all persisted in a local SQLite database and presented through
@@ -31,19 +34,19 @@ One backend, five clients, one repo:
    - Built with Vite + pnpm, tested with Vitest. `src/apps/desktop/src/sync/`
      is the Effect-TS offline-sync slice (see
      [effect-migration.md](effect-migration.md)).
-3. **Desktop shell — `pabrik-desktop`** (`src/apps/desktop_app/`)
+3. **Desktop shell — `pabrik-desktop`** — _preview (alpha)_ (`src/apps/desktop_app/`)
    - Native webview wrapper (WebKitGTK 4.1 on Linux, WKWebView on macOS,
      WebView2 on Windows) that embeds the built web app. Pure GUI shell —
      it connects to a running `pabrik` service, it doesn't own it.
 4. **Terminal clients** (`src/apps/cli/`)
    - **`pabrikcli`** — terminal wrapper around the REST API
      (`send` / `sessions` / `messages` / `events` SSE tail / `pr-status`).
-   - **`pabrik-tui`** — a full-screen, Claude-Code-style streaming chat client
+   - **`pabrik-tui`** — _preview (alpha)_ — a full-screen, Claude-Code-style streaming chat client
      over the same endpoints, built on a from-scratch Bubble-Tea-style
      `tui` module at `src/apps/cli/src/tui/`. No extra dependencies.
-5. **Android client — native Jetpack Compose** (`src/apps/android_mobile/`)
-   - A standalone Kotlin client (`com.pabrik.mobile`, minSdk 26). It is a real
-     client, not a stub: HTTPS sign-in, Keystore-encrypted session restore,
+5. **Android client — native Jetpack Compose** — _preview (alpha)_ (`src/apps/android_mobile/`)
+   - A standalone Kotlin client (`com.pabrik.mobile`, minSdk 26). It is a working
+     client, not a placeholder: HTTPS sign-in, Keystore-encrypted session restore,
      SSE chat with markdown/reasoning/tool cards, projects + task creation,
      a recents drawer, three Room offline caches, an in-app network inspector
      with request replay, `pabrik://chat/…` deep links, and session resume.
@@ -65,7 +68,7 @@ Key features at a glance:
 
 - 💬 Chat sessions with tool-calling agent loop, compaction, FTS5 history search
 - 📋 Kanban (columns, tasks, reorder, pins, routines per workspace item)
-- 🎨 Design canvas (pages, elements, agent-visible via `get_design_context`)
+- 🎨 Design canvas — _preview (alpha)_ (pages, elements, agent-visible via `get_design_context`)
 - ⏰ Workspace routines + in-process scheduler
 - 🧠 Agent memories (append-only, FTS5), skills, sub-agents, git worktrees
 - 🔌 MCP servers (stdio + HTTP), LLM profiles, web-launch mode, TLS / HTTP/2 (h2c)
