@@ -930,11 +930,9 @@ pub fn resolveRepoRoot(
     session_cwd: []const u8,
 ) !?[]u8 {
     if (session_cwd.len == 0) {
-        std.debug.print("set_git_worktree: session has no cwd, using the process cwd\n", .{});
         return null;
     }
     if (!std.fs.path.isAbsolute(session_cwd)) {
-        std.debug.print("set_git_worktree: ignoring relative session cwd '{s}'\n", .{session_cwd});
         return null;
     }
     return try allocator.dupe(u8, session_cwd);

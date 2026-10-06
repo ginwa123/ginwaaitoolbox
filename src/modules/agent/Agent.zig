@@ -2890,10 +2890,6 @@ pub const Agent = struct {
         ctx: ?*anyopaque,
         callback: StreamCallback,
     ) CallError!CallResponse {
-        self.log_fmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{
-            self.model, params.messages.len, params.tools.len,
-        });
-
         // Reset per-call Anthropic parser scratch state. The Agent is reused
         // across many calls; without this reset, the second call would see
         // stale input_tokens + a stuck `_usage_emitted` flag.
@@ -2927,13 +2923,6 @@ pub const Agent = struct {
         }
 
         defer self.allocator.free(json_body);
-
-        const estimated_tokens = @divFloor(json_body.len + 3, 4);
-        self.log_fmt(.info, "[TOKEN ESTIMATE] sending ~{} tokens ({} bytes)", .{ estimated_tokens, json_body.len });
-
-        const json_preview_len = if (json_body.len > 500) 500 else json_body.len;
-        const json_ellipsis = if (json_body.len > 500) "..." else "";
-        self.log_fmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
         // 2. Compose URL: baseUrl + endpoint.
         // Anthropic's correct API path is /v1/messages.
@@ -3036,8 +3025,6 @@ pub const Agent = struct {
         defer stream.deinit();
 
         const status = stream.statusCode();
-        self.log_fmt(.info, "[STREAM] Connected with HTTP {d}", .{status});
-
         if (status >= 400) {
             self.log_fmt(.err, "[STREAM] HTTP error status: {d}", .{status});
             // Drain the error body so the workflow catch block can log the
@@ -3137,7 +3124,6 @@ pub const Agent = struct {
             if (params.cancel_fn) |should_cancel| {
                 if (should_cancel()) {
                     stream.cancel();
-                    self.log_fmt(.info, "[STREAM] cancelled by caller after {} chunk(s)", .{chunk_count});
                     return error.Cancelled;
                 }
             }
