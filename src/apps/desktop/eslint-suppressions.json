@@ -1,16 +1,6 @@
 {
-  "src/App.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/__tests__/KanbanRowView.preview.spec.ts": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    }
-  },
-  "src/__tests__/sseBus.spec.ts": {
-    "local/no-watch": {
       "count": 1
     }
   },
@@ -21,10 +11,7 @@
   },
   "src/components/AppLayout.vue": {
     "local/no-silent-fallback-catch": {
-      "count": 2
-    },
-    "local/no-watch": {
-      "count": 11
+      "count": 1
     }
   },
   "src/components/FilePickerDialog.vue": {
@@ -146,10 +133,7 @@
   },
   "src/components/kanban/KanbanView.vue": {
     "local/no-silent-fallback-catch": {
-      "count": 9
-    },
-    "local/no-watch": {
-      "count": 6
+      "count": 7
     }
   },
   "src/components/kanban/MarkdownDescription.vue": {
@@ -308,9 +292,6 @@
   "src/components/views/ChatView.vue": {
     "local/no-silent-fallback-catch": {
       "count": 2
-    },
-    "local/no-watch": {
-      "count": 6
     }
   },
   "src/components/views/ChatsList.vue": {
@@ -448,11 +429,6 @@
       "count": 1
     }
   },
-  "src/composables/useDocumentTitle.ts": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/composables/useKanbanColumnScrollRestore.ts": {
     "local/no-silent-fallback-catch": {
       "count": 1
@@ -541,16 +517,6 @@
   },
   "src/stores/designHistory.ts": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    }
-  },
-  "src/stores/designSse.ts": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/stores/kanbanSse.ts": {
-    "local/no-watch": {
       "count": 1
     }
   },

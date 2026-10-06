@@ -18,10 +18,9 @@
  * reconnect-on-drop.
  *
  * The async `initKanbanSse` signature is preserved (callers in
- * AppLayout.vue's `watch(activeWorkspaceId, ...)` `await` it) even
- * though the body is synchronous, because the cooperative-init
- * semantic contract with the AppLayout watcher is part of the
- * public API.
+ * AppLayout's `initSseStores` `await` it) even though the body is
+ * synchronous, because the cooperative-init semantic contract with
+ * the AppLayout caller is part of the public API.
  *
  * The backend's kanban SSE routing keys (`kanban_column`,
  * `kanban_task`) are GLOBAL — every connected client receives every
@@ -34,8 +33,8 @@
  *   Chunk 10.
  */
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
-import { useSseBus } from '../helpers/sseBus'
+import { ref } from 'vue'
+import { useSseBus, __getSseBusGlobalClient } from '../helpers/sseBus'
 import type { KanbanColumnEvent, KanbanTaskEvent } from '../api'
 import { useWorkspacesStore } from './workspaces'
 
@@ -53,16 +52,16 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
   let offKanban: (() => void) | null = null
 
   // Unsubscribe for the bus's "you may have missed events" signal (see
-  // `helpers/sseTabChannel.ts`). The `bus.state` watcher below covers
+  // `helpers/sseTabChannel.ts`). The `bus.state` subscription below covers
   // transitions the SseClient itself emits; this covers the two cases where the
   // state never changes but deliveries were still lost: taking over the shared
   // connection from another tab, and returning from a long hidden period.
   let offResync: (() => void) | null = null
 
-  // Disposer for the `bus.state → fetchInitialKanban` watcher.
+  // Disposer for the `bus.state → fetchInitialKanban` subscription.
   // See `initKanbanSse` below for why this is needed even though
   // we're no longer owning the EventSource.
-  let stopStateWatch: (() => void) | null = null
+  let stopOpenSub: (() => void) | null = null
 
   // Throttle for open-triggered refetches (see fetchInitialKanban).
   let lastKanbanFetchAt = 0
@@ -70,8 +69,8 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
   /**
    * Subscribe the kanban store to the bus's `kanban` channel. The
    * function signature stays `async` + `Promise<void>` to preserve
-   * the cooperative-init semantic contract with AppLayout.vue's
-   * `watch(activeWorkspaceId, async (newId) => { await
+   * the cooperative-init semantic contract with AppLayout's
+   * `initSseStores(activeWorkspaceId)` awaiting
    * kanbanSseStore.initKanbanSse(newId) })`. The body is synchronous
    * (bus subscription is in-memory), but callers still `await` us
    * and that's part of the public API.
@@ -85,10 +84,10 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
    * Throws if the bus is not yet installed — call this AFTER App.vue's
    * `onMounted` has run. The bus is installed by App.vue's
    * `onMounted`, which runs after AppLayout.vue's mount in practice
-   * (the AppLayout's `watch(activeWorkspaceId, async ...)` fires only
+   * (the AppLayout's `initSseStores` on workspace switch fires only
    * after both components have mounted, by which point the bus is
    * ready). The async signature preserves the cooperative-init
-   * contract with that watcher — even though the body is now
+   * contract with that caller — even though the body is now
    * synchronous, callers still `await` us.
    */
   async function initKanbanSse(workspaceId: string): Promise<void> {
@@ -231,15 +230,15 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
     // its first `start()` via `setTimeout(0)`, so App.vue's
     // `installSseBus` may have already opened the stream before
     // AppLayout.vue mounted).
-    stopStateWatch = watch(
-      () => bus.state.value,
-      (s) => {
-        if (s === 'open') void fetchInitialKanban(activeWorkspaceId.value)
-      },
-      { immediate: true },
-    )
+    // Explicit `onStateChange` subscription on the underlying SseClient
+    // (not a reactive watcher). The immediate check covers the fast
+    // path where the bus is already open when init runs.
+    if (bus.state.value === 'open') void fetchInitialKanban(activeWorkspaceId.value)
+    stopOpenSub = __getSseBusGlobalClient()?.onStateChange((s) => {
+      if (s === 'open') void fetchInitialKanban(activeWorkspaceId.value)
+    }) ?? null
 
-    // Stale-on-wake (cross-tab sharing): the watcher above only fires on state
+    // Stale-on-wake (cross-tab sharing): the subscription above only fires on state
     // transitions the SseClient itself emits. A window that TOOK OVER the shared
     // connection, or that returns from a long hidden period (browsers freeze and
     // throttle hidden tabs, so deliveries and rendering were skipped), may have
@@ -265,16 +264,16 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
       offResync()
       offResync = null
     }
-    if (stopStateWatch) {
-      stopStateWatch()
-      stopStateWatch = null
+    if (stopOpenSub) {
+      stopOpenSub()
+      stopOpenSub = null
     }
     activeWorkspaceId.value = ''
   }
 
   /**
    * Update the workspace filter without re-subscribing the bus
-   * listener. Called by AppLayout's `watch(activeWorkspaceId, ...)`
+   * listener. Called by AppLayout's `initSseStores` on workspace switch
    * when the user switches workspaces after the initial setup. A
    * workspace switch is just a filter change because the backend's
    * kanban routing keys are global (every connected client sees every

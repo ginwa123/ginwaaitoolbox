@@ -35,8 +35,8 @@
  *   Chunk 6.
  */
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
-import { useSseBus } from '../helpers/sseBus'
+import { ref } from 'vue'
+import { useSseBus, __getSseBusGlobalClient } from '../helpers/sseBus'
 import type { DesignElementEvent } from '../api'
 import { useWorkspacesStore, isRecentLocalMutation } from './workspaces'
 import { designLogger } from '../helpers/designLogger'
@@ -58,16 +58,16 @@ export const useDesignSseStore = defineStore('designSse', () => {
   // `kanbanSse.ts` / `helpers/sseTabChannel.ts`.
   let offResync: (() => void) | null = null
 
-  // Disposer for the `bus.state → fetchInitialDesign` watcher.
+  // Disposer for the `bus.state → fetchInitialDesign` subscription.
   // See `initDesignSse` below for why this is needed even though
   // we're no longer owning the EventSource.
-  let stopStateWatch: (() => void) | null = null
+  let stopOpenSub: (() => void) | null = null
 
   /**
    * Subscribe the design store to the bus's `design` channel. The
    * function signature stays `async` + `Promise<void>` to preserve
-   * the cooperative-init semantic contract with AppLayout.vue's
-   * `watch(activeWorkspaceId, async (newId) => { await
+   * the cooperative-init semantic contract with AppLayout's
+   * `initSseStores(activeWorkspaceId)` awaiting
    * designSseStore.initDesignSse(newId) })` (Chunk 8). The body
    * is synchronous (bus subscription is in-memory), but callers
    * still `await` us and that's part of the public API.
@@ -81,8 +81,8 @@ export const useDesignSseStore = defineStore('designSse', () => {
    * Throws if the bus is not yet installed — call this AFTER
    * App.vue's `onMounted` has run. The bus is installed by
    * App.vue's `onMounted`, which runs after AppLayout.vue's mount
-   * in practice (the AppLayout's `watch(activeWorkspaceId, async
-   * ...)` fires only after both components have mounted, by which
+   * in practice (AppLayout's `initSseStores` on workspace switch
+   * fires only after both components have mounted, by which
    * point the bus is ready).
    */
   async function initDesignSse(workspaceId: string): Promise<void> {
@@ -200,17 +200,17 @@ export const useDesignSseStore = defineStore('designSse', () => {
     //
     // Chunk 7 will wire `fetchDesignElements` to the active page
     // id; until then `fetchInitialDesign` is a no-op (the user
-    // doesn't have a design view open in Chunk 6). The watcher is
-    // still installed so the chunk-7 wiring happens automatically
-    // — just modify `fetchInitialDesign` and the watcher's body
+    // doesn't have a design view open in Chunk 6). The subscription
+    // is still installed so the chunk-7 wiring happens automatically
+    // — just modify `fetchInitialDesign` and the callback body
     // doesn't change.
-    stopStateWatch = watch(
-      () => bus.state.value,
-      (s) => {
-        if (s === 'open') void fetchInitialDesign(activeWorkspaceId.value)
-      },
-      { immediate: true },
-    )
+    // Explicit `onStateChange` subscription on the underlying SseClient
+    // (not a reactive watcher). The immediate check covers the fast
+    // path where the bus is already open when init runs.
+    if (bus.state.value === 'open') void fetchInitialDesign(activeWorkspaceId.value)
+    stopOpenSub = __getSseBusGlobalClient()?.onStateChange((s) => {
+      if (s === 'open') void fetchInitialDesign(activeWorkspaceId.value)
+    }) ?? null
 
     // Stale-on-wake (cross-tab sharing) — same reasoning as `kanbanSse.ts`: a
     // takeover or a return from a long hidden period can miss events without any
@@ -235,16 +235,16 @@ export const useDesignSseStore = defineStore('designSse', () => {
       offResync()
       offResync = null
     }
-    if (stopStateWatch) {
-      stopStateWatch()
-      stopStateWatch = null
+    if (stopOpenSub) {
+      stopOpenSub()
+      stopOpenSub = null
     }
     activeWorkspaceId.value = ''
   }
 
   /**
    * Update the workspace filter without re-subscribing the bus
-   * listener. Called by AppLayout's `watch(activeWorkspaceId, ...)`
+   * listener. Called by AppLayout's `initSseStores` on workspace switch
    * when the user switches workspaces after the initial setup. A
    * workspace switch is just a filter change because the backend's
    * design routing keys are global (every connected client sees
@@ -295,8 +295,8 @@ export const useDesignSseStore = defineStore('designSse', () => {
 
   return {
     // Expose the active workspace id so tests + Chunk-7 diagnostics
-    // can read it. The watcher in AppLayout.vue's
-    // `watch(activeWorkspaceId, ...)` will also benefit — for now
+    // can read it. The filter update in AppLayout's `initSseStores`
+    // will also benefit — for now
     // it's only read by the SSE handler closure.
     activeWorkspaceId,
     initDesignSse,
