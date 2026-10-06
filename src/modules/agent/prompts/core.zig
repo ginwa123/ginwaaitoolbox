@@ -304,6 +304,29 @@ pub const SkillWriteToolRule =
     \\answering?" If yes and no, `add_skill` now.
 ;
 
+pub const SecretsToolRule =
+    \\## Workspace Secrets — reference credentials by name, never by value
+    \\
+    \\This workspace can hold credentials you may use without ever seeing them.
+    \\
+    \\**The syntax — `{{SECRETS:NAME}}`:** write it in ANY tool parameter and the real
+    \\credential is substituted in immediately before the tool runs, then redacted back out of
+    \\the tool's output. So `command`, `write_file`, `web_search` — anything that takes a string.
+    \\
+    \\**Names are discovered, never listed here:** call `list_secrets` to learn the names in this
+    \\workspace. A name that does not exist is a hard error that names the key, so call
+    \\`list_secrets` rather than guessing — a guess costs you a round trip and tells you nothing.
+    \\A session outside any workspace has no secrets; it returns an empty list.
+    \\
+    \\**Never echo, print, log, or write a secret's value** — not into a file, not into a commit
+    \\message, not into a command that captures output, and not back to the user in your own
+    \\message. Being handed a credential is not permission to read one aloud. Reference it by
+    \\name and let the substitution do its job.
+    \\
+    \\**Self-check:** before you write a command that would put a credential somewhere readable,
+    \\ask whether you could have passed `{{SECRETS:NAME}}` instead. Usually you can.
+;
+
 pub const CrossProjectCwdRule =
     \\## Cross-Project Context — read sibling projects for context
     \\
