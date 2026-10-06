@@ -90,6 +90,15 @@ const DEFAULT_NEW_CHAT_NAME = 'New Chat'
 // binding reads it.
 const isCreatingChat = ref(false)
 
+// Resolved workspace for the New Chat action. Uses the store's
+// `activeWorkspace` computed (explicit → persisted → item-owning →
+// first workspace), NOT the raw `activeWorkspaceId` ref — the ref is
+// only set by the header dropdown or a `?workspaceId=` URL restore,
+// so a fresh boot with workspaces but no explicit selection left the
+// button permanently disabled while the header already showed a
+// workspace. Same precedence fix as DocumentsList below.
+const newChatWorkspaceId = computed(() => workspacesStore.activeWorkspace?.id ?? null)
+
 // Chat-id updates forward to ChatsList, which owns the live navItems
 // mirror (plan: 2026-09-22-revamp-ui-chats). Sidebar kept no list of
 // its own — the pre-refactor navItems/chatsLoading mirror below was
@@ -898,7 +907,7 @@ const createAndOpenStandardChat = async (workspaceId: string, itemId: string) =>
 // Back/Forward-correct. Reimplementing any of that here is how two
 // subtly-different "new chat" paths get born.
 const handleNewChat = async () => {
-  const workspaceId = workspacesStore.activeWorkspaceId
+  const workspaceId = newChatWorkspaceId.value
   // No active workspace means no chat is possible. The button is disabled
   // in this state, but guard anyway — a programmatic call must not
   // quietly create a workspace as a side effect of a sidebar click.
@@ -1500,9 +1509,9 @@ defineExpose({
       class="h-10 flex items-center gap-2 shrink-0 px-[var(--sb-gutter)] border-b transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40"
       :class="isCollapsed ? 'justify-center px-0' : 'hover:bg-[var(--semantic-card-bg)]'"
       style="border-color: var(--color-border)"
-      :disabled="!workspacesStore.activeWorkspaceId || isCreatingChat"
+      :disabled="!newChatWorkspaceId || isCreatingChat"
       :title="
-        !workspacesStore.activeWorkspaceId
+        !newChatWorkspaceId
           ? 'Select a workspace first'
           : isCollapsed
             ? 'New Chat'
