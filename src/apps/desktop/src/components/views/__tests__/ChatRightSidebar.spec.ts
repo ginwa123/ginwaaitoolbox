@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import ChatRightSidebar from '../chat_right_sidebar/ChatRightSidebar.vue'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
 const { getGitChangesMock } = vi.hoisted(() => ({ getGitChangesMock: vi.fn() }))
 
@@ -26,7 +27,7 @@ vi.mock('../../../api', async () => {
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: vi.fn().mockResolvedValue({ path: '', diff_content: '', staged: false }),
+    getGitFolderDiffs: vi.fn(async () => ({ diffs: [] })),
     listFolder: vi.fn().mockResolvedValue({ entries: [] }),
     stageGitFiles: vi.fn(),
     unstageGitFiles: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock('../../../api', async () => {
 
 describe('ChatRightSidebar', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue({
       is_git_repo: true,

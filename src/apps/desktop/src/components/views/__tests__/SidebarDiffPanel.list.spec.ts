@@ -6,16 +6,17 @@
  *
  * - PR mode: after splitDiffByFile, every chunk is parsed synchronously
  *   (map parseUnifiedDiff) — one getPrDiff call, no per-file fetch.
- * - Worktree mode: after getGitChanges, all staged+modified+untracked
- *   files are fetched in parallel (Promise.allSettled over
- *   getGitFileDiff); per-file failures become error entries and never
- *   reject the batch.
+ * - Worktree mode: after getGitChanges, ONE folder-mode POST
+ *   (getGitFolderDiffs) covers all staged+modified+untracked files. A
+ *   failed fetch becomes error entries — one visible row per file, and no
+ *   second wave of per-file requests.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 import { createRouter, createMemoryHistory } from 'vue-router'
 
 const testRouter = createRouter({
@@ -23,10 +24,11 @@ const testRouter = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
+const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
   () => ({
     getGitChangesMock: vi.fn(),
     getGitFileDiffMock: vi.fn(),
+    getGitFolderDiffsMock: vi.fn(),
     getPrDiffMock: vi.fn(),
     getPrStatusMock: vi.fn(),
   }),
@@ -38,6 +40,7 @@ vi.mock('../../../api', async () => {
     ...actual,
     getGitChanges: getGitChangesMock,
     getGitFileDiff: getGitFileDiffMock,
+    getGitFolderDiffs: getGitFolderDiffsMock,
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,
     stageGitFiles: vi.fn(),
@@ -75,10 +78,17 @@ const diffFor = (path: string) =>
 describe('SidebarDiffPanel show-diff-list (3.1)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // The snapshot is module-level (that is what makes a click free), so it
+    // has to be dropped between tests or one repo leaks into the next.
+    clearFolderDiffCache()
     getGitChangesMock.mockResolvedValue(CHANGES)
-    getGitFileDiffMock.mockImplementation((cwd: string, path: string, staged: boolean) =>
-      Promise.resolve({ path, diff_content: diffFor(path), staged }),
-    )
+    getGitFolderDiffsMock.mockImplementation(async (_cwd: string) => ({
+      diffs: [
+        { path: 'staged.txt', diff_content: diffFor('staged.txt'), staged: true },
+        { path: 'dirty.txt', diff_content: diffFor('dirty.txt'), staged: false },
+        { path: 'new.txt', diff_content: diffFor('new.txt'), staged: false },
+      ],
+    }))
     getPrDiffMock.mockResolvedValue({
       pr_url: 'https://github.com/acme/app/pull/42',
       base: 'main',
@@ -136,17 +146,18 @@ describe('SidebarDiffPanel show-diff-list (3.1)', () => {
     expect(wrapper.emitted('show-diff')).toBeUndefined()
   })
 
-  it('worktree mode fetches every file in parallel and emits the ordered list', async () => {
+  it('worktree mode fetches the whole repo in ONE folder call and emits the ordered list', async () => {
     const wrapper = mount(SidebarDiffPanel, {
       global: { plugins: [testRouter] },
       props: { cwd: '/repo' },
     })
     await flushPromises()
     expect(getGitChangesMock).toHaveBeenCalledWith('/repo')
-    expect(getGitFileDiffMock).toHaveBeenCalledTimes(3)
-    expect(getGitFileDiffMock).toHaveBeenCalledWith('/repo', 'staged.txt', true)
-    expect(getGitFileDiffMock).toHaveBeenCalledWith('/repo', 'dirty.txt', false)
-    expect(getGitFileDiffMock).toHaveBeenCalledWith('/repo', 'new.txt', false)
+    // One request for every changed file — the per-file endpoint is gone from
+    // this path entirely.
+    expect(getGitFolderDiffsMock).toHaveBeenCalledTimes(1)
+    expect(getGitFolderDiffsMock).toHaveBeenCalledWith('/repo')
+    expect(getGitFileDiffMock).not.toHaveBeenCalled()
     const listed = wrapper.emitted('show-diff-list')
     expect(listed).toHaveLength(1)
     const files = listed![0]![0] as Array<{ path: string; staged: boolean; lines: unknown[] }>
@@ -157,11 +168,9 @@ describe('SidebarDiffPanel show-diff-list (3.1)', () => {
     expect(wrapper.emitted('show-diff')).toBeUndefined()
   })
 
-  it('worktree per-file failure becomes an error entry without rejecting the batch', async () => {
-    getGitFileDiffMock.mockImplementation((cwd: string, path: string) => {
-      if (path === 'dirty.txt') return Promise.reject(new Error('nope'))
-      return Promise.resolve({ path, diff_content: diffFor(path), staged: false })
-    })
+  it('a failed folder fetch marks every row, without a per-file retry wave', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+    getGitFolderDiffsMock.mockRejectedValue(new Error('nope'))
     const wrapper = mount(SidebarDiffPanel, {
       global: { plugins: [testRouter] },
       props: { cwd: '/repo' },
@@ -177,11 +186,15 @@ describe('SidebarDiffPanel show-diff-list (3.1)', () => {
       error?: string | null
     }>
     expect(files).toHaveLength(3)
-    const failed = files.find((f) => f.path === 'dirty.txt')!
-    expect(failed).toMatchObject({ lines: [], added: 0, removed: 0 })
-    expect(typeof failed.error).toBe('string')
-    // Siblings still parsed fine.
-    expect(files.find((f) => f.path === 'staged.txt')!.lines.length).toBeGreaterThan(0)
+    // Every row is reported and marked failed — nothing silently vanishes.
+    expect(files.every((f) => f.lines.length === 0)).toBe(true)
+    expect(files.every((f) => typeof f.error === 'string')).toBe(true)
+    // The failure is visible, and the panel does NOT retry per file: that
+    // retry path is what turned one error into a session of requests.
+    expect(errorLog).toHaveBeenCalled()
+    expect(getGitFolderDiffsMock).toHaveBeenCalledTimes(1)
+    expect(getGitFileDiffMock).not.toHaveBeenCalled()
+    errorLog.mockRestore()
   })
 
   it('shell re-emits both show-diff and show-diff-list', () => {

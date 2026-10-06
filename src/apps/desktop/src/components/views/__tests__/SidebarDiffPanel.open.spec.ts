@@ -2,16 +2,18 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
 const testRouter = createRouter({
   history: createMemoryHistory(),
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
+const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
   () => ({
     getGitChangesMock: vi.fn(),
     getGitFileDiffMock: vi.fn(),
+    getGitFolderDiffsMock: vi.fn(),
     getPrDiffMock: vi.fn(),
     getPrStatusMock: vi.fn(),
   }),
@@ -23,6 +25,7 @@ vi.mock('../../../api', async () => {
     ...actual,
     getGitChanges: getGitChangesMock,
     getGitFileDiff: getGitFileDiffMock,
+    getGitFolderDiffs: getGitFolderDiffsMock,
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,
     stageGitFiles: vi.fn(),
@@ -49,9 +52,12 @@ const DIFF = `diff --git a/dirty.txt b/dirty.txt
 
 describe('SidebarDiffPanel show-diff', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
-    getGitFileDiffMock.mockResolvedValue({ path: 'dirty.txt', diff_content: DIFF, staged: false })
+    getGitFolderDiffsMock.mockResolvedValue({
+      diffs: [{ path: 'dirty.txt', diff_content: DIFF, staged: false }],
+    })
     getPrDiffMock.mockResolvedValue({
       pr_url: 'https://github.com/acme/app/pull/1',
       base: 'main',
@@ -114,9 +120,12 @@ describe('SidebarDiffPanel show-diff', () => {
 
 describe('SidebarDiffPanel file context menu', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
-    getGitFileDiffMock.mockResolvedValue({ path: 'dirty.txt', diff_content: DIFF, staged: false })
+    getGitFolderDiffsMock.mockResolvedValue({
+      diffs: [{ path: 'dirty.txt', diff_content: DIFF, staged: false }],
+    })
   })
 
   it('right-click shows the file menu; item opens code-editor URL in new tab', async () => {

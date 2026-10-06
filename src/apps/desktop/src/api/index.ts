@@ -4835,20 +4835,10 @@ export interface GitFileDiff {
   staged: boolean
 }
 
-export async function getGitFileDiff(
-  cwd: string,
-  filePath: string,
-  staged: boolean = false,
-): Promise<GitFileDiff> {
-  return await apiFetch<GitFileDiff>(
-    `/git/file/diff?path=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}&staged=${staged}`,
-  )
-}
-
 // Batch file diffs — one POST replaces N parallel GET /git/file/diff.
 // Collapses the SidebarDiffPanel fan-out (20 files = 20 git spawns
 // holding 20 Io workers) into at most 2 server-side `git diff`
-// invocations. Falls back to per-file fetches on older servers.
+// invocations. LIST mode: the client names the paths.
 export interface GitFileDiffsBatchItem {
   file: string
   staged: boolean
@@ -4865,6 +4855,22 @@ export async function getGitFileDiffs(
   return await apiFetch<GitFileDiffsResponse>(`/git/file/diffs`, {
     method: 'POST',
     body: { path: cwd, files },
+    silent: true,
+  })
+}
+
+// Folder mode — one POST for a whole folder. The server enumerates the
+// changed paths itself (`git status --porcelain -uall -- <folder>`), so the
+// caller neither has to fetch `GET /api/git/changes` first nor send a
+// path-per-file body. Cost is 3 git spawns regardless of how many files
+// changed; `folder: ''` means the whole repo.
+export async function getGitFolderDiffs(
+  cwd: string,
+  folder: string = '',
+): Promise<GitFileDiffsResponse> {
+  return await apiFetch<GitFileDiffsResponse>(`/git/file/diffs`, {
+    method: 'POST',
+    body: { path: cwd, folder },
     silent: true,
   })
 }

@@ -2,16 +2,24 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
 const testRouter = createRouter({
   history: createMemoryHistory(),
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock, stageGitFilesMock, unstageGitFilesMock } =
+const {
+  getGitChangesMock,
+  getGitFileDiffMock,
+  getGitFolderDiffsMock,
+  stageGitFilesMock,
+  unstageGitFilesMock,
+} =
   vi.hoisted(() => ({
     getGitChangesMock: vi.fn(),
     getGitFileDiffMock: vi.fn(),
+    getGitFolderDiffsMock: vi.fn(),
     stageGitFilesMock: vi.fn(),
     unstageGitFilesMock: vi.fn(),
   }))
@@ -22,6 +30,7 @@ vi.mock('../../../api', async () => {
     ...actual,
     getGitChanges: getGitChangesMock,
     getGitFileDiff: getGitFileDiffMock,
+    getGitFolderDiffs: getGitFolderDiffsMock,
     stageGitFiles: stageGitFilesMock,
     unstageGitFiles: unstageGitFilesMock,
   }
@@ -46,9 +55,12 @@ const DIFF = `diff --git a/dirty.txt b/dirty.txt
 
 describe('SidebarDiffPanel', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
-    getGitFileDiffMock.mockResolvedValue({ path: 'dirty.txt', diff_content: DIFF, staged: false })
+    getGitFolderDiffsMock.mockResolvedValue({
+      diffs: [{ path: 'dirty.txt', diff_content: DIFF, staged: false }],
+    })
     stageGitFilesMock.mockResolvedValue({
       success: true,
       message: '',
@@ -76,9 +88,13 @@ describe('SidebarDiffPanel', () => {
   it('emits show-diff with parsed lines on file click (center renders)', async () => {
     const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
+    // The mount already fetched the whole repo and primed the shared
+    // snapshot, so the click is a map read — no request at all.
+    const before = getGitFolderDiffsMock.mock.calls.length
     await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
     await flushPromises()
-    expect(getGitFileDiffMock).toHaveBeenCalledWith('/repo', 'dirty.txt', false)
+    expect(getGitFolderDiffsMock.mock.calls.length).toBe(before)
+    expect(getGitFileDiffMock).not.toHaveBeenCalled()
     const emitted = wrapper.emitted('show-diff')
     expect(emitted).toHaveLength(1)
     expect(emitted![0]![0]).toMatchObject({ path: 'dirty.txt', staged: false, added: 1, removed: 1 })
@@ -88,11 +104,14 @@ describe('SidebarDiffPanel', () => {
   })
 
   it('emits show-diff with error on diff fetch failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
     const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
-    // Mount preloads the full list (show-diff-list); arm the failure
-    // after the preload so the click's own fetch is the one that fails.
-    getGitFileDiffMock.mockRejectedValueOnce(new Error('nope'))
+    // Mount primes the snapshot from its own folder fetch. Drop it and arm a
+    // failure so the click has to revalidate — that is the TTL-expiry path,
+    // and it must surface an error rather than an empty diff.
+    clearFolderDiffCache()
+    getGitFolderDiffsMock.mockRejectedValueOnce(new Error('nope'))
     await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
     await flushPromises()
     const emitted = wrapper.emitted('show-diff')

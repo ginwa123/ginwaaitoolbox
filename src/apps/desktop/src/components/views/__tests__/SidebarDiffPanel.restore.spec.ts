@@ -9,12 +9,15 @@ import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { encodePathParam } from '../chat_right_sidebar/parseUnifiedDiff'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
-const { getGitChangesMock, getGitFileDiffMock, getPrStatusMock } = vi.hoisted(() => ({
-  getGitChangesMock: vi.fn(),
-  getGitFileDiffMock: vi.fn(),
-  getPrStatusMock: vi.fn(),
-}))
+const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock, getPrStatusMock } =
+  vi.hoisted(() => ({
+    getGitChangesMock: vi.fn(),
+    getGitFileDiffMock: vi.fn(),
+    getGitFolderDiffsMock: vi.fn(),
+    getPrStatusMock: vi.fn(),
+  }))
 
 vi.mock('../../../api', async () => {
   const actual = await vi.importActual<typeof import('../../../api')>('../../../api')
@@ -22,6 +25,7 @@ vi.mock('../../../api', async () => {
     ...actual,
     getGitChanges: getGitChangesMock,
     getGitFileDiff: getGitFileDiffMock,
+    getGitFolderDiffs: getGitFolderDiffsMock,
     getPrDiff: vi.fn(),
     getPrStatus: getPrStatusMock,
     stageGitFiles: vi.fn(),
@@ -62,11 +66,15 @@ async function mountWithDiff(diff: string | null) {
 
 describe('SidebarDiffPanel ?diff= is ignored on load', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
-    getGitFileDiffMock.mockImplementation((cwd: string, path: string, staged: boolean) =>
-      Promise.resolve({ path, diff_content: diffFor(path), staged }),
-    )
+    getGitFolderDiffsMock.mockResolvedValue({
+      diffs: [
+        { path: 'dirty.txt', diff_content: diffFor('dirty.txt'), staged: false },
+        { path: 'other.txt', diff_content: diffFor('other.txt'), staged: false },
+      ],
+    })
     getPrStatusMock.mockResolvedValue({
       status: 'open',
       state: 'OPEN',

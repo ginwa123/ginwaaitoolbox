@@ -60,6 +60,7 @@ const document_agent_tools_test = @import("document_agent_tools_test.zig");
 const frontend_log_dedup_test = @import("frontend_log_dedup_test.zig");
 const git_commits_test = @import("git_commits_test.zig");
 const git_file_diffs_test = @import("git_file_diffs_test.zig");
+const git_folder_diffs_test = @import("git_folder_diffs_test.zig");
 const git_file_relative_path_crash_test = @import("git_file_relative_path_crash_test.zig");
 const git_pr_checks_test = @import("git_pr_checks_test.zig");
 const git_pr_conflicts_test = @import("git_pr_conflicts_test.zig");
@@ -183,6 +184,7 @@ pub const suites = .{
     frontend_log_dedup_test,
     git_commits_test,
     git_file_diffs_test,
+    git_folder_diffs_test,
     git_file_relative_path_crash_test,
     git_pr_checks_test,
     git_pr_conflicts_test,

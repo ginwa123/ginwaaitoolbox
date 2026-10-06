@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
+import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
 /**
  * The chrome redesign (docs/plans/2026-10-04-right-sidebar-redesign.md).
@@ -15,10 +16,11 @@ import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
  * split, the filter, and the one-word tab labels.
  */
 
-const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock, getPrStatusMock, getGitCommitsMock } =
+const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock, getGitCommitsMock } =
   vi.hoisted(() => ({
     getGitChangesMock: vi.fn(),
     getGitFileDiffMock: vi.fn(),
+    getGitFolderDiffsMock: vi.fn(),
     getPrDiffMock: vi.fn(),
     getPrStatusMock: vi.fn(),
     getGitCommitsMock: vi.fn(),
@@ -30,6 +32,7 @@ vi.mock('../../../api', async () => {
     ...actual,
     getGitChanges: getGitChangesMock,
     getGitFileDiff: getGitFileDiffMock,
+    getGitFolderDiffs: getGitFolderDiffsMock,
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,
     getGitCommits: getGitCommitsMock,
@@ -78,6 +81,7 @@ const mountPanel = async (
 
 describe('SidebarDiffPanel chrome — status letter chips', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(BASE_CHANGES)
     getGitCommitsMock.mockResolvedValue({
@@ -139,6 +143,7 @@ describe('SidebarDiffPanel chrome — status letter chips', () => {
 
 describe('SidebarDiffPanel chrome — the filter', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitCommitsMock.mockResolvedValue({
       is_git_repo: true,
@@ -254,6 +259,7 @@ describe('SidebarDiffPanel chrome — the filter', () => {
 
 describe('SidebarDiffPanel chrome — the tab strip', () => {
   beforeEach(() => {
+    clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(BASE_CHANGES)
     getGitCommitsMock.mockResolvedValue({
