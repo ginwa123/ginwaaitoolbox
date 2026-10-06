@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, nextTick } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -32,18 +32,12 @@ const emit = defineEmits<{
 const name = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 
-// Reset value when modal opens, focus input
-watch(
-  () => props.show,
-  async (show) => {
-    if (show) {
-      name.value = props.currentName
-      await nextTick()
-      nameInput.value?.focus()
-      nameInput.value?.select()
-    }
-  },
-)
+const handleOpen = async () => {
+  name.value = props.currentName
+  await nextTick()
+  nameInput.value?.focus()
+  nameInput.value?.select()
+}
 
 const handleClose = () => {
   emit('close')
@@ -68,7 +62,7 @@ const handleKeydown = (event: KeyboardEvent) => {
 
 <template>
   <Teleport to="body">
-    <Transition name="modal">
+    <Transition name="modal" @before-enter="handleOpen">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center"

@@ -18,7 +18,7 @@
                     trimmed, non-empty, value-changed name)
 -->
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, nextTick } from 'vue'
 
 const props = defineProps<{
   show: boolean
@@ -33,18 +33,12 @@ const emit = defineEmits<{
 const name = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 
-// Reset the input value to the latest currentName whenever the modal
-// re-opens. nextTick is needed because the input element is mounted
-// inside <Transition> only after `show` flips to true — focus + select
-// must run after the DOM settles.
-watch(() => props.show, async (show) => {
-  if (show) {
-    name.value = props.currentName
-    await nextTick()
-    nameInput.value?.focus()
-    nameInput.value?.select()
-  }
-})
+const handleOpen = async () => {
+  name.value = props.currentName
+  await nextTick()
+  nameInput.value?.focus()
+  nameInput.value?.select()
+}
 
 const handleClose = () => {
   emit('close')
@@ -72,7 +66,7 @@ const handleKeydown = (event: KeyboardEvent) => {
 
 <template>
   <Teleport to="body">
-    <Transition name="modal">
+    <Transition name="modal" @before-enter="handleOpen">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center"
@@ -80,21 +74,15 @@ const handleKeydown = (event: KeyboardEvent) => {
         @keydown="handleKeydown"
       >
         <!-- Backdrop -->
-        <div
-          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          @click="handleClose"
-        />
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="handleClose" />
 
         <!-- Modal Content -->
         <div
           class="relative w-full max-w-sm mx-4 p-6 rounded-xl shadow-2xl"
-          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
         >
           <!-- Header -->
-          <h3
-            class="text-title-sm font-semibold mb-4"
-            style="color: var(--semantic-text);"
-          >
+          <h3 class="text-title-sm font-semibold mb-4" style="color: var(--semantic-text)">
             Rename Page
           </h3>
 
@@ -102,7 +90,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <div class="mb-6">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               Page Name
             </label>
@@ -127,7 +115,10 @@ const handleKeydown = (event: KeyboardEvent) => {
               @click="handleClose"
               type="button"
               class="px-4 py-2 rounded-lg text-body font-medium transition-all duration-200"
-              style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
+              style="
+                background-color: var(--semantic-sidebar-bg);
+                color: var(--semantic-text-muted);
+              "
               data-testid="rename-design-page-cancel"
             >
               Cancel
@@ -137,7 +128,10 @@ const handleKeydown = (event: KeyboardEvent) => {
               type="button"
               :disabled="!name.trim() || name.trim() === currentName"
               class="px-4 py-2 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+              style="
+                background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+                color: var(--color-bg);
+              "
               data-testid="rename-design-page-save"
             >
               Save
