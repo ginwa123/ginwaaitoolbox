@@ -54,6 +54,11 @@ export default defineConfigWithVueTs(
       // implicitly, so a later refactor can silently change when it re-runs —
       // it is the Vue spelling of the useEffect anti-pattern.
       'local/no-watch-effect': 'error',
+      // Zero occurrences after the three rewrites below. `watch([a, b], fn)`
+      // re-runs when ANY entry changes without saying which one did — the
+      // Vue spelling of `useEffect(fn, [a, b])`. Split into one watch per
+      // source sharing a handler.
+      'local/no-watch-array-source': 'error',
       // A watcher that writes back into the value it watches. Vue re-runs a
       // watcher when a dependency it READS changes, so a self-write schedules
       // another run — the loop only ends when the write is accidentally

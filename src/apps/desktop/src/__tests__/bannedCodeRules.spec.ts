@@ -22,12 +22,14 @@ import plugin from '../../eslint-rules/index'
 const linter = new Linter()
 
 type RuleName =
+  | 'local/no-watch-array-source'
   | 'local/no-watch-effect'
   | 'local/no-watch-feedback-loop'
   | 'local/no-derived-state-watch'
   | 'local/no-silent-fallback-catch'
 
 const ALL_RULES: RuleName[] = [
+  'local/no-watch-array-source',
   'local/no-watch-effect',
   'local/no-watch-feedback-loop',
   'local/no-derived-state-watch',
@@ -70,6 +72,7 @@ function lint(code: string, rules: RuleName[] = ALL_RULES): string[] {
 const ONLY_DERIVED: RuleName[] = ['local/no-derived-state-watch']
 const ONLY_LOOP: RuleName[] = ['local/no-watch-feedback-loop']
 const ONLY_WATCH_EFFECT: RuleName[] = ['local/no-watch-effect']
+const ONLY_ARRAY_SOURCE: RuleName[] = ['local/no-watch-array-source']
 const ONLY_CATCH: RuleName[] = ['local/no-silent-fallback-catch']
 
 describe('local/no-derived-state-watch', () => {
@@ -280,6 +283,56 @@ describe('local/no-watch-effect', () => {
 
   it('allows watch(), which names its dependencies explicitly', () => {
     expect(lint(`watch(a, () => { load() })`, ONLY_WATCH_EFFECT)).toEqual([])
+  })
+})
+
+describe('local/no-watch-array-source', () => {
+  it('flags a watch with an array source', () => {
+    // The Vue spelling of `useEffect(fn, [a, b])`.
+    expect(lint(`watch([a, b], () => { void load() })`, ONLY_ARRAY_SOURCE)).toEqual([
+      'local/no-watch-array-source',
+    ])
+  })
+
+  it('flags the array form with options', () => {
+    // PresentFiles.vue:376 carried `{ immediate: true }` — the option does
+    // not exempt the shape.
+    expect(
+      lint(`watch([isExpanded, files], () => fetch(), { immediate: true })`, ONLY_ARRAY_SOURCE),
+    ).toEqual(['local/no-watch-array-source'])
+  })
+
+  it('flags a single-element array source', () => {
+    // Still the array form — wrapping one dep in `[]` hides nothing and
+    // normalises nothing.
+    expect(lint(`watch([a], () => { void load() })`, ONLY_ARRAY_SOURCE)).toEqual([
+      'local/no-watch-array-source',
+    ])
+  })
+
+  it('flags the namespaced form', () => {
+    expect(lint(`Vue.watch([a, b], () => {})`, ONLY_ARRAY_SOURCE)).toEqual([
+      'local/no-watch-array-source',
+    ])
+  })
+
+  it('allows a single-ref source', () => {
+    expect(lint(`watch(a, () => { void load() })`, ONLY_ARRAY_SOURCE)).toEqual([])
+  })
+
+  it('allows a getter source', () => {
+    // The dominant idiom in this repo: `watch(() => props.id, () => load())`.
+    expect(lint(`watch(() => props.id, () => { void load() })`, ONLY_ARRAY_SOURCE)).toEqual([])
+  })
+
+  it('allows a getter that builds an array (out of scope)', () => {
+    // `watch(() => [a.value, b.value], fn)` is a single reactive source as
+    // far as this rule resolves — reporting it would require resolving the
+    // getter body. Documented boundary, not a dodge endorsement: prefer two
+    // single-source watchers sharing a handler.
+    expect(
+      lint(`watch(() => [a.value, b.value], () => { void load() })`, ONLY_ARRAY_SOURCE),
+    ).toEqual([])
   })
 })
 

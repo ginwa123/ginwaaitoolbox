@@ -298,31 +298,34 @@ const handleManualLoadMore = () => {
 //     `cardsInColumn.length` changes, so each new page re-arms it.
 const PAGE_SIZE = 10
 const hasAutoFetched = ref(false)
-watch(
-  [cardsInColumn, moreTasksAvailable, loadingMoreTasks, scrollerIsScrollable],
-  () => {
-    // Nothing to fetch → release the guard so the next "has more" state
-    // can re-trigger.
-    if (!moreTasksAvailable.value) {
-      hasAutoFetched.value = false
-      return
-    }
-    // Already a fetch in flight → wait for it.
-    if (loadingMoreTasks.value) return
-    // Not the "viewport fits the page" case → let VirtualScroller
-    // handle it (the scroll-driven @load-more).
-    if (cardsInColumn.value.length >= PAGE_SIZE) return
-    // Container is scrollable → VirtualScroller will handle it.
-    if (scrollerIsScrollable.value) return
-    // Already auto-fetched for this DOM state → wait for the new
-    // page's mount to re-arm. The watcher re-fires when the next
-    // page's cards arrive (cardsInColumn.length changes).
-    if (hasAutoFetched.value) return
-    hasAutoFetched.value = true
-    void workspacesStore.loadMoreTasksForColumn(props.workspaceId, props.itemId, props.column.id)
-  },
-  { immediate: true },
-)
+const maybeAutoFetchNextPage = () => {
+  // Nothing to fetch → release the guard so the next "has more" state
+  // can re-trigger.
+  if (!moreTasksAvailable.value) {
+    hasAutoFetched.value = false
+    return
+  }
+  // Already a fetch in flight → wait for it.
+  if (loadingMoreTasks.value) return
+  // Not the "viewport fits the page" case → let VirtualScroller
+  // handle it (the scroll-driven @load-more).
+  if (cardsInColumn.value.length >= PAGE_SIZE) return
+  // Container is scrollable → VirtualScroller will handle it.
+  if (scrollerIsScrollable.value) return
+  // Already auto-fetched for this DOM state → wait for the new
+  // page's mount to re-arm. The watcher re-fires when the next
+  // page's cards arrive (cardsInColumn.length changes).
+  if (hasAutoFetched.value) return
+  hasAutoFetched.value = true
+  void workspacesStore.loadMoreTasksForColumn(props.workspaceId, props.itemId, props.column.id)
+}
+// Four single-source watchers sharing one guarded handler. `immediate`
+// stays on the first only, so mount fires once; the guard flags above make
+// a same-tick change to several sources a harmless no-op on repeat runs.
+watch(cardsInColumn, maybeAutoFetchNextPage, { immediate: true })
+watch(moreTasksAvailable, maybeAutoFetchNextPage)
+watch(loadingMoreTasks, maybeAutoFetchNextPage)
+watch(scrollerIsScrollable, maybeAutoFetchNextPage)
 
 // ─── Inline rename state ───────────────────────────────────────────────────
 
@@ -460,7 +463,7 @@ const openSortModal = () => {
 // where <KanbanSortMenu>'s own handler has already written the new
 // sortBy/direction via v-model before the event bubbles here.
 //
-// <KanbanRowView> uses the equivalent `watch([sortBy, direction])` instead.
+// <KanbanRowView> uses the equivalent pair of single-source watchers instead.
 // Both are correct; this one additionally fires on a re-pick of the same
 // value, which is the behaviour the comment above describes.
 //

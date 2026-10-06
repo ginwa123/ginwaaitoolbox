@@ -352,21 +352,19 @@ watch(
 
 // Whenever any section ref mutates, push back to the central config
 // (which keeps the composable's dirty counter in sync).
-watch(
-  [
-    profilesList,
-    activeProfile,
-    mcpServersList,
-    webSearchRows,
-    generalSettings,
-    toolsList,
-    skillEvalsSettings,
-  ],
-  () => {
-    if (loaded.value) syncToConfig()
-  },
-  { deep: true },
-)
+const onSectionMutated = () => {
+  if (loaded.value) syncToConfig()
+}
+// Seven single-source deep watchers sharing one handler. `syncToConfig`
+// derives the same record from current refs, so a same-tick change to
+// several sections re-syncs harmlessly rather than diverging.
+watch(profilesList, onSectionMutated, { deep: true })
+watch(activeProfile, onSectionMutated, { deep: true })
+watch(mcpServersList, onSectionMutated, { deep: true })
+watch(webSearchRows, onSectionMutated, { deep: true })
+watch(generalSettings, onSectionMutated, { deep: true })
+watch(toolsList, onSectionMutated, { deep: true })
+watch(skillEvalsSettings, onSectionMutated, { deep: true })
 
 // ─── Modal state ──────────────────────────────────────────────────────────
 type ProfileModalState = { mode: 'add' | 'edit'; value: LlmConfigModalValue } | null

@@ -8,12 +8,14 @@
 import type { Rule } from 'eslint'
 import { noDerivedStateWatch } from './bannedCode'
 import { noSilentFallbackCatch } from './noSilentFallbackCatch'
+import { noWatchArraySource } from './noWatchArraySource'
 import { noWatchEffect } from './noWatchEffect'
 import { noWatchFeedbackLoop } from './noWatchFeedbackLoop'
 
 const rules: Record<string, Rule.RuleModule> = {
   'no-derived-state-watch': noDerivedStateWatch,
   'no-silent-fallback-catch': noSilentFallbackCatch,
+  'no-watch-array-source': noWatchArraySource,
   'no-watch-effect': noWatchEffect,
   'no-watch-feedback-loop': noWatchFeedbackLoop,
 }

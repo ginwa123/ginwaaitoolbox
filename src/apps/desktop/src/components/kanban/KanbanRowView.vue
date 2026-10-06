@@ -179,7 +179,7 @@ const handleMenuSort = (columnId: string) => {
 // DOM listener that fires on ANY click inside the menu (that is how
 // <KanbanColumn> uses it). Watching the v-model pair is precise: it fires
 // only when the user actually picks a sort.
-watch([sortBy, direction], () => {
+const onSortPicked = () => {
   const columnId = sortModalColumnId.value
   if (!columnId) return
   emit('sortChange', {
@@ -188,7 +188,12 @@ watch([sortBy, direction], () => {
     direction: direction.value,
   })
   sortModalColumnId.value = null
-})
+}
+// Two single-source watchers sharing one handler. The first run clears
+// `sortModalColumnId`, so a same-tick change to both refs is a no-op on the
+// second run rather than a double emit.
+watch(sortBy, onSortPicked)
+watch(direction, onSortPicked)
 
 const handleSortModalBackdrop = () => {
   sortModalColumnId.value = null
