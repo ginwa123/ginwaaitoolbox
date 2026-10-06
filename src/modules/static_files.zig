@@ -651,38 +651,35 @@ fn setupRoot(allocator: std.mem.Allocator) !TestEnv {
 // resolveStaticDirAbs() behavior
 // ---------------------------------------------------------------------------
 
-test "resolveStaticDirAbs: a relative dir resolves to the same absolute path as its realpath" {
-    // The `free` at the end is load-bearing: `testing.allocator` is a
-    // DebugAllocator, so a sentinel-terminated allocation freed as a plain
-    // slice (the `realPathFileAlloc` bug this function replaced) fails the
-    // test here with "Allocation size N does not match free size N-1" —
-    // the same report a dev build printed at startup, before the port was
-    // bound.
+test "resolveStaticDirAbs: a relative dir resolves to its realpath" {
     const allocator = testing.allocator;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const abs = try resolveStaticDirAbs(testing.io, allocator, ".", &buf);
+    // A real directory, spelled absolutely. The tmp dir lives under the
+    // build cache (or /tmp), never at the cwd, so the relative round-trip
+    // below always has path components to walk.
+    var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const abs_len = try tmp.dir.realPath(testing.io, &abs_buf);
+    const abs = try allocator.dupe(u8, abs_buf[0..abs_len]);
     defer allocator.free(abs);
-    try testing.expect(std.fs.path.isAbsolute(abs));
 
-    // Same directory, reached the other way round: relpath(cwd, abs) walked
-    // back by resolveStaticDirAbs must land on abs again.
-    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(testing.io, ".", allocator);
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.Io.Dir.cwd().realPathFile(testing.io, ".", &cwd_buf);
+    const cwd = try allocator.dupe(u8, cwd_buf[0..cwd_len]);
     defer allocator.free(cwd);
-    var rel = try std.fs.path.relative(allocator, cwd, null, cwd, abs);
+
+    const rel = try std.fs.path.relative(allocator, cwd, null, cwd, abs);
     defer allocator.free(rel);
-    // Same directory: the relative path is empty, and an empty path is not
-    // resolvable — spell it the way a caller would.
-    if (rel.len == 0) {
-        allocator.free(rel);
-        rel = try allocator.dupe(u8, ".");
-    }
     try testing.expect(!std.fs.path.isAbsolute(rel));
 
     var rel_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const resolved = try resolveStaticDirAbs(testing.io, allocator, rel, &rel_buf);
+    // This free is load-bearing: `testing.allocator` is a DebugAllocator, so
+    // a sentinel-terminated allocation freed as a plain slice (the
+    // `realPathFileAlloc` bug this function replaced) fails here with
+    // "Allocation size N does not match free size N-1" — the same report a
+    // dev build printed at startup, before the port was bound.
     defer allocator.free(resolved);
     try testing.expectEqualStrings(abs, resolved);
 }

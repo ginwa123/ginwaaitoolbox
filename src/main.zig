@@ -259,10 +259,8 @@ pub fn main(init: std.process.Init) !void {
     // `--no-static-dir` wins over `--static-dir` no matter which came first,
     // and frees the parse-time copy that no longer has an owner.
     if (cli.no_static_dir) {
-        if (cli.static_dir) |dir_arg| {
-            allocator.free(dir_arg);
-            std.log.info("--no-static-dir: API only, no static files at /.", .{});
-        }
+        if (cli.static_dir) |dir_arg| allocator.free(dir_arg);
+        std.log.info("--no-static-dir: API only, no static files at /.", .{});
     } else if (cli.static_dir) |dir_arg| ctxParent.static_dir_path = dir_arg;
     ctxParent.auth_enabled = cli.auth_enabled;
     if (cli.auth_enabled) {
