@@ -20,13 +20,7 @@
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const config_mod = @import("../modules/config/Config.zig");
-
-/// Just enough of the user's config to reach the block.
-/// `ignore_unknown_fields` keeps every unrelated key in the document from
-/// being a parse error.
-const UserConfigHolder = struct {
-    skill_evals: config_mod.SkillEvalsJson = .{},
-};
+const session_llm_config = @import("session_llm_config.zig");
 
 /// The `skill_evals` block in force for `session_id`, or null when
 /// `ctx.config.skill_evals` is already authoritative and should be read
@@ -50,7 +44,7 @@ pub fn resolve(
     if (!di.auth_enabled) return null;
     if (session_id.len == 0) return null;
 
-    const owner = sessionOwner(allocator, db, session_id) catch return null;
+    const owner = session_llm_config.sessionOwner(allocator, db, session_id) catch return null;
     defer allocator.free(owner);
     return resolveForOwner(allocator, db, owner);
 }
@@ -58,6 +52,9 @@ pub fn resolve(
 /// The `skill_evals` block stored for one user, or null when they have no
 /// saved config at all.
 ///
+/// Delegates to `session_llm_config.forOwner` — the single JSON -> LlmConfig
+/// mapping (`LlmConfig.initFromJsonText`) — then copies the block out.
+/// `SkillEvalsConfig` owns no memory, so the copy outlives the temp config.
 /// Split out from `resolve` so it can be tested without the process-global
 /// singleton: there is no `clearSingleton`, so a test that installed one
 /// would leak into every other test in the binary.
@@ -66,38 +63,13 @@ pub fn resolveForOwner(
     db: *pabrikcore.sqlite.SqliteBackend,
     owner: []const u8,
 ) ?config_mod.SkillEvalsConfig {
-    const raw = pabrikcore.user_config_store.loadRaw(allocator, db, owner) catch return null;
-    // No saved config for this user means they never opened Settings, so the
-    // singleton is still the better guess. An absent row is not a request to
-    // switch the feature off.
-    const content = raw orelse return null;
-    defer allocator.free(content);
-
-    const parsed = std.json.parseFromSlice(UserConfigHolder, allocator, content, .{
-        .ignore_unknown_fields = true,
-    }) catch return null;
-    defer parsed.deinit();
-    // `skillEvalsFromJson` turns `apply_mode` into an enum by value before
-    // this returns, so `deinit` cannot free anything the caller still holds.
-    return config_mod.skillEvalsFromJson(parsed.value.skill_evals);
-}
-
-fn sessionOwner(
-    allocator: std.mem.Allocator,
-    db: *pabrikcore.sqlite.SqliteBackend,
-    session_id: []const u8,
-) ![]u8 {
-    var q = try db.query(
-        allocator,
-        "SELECT COALESCE(user_id, '') FROM sessions WHERE id = ?",
-        &[_][]const u8{session_id},
-    );
-    defer q.deinit();
-    const row = try q.next();
-    const r = row orelse return error.UnknownSession;
-    defer r.deinit(allocator);
-    if (r.values.len < 1 or r.values[0].len == 0) return error.SessionHasNoOwner;
-    return try allocator.dupe(u8, r.values[0]);
+    const cfg = session_llm_config.forOwner(allocator, db, owner) orelse return null;
+    defer {
+        var tmp = cfg;
+        tmp.deinit();
+        allocator.destroy(tmp);
+    }
+    return cfg.skill_evals;
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────
@@ -137,8 +109,7 @@ test "resolveForOwner returns the block the user saved (the auth-mode trap)" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try insertUser(&ctx.db, "u1",
-        "{\"notify_on_complete\":true,\"skill_evals\":{\"enabled\":true,\"max_skills_per_run\":3,\"fact_lease_seconds\":42}}");
+    try insertUser(&ctx.db, "u1", "{\"notify_on_complete\":true,\"skill_evals\":{\"enabled\":true,\"max_skills_per_run\":3,\"fact_lease_seconds\":42}}");
 
     const got = resolveForOwner(testing.allocator, &ctx.db, "u1");
     try testing.expect(got != null);
@@ -174,8 +145,7 @@ test "unrelated keys and nested objects do not break the parse" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try insertUser(&ctx.db, "u3",
-        "{\"profiles_models\":[{\"name\":\"p\",\"models\":{\"x\":\"y\"}}],\"skill_evals\":{\"enabled\":true,\"apply_mode\":\"off\"}}");
+    try insertUser(&ctx.db, "u3", "{\"profiles_models\":[{\"name\":\"p\",\"models\":{\"x\":\"y\"}}],\"skill_evals\":{\"enabled\":true,\"apply_mode\":\"off\"}}");
 
     const got = resolveForOwner(testing.allocator, &ctx.db, "u3");
     try testing.expect(got != null);

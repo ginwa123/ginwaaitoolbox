@@ -756,7 +756,13 @@ pub const LlmConfig = struct {
         return providers;
     }
 
-    /// Initialize an `LlmConfig` from disk. When `path` is null (the
+    /// Initialize an `LlmConfig` from disk (boot / file mode only).
+    /// Thin I/O wrapper around `initFromJsonText`: resolves the path,
+    /// reads the file, then delegates to the single JSON -> struct mapping.
+    /// Runtime reads under `--auth` must NOT call this — per-user config
+    /// lives in `users.config_json`, so use
+    /// `agentic_loop/session_llm_config.zig` (`forSession` / `forOwner`).
+    /// When `path` is null (the
     /// default), uses the platform-specific config path returned by
     /// `getDefaultConfigPath` (e.g. `~/.config/pabrik/config.json` on
     /// Linux, `~/Library/Application Support/pabrik/config.json` on

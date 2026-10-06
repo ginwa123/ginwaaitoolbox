@@ -42,11 +42,13 @@
 //!     calls `forOwner` here, so the rule still has one implementation.
 //!
 //! Direct `getLlmConfig(di)` reads that legitimately stay outside:
-//! boot (`main.zig`), the Settings handlers (they read/write
-//! `users.config_json` themselves), and the two feature-specific narrow
-//! resolvers that predate this module (`skill_evals_config.zig`,
-//! `web_search_config.zig` — same row, narrower parse, so folding them in
-//! would change behaviour for no gain today).
+//! boot (`main.zig`) and the Settings handlers (they read/write
+//! `users.config_json` themselves). The two feature-specific narrow
+//! resolvers share this module's owner lookup and full-config parse:
+//! `skill_evals_config.zig` delegates to `forOwner` (its struct owns no
+//! memory, so the copy is free); `web_search_config.zig` reuses
+//! `sessionOwner` and keeps its narrow parse only because the providers map
+//! owns heap strings tied to the full config's lifetime.
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
@@ -122,11 +124,10 @@ pub fn fromJsonText(
 
 /// The owner of `session_id`, duped into `allocator`.
 ///
-/// Mirrors the private helper of the same name in `skill_evals_config.zig`
-/// (same query, same two error cases). Kept local rather than shared: the
-/// only consumer is this module, and a cross-module dependency here would
-/// couple two features that are otherwise independent.
-fn sessionOwner(
+/// Shared helper for the narrow resolvers (`skill_evals_config.zig`,
+/// `web_search_config.zig`) so all three read the same row through the same
+/// query. Single source of truth for owner resolution — do not duplicate.
+pub fn sessionOwner(
     allocator: std.mem.Allocator,
     db: *pabrikcore.sqlite.SqliteBackend,
     session_id: []const u8,

@@ -150,7 +150,8 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
         const stamp_owner = auth_common.resolveRequestUserId(allocator, di.db, di.auth_enabled, req.headers) catch null;
         defer if (stamp_owner) |o| allocator.free(o);
         if (stamp_owner) |o| {
-            _ = di.db.exec(allocator,
+            _ = di.db.exec(
+                allocator,
                 "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')",
                 &[_][]const u8{ o, usecase.id },
             ) catch {};
@@ -414,61 +415,6 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.App, parsed: Re
         .name = session_name,
         .status = "send",
     };
-}
-
-fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBackend, parsed: RequestSession, image_urls: []const u8) !void {
-    _ = image_urls;
-    const session_id = parsed.session_id;
-    const session_name = parsed.session_name;
-    const effective_cwd = parsed.cwd_session;
-    // 2026-08-21 — same active_profile snapshot as useCase: when the
-    // caller didn't pick a profile, persist the user's active profile
-    // so the session row is self-contained (footer context window,
-    // compaction decision, and workflow all agree from message #1).
-    const effective_profile: []const u8 = blk: {
-        if (parsed.selected_profile_model.len > 0) break :blk parsed.selected_profile_model;
-        // NOTE: `insertWorker` has no caller today. If it is ever re-wired,
-        // this snapshot must resolve through `session_llm_config` like
-        // `useCase` above — the session row does not exist yet here, so
-        // `forOwner(alloc, di.db, owner)` is the entry point to use.
-        const di = pabrikcore.getSingleton() catch break :blk "";
-        if (pabrikcore.getLlmConfig(di).active_profile) |ap| break :blk ap;
-        break :blk "";
-    };
-    const effective_auto_retry: []const u8 = blk: {
-        if (std.mem.eql(u8, parsed.is_auto_retry_until_stop, "1")) break :blk "1";
-        break :blk "0";
-    };
-
-    const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop) " ++
-        "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)";
-    const copy_session_name = try allocator.dupe(u8, session_name);
-    defer allocator.free(copy_session_name);
-    const copy_cwd = try allocator.dupe(u8, effective_cwd);
-    defer allocator.free(copy_cwd);
-    const copy_session_id = try allocator.dupe(u8, session_id);
-    defer allocator.free(copy_session_id);
-    const copy_profile = if (effective_profile.len > 0) try allocator.dupe(u8, effective_profile) else "";
-    defer if (copy_profile.len > 0) allocator.free(copy_profile);
-    try sqlite_db.exec(
-        allocator,
-        session_sql,
-        &.{ session_id, copy_session_name, copy_cwd, copy_profile, effective_auto_retry },
-    );
-
-    // Broadcast session created event
-    try ai_workflow.on_event_sent.onEventSendSessions(allocator, .{
-        .action = "created",
-        .id = session_id,
-        .name = session_name,
-        .status = "active",
-        .cwd = effective_cwd,
-        .created_at = "",
-        .updated_at = "",
-        .selected_profile_model = effective_profile,
-        .is_auto_retry_until_stop = effective_auto_retry,
-        .last_finish_reason = "",
-    });
 }
 
 /// Server-side cwd fallback chain (Migration 070). Returns the
