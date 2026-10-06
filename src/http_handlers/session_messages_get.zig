@@ -1,6 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
 const pabrikcore = @import("pabrikcore");
+const session_llm_config = @import("../agentic_loop/session_llm_config.zig");
 const gserverz = pabrikcore.gserverz;
 const helpers = @import("helpers");
 const ai_mod = pabrikcore.ai_mod;
@@ -66,7 +67,11 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     // `resolveSessionProfile` walks session selection → active_profile →
     // null, matching the workflow loop — so a Default chat with
     // active_profile=alpha shows alpha's 950k window, not 500k.
-    const cfg = pabrikcore.getLlmConfig(di);
+    // Session-scoped config: the session OWNER's stored config under
+    // `--auth`, the process-global one otherwise — one resolution module
+    // (`session_llm_config.zig`), never a hand-rolled singleton read.
+    const cfg = session_llm_config.forSession(allocator, di.db, session_id) orelse
+        pabrikcore.getLlmConfig(di);
     const profile_name = llm_history.getSessionProfileName(allocator, sqlite_db, session_id) catch "";
     const profile: ?config.LlmConfig.LlmProfile =
         llm_history.resolveSessionProfile(cfg, profile_name);

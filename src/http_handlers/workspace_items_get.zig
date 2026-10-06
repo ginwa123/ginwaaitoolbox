@@ -1,6 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
 const pabrikcore = @import("pabrikcore");
+const auth_common = @import("auth_common.zig");
 const gserverz = pabrikcore.gserverz;
 const ai_mod = pabrikcore.ai_mod;
 const llm_history = pabrikcore.llm_history;
@@ -57,12 +58,16 @@ pub fn workspaceItemsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRe
     if (workspace_default.workspaceExists(allocator, sqlite_db, workspace_id)) {
         // 2. Non-fatal ensure — see rule 2 above. `if` on the error union
         // so the failure branch can log without unwinding the handler.
+        // The checklist that seeds a fresh default project belongs to the
+        // requesting user under `--auth` (see `session_llm_config.zig`).
+        const config_tools = auth_common.requestUserConfig(allocator, di.db, di.auth_enabled, req.headers) orelse
+            pabrikcore.getLlmConfig(di);
         const ensured = workspace_default.ensureDefaultProject(
             allocator,
             sqlite_db,
             workspace_id,
             di.environment,
-            pabrikcore.getLlmConfig(di).tools,
+            config_tools.tools,
         );
         if (ensured) |project| {
             defer project.deinit(allocator);

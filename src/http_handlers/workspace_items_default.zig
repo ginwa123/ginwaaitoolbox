@@ -54,6 +54,7 @@
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
+const auth_common = @import("auth_common.zig");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
@@ -436,7 +437,10 @@ pub fn workspaceDefaultProjectHandler(
 
     const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
-    const config_tools = pabrikcore.getLlmConfig(di).tools;
+    // Per-user tools checklist under `--auth` (see `session_llm_config.zig`).
+    const user_cfg = auth_common.requestUserConfig(allocator, di.db, di.auth_enabled, req.headers) orelse
+        pabrikcore.getLlmConfig(di);
+    const config_tools = user_cfg.tools;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
     if (workspace_id.len == 0) {

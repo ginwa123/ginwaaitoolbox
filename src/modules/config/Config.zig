@@ -833,6 +833,26 @@ pub const LlmConfig = struct {
         };
         defer allocator.free(content);
 
+        return initFromJsonText(allocator, content);
+    }
+
+    /// Build an `LlmConfig` from in-memory JSON text, applying the same
+    /// shape, tolerance (`ignore_unknown_fields`) and post-processing
+    /// (`parseToolsList`, `backfillTopLevelFromProfiles`,
+    /// `migrateTopLevelSubAgentsIntoEmptyProfiles`, ...) as the file path.
+    ///
+    /// Split out of `init` for opt-in `--auth`, where each user's config is
+    /// the `users.config_json` column — a string, not a file. This is the
+    /// ONE JSON -> `LlmConfig` mapping, so a stored row and a `config.json`
+    /// holding identical bytes cannot drift apart.
+    ///
+    /// Errors: `InvalidJson` for malformed text. The file-specific failures
+    /// `init` can raise (`ConfigFileNotFound`, `ConfigFileReadError`) are
+    /// impossible here.
+    pub fn initFromJsonText(
+        allocator: std.mem.Allocator,
+        content: []const u8,
+    ) LoadError!LlmConfig {
         const parsed = json.parseFromSlice(LlmConfigJson, allocator, content, .{
             .ignore_unknown_fields = true,
         }) catch |err| {

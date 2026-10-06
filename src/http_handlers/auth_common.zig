@@ -309,6 +309,35 @@ pub fn resolveOwnerInto(buf: []u8, headers: anytype) ?[]const u8 {
     return buf[0..owner.len];
 }
 
+/// The `LlmConfig` for the user behind `headers`, or null when the
+/// process-global singleton is authoritative.
+///
+/// The single entry point for HTTP handlers that need a user-scoped config
+/// but have no session row (workspace seeding, web status, kanban task
+/// creation). All resolution logic lives in
+/// `agentic_loop/session_llm_config.zig`; handlers must not read
+/// `getLlmConfig(di)` for user-scoped data themselves. Null covers auth-off,
+/// a missing/unknown cookie, a user who never saved settings and a corrupt
+/// row — every one of them falls back to the singleton, i.e. to the
+/// pre-`--auth` behaviour.
+///
+/// The returned config is allocated with `allocator` (a request arena in
+/// production) — do not free or mutate it.
+pub fn requestUserConfig(
+    allocator: std.mem.Allocator,
+    db: *pabrikcore.sqlite.SqliteBackend,
+    auth_enabled: bool,
+    headers: anytype,
+) ?*pabrikcore.config.LlmConfig {
+    // File mode: the config PUT swaps the singleton synchronously, so it is
+    // already the authority. Reading the database here would add a second
+    // source that can only ever disagree with it.
+    if (!auth_enabled) return null;
+    const owner = resolveRequestUserId(allocator, db, auth_enabled, headers) catch return null;
+    defer allocator.free(owner);
+    return pabrikcore.session_llm_config.forOwner(allocator, db, owner);
+}
+
 /// Verify a password against a stored `users.password_hash`.
 /// Sentinel `!disabled` (user_system) always fails. Supports bcrypt
 /// hashes; any other format fails closed.

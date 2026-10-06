@@ -130,6 +130,13 @@ pub const parse_thinking = @import("modules/config/parse_thinking.zig");
 // reach it via `pabrikcore.user_config_store` without a direct
 // cross-module @import duplicating the file.
 pub const user_config_store = @import("modules/config/UserConfigStore.zig");
+
+/// Per-session/per-owner LLM-config resolution for opt-in `--auth` mode.
+///
+/// THE ONE module that decides whether a user-scoped read sees the user's
+/// `users.config_json` or the process-global `config.json`. See its header
+/// for the rule and the two entry points call sites use.
+pub const session_llm_config = @import("agentic_loop/session_llm_config.zig");
 // Plan 2026-09-10-web-launch-toggle: random loopback port picker for
 // browser mode (`--port 0` resolution). Re-exported here so the exe
 // module (src/main.zig) reaches it via `pabrikcore.web_port` instead of

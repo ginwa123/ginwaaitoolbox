@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
+const auth_common = @import("auth_common.zig");
 const gserverz = pabrikcore.gserverz;
 
 /// Build the browser-mode URL for `port`. Pure (no singleton) so it is
@@ -31,11 +32,14 @@ pub fn webStatusHandler(
     req: gserverz.HttpRequest,
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
-    _ = req;
     const allocator = ctx.allocator;
 
     const di = try pabrikcore.getSingleton();
-    const cfg = pabrikcore.getLlmConfig(di);
+    // `web_launch_enabled` is a per-user setting under `--auth`; resolve it
+    // through the one config-resolution module and fall back to the
+    // singleton when the database is not authoritative.
+    const cfg = auth_common.requestUserConfig(allocator, di.db, di.auth_enabled, req.headers) orelse
+        pabrikcore.getLlmConfig(di);
     const port: u16 = di.server.address.port;
 
     const url = try buildWebUrl(allocator, port);
