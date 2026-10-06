@@ -8,8 +8,29 @@
         // Pinned by URL + hash; exposes a single `databases` module;
         // consumers `@import("databases")` to use it.
         .databases = .{
-            .url = "https://github.com/ginwa123/ruangsql/archive/0dc2010da6df643471687ea328132dc2f5d6ad21.tar.gz",
-            .hash = "databases-0.0.0-vy-BCG1iBAAzeOdFZ6dHzUnb1ZLUOxYXK44fuHRsZgbr",
+            // 46d96dd = merge of ginwa123/ruangsql#1, "take the WAL writer
+            // slot up front instead of losing writes". busy_timeout 5s ->
+            // 15s, a real Config (journal_size_limit / wal_autocheckpoint),
+            // `BEGIN IMMEDIATE` in `begin()` so a read-then-write
+            // transaction cannot hit an instant, unretryable
+            // SQLITE_BUSY_SNAPSHOT, and `database.openWithConfig` so this
+            // app can set its own `synchronous`. Before it, a contended
+            // write FAILED with "database is locked" and was lost.
+            //
+            // RE-PINNING: this URL is a COMMIT SHA. A squash-merge of
+            // ruangsql invalidates it — the old SHA stays reachable on its
+            // branch so the URL keeps resolving, and the build keeps
+            // SUCCEEDING against the pre-merge code. Zig also keys the
+            // package cache by `.hash`, not by `.url`, so changing the URL
+            // alone changes nothing. To move the pin: take the new SHA from
+            // `git -C ../ruangsql rev-parse origin/main`, put it here, put
+            // a throwaway in `.hash`, run `zig build`, and paste in the
+            // `hash mismatch: ... but the fetched package has ...` value it
+            // prints. Then `rm -rf zig-pkg && zig build` and confirm the
+            // new symbol you rely on actually exists in the extracted
+            // package.
+            .url = "https://github.com/ginwa123/ruangsql/archive/46d96ddffef48a5f17d1a335c12f96ec67cb8630.tar.gz",
+            .hash = "databases-0.0.0-vy-BCKm_BADbzxlYbgaV7ca6TLcxIY0RWbCXcpsC9LcW",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Exposes a single `kabelweb` module
@@ -42,7 +63,7 @@
         // The Zig functional test suite (tests/functional/). A SEPARATE
         // package with an EMPTY dependency list of its own: it boots the
         // `pabrik` binary as a child process and drives it over HTTP, and
-        // must never be able to `@import` a `src/` internal — a test that
+        // must never be able to `@import` a `src/` internal - a test that
         // bound to an internal type could pass without crossing the wire,
         // which is the one class of test this suite exists to rule out.
         .functional_tests = .{
