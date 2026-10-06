@@ -34,6 +34,8 @@
  *   - `&apos;` → `'`
  *   - `&amp;`  → `&`   (last)
  */
+import { stripAnsiEscapes } from '../../../helpers/stripAnsiEscapes'
+
 export function unescapeXml(s: string): string {
   return s
     .replace(/&lt;/g, '<')
@@ -406,8 +408,13 @@ export function parseBash(data: unknown): ParsedBash {
   const o = unwrapDataRecord(data)
   return {
     command: strOrNullField(o, 'command'),
-    stdout: strField(o, 'stdout'),
-    stderr: strField(o, 'stderr'),
+    // Second, independent escape guard at the parse seam. The backend
+    // strips in shell.result_to_json; this covers live/partial payloads
+    // and any future raw-bytes producer. It deliberately does NOT try to
+    // repair pre-fix rows — see helpers/stripAnsiEscapes.ts on why those
+    // are unrecoverable rather than heuristically "fixed".
+    stdout: stripAnsiEscapes(strField(o, 'stdout')),
+    stderr: stripAnsiEscapes(strField(o, 'stderr')),
     exitCode: numOrNullField(o, 'exit_code'),
     truncated: boolField(o, 'truncated', false),
     timedOut: boolField(o, 'timeout', false),

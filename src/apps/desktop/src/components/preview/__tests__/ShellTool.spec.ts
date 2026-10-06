@@ -148,6 +148,63 @@ describe('ShellTool.vue — in-progress placeholder (TDD: unknown bug)', () => {
  * four dead `bash` calls were read as "the shell is flaky" (the agent's own
  * diagnosis) instead of "that tool does not exist".
  */
+/**
+ * Regression: a `dotnet build` piped through PowerShell rendered as a wall
+ * of `?[7mwarning ?[0m` (user screenshot). MSBuild colourises its
+ * diagnostics even onto a pipe, so the captured stdout carried raw
+ * `ESC[7m` sequences. These assert the card shows the DIAGNOSTIC, not the
+ * escape soup — i.e. the exact user-visible symptom, driven through the
+ * real component.
+ */
+describe('ShellTool.vue — ANSI escape soup never reaches the card', () => {
+  const msbuildStdout =
+    'C:\\Users\\gilang.trisetya\\AppData\\Local\\Microsoft\\dotnet\\sdk\\10.0.401\\Microsoft.Common.CurrentVersion.targets(4919,5): ' +
+    '\x1b[7mwarning \x1b[0m\x1b[1mMSB\x1b[0m3026: Could not copy the file'
+
+  it('renders the warning as readable prose', () => {
+    const wrapper = makeWrapper({
+      content: {
+        ...completedEnvelope,
+        command: 'dotnet build PriceCatalog.csproj',
+        stdout: msbuildStdout,
+        exit_code: 1,
+      },
+      expanded: true,
+    })
+    const card = wrapper.text()
+    expect(card).toContain('warning MSB3026: Could not copy the file')
+    expect(card).toContain('Microsoft.Common.CurrentVersion.targets(4919,5)')
+  })
+
+  it('renders no ESC byte, no "[7m"/"[0m" fragment and no replacement char', () => {
+    const wrapper = makeWrapper({
+      content: { ...completedEnvelope, stdout: msbuildStdout, exit_code: 1 },
+      expanded: true,
+    })
+    const card = wrapper.text()
+    expect(card).not.toContain('\x1b')
+    expect(card).not.toContain('[7m')
+    expect(card).not.toContain('[0m')
+    expect(card).not.toContain('�')
+  })
+
+  it('strips escape sequences out of stderr too', () => {
+    const wrapper = makeWrapper({
+      content: {
+        ...completedEnvelope,
+        stdout: '',
+        stderr: '\x1b[1mFAILED\x1b[0m \x1b[31mPriceCatalog.dll is locked\x1b[0m',
+        exit_code: 1,
+      },
+      expanded: true,
+    })
+    const card = wrapper.text()
+    expect(card).toContain('FAILED PriceCatalog.dll is locked')
+    expect(card).not.toContain('[31m')
+    expect(card).not.toContain('\x1b')
+  })
+})
+
 describe('ShellTool.vue — failed envelope is never blank', () => {
   it('renders the envelope error text for a tool that never ran', () => {
     const wrapper = makeWrapper({ content: unknownToolEnvelope, toolName: 'bash' })
