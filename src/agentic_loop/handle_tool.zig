@@ -19,6 +19,7 @@ const agentic_loop_mod = @import("workflow.zig");
 const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
 const xmlUnescape = @import("helpers").xmlUnescape;
 const on_event_sent = @import("on_event_sent.zig");
+const parsing = @import("parsing.zig");
 const hooks = @import("hooks.zig");
 const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 const insertLLMHistories = @import("insert_llm_histories.zig").inserLLMHistories;
@@ -606,15 +607,14 @@ pub fn handle_tool(
                     msg,
                     "",
                 );
-            } else
-                try wrapToolOutput(
-                    allocator,
-                    tool_call.function.name,
-                    tool_call.function.arguments,
-                    true,
-                    null,
-                    "",
-                );
+            } else try wrapToolOutput(
+                allocator,
+                tool_call.function.name,
+                tool_call.function.arguments,
+                true,
+                null,
+                "",
+            );
             // `insertLLMHistories` duplicates the content slice
             // internally (line 123 of insert_llm_histories.zig), so
             // we own and free the envelope string after the call
@@ -971,12 +971,18 @@ fn sendSSEForMessageById(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend
         allocator.free(skill.content);
     };
 
+    // DB may hold Option A envelopes; the wire stays plain `.msg`
+    // (same unwrap as the insert path + REST handler). Owned dupe —
+    // freed below; the emitter only borrows it.
+    const wire_content_by_id = parsing.unwrapChatContent(allocator, msg.response_content) catch null;
+    defer if (wire_content_by_id) |w| allocator.free(w);
+
     onEventSendLLMHistory(allocator, .{
         .id = msg.id,
         .session_id = msg.session_id,
         .model = msg.model,
         .cwd = cwd,
-        .content = msg.response_content,
+        .content = wire_content_by_id orelse msg.response_content,
         .reasoning_content = msg.reasoning_content,
         .role = msg.role,
         .finish_reason = msg.finish_reason,
@@ -1031,12 +1037,18 @@ fn sendSSEForLatestMessage(allocator: std.mem.Allocator, db: *sqlite.SqliteBacke
             allocator.free(skill.content);
         };
 
+        // DB may hold Option A envelopes; the wire stays plain `.msg`
+        // (same unwrap as the insert path + REST handler). Owned dupe —
+        // freed below; the emitter only borrows it.
+        const wire_content_latest = parsing.unwrapChatContent(allocator, msg.response_content) catch null;
+        defer if (wire_content_latest) |w| allocator.free(w);
+
         onEventSendLLMHistory(allocator, .{
             .id = msg.id,
             .session_id = msg.session_id,
             .model = msg.model,
             .cwd = cwd,
-            .content = msg.response_content,
+            .content = wire_content_latest orelse msg.response_content,
             .reasoning_content = msg.reasoning_content,
             .role = msg.role,
             .finish_reason = msg.finish_reason,
