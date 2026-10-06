@@ -28,7 +28,7 @@
 import { ref, watch, nextTick } from 'vue'
 import type { DesignElementType } from '../../api'
 
-const props = withDefaults(
+withDefaults(
   defineProps<{
     show: boolean
     pageId: string
@@ -113,15 +113,13 @@ const handleKeydown = (event: KeyboardEvent): void => {
 // Reset all state when the dialog opens. We deliberately do NOT
 // preserve any field across open/close — matches AddKanbanDialog's
 // UX and avoids surprising the user with stale data.
-watch(() => props.show, async (show) => {
-  if (show) {
-    name.value = ''
-    elementType.value = 'rectangle'
-    initialHtml.value = ''
-    await nextTick()
-    nameInput.value?.focus()
-  }
-})
+const handleOpen = async () => {
+  name.value = ''
+  elementType.value = 'rectangle'
+  initialHtml.value = ''
+  await nextTick()
+  nameInput.value?.focus()
+}
 
 // Auto-fill the HTML textarea when the type changes (only if the user
 // hasn't typed anything yet — we don't want to clobber their draft).
@@ -134,7 +132,7 @@ watch(elementType, (t) => {
 
 <template>
   <Teleport to="body">
-    <Transition name="add-design-element-modal">
+    <Transition name="add-design-element-modal" @before-enter="handleOpen">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -148,7 +146,7 @@ watch(elementType, (t) => {
         <!-- Backdrop -->
         <div
           class="absolute inset-0 backdrop-blur-md"
-          style="background: rgba(0, 0, 0, 0.6);"
+          style="background: rgba(0, 0, 0, 0.6)"
           @click="handleClose"
         />
 
@@ -169,15 +167,12 @@ watch(elementType, (t) => {
             <h3
               id="add-design-element-title"
               class="text-lead font-semibold flex items-center gap-2"
-              style="color: var(--semantic-text);"
+              style="color: var(--semantic-text)"
             >
               <span aria-hidden="true">◇</span>
               Add Design Element
             </h3>
-            <p
-              class="text-dense mt-1"
-              style="color: var(--semantic-text-dim);"
-            >
+            <p class="text-dense mt-1" style="color: var(--semantic-text-dim)">
               Add a new element to this page
             </p>
           </div>
@@ -186,7 +181,7 @@ watch(elementType, (t) => {
           <div class="px-5 pb-4">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               Type
             </label>
@@ -211,7 +206,7 @@ watch(elementType, (t) => {
           <div class="px-5 pb-4">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               Name
             </label>
@@ -236,10 +231,10 @@ watch(elementType, (t) => {
           <div class="px-5 pb-4">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               Initial HTML body
-              <span class="ml-1 text-micro" style="color: var(--semantic-text-dim);">
+              <span class="ml-1 text-micro" style="color: var(--semantic-text-dim)">
                 (optional — default filled by type)
               </span>
             </label>
