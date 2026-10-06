@@ -28,7 +28,14 @@ pub const CliArgs = struct {
     port: ?u16 = null,
     /// `--static-dir`. Copied onto `ctxParent.static_dir_path` once that
     /// context exists. Allocator-owned for the process lifetime — see `parse`.
+    /// Ignored when `no_static_dir` is set (see that field).
     static_dir: ?[]const u8 = null,
+    /// `--no-static-dir`: serve the API only, no static files at `/`.
+    /// Exists so an API-only run can opt out of the `--static-dir` default
+    /// that `zig build run` passes (see build.zig) without having to spell
+    /// out a different directory. Wins over `--static-dir` regardless of
+    /// order on the argv.
+    no_static_dir: bool = false,
     /// `--http2 h2c`. OFF by default; there is deliberately no TLS here, so
     /// browsers keep using HTTP/1.1 unless TLS is also enabled.
     enable_h2c: bool = false,
@@ -104,6 +111,8 @@ pub fn parse(
             i += 1;
             if (i >= args.len) return .{ .kind = .missing_static_dir_value };
             out.static_dir = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--no-static-dir")) {
+            out.no_static_dir = true;
         } else if (std.mem.eql(u8, arg, "--http2")) {
             // `--http2` on its own means h2c; an explicit value keeps room for
             // future modes (e.g. `--http2=off`). It consumes the next word
@@ -167,6 +176,7 @@ pub fn printUsage() void {
     std.debug.print("Usage: pabrik [--port PORT] [--static-dir DIR] [--http2 h2c|off] [--tls CERT KEY | --tls-selfsigned] [--auth]\n", .{});
     std.debug.print("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
     std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
+    std.debug.print("  --no-static-dir      API only: serve no static files at / (overrides --static-dir)\n", .{});
     std.debug.print("  --http2 h2c|off      Also accept HTTP/2 cleartext (h2c) clients on the same port (default: off)\n", .{});
     std.debug.print("  --auth               Require login (session cookie + middleware). When off, all endpoints are open.\n", .{});
 }
@@ -209,6 +219,7 @@ test "parse: no arguments yields the documented defaults" {
     try ok(&.{}, &args);
     try testing.expectEqual(@as(?u16, null), args.port);
     try testing.expectEqual(@as(?[]const u8, null), args.static_dir);
+    try testing.expectEqual(false, args.no_static_dir);
     try testing.expectEqual(false, args.enable_h2c);
     try testing.expectEqual(@as(?[]const u8, null), args.tls_cert_path);
     try testing.expectEqual(@as(?[]const u8, null), args.tls_key_path);
@@ -264,6 +275,25 @@ test "parse: --static-dir copies the value instead of aliasing argv" {
     backing[0] = 'X';
     try testing.expectEqualStrings("/tmp/web", args.static_dir.?);
     try rejects(&.{"--static-dir"}, .missing_static_dir_value);
+}
+
+test "parse: --no-static-dir is independent of --static-dir, in either order" {
+    // `zig build run` appends `--static-dir src/apps/desktop/dist`, so the
+    // opt-out has to be readable from the same argv — and has to win
+    // regardless of where it lands. main.zig resolves the precedence from
+    // these two fields; this pins that the parser reports BOTH rather than
+    // collapsing the flag into a cleared/overwritten static_dir.
+    var flag_first: CliArgs = .{};
+    defer freeParsed(testing.allocator, flag_first);
+    try ok(&.{ "--no-static-dir", "--static-dir", "/tmp/webapp" }, &flag_first);
+    try testing.expectEqual(true, flag_first.no_static_dir);
+    try testing.expectEqualStrings("/tmp/webapp", flag_first.static_dir.?);
+
+    var flag_last: CliArgs = .{};
+    defer freeParsed(testing.allocator, flag_last);
+    try ok(&.{ "--static-dir", "/tmp/webapp", "--no-static-dir" }, &flag_last);
+    try testing.expectEqual(true, flag_last.no_static_dir);
+    try testing.expectEqualStrings("/tmp/webapp", flag_last.static_dir.?);
 }
 
 test "parse: bare --http2 means h2c, explicit off disables it" {
