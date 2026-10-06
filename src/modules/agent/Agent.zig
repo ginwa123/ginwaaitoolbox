@@ -1465,10 +1465,6 @@ pub const Agent = struct {
         for (params.messages) |msg| {
             if (msg.content) |c| total_content_size += c.len;
         }
-        self.log_fmt(.debug, "ANTHROPIC_STATS: tools={d}, content={d}", .{
-            params.tools.len, total_content_size,
-        });
-
         const json_messages = try arena_alloc.alloc(AnthropicMessage, params.messages.len);
         // `params.messages` may contain entries with `role == .system`.
         // Anthropic rejects `role: "system"` inside `messages`, so we
@@ -1735,7 +1731,6 @@ pub const Agent = struct {
         if (thinking_on) {
             if (params.temperature) |t| {
                 if (t != 1.0) {
-                    self.log_fmt(.debug, "buildJsonAnthropicRequest: dropping temperature={d} because thinkingEnabled=true (Anthropic requires temperature omitted or 1 when thinking is enabled)", .{t});
                 }
             }
         }
@@ -1785,10 +1780,6 @@ pub const Agent = struct {
         for (params.tools) |tool| {
             total_props += tool.function.parameters.properties.len;
         }
-        self.log_fmt(.debug, "TOOL_STATS: tools={d}, props={d}, content={d}", .{
-            params.tools.len, total_props, total_content_size,
-        });
-
         // Reasoning-echo backfill (task_1789091513563_0): DeepSeek-style
         // providers in thinking mode REQUIRE every assistant message to
         // carry `reasoning_content` ("must be passed back to the API").
@@ -1929,8 +1920,6 @@ pub const Agent = struct {
             if (msg.content) |c| total_content_size += c.len;
             if (msg.reasoning_content) |rc| total_content_size += rc.len;
         }
-        self.log_fmt(.debug, "RESPONSES_STATS: tools={d}, content={d}", .{ params.tools.len, total_content_size });
-
         // Join system messages into top-level `instructions`.
         var instructions_buf: std.ArrayList(u8) = .empty;
         for (params.messages) |msg| {
@@ -2168,10 +2157,6 @@ pub const Agent = struct {
         try aw2.writer.print("{f}", .{std.json.fmt(req, .{})});
         const out = try aw2.toOwnedSlice();
         if (std.mem.eql(u8, self.UrlStyle, "openai-response")) {
-            self.log_fmt(.info, "[RESPONSES DEBUG] input_items={d} tools={d} has_instructions={} json_len={d}", .{ input_items[0..input_count].len, if (json_tools) |t| t.len else 0, instructions != null, out.len });
-            // Log a larger preview (2000 chars) so we can see tool definitions in the truncated log.
-            const preview_len = @min(out.len, 2000);
-            self.log_fmt(.debug, "[RESPONSES BODY] {s}", .{out[0..preview_len]});
         }
         return out;
     }
