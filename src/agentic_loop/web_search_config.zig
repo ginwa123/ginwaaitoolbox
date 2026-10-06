@@ -27,6 +27,7 @@
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const config_mod = @import("../modules/config/Config.zig");
+const session_llm_config = @import("session_llm_config.zig");
 
 pub const Providers = config_mod.LlmConfig.WebSearchProvidersMap;
 
@@ -56,12 +57,17 @@ pub fn resolve(
     if (!di.auth_enabled) return null;
     if (session_id.len == 0) return null;
 
-    const owner = sessionOwner(allocator, db, session_id) catch return null;
+    const owner = session_llm_config.sessionOwner(allocator, db, session_id) catch return null;
     defer allocator.free(owner);
     return resolveForOwner(allocator, db, owner);
 }
 
 /// The providers stored for one user, or null when they have none.
+///
+/// Narrow parse (not a full `forOwner` delegate like skill_evals): the map
+/// owns heap strings, so returning it borrows nothing from a temp full
+/// config — cloning it out would add a deep-copy for no behaviour gain.
+/// Owner lookup is still shared via `session_llm_config.sessionOwner`.
 ///
 /// Split from `resolve` so it can be tested without the process-global
 /// singleton — there is no `clearSingleton`, so a test that installed one
@@ -85,25 +91,6 @@ pub fn resolveForOwner(
 
     const ws = parsed.value.web_search orelse return null;
     return config_mod.LlmConfig.parseWebSearchProvidersMap(allocator, ws) catch null;
-}
-
-/// The session's user id, or an error when the session is not owned.
-fn sessionOwner(
-    allocator: std.mem.Allocator,
-    db: *pabrikcore.sqlite.SqliteBackend,
-    session_id: []const u8,
-) ![]u8 {
-    var q = try db.query(
-        allocator,
-        "SELECT COALESCE(user_id, '') FROM sessions WHERE id = ?",
-        &[_][]const u8{session_id},
-    );
-    defer q.deinit();
-    const row = try q.next();
-    const r = row orelse return error.UnknownSession;
-    defer r.deinit(allocator);
-    if (r.values.len < 1 or r.values[0].len == 0) return error.SessionHasNoOwner;
-    return try allocator.dupe(u8, r.values[0]);
 }
 
 // ─── tests: matrix rows 58–63 ────────────────────────────────────────────
@@ -209,11 +196,11 @@ test "web_search_config: row 60 — a session with no owner is not an error" {
         \\VALUES ('ownerless', 'ownerless', NULL, datetime('now'))
     , &[_][]const u8{}) catch return error.SeedSessionFailed;
 
-    try testing.expectError(error.SessionHasNoOwner, sessionOwner(alloc, &t.db, "ownerless"));
-    try testing.expectError(error.UnknownSession, sessionOwner(alloc, &t.db, "no_such_session"));
+    try testing.expectError(error.SessionHasNoOwner, session_llm_config.sessionOwner(alloc, &t.db, "ownerless"));
+    try testing.expectError(error.UnknownSession, session_llm_config.sessionOwner(alloc, &t.db, "no_such_session"));
 
     // …and `resolve` swallows both rather than propagating.
-    _ = sessionOwner(alloc, &t.db, "ownerless") catch {};
+    _ = session_llm_config.sessionOwner(alloc, &t.db, "ownerless") catch {};
 }
 
 test "web_search_config: the stored document tolerates unrelated keys" {
