@@ -22,6 +22,7 @@ import plugin from '../../eslint-rules/index'
 const linter = new Linter()
 
 type RuleName =
+  | 'local/no-watch'
   | 'local/no-watch-array-source'
   | 'local/no-watch-effect'
   | 'local/no-watch-feedback-loop'
@@ -29,6 +30,7 @@ type RuleName =
   | 'local/no-silent-fallback-catch'
 
 const ALL_RULES: RuleName[] = [
+  'local/no-watch',
   'local/no-watch-array-source',
   'local/no-watch-effect',
   'local/no-watch-feedback-loop',
@@ -73,6 +75,7 @@ const ONLY_DERIVED: RuleName[] = ['local/no-derived-state-watch']
 const ONLY_LOOP: RuleName[] = ['local/no-watch-feedback-loop']
 const ONLY_WATCH_EFFECT: RuleName[] = ['local/no-watch-effect']
 const ONLY_ARRAY_SOURCE: RuleName[] = ['local/no-watch-array-source']
+const ONLY_NO_WATCH: RuleName[] = ['local/no-watch']
 const ONLY_CATCH: RuleName[] = ['local/no-silent-fallback-catch']
 
 describe('local/no-derived-state-watch', () => {
@@ -336,6 +339,46 @@ describe('local/no-watch-array-source', () => {
   })
 })
 
+describe('local/no-watch', () => {
+  it('flags a single-ref source', () => {
+    expect(lint(`watch(a, () => { void load() })`, ONLY_NO_WATCH)).toEqual(['local/no-watch'])
+  })
+
+  it('flags the side-effect getter idiom, including the route-query shape', () => {
+    // KanbanView.vue watches `() => route.query?.detail` to open/close the
+    // panel on Back/Forward. Legitimate under the old settlement, banned
+    // under the blanket ban — pinned here so the policy change is visible.
+    expect(lint(`watch(() => props.id, () => { void load() })`, ONLY_NO_WATCH)).toEqual([
+      'local/no-watch',
+    ])
+  })
+
+  it('flags the array form (also caught by no-watch-array-source)', () => {
+    expect(lint(`watch([a, b], () => { void load() })`, ONLY_NO_WATCH)).toEqual(['local/no-watch'])
+  })
+
+  it('flags watchers with options', () => {
+    expect(lint(`watch(a, () => { void load() }, { deep: true })`, ONLY_NO_WATCH)).toEqual([
+      'local/no-watch',
+    ])
+    expect(lint(`watch(a, () => { void load() }, { immediate: true })`, ONLY_NO_WATCH)).toEqual([
+      'local/no-watch',
+    ])
+  })
+
+  it('flags the namespaced form', () => {
+    expect(lint(`Vue.watch(a, () => {})`, ONLY_NO_WATCH)).toEqual(['local/no-watch'])
+  })
+
+  it('allows computed(), which derives without reacting', () => {
+    expect(lint(`const c = computed(() => a.value * 2)`, ONLY_NO_WATCH)).toEqual([])
+  })
+
+  it('allows a similarly-named function that is not watch', () => {
+    expect(lint(`watcher(a, () => { void load() })`, ONLY_NO_WATCH)).toEqual([])
+  })
+})
+
 describe('local/no-silent-fallback-catch', () => {
   it('flags a catch that returns [] with no diagnostic', () => {
     // This is PR #719: an outage and an empty session reached the UI as the
@@ -395,7 +438,11 @@ describe('local/no-silent-fallback-catch', () => {
 })
 
 describe('the rules compose without false positives on real shapes', () => {
-  it('a realistic component using computed + side-effect watch + logged catch is clean', () => {
+  it('a realistic component using computed + side-effect watch + logged catch trips ONLY the blanket ban', () => {
+    // Under the blanket ban this previously-clean shape reports exactly one
+    // hit — `local/no-watch` — and nothing else. That pins the policy
+    // change: the targeted rules still see no derived state, no loop, no
+    // silent catch here; only the backstop fires.
     const code = `
       import { ref, watch, computed } from 'vue'
       export function useRows(props) {
@@ -419,6 +466,6 @@ describe('the rules compose without false positives on real shapes', () => {
         return { rows, error, busy, count }
       }
     `
-    expect(lint(code)).toEqual([])
+    expect(lint(code)).toEqual(['local/no-watch'])
   })
 })

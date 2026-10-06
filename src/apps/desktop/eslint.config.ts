@@ -59,6 +59,14 @@ export default defineConfigWithVueTs(
       // Vue spelling of `useEffect(fn, [a, b])`. Split into one watch per
       // source sharing a handler.
       'local/no-watch-array-source': 'error',
+      // Blanket ban: ALL `watch()` calls are prohibited, including the
+      // single-source side-effect form. Pre-existing sites are pinned as
+      // baseline debt in `eslint-suppressions.json` (regenerate with
+      // `pnpm run lint:banned-baseline` only after fixing debt, never to
+      // silence a new violation). New watchers fail immediately. Note
+      // there is deliberately no sanctioned alternative for external
+      // signals (router, SSE, browser chrome) — those cases go to review.
+      'local/no-watch': 'error',
       // A watcher that writes back into the value it watches. Vue re-runs a
       // watcher when a dependency it READS changes, so a self-write schedules
       // another run — the loop only ends when the write is accidentally
