@@ -320,15 +320,9 @@ fn useCaseWithPrograms(
     // `spawn` also hands the child the `Io.Threaded` CACHED environ, so
     // the process cannot fix this for itself after startup. The fix is
     // to pass an explicit `environ_map` to this probe; tracked as
-    // follow-up work.
-    //
-    // 2026-10-07 incident: this same vector (hook-exported GIT_DIR) made
-    // the pre-push hook's own `zig build test` spray sixteen fixture
-    // `init` commits onto a live PR branch. Two mitigations landed for
-    // the TEST side: the hook unsets GIT_* itself (.husky/pre-push), and
-    // every git-spawning test fixture refuses a dirty env loudly instead
-    // of committing into a real repo (helpers/git_env_guard.zig). This
-    // production probe still inherits the environment.
+    // follow-up work. Test-side mitigations: the hook unsets GIT_*
+    // (.husky/pre-push) and fixtures refuse a dirty env
+    // (helpers/git_env_guard.zig).
     {
         const check = std.process.run(allocator, io, .{ .argv = &.{ "git", "-C", path, "rev-parse", "--git-dir" } }) catch return error.NotARepository;
         defer {
@@ -833,9 +827,7 @@ fn haveGit() bool {
 /// A real (empty) git repo inside the fixture, so the
 /// `git rev-parse --git-dir` gate in `useCaseWith` passes.
 fn makeGitRepo(fx: *Fixture) ![]u8 {
-    // Same guard as the other git fixtures: under hook-exported
-    // GIT_DIR/GIT_WORK_TREE even `git init <path>` misbehaves against the
-    // real repo (2026-10-07 incident). Fail loudly here.
+    // Fixture git must not run under hook-exported GIT_DIR/GIT_WORK_TREE.
     try @import("helpers").git_env_guard.requireCleanGitEnv();
     const a = fx.allocator;
     const repo = try fx.subDir("repo");

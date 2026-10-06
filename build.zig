@@ -3664,12 +3664,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     b.step("test:helpers:ansi", "Run ansi (ANSI escape stripper) helper tests")
         .dependOn(&run_ansi_tests.step);
 
-    // Same story for `git_env_guard.zig`: standalone helpers-package file
-    // (std + libc getenv only), so its inline tests need their own root.
-    // These are load-bearing: the guard is what stops a suite run under a
-    // git hook (GIT_DIR/GIT_WORK_TREE exported) from committing fixture
-    // `init`s into the REAL repository — on 2026-10-07 exactly that
-    // sprayed sixteen commits onto a live PR branch via pre-push.
+    // Standalone helper (std + libc getenv only), so it needs its own test root.
     const git_env_guard_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/helpers/git_env_guard.zig"),

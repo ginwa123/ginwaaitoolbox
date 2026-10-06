@@ -1896,10 +1896,7 @@ const GitFixture = struct {
     allocator: std.mem.Allocator,
 
     fn init(allocator: std.mem.Allocator) !GitFixture {
-        // Refuse fixture git under hook-exported GIT_DIR/GIT_WORK_TREE:
-        // `git -C <fixture> commit` obeys the env over `-C` and would land
-        // in the real repo (2026-10-07 incident: sixteen `init` commits on
-        // a live PR branch). Loud error here, never silent corruption.
+        // Refuse fixture git when hook-exported GIT_DIR/GIT_WORK_TREE is set.
         try @import("helpers").git_env_guard.requireCleanGitEnv();
         var tmp = std.testing.tmpDir(.{});
         errdefer tmp.cleanup();
