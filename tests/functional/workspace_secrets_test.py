@@ -51,7 +51,7 @@ Covered
     `UNKNOWN`, and the target file is never created.
 
 Run:
-    NALAR_BIN=<worktree>/zig-out/bin/nalar \
+    PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \
       python -m pytest tests/functional/workspace_secrets_test.py -v
 
 NEVER curl a live server for any of this. `FunctionalHarness` boots a fresh
@@ -846,7 +846,7 @@ def _run_turn(
 
 
 def test_unknown_placeholder_names_the_missing_key_and_dispatches_nothing(
-    default_nalar_bin: Path,
+    default_pabrik_bin: Path,
 ) -> None:
     """`{{SECRETS:UNKNOWN}}` produces a tool error naming `UNKNOWN`, and the
     tool never runs.
@@ -859,7 +859,7 @@ def test_unknown_placeholder_names_the_missing_key_and_dispatches_nothing(
     Runs a positive control alongside the required case; see the section
     header above for why A without B proves nothing.
     """
-    harness = FunctionalHarness.boot(default_nalar_bin, stub_llm_profile=True)
+    harness = FunctionalHarness.boot(default_pabrik_bin, stub_llm_profile=True)
     server: ThreadingHTTPServer | None = None
     try:
         # ── A workspace whose item path IS the session cwd, so
@@ -918,7 +918,7 @@ def test_unknown_placeholder_names_the_missing_key_and_dispatches_nothing(
         stub_url = f"http://127.0.0.1:{stub_port}/v1/chat/completions"
         harness.http(
             "PUT",
-            "/api/config/nalar",
+            "/api/config/pabrik",
             json_body={
                 "api_endpoint": stub_url,
                 "api_key": "sk-stub-test",
@@ -950,7 +950,7 @@ def test_unknown_placeholder_names_the_missing_key_and_dispatches_nothing(
 
         # The worker must have survived both turns.
         assert harness.health(), (
-            f"nalar died during the turn.\n--- log tail ---\n{log_tail[-4000:]}"
+            f"pabrik died during the turn.\n--- log tail ---\n{log_tail[-4000:]}"
         )
 
         state: _StubState = server.state  # type: ignore[attr-defined, union-attr]
