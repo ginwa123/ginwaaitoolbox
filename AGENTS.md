@@ -448,7 +448,6 @@ Repo-specific notes: `scrollLogger.*({ reason })` takes a closed `ScrollReason`
 union (a retry is not a scroll reason — use `console.warn`); `oxlint`'s
 `no-useless-catch` rejects a `catch (e) { throw e }` wrapper; and prettier
 wraps long `v-if` expressions across lines, so source-contract regexes must be
-whitespace-tolerant. See
-`.pabrik/skills/chatview-empty-state-gate/SKILL.MD` for a worked example.
+whitespace-tolerant.
 
 
