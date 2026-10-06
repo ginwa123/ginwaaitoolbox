@@ -28,7 +28,7 @@
 // composables/useTaskActions.ts; this file owns ONLY the card
 // layout and the card-specific computeds (description preview, meta
 // row, Jira-style type accent).
-import { inject, ref, computed, watch, onMounted, type Ref } from 'vue'
+import { inject, ref, computed, onMounted, onUpdated, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useAgentErrorStore } from '../../stores/agentError'
 import { useContextMenu } from '../../composables/useContextMenu'
@@ -522,15 +522,20 @@ const loadPrStatus = async () => {
   prHasConflict.value = hasConflict
 }
 
+// Reload PR status when the badge or cwd changes: mount covers the
+// initial load, prev-combo guard on update covers branch/cwd swaps.
+const prevPrKey = ref('')
+const prKey = () => `${gitBranchBadge.value ?? ''}|${effectiveCwd.value}`
 onMounted(() => {
+  prevPrKey.value = prKey()
   void loadPrStatus()
 })
-
-watch(gitBranchBadge, () => {
-  void loadPrStatus()
-})
-watch(effectiveCwd, () => {
-  void loadPrStatus()
+onUpdated(() => {
+  const key = prKey()
+  if (key !== prevPrKey.value) {
+    prevPrKey.value = key
+    void loadPrStatus()
+  }
 })
 </script>
 

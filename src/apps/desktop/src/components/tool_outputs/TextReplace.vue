@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUpdated, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import DiffView from './_shared/DiffView.vue'
@@ -27,16 +27,23 @@ const isEmptyContent = (c: unknown): boolean =>
 
 // Keep local toggle state in sync with the parent's `expanded` prop so the
 // component behaves as a *controlled* component (parent owns the truth).
-// Without this watcher, mount({expanded:true}) → setProps({expanded:false})
+// Without this sync, mount({expanded:true}) → setProps({expanded:false})
 // leaves the local ref out of sync with the prop, which is wrong for any
 // caller that programmatically expands/collapses from outside (e.g. tests,
-// a "collapse all" toolbar, etc.).
-watch(
-  () => props.expanded,
-  (next) => {
-    isExpanded.value = next ?? false
-  },
-)
+// a "collapse all" toolbar, etc.). Prev-prop guard on update: local
+// toggles via handleToggle don't touch the prop, so they never clobber.
+const prevExpandedProp = ref(props.expanded ?? false)
+onMounted(() => {
+  isExpanded.value = props.expanded ?? false
+  prevExpandedProp.value = props.expanded ?? false
+})
+onUpdated(() => {
+  const next = props.expanded ?? false
+  if (next !== prevExpandedProp.value) {
+    prevExpandedProp.value = next
+    isExpanded.value = next
+  }
+})
 
 const normalized = computed(() => normalizeToolContent(props.content))
 const parsed = computed(() => {

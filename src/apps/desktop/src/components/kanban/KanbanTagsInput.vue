@@ -48,7 +48,7 @@
       update:modelValue [tags: string[]]
 -->
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, onUpdated } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -205,9 +205,7 @@ const filteredSuggestions = computed<string[]>(() => {
 // "partial*" suggestions) keeps the dropdown open — the user
 // can backspace to reveal matches, and Escape closes it without
 // committing the draft.
-const showDropdown = computed<boolean>(
-  () => isFocused.value && props.suggestions.length > 0,
-)
+const showDropdown = computed<boolean>(() => isFocused.value && props.suggestions.length > 0)
 
 function onFocus(): void {
   isFocused.value = true
@@ -261,9 +259,9 @@ function onKeydown(event: KeyboardEvent): void {
       commitDraft()
     }
   } else if (
-    event.key === 'Backspace'
-    && draftInput.value.length === 0
-    && props.modelValue.length > 0
+    event.key === 'Backspace' &&
+    draftInput.value.length === 0 &&
+    props.modelValue.length > 0
   ) {
     removeTag(props.modelValue.length - 1)
   } else if (event.key === 'ArrowDown') {
@@ -319,16 +317,21 @@ function detachObserver(): void {
   }
 }
 
-// Re-attach when the sentinel ref changes (e.g. when the dropdown
-// re-mounts after a filter change hides + shows it). `flush: 'post'`
-// ensures the callback runs after the DOM patch that set the ref.
-watch(scrollSentinel, () => {
-  detachObserver()
-  attachObserver()
-}, { flush: 'post' })
-
+// The sentinel mounts/unmounts with the dropdown (v-if on hasMore, and
+// the dropdown itself opens/closes), so re-attach whenever the ref
+// element changes: mount covers the initial render, prev-element guard
+// on update covers focus-open and hasMore flips.
+let prevSentinel: HTMLLIElement | null = null
 onMounted(() => {
+  prevSentinel = scrollSentinel.value
   attachObserver()
+})
+onUpdated(() => {
+  if (scrollSentinel.value !== prevSentinel) {
+    prevSentinel = scrollSentinel.value
+    detachObserver()
+    attachObserver()
+  }
 })
 
 onBeforeUnmount(() => {
@@ -348,7 +351,7 @@ defineExpose({ commitDraft })
     <div
       class="flex flex-wrap items-center gap-1.5 px-2 py-1.5 rounded-lg"
       :class="hasError ? 'border border-red-500/60' : 'border border-[--color-border]'"
-      style="background-color: var(--semantic-sidebar-bg);"
+      style="background-color: var(--semantic-sidebar-bg)"
       :data-testid="`${props.testId}-container`"
     >
       <span
@@ -367,7 +370,12 @@ defineExpose({ commitDraft })
           :data-testid="`${props.testId}-remove-${tag}`"
         >
           <svg class="w-2 h-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12" />
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="3"
+              d="M6 18L18 6M6 6l12 12"
+            />
           </svg>
         </button>
       </span>
@@ -381,13 +389,13 @@ defineExpose({ commitDraft })
         :placeholder="props.modelValue.length === 0 ? 'Add tags (letters, digits, hyphens)…' : ''"
         :data-testid="`${props.testId}-field`"
         class="flex-1 min-w-[120px] bg-transparent outline-none text-body"
-        style="color: var(--semantic-text);"
+        style="color: var(--semantic-text)"
       />
     </div>
     <div
       v-if="showDropdown"
       class="absolute z-50 mt-1 w-full rounded-lg shadow-lg overflow-hidden"
-      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
       :data-testid="`${props.testId}-suggestions`"
     >
       <ul class="max-h-48 overflow-y-auto py-1">
@@ -413,7 +421,7 @@ defineExpose({ commitDraft })
       <div
         v-if="props.loadingMore"
         class="px-3 py-1.5 text-dense text-center"
-        style="color: var(--semantic-text-dim);"
+        style="color: var(--semantic-text-dim)"
         :data-testid="`${props.testId}-suggestions-loading`"
       >
         Loading more…
@@ -422,7 +430,7 @@ defineExpose({ commitDraft })
     <div
       v-if="hasError"
       class="mt-1 text-meta"
-      style="color: rgb(248, 113, 113);"
+      style="color: rgb(248, 113, 113)"
       :data-testid="`${props.testId}-error`"
       role="alert"
     >

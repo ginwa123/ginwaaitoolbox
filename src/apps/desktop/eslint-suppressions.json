@@ -14,11 +14,6 @@
       "count": 1
     }
   },
-  "src/components/FilePickerDialog.vue": {
-    "local/no-watch": {
-      "count": 3
-    }
-  },
   "src/components/PabrikSettings.vue": {
     "local/no-silent-fallback-catch": {
       "count": 3
@@ -27,37 +22,9 @@
       "count": 8
     }
   },
-  "src/components/design/AddDesignElementDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/design/DesignChatDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/design/DesignElement.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/design/DesignElementPreview.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/components/design/DesignView.vue": {
     "local/no-silent-fallback-catch": {
       "count": 1
-    },
-    "local/no-watch": {
-      "count": 5
-    }
-  },
-  "src/components/design/PropertiesPanel.vue": {
-    "local/no-watch": {
-      "count": 3
     }
   },
   "src/components/dialogs/CopyKanbanSpecDialog.vue": {
@@ -93,42 +60,9 @@
       "count": 1
     }
   },
-  "src/components/kanban/FilePreviewModal.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/kanban/GitBaseBranchSelect.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/kanban/KanbanColumn.vue": {
-    "local/no-watch": {
-      "count": 4
-    }
-  },
   "src/components/kanban/KanbanDescriptionEditor.vue": {
     "local/no-silent-fallback-catch": {
       "count": 1
-    },
-    "local/no-watch": {
-      "count": 3
-    }
-  },
-  "src/components/kanban/KanbanRowView.vue": {
-    "local/no-watch": {
-      "count": 2
-    }
-  },
-  "src/components/kanban/KanbanTagsInput.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/kanban/KanbanTaskDetail.vue": {
-    "local/no-watch": {
-      "count": 3
     }
   },
   "src/components/kanban/KanbanView.vue": {
@@ -206,11 +140,6 @@
       "count": 1
     }
   },
-  "src/components/tool_outputs/AskUser.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/components/tool_outputs/GetPlan.vue": {
     "local/no-silent-fallback-catch": {
       "count": 2
@@ -224,11 +153,6 @@
   "src/components/tool_outputs/LoadMemory.vue": {
     "local/no-silent-fallback-catch": {
       "count": 1
-    }
-  },
-  "src/components/tool_outputs/PresentFiles.vue": {
-    "local/no-watch": {
-      "count": 2
     }
   },
   "src/components/tool_outputs/ReadCompactedMessages.vue": {
@@ -246,11 +170,6 @@
       "count": 2
     }
   },
-  "src/components/tool_outputs/SkillList.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/components/tool_outputs/SpawnSubAgent.vue": {
     "local/no-silent-fallback-catch": {
       "count": 1
@@ -258,9 +177,6 @@
   },
   "src/components/tool_outputs/TextReplace.vue": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    },
-    "local/no-watch": {
       "count": 1
     }
   },
@@ -294,11 +210,6 @@
       "count": 2
     }
   },
-  "src/components/views/ChatsList.vue": {
-    "local/no-watch": {
-      "count": 4
-    }
-  },
   "src/components/views/CodeEditor.vue": {
     "local/no-watch": {
       "count": 1
@@ -307,9 +218,6 @@
   "src/components/views/KanbanSettingsView.vue": {
     "local/no-silent-fallback-catch": {
       "count": 1
-    },
-    "local/no-watch": {
-      "count": 2
     }
   },
   "src/components/views/KanbanToolsPanel.vue": {
@@ -360,17 +268,9 @@
       "count": 1
     }
   },
-  "src/components/views/chat_right_sidebar/SidebarDiffView.vue": {
-    "local/no-watch": {
-      "count": 2
-    }
-  },
   "src/components/views/chat_right_sidebar/SkillEvalsPanel.vue": {
     "local/no-silent-fallback-catch": {
       "count": 1
-    },
-    "local/no-watch": {
-      "count": 2
     }
   },
   "src/components/views/chat_right_sidebar/TerminalTab.vue": {
@@ -399,11 +299,6 @@
   "src/components/workspace/DocumentsView.vue": {
     "local/no-watch": {
       "count": 1
-    }
-  },
-  "src/components/workspace/WorkspaceItemTaskCard.vue": {
-    "local/no-watch": {
-      "count": 2
     }
   },
   "src/composables/useChatScrollRestore.ts": {

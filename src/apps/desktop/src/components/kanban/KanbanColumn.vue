@@ -41,7 +41,7 @@
       pin-task           [workspaceId, itemId, taskId, isPinned]
 -->
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted, onUpdated } from 'vue'
 import KanbanCard from './KanbanCard.vue'
 import KanbanSortMenu from './KanbanSortMenu.vue'
 import { VirtualScroller } from '@/helpers'
@@ -250,6 +250,7 @@ const loadingMoreTasks = computed(
 const scrollerIsScrollable = ref(false)
 const handleScrollabilityChange = (scrollable: boolean) => {
   scrollerIsScrollable.value = scrollable
+  maybeAutoFetchNextPage()
 }
 
 // @load-more from VirtualScroller. Fire `loadMoreTasksForColumn`.
@@ -279,7 +280,7 @@ const handleManualLoadMore = () => {
 // not auto fetch? it keeps like that until i click the load more").
 //
 // Fix: when the column has fewer cards than one page AND `hasMore` is
-// true, automatically fetch the next page. The watcher re-fires when
+// true, automatically fetch the next page. The update guard re-fires when
 // the new page arrives (cardsInColumn.length grows), recursively
 // pulling pages until either `hasMore` flips false OR the column
 // becomes scrollable (at which point the VirtualScroller's @load-more
@@ -292,9 +293,9 @@ const handleManualLoadMore = () => {
 //     concurrent fetches.
 //   - `cardsInColumn.length < PAGE_SIZE` is the "doesn't overflow" check.
 //     Once the column becomes scrollable, the condition is false and
-//     the watcher goes silent — VirtualScroller handles the rest.
-//   - `hasAutoFetched` is a one-shot guard so the watcher doesn't loop
-//     forever on the SAME DOM state — but the watcher IS triggered by
+//     the guard goes silent — VirtualScroller handles the rest.
+//   - `hasAutoFetched` is a one-shot guard so the update hook doesn't loop
+//     forever on the SAME DOM state — but the guard IS re-armed by
 //     `cardsInColumn.length` changes, so each new page re-arms it.
 const PAGE_SIZE = 10
 const hasAutoFetched = ref(false)
@@ -313,19 +314,31 @@ const maybeAutoFetchNextPage = () => {
   // Container is scrollable → VirtualScroller will handle it.
   if (scrollerIsScrollable.value) return
   // Already auto-fetched for this DOM state → wait for the new
-  // page's mount to re-arm. The watcher re-fires when the next
+  // page's mount to re-arm. The update guard re-fires when the next
   // page's cards arrive (cardsInColumn.length changes).
   if (hasAutoFetched.value) return
   hasAutoFetched.value = true
   void workspacesStore.loadMoreTasksForColumn(props.workspaceId, props.itemId, props.column.id)
 }
-// Four single-source watchers sharing one guarded handler. `immediate`
-// stays on the first only, so mount fires once; the guard flags above make
-// a same-tick change to several sources a harmless no-op on repeat runs.
-watch(cardsInColumn, maybeAutoFetchNextPage, { immediate: true })
-watch(moreTasksAvailable, maybeAutoFetchNextPage)
-watch(loadingMoreTasks, maybeAutoFetchNextPage)
-watch(scrollerIsScrollable, maybeAutoFetchNextPage)
+// One explicit path instead of four watchers: mount covers the initial
+// state, and a prev-combo guard on update covers all four inputs (new
+// page arrivals change the card count; pagination flags and the
+// scrollability flag arrive via the handler above). The `hasAutoFetched`
+// guard inside the handler keeps repeat runs harmless.
+const prevAutoFetchKey = ref('')
+const autoFetchKey = () =>
+  `${cardsInColumn.value.length}|${moreTasksAvailable.value ? '1' : '0'}|${loadingMoreTasks.value ? '1' : '0'}|${scrollerIsScrollable.value ? '1' : '0'}`
+onMounted(() => {
+  prevAutoFetchKey.value = autoFetchKey()
+  maybeAutoFetchNextPage()
+})
+onUpdated(() => {
+  const key = autoFetchKey()
+  if (key !== prevAutoFetchKey.value) {
+    prevAutoFetchKey.value = key
+    maybeAutoFetchNextPage()
+  }
+})
 
 // ─── Inline rename state ───────────────────────────────────────────────────
 
@@ -463,7 +476,7 @@ const openSortModal = () => {
 // where <KanbanSortMenu>'s own handler has already written the new
 // sortBy/direction via v-model before the event bubbles here.
 //
-// <KanbanRowView> uses the equivalent pair of single-source watchers instead.
+// <KanbanRowView> uses the equivalent pair of single-source update handlers instead.
 // Both are correct; this one additionally fires on a re-pick of the same
 // value, which is the behaviour the comment above describes.
 //

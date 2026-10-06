@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUpdated, ref } from 'vue'
 import UiIcon from '../../ui/UiIcon.vue'
 import DiffCommentBox, {
   listSavedComments,
@@ -98,21 +98,31 @@ async function loadWholeFile(): Promise<void> {
   }
 }
 
-watch(
-  () => [props.wholeFile, props.untracked, props.path, props.staged, props.cwd] as const,
-  ([whole]) => {
-    if (whole) void loadWholeFile()
-    else {
-      wholeFileResult.value = null
-      wholeFileError.value = null
-    }
-  },
-  // immediate: a section can MOUNT with the scope already on (the state lives
-  // in ChatView, so remounting after a collapse restores it). Waiting for a
-  // transition would leave that section showing hunks while its control says
-  // "Whole file".
-  { immediate: true },
-)
+// Whole-file scope sync: mount covers a section mounting with the scope
+// already on (the state lives in ChatView, so remounting after a collapse
+// restores it); the prev-combo guard on update covers scope/path/cwd
+// switches. A path switch also resets the review progress below.
+const prevDiffKey = ref('')
+const diffKey = () =>
+  `${props.wholeFile ? '1' : '0'}|${props.untracked ? '1' : '0'}|${props.path}|${props.staged ? '1' : '0'}|${props.cwd}`
+const syncDiffScope = () => {
+  if (props.wholeFile) void loadWholeFile()
+  else {
+    wholeFileResult.value = null
+    wholeFileError.value = null
+  }
+}
+onMounted(() => {
+  prevDiffKey.value = diffKey()
+  syncDiffScope()
+})
+onUpdated(() => {
+  const key = diffKey()
+  if (key !== prevDiffKey.value) {
+    prevDiffKey.value = key
+    syncDiffScope()
+  }
+})
 
 // ── split render ──────────────────────────────────────────────────────────
 const splitRows = computed<SplitRow[]>(() => pairSplitRows(displayLines.value))
@@ -198,6 +208,14 @@ const closeMiniChat = () => {
 }
 
 const reviewedVersion = ref(0)
+// A new file resets the review progress (prev-path guard on update).
+const prevDiffPath = ref(props.path)
+onUpdated(() => {
+  if (props.path !== prevDiffPath.value) {
+    prevDiffPath.value = props.path
+    reviewedVersion.value = 0
+  }
+})
 const savedThreads = computed(() => {
   void reviewedVersion.value
   return listSavedComments(props.cwd, props.path)
@@ -244,13 +262,6 @@ function threadsAfterSplitRow(rowIndex: number): SavedComment[] {
   }
   return out
 }
-
-watch(
-  () => props.path,
-  () => {
-    reviewedVersion.value = 0
-  },
-)
 
 const handleCommentSave = (payload: DiffCommentSavePayload) => {
   closeMiniChat()

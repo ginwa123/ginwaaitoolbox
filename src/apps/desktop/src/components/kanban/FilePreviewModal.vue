@@ -32,7 +32,7 @@
     surface.
 -->
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, onMounted, onUpdated } from 'vue'
 import * as api from '../../api'
 import UiIcon from '../ui/UiIcon.vue'
 
@@ -64,31 +64,43 @@ const absolutePath = computed<string>(() => {
   return stripped
 })
 
-// Re-fetch whenever the dialog opens OR the file changes.
-watch(
-  () => [props.show, props.filePath] as const,
-  async ([show, file]) => {
-    if (!show || !file || !props.cwd) return
-    isLoading.value = true
-    errorMessage.value = null
-    content.value = ''
-    try {
-      const url = `${api.API_BASE}/system/folder?path=${encodeURIComponent(props.cwd)}&action=read&file=${encodeURIComponent(absolutePath.value)}`
-      const response = await fetch(url)
-      if (!response.ok) {
-        errorMessage.value = `Failed to read file (HTTP ${response.status})`
-        return
-      }
-      const data = (await response.json()) as { content?: string; encoding?: string }
-      content.value = data.content ?? ''
-    } catch (err) {
-      errorMessage.value = err instanceof Error ? err.message : String(err)
-    } finally {
-      isLoading.value = false
+// Re-fetch whenever the dialog opens OR the file changes: open guard
+// (mount with show=true, plus closed->open updates) with a prev-combo
+// guard so file switches while open also refetch.
+const fetchForDialog = async () => {
+  if (!props.show || !props.filePath || !props.cwd) return
+  isLoading.value = true
+  errorMessage.value = null
+  content.value = ''
+  try {
+    const url = `${api.API_BASE}/system/folder?path=${encodeURIComponent(props.cwd)}&action=read&file=${encodeURIComponent(absolutePath.value)}`
+    const response = await fetch(url)
+    if (!response.ok) {
+      errorMessage.value = `Failed to read file (HTTP ${response.status})`
+      return
     }
-  },
-  { immediate: true },
-)
+    const data = (await response.json()) as { content?: string; encoding?: string }
+    content.value = data.content ?? ''
+  } catch (err) {
+    errorMessage.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+const prevFetchKey = ref('')
+const fetchKey = () => `${props.show ? '1' : '0'}|${props.filePath}|${props.cwd}`
+onMounted(() => {
+  prevFetchKey.value = fetchKey()
+  void fetchForDialog()
+})
+onUpdated(() => {
+  const key = fetchKey()
+  if (key !== prevFetchKey.value) {
+    prevFetchKey.value = key
+    void fetchForDialog()
+  }
+})
 
 const handleClose = () => emit('close')
 const handleKeydown = (event: KeyboardEvent) => {

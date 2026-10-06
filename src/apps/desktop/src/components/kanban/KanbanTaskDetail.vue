@@ -86,11 +86,11 @@
 import {
   ref,
   computed,
-  watch,
   nextTick,
   onMounted,
   onBeforeUnmount,
   onUnmounted,
+  onUpdated,
   inject,
 } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
@@ -479,24 +479,8 @@ const cwdPickerRef = ref<HTMLElement | null>(null)
 // handles the initial sync AND the rare "user clicks task A then
 // task B with the dialog already open" re-sync — cwd re-syncs
 // whenever show flips true OR the target task swaps.
-// This dedicated `props.show`-only watcher remains here for
-// defensiveness (the broader watcher runs on the same tick as
-// the dialog mount; the explicit show-watcher documents intent).
-watch(
-  () => props.show,
-  (show) => {
-    if (!show) return
-    if (isCreateMode.value) {
-      cwdSession.value = props.cwd ?? ''
-    } else {
-      // `task?.cwd ?? ''` coerces legacy tasks whose `cwd` field is
-      // `undefined` (predates Migration 070) to the empty-state
-      // placeholder, matching what the read-only strip showed
-      // before this fix.
-      cwdSession.value = props.task?.cwd ?? ''
-    }
-  },
-)
+// cwdSession sync lives in the open handler below (it sets the same
+// values in both modes), so no separate show-only sync is needed.
 const toggleCwdPicker = () => {
   isCwdPickerOpen.value = !isCwdPickerOpen.value
 }
@@ -638,11 +622,9 @@ const pendingAction = ref<'create' | 'create_and_run' | null>(null)
 
 // Reset form whenever the dialog opens OR the target task changes.
 // In create mode we always start blank (regardless of `task`). In
-// edit mode we prefill from `task` (today's behavior).
-watch(
-  () => [props.show, props.task?.id, props.mode] as const,
-  async ([show]) => {
-    if (!show) return
+// edit mode we prefill from `task` (today's behavior). Runs from the
+// mount/update open guard below instead of a watcher.
+const openDialog = async (): Promise<void> => {
     // The commit split button narrates the in-flight action via
     // pendingAction; clear any stale attribution from the previous
     // session here, in the open handler, instead of watching isCreating.
@@ -739,28 +721,32 @@ watch(
       void loadProfiles()
       void loadHomeDir()
     }
-  },
-  { immediate: true },
-)
-
-// NEW (plan: 2026-08-06-kanban-add-task-button-placement). Sync
-// selectedColumnId from the parent's `column` prop. Two scenarios:
-//   (a) Dialog opens — props.show flips false→true, parent passes
-//       the latest column via `props.column`, selectedColumnId
-//       re-syncs to match.
-//   (b) User changes the column in the dropdown — emit `column-change`,
-//       host updates activeCreateColumnId, the parent's computed
-//       `activeCreateColumn` re-flows, `props.column?.id` re-emits,
-//       this watcher fires with the SAME id (no infinite loop —
-//       re-assigning selectedColumnId to its current value is a no-op).
-watch(
-  () => [props.show, props.column?.id] as const,
-  ([show, columnId]) => {
-    if (show && isCreateMode.value) {
-      selectedColumnId.value = columnId ?? null
+    // Sync selectedColumnId from the parent's `column` prop on open
+    // (create mode only). Re-assigning the same id is a no-op, so the
+    // host round-trip in scenario (b) stays loop-free.
+    if (isCreateMode.value) {
+      selectedColumnId.value = props.column?.id ?? null
     }
-  },
-)
+}
+
+// selectedColumnId sync lives at the end of the open handler above.
+
+// Open guard: run the open handler on mount-with-show plus any update
+// that changes show, the target task, the mode, or the column.
+const prevOpenKey = ref('')
+const openKey = () =>
+  `${props.show ? '1' : '0'}|${props.task?.id ?? ''}|${props.mode}|${props.column?.id ?? ''}`
+onMounted(() => {
+  prevOpenKey.value = openKey()
+  if (props.show) void openDialog()
+})
+onUpdated(() => {
+  const key = openKey()
+  if (key !== prevOpenKey.value) {
+    prevOpenKey.value = key
+    if (props.show) void openDialog()
+  }
+})
 
 // NEW (plan: 2026-08-06-kanban-add-task-button-placement). Register
 // the click-outside listener for the column picker at mount,
