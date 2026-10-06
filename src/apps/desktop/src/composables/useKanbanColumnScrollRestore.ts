@@ -1,4 +1,4 @@
-import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
+import { onBeforeUnmount, onMounted, onUpdated, ref, type Ref } from 'vue'
 
 /**
  * Persists a kanban column body's `scrollTop` to `localStorage` across
@@ -23,7 +23,8 @@ import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
  *     arriving from the API) the container is null at the column's
  *     `onMounted`. Losing that moment would mean never attaching the
  *     listeners — the position would never be saved in the first place. So
- *     this one WATCHES the ref and wires up whenever the element shows up.
+ *     this one wires up on mount AND on update (cards arriving re-renders
+ *     the host, which lands in the update hook with the element present).
  *   - It restores unconditionally. `useChatScrollRestore` deliberately
  *     refuses to restore a position within 40 px of the bottom (a chat should
  *     land on the newest message); a kanban column scrolled to its last card
@@ -156,35 +157,38 @@ export function useKanbanColumnScrollRestore(
     lastKnownScrollTop = clamped
   }
 
-  watch(
-    containerRef,
-    (el) => {
-      if (!el) {
-        detach()
-        return
-      }
-      if (attachedEl === el) return
+  // Attach on mount when the element is already there, and on update when
+  // it shows up late (the scroller sits behind `v-if="cardsInColumn.length
+  // > 0"`, so on a cold load the container is still null at mount and only
+  // appears once cards arrive — which re-renders the host and lands here).
+  // `wireContainer` is idempotent per element; a null pass detaches.
+  const wireContainer = (el: HTMLElement | null) => {
+    if (!el) {
       detach()
-      attachedEl = el
+      return
+    }
+    if (attachedEl === el) return
+    detach()
+    attachedEl = el
 
-      el.addEventListener('scroll', handleScroll, { passive: true })
-      // `scrollend` is the fast path (~100 ms after the user stops). Feature
-      // detect with `in` — jsdom silently creates missing properties on
-      // assignment, so a bare `if (el.onscrollend)` would lie.
-      if ('onscrollend' in el) {
-        el.addEventListener('scrollend', handleScrollEnd, { passive: true })
-      }
-      // else: the debounced `scroll` handler covers it.
+    el.addEventListener('scroll', handleScroll, { passive: true })
+    // `scrollend` is the fast path (~100 ms after the user stops). Feature
+    // detect with `in` — jsdom silently creates missing properties on
+    // assignment, so a bare `if (el.onscrollend)` would lie.
+    if ('onscrollend' in el) {
+      el.addEventListener('scrollend', handleScrollEnd, { passive: true })
+    }
+    // else: the debounced `scroll` handler covers it.
 
-      void restoreInto(el)
-    },
-    // `sync` on purpose: the template ref is assigned during mount, and a
-    // post-flush watcher would leave a window where the element exists but no
-    // `scroll` listener does yet — a scroll landing in that window would never
-    // be saved. The value only ever changes on mount/unmount, so there is no
-    // reactive-churn cost to listening synchronously.
-    { immediate: true, flush: 'sync' },
-  )
+    void restoreInto(el)
+  }
+
+  onMounted(() => {
+    wireContainer(containerRef.value)
+  })
+  onUpdated(() => {
+    wireContainer(containerRef.value)
+  })
 
   onBeforeUnmount(() => {
     flushPending()

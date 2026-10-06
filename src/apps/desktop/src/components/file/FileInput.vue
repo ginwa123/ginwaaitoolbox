@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, nextTick, computed, onMounted, onBeforeUnmount, onUpdated } from 'vue'
 import * as api from '../../api'
 import { getActivePinia } from 'pinia'
 import { useTabsStore } from '../../stores/tabs'
@@ -114,14 +114,17 @@ function flushDraft(): void {
   if (bucket) bucket.setDraft(draftKey.value, inputText.value)
 }
 
-watch(inputText, (value) => {
+// Debounced draft persist, driven by the textarea's @input handler
+// (`autoResize`) instead of a watcher — same 200 ms trailing write.
+function scheduleDraftSave(): void {
   if (!draftKey.value) return
   if (draftTimer) clearTimeout(draftTimer)
+  const value = inputText.value
   draftTimer = setTimeout(() => {
     draftTimer = null
     draftBucket()?.setDraft(draftKey.value, value)
   }, 200)
-})
+}
 
 // ── Autofocus on session switch ───────────────────────────────────────
 // Clicking a chat session remounts ChatView (AppLayout `:key="activeChatId"`)
@@ -149,25 +152,22 @@ const previewFiles = ref<PreviewFile[]>([])
 
 // ── Stop button state ─────────────────────────────────────────────────────
 //
-// `isStopping` is the parent's claim about whether a stop request is in
-// flight. We watch `isLLMProcessing` and reset to false when the LLM
-// stops — covers the fast path (SSE `worker deleted` arrives before the
-// API round-trip) and the slow path (backend processes cancel before
-// SSE). Without this reset, the spinner could stay stuck on after the
-// SSE event hid the button, then re-appear the next time the agent
-// runs.
-const isStopping = ref(props.isStopping ?? false)
-watch(
-  () => props.isStopping,
-  (v) => {
-    isStopping.value = v ?? false
-  },
-)
-watch(
-  () => props.isLLMProcessing,
-  (isProcessing) => {
-    if (!isProcessing) isStopping.value = false
-  },
+// Stop-button state: the parent (ChatView) sets `isStopping` on click and
+// clears it when the LLM stops, so the spinner shows only while a stop is
+// actually in flight AND the agent is still processing. Folding the
+// `isLLMProcessing` reset into the computed covers the fast path (SSE
+// `worker deleted` arrives before the API round-trip) and the slow path
+// (backend processes cancel before SSE) with no mirror watcher — and no
+// stuck-spinner window.
+//
+// `stopRequested` is the optimistic claim for the same-tick window: the
+// parent's prop round-trips asynchronously, so without it a rapid second
+// click lands before the prop arrives and emits twice. It is cleared as
+// soon as the parent acknowledges (prop true) or the run ends — see the
+// onUpdated guard below.
+const stopRequested = ref(false)
+const isStopping = computed(
+  () => ((props.isStopping ?? false) || stopRequested.value) && (props.isLLMProcessing ?? false),
 )
 
 const handleStopClick = () => {
@@ -176,7 +176,7 @@ const handleStopClick = () => {
   // this is a defensive check for the case where the prop hasn't
   // propagated yet (same render frame as the click).
   if (isStopping.value) return
-  isStopping.value = true
+  stopRequested.value = true
   emit('stop-session')
 }
 
@@ -208,6 +208,10 @@ const sendMessageWithFiles = async () => {
     clearTimeout(draftTimer)
     draftTimer = null
   }
+  if (fileDebounceTimer) {
+    clearTimeout(fileDebounceTimer)
+    fileDebounceTimer = null
+  }
   // The text is gone from the box AND from the draft bucket — a sent
   // message must never come back as a draft.
   draftBucket()?.clearDraft(draftKey.value)
@@ -227,15 +231,25 @@ const sendMessageWithFiles = async () => {
   })
 }
 
-// Watch for changes to initialMessage (e.g., when selecting diff lines)
-watch(
-  () => props.initialMessage,
-  (newVal) => {
-    if (newVal) {
-      inputText.value = newVal
-    }
-  },
-)
+// Pre-fill when the parent provides a new initialMessage (e.g., selecting
+// diff lines). The producer lives in the parent, so the prop change is
+// picked up here with a prev-value guard on update — same truthy-only
+// assignment the watcher did.
+let prevInitialMessage = props.initialMessage
+onUpdated(() => {
+  const next = props.initialMessage
+  const changed = next !== prevInitialMessage
+  prevInitialMessage = next
+  if (changed && next) {
+    inputText.value = next
+  }
+  // Drop the optimistic stop claim once it is superseded: the parent
+  // acknowledged (prop true, it owns the spinner now) or the run ended
+  // (otherwise the leftover would show a phantom spinner on the next run).
+  if (stopRequested.value && ((props.isStopping ?? false) || !props.isLLMProcessing)) {
+    stopRequested.value = false
+  }
+})
 
 // Trigger native file picker
 const triggerFilePicker = () => {
@@ -573,10 +587,12 @@ const detectAtTrigger = () => {
   }
 }
 
-watch(inputText, () => {
+// Debounced @-mention detection, driven by the textarea's @input handler
+// (`autoResize`) instead of a watcher — same 150 ms trailing run.
+function scheduleDetectAtTrigger(): void {
   if (fileDebounceTimer) clearTimeout(fileDebounceTimer)
   fileDebounceTimer = setTimeout(detectAtTrigger, 150)
-})
+}
 
 const selectFile = (file: FileEntry) => {
   const text = inputText.value
@@ -649,6 +665,10 @@ const autoResize = (e: Event) => {
   cursorPos.value = target.selectionStart ?? 0
   target.style.height = 'auto'
   target.style.height = `${Math.min(target.scrollHeight, 200)}px`
+  // The @input handler is the single entry point for typed text (typing,
+  // paste, IME all fire `input`), so both debounced reactions live here.
+  scheduleDraftSave()
+  scheduleDetectAtTrigger()
 }
 
 const scrollSelectedIntoView = () => {
@@ -820,7 +840,9 @@ const sendMessage = () => {
               <span v-if="isCompletionMsg(msg)" class="text-dense font-medium"
                 >Background pid {{ completionPid(msg) }}</span
               >
-              <p class="text-body truncate" style="color: var(--semantic-text)">{{ msg.message }}</p>
+              <p class="text-body truncate" style="color: var(--semantic-text)">
+                {{ msg.message }}
+              </p>
               <p class="text-dense mt-1" style="color: var(--semantic-text-dim)">Click to use</p>
             </div>
           </div>

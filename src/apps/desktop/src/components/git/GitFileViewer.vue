@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onUpdated } from 'vue'
 import UiIcon from '../ui/UiIcon.vue'
 import type { GitFileDiff } from '../../api'
 import { fetchFolderDiff } from '../../helpers/folderDiffCache'
@@ -142,13 +142,23 @@ const loadDiff = async () => {
   }
 }
 
-// Watch for changes
-watch(
-  () => [props.cwd, props.filePath, props.staged],
-  () => {
-    loadDiff()
-  },
-)
+// Reload on binding change (prev-value guard on update — same load the
+// watcher did; mount is covered below).
+let prevDiffCwd = props.cwd
+let prevDiffFilePath = props.filePath
+let prevDiffStaged = props.staged
+onUpdated(() => {
+  if (
+    props.cwd === prevDiffCwd &&
+    props.filePath === prevDiffFilePath &&
+    props.staged === prevDiffStaged
+  )
+    return
+  prevDiffCwd = props.cwd
+  prevDiffFilePath = props.filePath
+  prevDiffStaged = props.staged
+  loadDiff()
+})
 
 onMounted(() => {
   loadDiff()
@@ -246,8 +256,8 @@ onMounted(() => {
       class="flex-1 flex flex-col items-center justify-center p-4"
     >
       <UiIcon name="file" size-class="w-6 h-6" class="mb-3" />
-      <p class="text-body" style="color: var(--semantic-text-dim);">No changes detected</p>
-      <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
+      <p class="text-body" style="color: var(--semantic-text-dim)">No changes detected</p>
+      <p class="text-dense mt-1" style="color: var(--semantic-text-dim)">
         File may be identical to the committed version
       </p>
     </div>
@@ -380,8 +390,10 @@ onMounted(() => {
         }"
       >
         <div class="mini-chat-header">
-          <UiIcon name="chat" style="color: var(--color-green);" />
-          <span class="text-body font-medium" style="color: var(--semantic-text);">Review this code</span>
+          <UiIcon name="chat" style="color: var(--color-green)" />
+          <span class="text-body font-medium" style="color: var(--semantic-text)"
+            >Review this code</span
+          >
           <button @click="closeMiniChat" class="ml-auto p-1 rounded hover:opacity-70">
             <svg
               class="w-4 h-4"

@@ -1,4 +1,4 @@
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 
 /**
  * Position state + dismiss wiring for the right-click context menus
@@ -34,6 +34,7 @@ export function useContextMenu(options: { width?: number; height?: number } = {}
   const openAt = (event: MouseEvent) => {
     event.preventDefault()
     menuPos.value = clampToViewport(event.clientX, event.clientY)
+    attachDismissListeners()
   }
 
   /**
@@ -53,6 +54,7 @@ export function useContextMenu(options: { width?: number; height?: number } = {}
 
   const close = () => {
     menuPos.value = null
+    detachDismissListeners()
   }
 
   const onKeydown = (event: KeyboardEvent) => {
@@ -72,25 +74,25 @@ export function useContextMenu(options: { width?: number; height?: number } = {}
 
   const onScroll = () => close()
 
-  watch(menuPos, (opened) => {
-    if (opened) {
-      window.addEventListener('keydown', onKeydown)
-      window.addEventListener('mousedown', onPointerDown)
-      window.addEventListener('wheel', onScroll, { capture: true, passive: true })
-      window.addEventListener('scroll', onScroll, true)
-      return
-    }
+  // Dismiss listeners follow the menu state directly: attached on open,
+  // removed on close (re-adding an identical listener is a browser no-op,
+  // so a second openAt while open is harmless). Unmount always detaches.
+  function attachDismissListeners() {
+    window.addEventListener('keydown', onKeydown)
+    window.addEventListener('mousedown', onPointerDown)
+    window.addEventListener('wheel', onScroll, { capture: true, passive: true })
+    window.addEventListener('scroll', onScroll, true)
+  }
+
+  function detachDismissListeners() {
     window.removeEventListener('keydown', onKeydown)
     window.removeEventListener('mousedown', onPointerDown)
     window.removeEventListener('wheel', onScroll, true)
     window.removeEventListener('scroll', onScroll, true)
-  })
+  }
 
   onBeforeUnmount(() => {
-    window.removeEventListener('keydown', onKeydown)
-    window.removeEventListener('mousedown', onPointerDown)
-    window.removeEventListener('wheel', onScroll, true)
-    window.removeEventListener('scroll', onScroll, true)
+    detachDismissListeners()
   })
 
   return { menuPos, openAt, close, clampToViewport }

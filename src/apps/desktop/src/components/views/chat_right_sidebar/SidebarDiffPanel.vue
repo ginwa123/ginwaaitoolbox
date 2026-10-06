@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import * as api from '../../../api'
 import { openInNewTab } from '../../../helpers/openInNewTab'
@@ -894,35 +894,45 @@ const unstageFile = async (file: api.GitFileChange) => {
   }
 }
 
-watch(
-  () => [props.cwd, props.prUrl] as const,
-  ([, url], [, prevUrl]) => {
-    const had = (prevUrl ?? '').trim().length > 0
-    const has = (url ?? '').trim().length > 0
-    if (had !== has) {
-      if (has) activeTab.value = readTabParam() ?? 'pr'
-      else if (activeTab.value === 'pr') {
-        // Leaving PR mode drops back to files and clears the param;
-        // a commits tab survives (it needs no PR).
-        activeTab.value = 'files'
-        syncTabParam(null)
-      }
-      // The conflicts-only filter is a PR-tab view, so it must not outlive
-      // the PR it filtered — clear it and its query param with the binding.
-      conflictsOnly.value = false
-      syncConflictsParam(false)
-      prConflictSeq++
-      prConflictLoaded.value = false
-      prConflictFiles.value = []
-      prConflictError.value = ''
-      prConflictBase.value = ''
-      prConflictTruncated.value = false
+// PR-binding sync: tab/conflict state follows the [cwd, prUrl] binding.
+// Prev-value guard on update — same body the watcher ran (no immediate
+// run; mount is covered by the onMounted loadTab below).
+function syncPrBinding(url: string | undefined, prevUrl: string | undefined) {
+  const had = (prevUrl ?? '').trim().length > 0
+  const has = (url ?? '').trim().length > 0
+  if (had !== has) {
+    if (has) activeTab.value = readTabParam() ?? 'pr'
+    else if (activeTab.value === 'pr') {
+      // Leaving PR mode drops back to files and clears the param;
+      // a commits tab survives (it needs no PR).
+      activeTab.value = 'files'
+      syncTabParam(null)
     }
-    selectedPath.value = null
-    loadedTabs.value.clear()
-    void loadTab(activeTab.value, true)
-  },
-)
+    // The conflicts-only filter is a PR-tab view, so it must not outlive
+    // the PR it filtered — clear it and its query param with the binding.
+    conflictsOnly.value = false
+    syncConflictsParam(false)
+    prConflictSeq++
+    prConflictLoaded.value = false
+    prConflictFiles.value = []
+    prConflictError.value = ''
+    prConflictBase.value = ''
+    prConflictTruncated.value = false
+  }
+  selectedPath.value = null
+  loadedTabs.value.clear()
+  void loadTab(activeTab.value, true)
+}
+
+let prevDiffCwd = props.cwd
+let prevDiffPrUrl = props.prUrl
+onUpdated(() => {
+  if (props.cwd === prevDiffCwd && props.prUrl === prevDiffPrUrl) return
+  const prevUrl = prevDiffPrUrl
+  prevDiffCwd = props.cwd
+  prevDiffPrUrl = props.prUrl
+  syncPrBinding(props.prUrl, prevUrl)
+})
 
 onMounted(() => {
   void loadTab(activeTab.value, true)

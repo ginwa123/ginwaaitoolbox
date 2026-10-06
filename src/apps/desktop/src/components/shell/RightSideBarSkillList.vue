@@ -14,7 +14,7 @@
   the Effect's error channel and the template renders it.
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUpdated, ref } from 'vue'
 import { Effect } from 'effect'
 import UiIcon from '../ui/UiIcon.vue'
 import { getSkills, type Skill } from '../../api'
@@ -92,14 +92,18 @@ const refreshSkills = () => {
 }
 
 // Reload on workspace change. `immediate` covers the first load, so the
-// old mount-plus-immediate-watch double fetch is gone.
-watch(
-  () => workspaceId.value,
-  () => {
-    loadSkills()
-  },
-  { immediate: true },
-)
+// old mount-plus-immediate-watch double fetch is gone: mount loads once,
+// and the prev-value guard below reloads only when the id moves.
+let prevSkillListWorkspaceId: string | null = workspaceId.value
+onMounted(() => {
+  prevSkillListWorkspaceId = workspaceId.value
+  loadSkills()
+})
+onUpdated(() => {
+  if (workspaceId.value === prevSkillListWorkspaceId) return
+  prevSkillListWorkspaceId = workspaceId.value
+  loadSkills()
+})
 </script>
 
 <template>

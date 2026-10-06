@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, onMounted, onUpdated } from 'vue'
 import { listFolder, type FolderEntry } from '../../api'
 import UiIcon from '../ui/UiIcon.vue'
 
@@ -54,18 +54,26 @@ const loadRoot = async () => {
   }
 }
 
-// Watch for cwd changes
-watch(
-  () => props.cwd,
-  (newCwd) => {
-    nestedEntriesCache.value = {}
-    rootEntries.value = []
-    if (newCwd) {
-      loadRoot()
-    }
-  },
-  { immediate: true },
-)
+// Reload the root on cwd change (prev-value guard on update — same
+// clear+load the watcher did; the mount call covers the initial load).
+function syncExplorerCwd(newCwd: string | undefined) {
+  nestedEntriesCache.value = {}
+  rootEntries.value = []
+  if (newCwd) {
+    loadRoot()
+  }
+}
+
+let prevExplorerCwd: string | undefined = props.cwd
+onMounted(() => {
+  prevExplorerCwd = props.cwd
+  syncExplorerCwd(props.cwd)
+})
+onUpdated(() => {
+  if (props.cwd === prevExplorerCwd) return
+  prevExplorerCwd = props.cwd
+  syncExplorerCwd(props.cwd)
+})
 
 // Toggle folder expansion
 const toggleFolder = async (entry: FolderEntry) => {

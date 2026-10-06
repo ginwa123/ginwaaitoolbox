@@ -35,9 +35,6 @@
   "src/components/PabrikSettings.vue": {
     "local/no-silent-fallback-catch": {
       "count": 3
-    },
-    "local/no-watch": {
-      "count": 8
     }
   },
   "src/components/design/AddDesignElementDialog.vue": {
@@ -78,31 +75,8 @@
       "count": 1
     }
   },
-  "src/components/file/FileInput.vue": {
-    "local/no-watch": {
-      "count": 5
-    }
-  },
-  "src/components/file/FolderExplorer.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/git/GitChanges.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/components/git/GitCommits.vue": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    },
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/git/GitFileViewer.vue": {
-    "local/no-watch": {
       "count": 1
     }
   },
@@ -157,68 +131,8 @@
       "count": 1
     }
   },
-  "src/components/memory/MemoryDetail.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/pabrik/LlmConfigForm.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/pabrik/LlmConfigModal.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/pabrik/McpServerModal.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/pabrik/PabrikTabStrip.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/preview/BackgroundCommandsPopup.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/preview/ImagePreview.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/components/preview/PreviewContentRenderer.vue": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    }
-  },
-  "src/components/shell/RightSideBarSkillList.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/shell/RightSidebar.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/shell/SkillDetail.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/shell/SseStatusBadge.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/shell/TopLoadingBar.vue": {
-    "local/no-watch": {
       "count": 1
     }
   },
@@ -318,11 +232,6 @@
       "count": 4
     }
   },
-  "src/components/views/CodeEditor.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/components/views/KanbanSettingsView.vue": {
     "local/no-silent-fallback-catch": {
       "count": 1
@@ -336,26 +245,8 @@
       "count": 1
     }
   },
-  "src/components/views/LocalMemoryDetailView.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/components/views/RoutineView.vue": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    },
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/views/WorkspaceItemMemoriesView.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/views/chat_right_sidebar/CenterDiffSection.vue": {
-    "local/no-watch": {
       "count": 1
     }
   },
@@ -365,17 +256,7 @@
     }
   },
   "src/components/views/chat_right_sidebar/DiffCommentBox.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/views/chat_right_sidebar/PrChecksPanel.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/views/chat_right_sidebar/SidebarDiffPanel.vue": {
-    "local/no-watch": {
+    "local/no-silent-fallback-catch": {
       "count": 1
     }
   },
@@ -395,28 +276,10 @@
   "src/components/views/chat_right_sidebar/TerminalTab.vue": {
     "local/no-silent-fallback-catch": {
       "count": 2
-    },
-    "local/no-watch": {
-      "count": 1
     }
   },
   "src/components/views/chat_right_sidebar/parseUnifiedDiff.ts": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    }
-  },
-  "src/components/views/chat_right_sidebar/useChatRightSidebar.ts": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/workspace/DocumentsList.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/workspace/DocumentsView.vue": {
-    "local/no-watch": {
       "count": 1
     }
   },
@@ -428,18 +291,10 @@
   "src/composables/useChatScrollRestore.ts": {
     "local/no-silent-fallback-catch": {
       "count": 1
-    },
-    "local/no-watch": {
-      "count": 1
     }
   },
   "src/composables/useCodeEditorSession.ts": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    }
-  },
-  "src/composables/useContextMenu.ts": {
-    "local/no-watch": {
       "count": 1
     }
   },
@@ -455,9 +310,6 @@
   },
   "src/composables/useKanbanColumnScrollRestore.ts": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    },
-    "local/no-watch": {
       "count": 1
     }
   },
@@ -476,17 +328,9 @@
       "count": 1
     }
   },
-  "src/composables/useSubAgentPeek.ts": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/helpers/VirtualScroller.vue": {
     "local/no-silent-fallback-catch": {
       "count": 2
-    },
-    "local/no-watch": {
-      "count": 6
     }
   },
   "src/helpers/authMe.ts": {

@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="T">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onUpdated, nextTick } from 'vue'
 
 import { computeLoadMoreThreshold } from './virtualScrollerThreshold'
 import { computeAnchorCompensation, type AnchorMeasurement } from './virtualScrollerScrollAnchor'
@@ -465,22 +465,18 @@ const effectiveLoadMoreThreshold = computed(() =>
   ),
 )
 
-// Push the isScrollable value to the parent via an event whenever it
-// changes. `immediate: true` ensures the parent gets the initial
-// value on mount — otherwise the parent's local ref would start at
-// its default (`false`) and the event would only fire on the FIRST
-// actual value change. (Vue 3's `watch` on a computed does fire
-// `immediate` with the current value at setup time, which is what
-// we want here.) This is more reliable than letting the parent read
-// the computed through the template ref — see the
-// `scrollabilityChange` emit doc for the reason.
-watch(
-  isScrollable,
-  (scrollable) => {
-    emit('scrollabilityChange', scrollable)
-  },
-  { immediate: true },
-)
+// Scrollability is pushed to the parent via the `scrollabilityChange` event
+// (see its emit doc for why an event beats a template-ref read).
+// `emitScrollableIfChanged` below (driven by onMounted + onUpdated) sends
+// the initial value on mount — otherwise the parent's local ref would
+// start at its default (`false`) until the FIRST actual value change.
+let prevScrollable: boolean | null = null
+const emitScrollableIfChanged = () => {
+  const scrollable = isScrollable.value
+  if (scrollable === prevScrollable) return
+  prevScrollable = scrollable
+  emit('scrollabilityChange', scrollable)
+}
 
 let _anchorOffsetTopBefore = 0
 let _pendingNewItemsCount = 0
@@ -589,53 +585,34 @@ const sizerHeight = computed(() => {
   }
   return cachedSizerHeight
 })
-// CRITICAL: `{ immediate: true }` is required here. Without it,
-// `updateAccumulatedHeights` only runs when `props.items.length`
-// *changes* — but on initial mount the items are already present
-// (the parent populates them before rendering this child), so the
-// length never "changes" during the watch's lifetime. Result:
-// `accumulatedHeights` stays at the initial `[0]`, the computed
-// `isScrollable` reads `accumulatedHeights[items.length]` which is
-// `undefined ?? 0 = 0`, `0 > containerHeight` is `false`, and the
-// parent's "Load more messages" button shows in scrollable chats
-// (user reported: "i still see a scroll" / button still visible).
-// `immediate: true` makes the watcher run synchronously during
-// setup, populating `accumulatedHeights` with default-height
-// estimates before the first render. After ~150ms (the mount
-// setTimeout + the `itemHeights` deep-watch debounce) the real
-// measurements replace the estimates, and `isScrollable` reflects
-// reality. Symptom was traced via the dev-tools scroll logger
-// showing `clientHeight: 0`-like behavior — the container was
-// fine, `accumulatedHeights` was empty.
-watch(
-  () => props.items.length,
-  (newLen, oldLen) => {
-    // A collapse to 0 means the list was swapped (chat switch) — forget
-    // the previous chat's height profile so its median doesn't pollute
-    // the new chat's estimates.
-    if (newLen === 0 && (oldLen ?? 0) > 0) {
-      heightEstimator.reset()
-      maxMeasuredIndex = -1
-      // The measured tail bottom belongs to the OLD list: keeping it
-      // would cap the new chat's sizer at a position that means nothing
-      // here.
-      tailContentBottom.value = 0
-      tailCapLatched.value = false
-    }
-    updateAccumulatedHeights()
-  },
-  { immediate: true },
-)
-
-let heightDebounce: ReturnType<typeof setTimeout> | null = null
-watch(
-  itemHeights,
-  () => {
-    if (heightDebounce) clearTimeout(heightDebounce)
-    heightDebounce = setTimeout(updateAccumulatedHeights, 50)
-  },
-  { deep: true },
-)
+// Rebuild the height model on mount AND whenever `items.length` changes.
+// The mount run is load-bearing: on initial mount the items are already
+// present (the parent populates them before rendering this child), so a
+// change-only trigger would leave `accumulatedHeights` at `[0]`,
+// `isScrollable` would read `undefined ?? 0 = 0`, and the parent's
+// "Load more messages" button would show in scrollable chats. Driven by
+// onMounted + onUpdated with a prev-length guard (see the sync block
+// near the bottom of <script setup>).
+let prevItemsLen = -1
+const syncItemsLength = () => {
+  const newLen = props.items.length
+  if (newLen === prevItemsLen) return
+  const oldLen = prevItemsLen
+  prevItemsLen = newLen
+  // A collapse to 0 means the list was swapped (chat switch) — forget
+  // the previous chat's height profile so its median doesn't pollute
+  // the new chat's estimates.
+  if (newLen === 0 && oldLen > 0) {
+    heightEstimator.reset()
+    maxMeasuredIndex = -1
+    // The measured tail bottom belongs to the OLD list: keeping it
+    // would cap the new chat's sizer at a position that means nothing
+    // here.
+    tailContentBottom.value = 0
+    tailCapLatched.value = false
+  }
+  updateAccumulatedHeights()
+}
 
 const findStartIndex = (): number => {
   const h = accumulatedHeights.value
@@ -681,15 +658,12 @@ const visibleRange = computed(() => {
 // see the real content bottom and record it. OFF only once the window is a
 // full `buffer` away from the tail, so a clamp-driven scrollTop write at
 // the capped bottom cannot flip the cap off (the window would then re-grow,
-// get clamped again, and dither).
-watch(
-  () => visibleRange.value.end,
-  (end) => {
-    if (end >= props.items.length) tailCapLatched.value = true
-    else if (end < props.items.length - props.buffer) tailCapLatched.value = false
-  },
-  { immediate: true },
-)
+// get clamped again, and dither). Applied by the onMounted + onUpdated
+// sync block below (same hysteresis, prev-end guard).
+const applyTailCapLatch = (end: number) => {
+  if (end >= props.items.length) tailCapLatched.value = true
+  else if (end < props.items.length - props.buffer) tailCapLatched.value = false
+}
 
 /**
  * Record the MEASURED bottom of the rendered window, in model space.
@@ -791,25 +765,28 @@ const scrollInfo = computed(() => ({
 // ── P2: contentShift emit (task_1787551495337_9) ─────────────────────────────
 //
 // Transform-based positioning has no spacer DIVs whose style mutations a
-// parent MutationObserver could watch. This watcher is the explicit
+// parent MutationObserver could watch. This emit is the explicit
 // replacement signal: it fires whenever the virtual layout's geometry
 // changes (scroll-driven window shift, measurement update, item-list
 // change). ChatView listens to re-stick to bottom after measurement drift.
-watch(
-  () => ({
-    topSpacer: visibleRange.value.topSpacer,
-    bottomSpacer: visibleRange.value.bottomSpacer,
-    total: accumulatedHeights.value[props.items.length] ?? 0,
-  }),
-  (shift) => {
-    emit('contentShift', shift)
-  },
-  // immediate: the parent gets the initial geometry on mount — same
-  // convention as the scrollabilityChange watcher above. Without it a
-  // never-scrolled list would never emit, and ChatView's re-stick logic
-  // would miss the initial measurement drift.
-  { immediate: true },
-)
+// `emitContentShiftIfChanged` below (driven by onMounted + onUpdated with
+// a prev-geometry guard) sends the initial geometry on mount — without it
+// a never-scrolled list would never emit, and ChatView's re-stick logic
+// would miss the initial measurement drift.
+let prevShiftTop = -1
+let prevShiftBottom = -1
+let prevShiftTotal = -1
+const emitContentShiftIfChanged = () => {
+  const topSpacer = visibleRange.value.topSpacer
+  const bottomSpacer = visibleRange.value.bottomSpacer
+  const total = accumulatedHeights.value[props.items.length] ?? 0
+  if (topSpacer === prevShiftTop && bottomSpacer === prevShiftBottom && total === prevShiftTotal)
+    return
+  prevShiftTop = topSpacer
+  prevShiftBottom = bottomSpacer
+  prevShiftTotal = total
+  emit('contentShift', { topSpacer, bottomSpacer, total })
+}
 
 // Hysteresis dead-band for `measureItems()` ABOVE the viewport.
 //
@@ -1125,17 +1102,28 @@ const measureItems = () => {
 // measure + compensation collapse into ONE frame — no intermediate paint
 // with wrong spacers, nothing to see.
 //
+// `schedulePrePaintMeasure` (driven by onScroll + the onUpdated sync block
+// below) re-measures inside `nextTick` whenever the rendered window
+// changes. nextTick callbacks drain BEFORE the browser paints, so render +
+// measure + compensation collapse into ONE frame — no intermediate paint
+// with wrong spacers, nothing to see.
+//
 // `_inPrePaintMeasure` guards re-entrancy: measureItems mutates
 // scrollTop, which fires another scroll event → visibleRange recomputes
-// → this watcher would re-run. The guard breaks that cycle; the trailing
+// → the sync block would re-run. The guard breaks that cycle; the trailing
 // debounce below still catches any range change caused by the correction
 // itself (rare — compensation preserves the anchor's screen position).
+// `_prePaintScheduled` dedupes the onScroll call against the onUpdated
+// call for the same scroll gesture (the scroll handler runs first, the
+// update follows for the same range — one measure, not two).
 let _inPrePaintMeasure = false
 let _prePaintTrailing: ReturnType<typeof setTimeout> | null = null
-
-watch(effectiveRange, () => {
-  if (_inPrePaintMeasure || isPreservingScroll.value) return
+let _prePaintScheduled = false
+const schedulePrePaintMeasure = () => {
+  if (_inPrePaintMeasure || isPreservingScroll.value || _prePaintScheduled) return
+  _prePaintScheduled = true
   nextTick(() => {
+    _prePaintScheduled = false
     if (_inPrePaintMeasure || isPreservingScroll.value) return
     _inPrePaintMeasure = true
     try {
@@ -1150,7 +1138,7 @@ watch(effectiveRange, () => {
       if (!_inPrePaintMeasure && !isPreservingScroll.value) measureItems()
     }, 50)
   })
-})
+}
 
 let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null
 let measureDebounce: ReturnType<typeof setTimeout> | null = null
@@ -1178,7 +1166,7 @@ const onScroll = (e: Event) => {
   const dir = st > lastScrollTop.value ? 'down' : 'up'
   // NOTE (P1 perf review, task_1787551495337_9): this write stays
   // SYNCHRONOUS. An rAF-deferred variant was tried and reverted: the
-  // pre-paint compensation contract (watch effectiveRange → nextTick →
+  // pre-paint compensation contract (onScroll + onUpdated → nextTick →
   // measureItems, PR #310) requires the range recompute to begin within
   // the SAME tick as the scroll event; deferring it to the next frame
   // broke that guarantee. Coalescing is already provided by Vue's async
@@ -1257,6 +1245,10 @@ const onScroll = (e: Event) => {
       measureItems()
     }, 50)
   }
+  // Re-measure pre-paint when the scroll moved the rendered window (same
+  // contract the old `effectiveRange` watcher provided; deduped against
+  // the onUpdated sync block below via `_prePaintScheduled`).
+  schedulePrePaintMeasure()
 }
 
 /**
@@ -1495,6 +1487,35 @@ let lastContentH = -1
 let lastScrollEventAt = 0
 const CONTENT_RO_DEBOUNCE_MS = 150
 const CONTENT_RO_MIN_DELTA_PX = 2
+// ── Watch-free sync block ──────────────────────────────────────────────────
+// The six reactive edges above (scrollability emit, items-length rebuild,
+// tail-cap latch, contentShift emit, rendered-range measure) run here:
+// onMounted for the initial pass, onUpdated with prev-value guards after
+// that. `itemHeights` needs no entry: `measureItems()` and `rekeyHeight()`
+// already call `updateAccumulatedHeights()` synchronously after writing,
+// so the deleted debounced deep watcher only ever re-ran the same update.
+let prevRangeStart = -1
+let prevRangeEnd = -1
+onMounted(() => {
+  emitScrollableIfChanged()
+  syncItemsLength()
+  const { start, end } = effectiveRange.value
+  prevRangeStart = start
+  prevRangeEnd = end
+  applyTailCapLatch(end)
+  emitContentShiftIfChanged()
+})
+onUpdated(() => {
+  emitScrollableIfChanged()
+  syncItemsLength()
+  emitContentShiftIfChanged()
+  const { start, end } = effectiveRange.value
+  const rangeMoved = start !== prevRangeStart || end !== prevRangeEnd
+  prevRangeStart = start
+  prevRangeEnd = end
+  applyTailCapLatch(end)
+  if (rangeMoved) schedulePrePaintMeasure()
+})
 onMounted(() => {
   if (containerRef.value) {
     containerHeight.value = containerRef.value.clientHeight
@@ -1537,7 +1558,6 @@ onUnmounted(() => {
   if (contentROTimer) clearTimeout(contentROTimer)
   if (loadMoreDebounce) clearTimeout(loadMoreDebounce)
   if (measureDebounce) clearTimeout(measureDebounce)
-  if (heightDebounce) clearTimeout(heightDebounce)
   if (_prePaintTrailing) clearTimeout(_prePaintTrailing)
   if (programmaticResetTimer) clearTimeout(programmaticResetTimer)
 })

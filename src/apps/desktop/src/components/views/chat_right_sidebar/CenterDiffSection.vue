@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import SidebarDiffView from './SidebarDiffView.vue'
 import type { DiffCommentSavePayload } from './DiffCommentBox.vue'
 import type { ParsedDiffLine } from './parseUnifiedDiff'
@@ -73,14 +73,17 @@ onMounted(() => {
  *
  * The transition is what matters, not the value: `props.collapsed === false`
  * at mount is today's behaviour (the observer decides), while a real
- * collapsed → expanded flip is the user asking for this file's diff.
+ * collapsed → expanded flip is the user asking for this file's diff. The
+ * flip is owned by the parent (this component only emits
+ * `toggle-collapse`), so it is picked up here with a prev-value guard on
+ * update — same collapsed → expanded transition the watcher caught.
  */
-watch(
-  () => props.collapsed,
-  (now, before) => {
-    if (before === true && now === false) isMounted.value = true
-  },
-)
+let prevCollapsed = props.collapsed
+onUpdated(() => {
+  const now = props.collapsed
+  if (prevCollapsed === true && now === false) isMounted.value = true
+  prevCollapsed = now
+})
 
 onUnmounted(() => {
   observer?.disconnect()

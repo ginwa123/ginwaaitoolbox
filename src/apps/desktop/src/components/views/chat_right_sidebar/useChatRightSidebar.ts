@@ -1,4 +1,4 @@
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 
 const STORAGE_KEY_WIDTH = 'pabrik-right-sidebar-width'
 const DEFAULT_WIDTH = 280
@@ -104,14 +104,10 @@ export function useChatRightSidebar(chatType: string) {
     window.removeEventListener('keydown', onKeydown)
   })
 
-  // Reload persisted open state if the chat type changes (e.g. the
-  // same ChatView instance is reused across routes in tests).
-  watch(
-    () => chatType,
-    (next) => {
-      isOpen.value = loadOpen(next)
-    },
-  )
+  // NOTE: `chatType` is a plain (non-reactive) parameter fixed per
+  // composable instance — observing it would never fire, since the source
+  // never changes. Each instance already hydrates via
+  // `ref(loadOpen(chatType))` above, so there is nothing to re-sync.
 
   return {
     isOpen,

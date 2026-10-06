@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUpdated, ref } from 'vue'
 
 import { testLlmProfile, type LlmTestResult } from '../../api'
 import LlmConfigForm, { type LlmConfig } from './LlmConfigForm.vue'
@@ -42,9 +42,15 @@ const emit = defineEmits<{
 }>()
 
 function updateName(val: string) {
+  testResult.value = null
   emit('update:modelValue', { ...props.modelValue, name: val })
 }
 function updateConfig(cfg: LlmConfig) {
+  // Editing any field invalidates a previous test result — the profile
+  // may now be misconfigured even though the prior probe succeeded.
+  // Clearing prevents stale "looks good!" badges from lulling the user
+  // into saving a broken config.
+  testResult.value = null
   emit('update:modelValue', { ...props.modelValue, config: cfg })
 }
 
@@ -60,17 +66,18 @@ const testing = ref(false)
 // probe targets; the backend omits the auth header when empty.
 const testValid = computed(() => props.modelValue.config.model.trim().length > 0)
 
-// Editing any field invalidates a previous test result — the profile
-// may now be misconfigured even though the prior probe succeeded.
-// Clearing prevents stale "looks good!" badges from lulling the user
-// into saving a broken config.
-watch(
-  () => props.modelValue,
-  () => {
-    testResult.value = null
-  },
-  { deep: true },
-)
+// Test-result invalidation lives in the edit handlers above
+// (`updateName` / `updateConfig`): every keystroke flows through them,
+// so a stale probe can never outlive the edit that broke it.
+let prevLlmModalValue = props.modelValue
+onUpdated(() => {
+  // A new modelValue object means the parent reseeded the form (e.g. a
+  // different profile to edit) — any probe result describes the previous
+  // one and must go.
+  if (props.modelValue === prevLlmModalValue) return
+  prevLlmModalValue = props.modelValue
+  testResult.value = null
+})
 
 async function onTest() {
   if (testing.value || !testValid.value) return
@@ -101,34 +108,39 @@ async function onTest() {
   <Teleport to="body">
     <div
       class="fixed inset-0 z-50 flex items-center justify-center"
-      style="background-color: rgba(0, 0, 0, 0.5);"
+      style="background-color: rgba(0, 0, 0, 0.5)"
       @click.self="emit('cancel')"
     >
       <div
         :class="['w-full mx-4 rounded-md flex flex-col', props.maxWidthClass]"
-        style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+        style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
         role="dialog"
         aria-modal="true"
       >
         <div
           class="flex items-center justify-between px-5 h-12 border-b shrink-0"
-          style="border-color: var(--color-border);"
+          style="border-color: var(--color-border)"
         >
-          <h3 class="text-body font-semibold" style="color: var(--semantic-text);">{{ title }}</h3>
+          <h3 class="text-body font-semibold" style="color: var(--semantic-text)">{{ title }}</h3>
           <button
             type="button"
             @click="emit('cancel')"
             aria-label="Close"
             class="w-7 h-7 flex items-center justify-center text-body"
-            style="color: var(--semantic-text-muted);"
-          >✕</button>
+            style="color: var(--semantic-text-muted)"
+          >
+            ✕
+          </button>
         </div>
 
-        <div class="p-5 space-y-4 overflow-y-auto" style="max-height: 70vh;">
+        <div class="p-5 space-y-4 overflow-y-auto" style="max-height: 70vh">
           <!-- Name -->
           <div>
-            <label class="block text-dense font-medium mb-1.5" style="color: var(--semantic-text-muted);">
-              Name <span style="color: var(--color-red);">*</span>
+            <label
+              class="block text-dense font-medium mb-1.5"
+              style="color: var(--semantic-text-muted)"
+            >
+              Name <span style="color: var(--color-red)">*</span>
             </label>
             <input
               :value="modelValue.name"
@@ -136,10 +148,16 @@ async function onTest() {
               type="text"
               :disabled="!nameEditable"
               class="w-full px-3 h-8 rounded-md border text-body"
-              style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
+              style="
+                background-color: var(--semantic-content-bg);
+                color: var(--semantic-text);
+                border-color: var(--color-border);
+              "
               data-testid="name-input"
             />
-            <p v-if="errors?.name" class="text-dense mt-1" style="color: var(--color-red);">{{ errors.name }}</p>
+            <p v-if="errors?.name" class="text-dense mt-1" style="color: var(--color-red)">
+              {{ errors.name }}
+            </p>
           </div>
 
           <!-- LLM config -->
@@ -157,21 +175,23 @@ async function onTest() {
             v-if="testResult"
             data-testid="llm-test-result"
             class="px-3 py-2 rounded-md text-dense border"
-            :style="testResult.ok
-              ? {
-                  borderColor: 'var(--color-green)',
-                  backgroundColor: 'rgba(34, 197, 94, 0.08)',
-                  color: 'var(--semantic-text)',
-                }
-              : {
-                  borderColor: 'var(--color-red)',
-                  backgroundColor: 'rgba(239, 68, 68, 0.08)',
-                  color: 'var(--semantic-text)',
-                }"
+            :style="
+              testResult.ok
+                ? {
+                    borderColor: 'var(--color-green)',
+                    backgroundColor: 'rgba(34, 197, 94, 0.08)',
+                    color: 'var(--semantic-text)',
+                  }
+                : {
+                    borderColor: 'var(--color-red)',
+                    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                    color: 'var(--semantic-text)',
+                  }
+            "
           >
             <div class="flex items-center gap-1.5 font-medium">
-              <span v-if="testResult.ok" style="color: var(--color-green);">✓</span>
-              <span v-else style="color: var(--color-red);">✗</span>
+              <span v-if="testResult.ok" style="color: var(--color-green)">✓</span>
+              <span v-else style="color: var(--color-red)">✗</span>
               <span v-if="testResult.ok">
                 Connected — "{{ testResult.reply }}" ({{ testResult.latency_ms }}ms)
               </span>
@@ -181,19 +201,23 @@ async function onTest() {
               v-if="!testResult.ok"
               data-testid="llm-test-error"
               class="mt-1 font-mono text-meta"
-              style="color: var(--semantic-text-muted);"
-            >{{ testResult.error }}</div>
+              style="color: var(--semantic-text-muted)"
+            >
+              {{ testResult.error }}
+            </div>
             <div
               v-if="!testResult.ok && testResult.details"
               class="mt-0.5 font-mono text-meta break-all"
-              style="color: var(--semantic-text-dim);"
-            >{{ testResult.details }}</div>
+              style="color: var(--semantic-text-dim)"
+            >
+              {{ testResult.details }}
+            </div>
           </div>
         </div>
 
         <div
           class="flex justify-between gap-2 px-5 h-14 border-t shrink-0 items-center"
-          style="border-color: var(--color-border);"
+          style="border-color: var(--color-border)"
         >
           <button
             type="button"
@@ -208,22 +232,36 @@ async function onTest() {
               opacity: testValid && !testing ? 1 : 0.5,
               cursor: testValid && !testing ? 'pointer' : 'not-allowed',
             }"
-          >{{ testing ? 'Testing…' : 'Test' }}</button>
+          >
+            {{ testing ? 'Testing…' : 'Test' }}
+          </button>
           <div class="flex gap-2">
-          <button
-            type="button"
-            data-testid="modal-cancel"
-            @click="emit('cancel')"
-            class="px-4 h-8 rounded-md text-body border transition-colors duration-150"
-            style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
-          >Cancel</button>
-          <button
-            type="button"
-            data-testid="modal-save"
-            @click="emit('save')"
-            class="px-4 h-8 rounded-md text-body font-medium border transition-colors duration-150"
-            style="border-color: var(--color-violet); color: var(--color-violet); background-color: transparent;"
-          >Save</button>
+            <button
+              type="button"
+              data-testid="modal-cancel"
+              @click="emit('cancel')"
+              class="px-4 h-8 rounded-md text-body border transition-colors duration-150"
+              style="
+                border-color: var(--color-border);
+                color: var(--semantic-text-muted);
+                background-color: transparent;
+              "
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              data-testid="modal-save"
+              @click="emit('save')"
+              class="px-4 h-8 rounded-md text-body font-medium border transition-colors duration-150"
+              style="
+                border-color: var(--color-violet);
+                color: var(--color-violet);
+                background-color: transparent;
+              "
+            >
+              Save
+            </button>
           </div>
         </div>
       </div>
