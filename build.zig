@@ -46,6 +46,21 @@ const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
 ///   - Windows:  `GetFileAttributesW` returns INVALID_FILE_ATTRIBUTES
 ///              on missing; existence = attrs != invalid AND attrs
 ///              doesn't have the DIRECTORY bit set (mirror `test -f`).
+/// True when `zig build run -- <args>` already says what to serve, so the
+/// `run` step must not append its own `--static-dir` default.
+///
+/// Skipping the default (rather than relying on the caller's flag landing
+/// later in argv) is what makes `--no-static-dir` honest: the top-level
+/// parser ignores unknown flags, so a static dir appended after it would
+/// silently serve the webapp anyway.
+fn callerSetsStaticDir(args: ?[]const []const u8) bool {
+    const forwarded = args orelse return false;
+    for (forwarded) |arg| {
+        if (std.mem.eql(u8, arg, "--static-dir") or std.mem.eql(u8, arg, "--no-static-dir")) return true;
+    }
+    return false;
+}
+
 fn fileExists(absolute_path: []const u8) bool {
     var buf: [std.fs.max_path_bytes:0]u8 = undefined;
     if (absolute_path.len >= buf.len) return false;
@@ -3380,11 +3395,43 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const install_tui_user_step = b.step("install-tui", "Build pabrik-tui and install to user bin (~/.local/bin on Linux/macOS, %LOCALAPPDATA%\\pabrik\\bin on Windows)");
     install_tui_user_step.dependOn(&install_tui_run.step);
 
-    const run_step = b.step("run", "Run the app");
+    // `zig build run` serves the Vue webapp, and rebuilds it first.
+    //
+    // Two things differ from "build the binary, then run it":
+    //
+    //   1. The webapp build is a dependency, so dist/ matches the .vue
+    //      sources on disk when the server comes up. `pnpm run build` is
+    //      a Run step with no declared output paths, which std.Build
+    //      re-executes on every build rather than serving from cache (see
+    //      std.Build.Step.Run.hasSideEffects) — so this is genuinely fresh
+    //      each time, the same contract the `pabrik-desktop` path takes.
+    //      Only `build_webapp_step` is wired in, not the rebuild+codec
+    //      gen chain: a plain server run needs dist/ on disk, not assets
+    //      embedded in a binary, and it must not delete the desktop's
+    //      generated webapp_assets.zig as a side effect.
+    //
+    //   2. `--static-dir src/apps/desktop/dist` is passed by default.
+    //      Without it the server is API-only and GET / 404s, which makes
+    //      a first `zig build run` look broken. An explicit `--static-dir`
+    //      (or `--no-static-dir`) in the `--` args still wins: those args
+    //      are appended after this default and cli_args.parse keeps the
+    //      last occurrence.
+    //
+    // `-Dno-webapp-rebuild` restores the old bare-binary, API-only run —
+    // that is the escape hatch for a box with no node/pnpm on PATH (and
+    // what Windows CI uses).
+    const run_step = b.step("run", "Run the app (rebuilds and serves the webapp; -Dno-webapp-rebuild for API only)");
 
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
+
+    if (!no_webapp_rebuild) {
+        run_cmd.step.dependOn(build_webapp_step);
+        if (!callerSetsStaticDir(b.args)) {
+            run_cmd.addArgs(&.{ "--static-dir", b.pathJoin(&.{ webapp_dir, "dist" }) });
+        }
+    }
 
     if (b.args) |args| {
         run_cmd.addArgs(args);

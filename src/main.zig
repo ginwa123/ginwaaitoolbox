@@ -256,7 +256,12 @@ pub fn main(init: std.process.Init) !void {
 
     // Applied AFTER the struct literal above — assigning before it would be
     // clobbered by the whole-struct initialisation (the field defaults to null).
-    if (cli.static_dir) |dir_arg| ctxParent.static_dir_path = dir_arg;
+    // `--no-static-dir` wins over `--static-dir` no matter which came first,
+    // and frees the parse-time copy that no longer has an owner.
+    if (cli.no_static_dir) {
+        if (cli.static_dir) |dir_arg| allocator.free(dir_arg);
+        std.log.info("--no-static-dir: API only, no static files at /.", .{});
+    } else if (cli.static_dir) |dir_arg| ctxParent.static_dir_path = dir_arg;
     ctxParent.auth_enabled = cli.auth_enabled;
     if (cli.auth_enabled) {
         std.log.info("--auth on: per-user LLM config comes from users.config_json; config.json is ignored.", .{});
@@ -404,10 +409,8 @@ pub fn main(init: std.process.Init) !void {
         // assertion ABORTS the process instead of returning an error. A relative
         // `--static-dir` (or a relative XDG_DATA_HOME/HOME-derived value that
         // the desktop launcher passes through) must not be able to do that.
-        const abs_static_dir = if (std.fs.path.isAbsolute(dir))
-            try allocator.dupe(u8, dir)
-        else
-            try std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator);
+        var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const abs_static_dir = try static_files.resolveStaticDirAbs(io, allocator, dir, &abs_buf);
         defer allocator.free(abs_static_dir);
 
         // Open + canonicalize the dir. openDirAbsolute surfaces "not a

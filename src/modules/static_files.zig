@@ -185,6 +185,42 @@ fn pathMatchesSpaPrefix(clean_path: []const u8, prefix: []const u8) bool {
 }
 
 // ---------------------------------------------------------------------------
+// resolveStaticDirAbs()
+// ---------------------------------------------------------------------------
+
+/// Resolve a `--static-dir` value to an absolute path, allocated with
+/// `allocator` and freed by the caller.
+///
+/// Every static-dir path funnels into `openDirAbsolute`, which ASSERTS
+/// `std.fs.path.isAbsolute` — a failed assertion aborts the process instead
+/// of returning an error, so a relative value has to be resolved before it
+/// gets there. Relative values are ordinary, not hypothetical: the
+/// `zig build run` default is `src/apps/desktop/dist`, and the desktop
+/// launcher passes a relative XDG-derived path.
+///
+/// `buf` is caller-provided scratch (`std.Io.Dir.max_path_bytes` is the
+/// usual size) so resolution itself allocates nothing.
+///
+/// `realPathFile` + `dupe`, deliberately NOT `realPathFileAlloc`: the latter
+/// dupes a sentinel terminator, and a `[:0]u8` arm in an `if` whose other
+/// arm is a plain `dupe` silently drops that sentinel — so the matching
+/// `free` asks the allocator for one byte less than it was handed. A
+/// DebugAllocator-backed process (every dev build, every test) then reports
+/// "Allocation size N does not match free size N-1" with a stack trace at
+/// startup, before the port is bound, and the user gets a trace instead of
+/// a server.
+pub fn resolveStaticDirAbs(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    dir: []const u8,
+    buf: []u8,
+) ![]u8 {
+    if (std.fs.path.isAbsolute(dir)) return allocator.dupe(u8, dir);
+    const abs_len = try std.Io.Dir.cwd().realPathFile(io, dir, buf);
+    return allocator.dupe(u8, buf[0..abs_len]);
+}
+
+// ---------------------------------------------------------------------------
 // resolve()
 // ---------------------------------------------------------------------------
 
@@ -609,6 +645,70 @@ fn setupRoot(allocator: std.mem.Allocator) !TestEnv {
     const n = try tmp.dir.realPath(testing.io, &path_buf);
     const abs = try allocator.dupe(u8, path_buf[0..n]);
     return .{ .tmp_dir = tmp, .root_abs = abs, .io = testing.io };
+}
+
+// ---------------------------------------------------------------------------
+// resolveStaticDirAbs() behavior
+// ---------------------------------------------------------------------------
+
+test "resolveStaticDirAbs: a relative dir resolves to its realpath" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A real directory, spelled absolutely. The tmp dir lives under the
+    // build cache (or /tmp), never at the cwd, so the relative round-trip
+    // below always has path components to walk.
+    var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const abs_len = try tmp.dir.realPath(testing.io, &abs_buf);
+    const abs = try allocator.dupe(u8, abs_buf[0..abs_len]);
+    defer allocator.free(abs);
+
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.Io.Dir.cwd().realPathFile(testing.io, ".", &cwd_buf);
+    const cwd = try allocator.dupe(u8, cwd_buf[0..cwd_len]);
+    defer allocator.free(cwd);
+
+    const rel = try std.fs.path.relative(allocator, cwd, null, cwd, abs);
+    defer allocator.free(rel);
+    try testing.expect(!std.fs.path.isAbsolute(rel));
+
+    var rel_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const resolved = try resolveStaticDirAbs(testing.io, allocator, rel, &rel_buf);
+    // This free is load-bearing: `testing.allocator` is a DebugAllocator, so
+    // a sentinel-terminated allocation freed as a plain slice (the
+    // `realPathFileAlloc` bug this function replaced) fails here with
+    // "Allocation size N does not match free size N-1" — the same report a
+    // dev build printed at startup, before the port was bound.
+    defer allocator.free(resolved);
+    try testing.expectEqualStrings(abs, resolved);
+}
+
+test "resolveStaticDirAbs: an absolute dir is passed through, and owned by the caller" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const abs = path_buf[0..n];
+
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const resolved = try resolveStaticDirAbs(testing.io, allocator, abs, &buf);
+    defer allocator.free(resolved);
+    try testing.expectEqualStrings(abs, resolved);
+}
+
+test "resolveStaticDirAbs: a missing relative dir is an error, not a passthrough" {
+    // Passing the input through unchecked would reach `openDirAbsolute`,
+    // which aborts the process on a non-absolute path — so a bad value has
+    // to fail here, while there is still an error to report.
+    const allocator = testing.allocator;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    try testing.expectError(
+        error.FileNotFound,
+        resolveStaticDirAbs(testing.io, allocator, "no-such-static-dir-8f3a1c", &buf),
+    );
 }
 
 // ---------------------------------------------------------------------------

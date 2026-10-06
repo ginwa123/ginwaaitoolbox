@@ -59,7 +59,17 @@ it is not already running:
 ```
 
 **Web app in a browser** — the server serves the UI itself once you point it at a
-built web app, so there is nothing else to start. Build the UI once:
+built web app, so there is nothing else to start. `zig build run` does both halves
+for you: it rebuilds `src/apps/desktop/dist` from the current `.vue` sources and
+starts the server with `--static-dir` pointed at it.
+
+```bash
+zig build run                  # rebuild webapp → serve UI + API on :8081
+zig build run -- --port 8090   # any flags the binary takes
+```
+
+Without a webapp build on disk, the direct binary invocation takes the dir
+explicitly:
 
 ```bash
 cd src/apps/desktop
@@ -76,9 +86,11 @@ Then start the server with `--static-dir`:
 
 Open <http://127.0.0.1:8081/app>.
 
-**API only** — drop `--static-dir` and you get the REST + SSE API on
-<http://127.0.0.1:8081> with no UI. That is what the terminal clients and any
-script talk to.
+**API only** — `--no-static-dir` serves the REST + SSE API on
+<http://127.0.0.1:8081> with no UI (`zig build run -- --no-static-dir`), or drop
+`--static-dir` entirely for the raw binary. That is what the terminal clients and
+any script talk to. Build-wise, `-Dno-webapp-rebuild` skips the webapp build
+entirely — use it on a box without node/pnpm (what Windows CI does).
 
 > On Linux the plain `zig build` output is named `pabrikcore-linux-x86_64`. Run
 > `zig build install:linux:system` first if you want the binary called `pabrik`.
@@ -93,6 +105,7 @@ Add a model under **Settings → Profiles** — a `base_url`, a `model` and an
 zig build test                                    # backend unit tests
 zig build test:cli                                # terminal client
 zig build test:tui                                # terminal UI
+zig build run                                     # server + webapp (rebuilds dist/ first)
 cd src/apps/desktop && pnpm install && pnpm run dev   # web app, with hot reload
 zig build functional-test-all                     # API + browser tests (pytest)
 ```
