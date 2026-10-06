@@ -345,7 +345,8 @@ lines; do not start a tree-wide emoji sweep inside an unrelated change.
 `src/apps/desktop/` enforces the Vue/TS analogue of React's **"You Might Not
 Need an Effect"** doctrine. The bans are LINT RULES, not advice — the full
 table, the React→Vue mapping, and the "what is NOT banned" list live in
-**`docs/vue-ts-banned-code.md`**. Read that before arguing with a lint error.
+the Vue/TS banned-code rules in `src/apps/desktop/eslint-rules/`. Read those
+before arguing with a lint error.
 
 | Rule | Bans | Fix |
 |---|---|---|

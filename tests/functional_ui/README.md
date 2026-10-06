@@ -225,7 +225,6 @@ Vite's listener honors `SO_REUSEADDR` too.
 
 ## Reference
 
-- Plan: `docs/SPEC.md` §3.13 (Testing / Tooling)
 - Sibling suite: `tests/functional/README.md`
 - Parent harness: `tests/functional/harness.py` (where `FunctionalHarness`
   and `is_safe_tmp` live — the UI suite reuses them via composition)

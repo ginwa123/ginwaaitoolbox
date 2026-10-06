@@ -31,7 +31,7 @@ export default defineConfigWithVueTs(
 
   // The Vue/TS banned-code rules — the local analogue of React's
   // "you might not need an effect" doctrine, plus the swallowed-error class
-  // that PR #719 shipped. See `docs/vue-ts-banned-code.md`.
+  // that PR #719 shipped. See `src/apps/desktop/eslint-rules/bannedCode.ts`.
   //
   // Everything here is severity `error`, because ESLint's `--suppress-rule`
   // only records ERROR-level violations — a `warn` baseline is silently

@@ -22,8 +22,8 @@
  *
  * Regenerate the baseline with `pnpm run lint:banned-baseline` AFTER fixing
  * debt, never to silence a new violation. Full rationale, the React→Vue
- * mapping table, and what is deliberately NOT banned: see
- * `docs/vue-ts-banned-code.md`.
+ * mapping table, and what is deliberately NOT banned: see this file's ban
+ * list and the `local/*` rules it exports.
  */
 import type { Rule } from 'eslint'
 

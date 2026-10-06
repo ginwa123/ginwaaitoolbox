@@ -30,7 +30,7 @@ pub const CliArgs = struct {
     /// context exists. Allocator-owned for the process lifetime — see `parse`.
     static_dir: ?[]const u8 = null,
     /// `--http2 h2c`. OFF by default; there is deliberately no TLS here, so
-    /// browsers keep using HTTP/1.1 (see docs/http2.md).
+    /// browsers keep using HTTP/1.1 unless TLS is also enabled.
     enable_h2c: bool = false,
     /// `--tls <cert.pem> <key.pem>` (allocator-owned, process lifetime), or
     /// the pair `tls_selfsigned` generates / reuses in the app data dir.
