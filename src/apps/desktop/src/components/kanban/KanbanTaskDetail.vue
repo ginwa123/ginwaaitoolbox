@@ -626,6 +626,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleImagePopupKe
 // form-state reset rule, and which emit fires on submit.
 const isCreateMode = computed<boolean>(() => props.mode === 'create')
 
+// Which commit the user actually pressed. Declared ahead of the open
+// watcher below so the open handler can clear it (no TDZ: the
+// immediate watcher runs during setup, before later declarations).
+// `creating` is one host flag covering both create paths, so on its own
+// the footer cannot tell "Create task" from "Create task & run agent".
+// The `null` branch is deliberate: the host can raise `creating`
+// through a path this dialog did not initiate, and then there is
+// nothing to attribute, so the label falls back to neutral "Creating…".
+const pendingAction = ref<'create' | 'create_and_run' | null>(null)
+
 // Reset form whenever the dialog opens OR the target task changes.
 // In create mode we always start blank (regardless of `task`). In
 // edit mode we prefill from `task` (today's behavior).
@@ -633,6 +643,12 @@ watch(
   () => [props.show, props.task?.id, props.mode] as const,
   async ([show]) => {
     if (!show) return
+    // The commit split button narrates the in-flight action via
+    // pendingAction; clear any stale attribution from the previous
+    // session here, in the open handler, instead of watching isCreating.
+    // (pendingCommitLabel already returns null when !isCreating, so this
+    // is hygiene for the next open, not a render dependency.)
+    pendingAction.value = null
     if (isCreateMode.value) {
       name.value = ''
       description.value = ''
@@ -808,24 +824,9 @@ const canRunAgent = computed<boolean>(() => isValid.value)
 const isCreating = computed<boolean>(() => props.creating === true)
 const canCommitCreate = computed<boolean>(() => !isCreating.value && isValid.value)
 
-// Which commit the user actually pressed. `creating` is one host flag
-// covering both create paths, so on its own the footer cannot tell
-// "Create task" from "▶ Create task & run agent" — both used to read
-// "Creating…" at the same time, side by side. The split button
-// narrates the pressed action on its primary half instead.
-//
-// The `null` branch is deliberate: the host can raise `creating`
-// through a path this dialog did not initiate, and then there is
-// nothing to attribute, so we fall back to the neutral "Creating…".
-const pendingAction = ref<'create' | 'create_and_run' | null>(null)
-
 const pendingCommitLabel = computed<string | null>(() => {
   if (!isCreating.value) return null
   return pendingAction.value === 'create_and_run' ? 'Starting…' : 'Creating…'
-})
-
-watch(isCreating, (busy) => {
-  if (!busy) pendingAction.value = null
 })
 
 // Inject the processingState map (provided by App.vue; populated via

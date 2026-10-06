@@ -83,6 +83,12 @@ const emit = defineEmits<{
 // ─── State ──────────────────────────────────────────────────────────────
 
 const text = ref(props.modelValue)
+// Tracks the last value seen from EITHER side (local edit or prop).
+// The modelValue watcher below uses it to tell an echo of our own emit
+// (parent round-tripped our text back) from a genuine external change
+// (dialog re-open with new images). Updated here on local edits so the
+// echo check stays correct without a second watcher.
+let lastSeenText = props.modelValue
 const previewFiles = ref<PreviewFile[]>([])
 // Files staged in CREATE mode (taskId='') — uploaded by the host AFTER
 // the task exists. Mirrors previewFiles but exists only for the
@@ -111,8 +117,11 @@ watch(
   },
 )
 
-// Emit on every text edit.
+// Emit on every text edit (v-model out). Also records the value as seen
+// so the modelValue watcher below recognises the parent's round-trip
+// echo and does not rehydrate previews for our own keystrokes.
 watch(text, (v) => {
+  lastSeenText = v
   emit('update:modelValue', v)
 })
 
@@ -628,7 +637,8 @@ onMounted(() => {
 
 // ─── Watch modelValue for external image changes (e.g. dialog re-open) ──
 // We only re-hydrate when the modelValue grows (new image added externally).
-let lastSeenText = props.modelValue
+// `lastSeenText` is declared with the state above and updated in the
+// text-emit watcher, so this is the single place that reads it.
 watch(
   () => props.modelValue,
   (v) => {
@@ -642,15 +652,6 @@ watch(
     }
   },
 )
-
-// ─── Watch modelValue for external image changes (e.g. dialog re-open) ──
-// We only re-hydrate when the modelValue grows (new image added externally).
-// (lastSeenText + the two watches are declared at the top of the file
-// to avoid duplicate declarations; this comment is a marker for the
-// second half of the lifecycle logic.)
-watch(text, (v) => {
-  lastSeenText = v
-})
 
 const autoResize = (event: Event) => {
   const target = event.target as HTMLTextAreaElement

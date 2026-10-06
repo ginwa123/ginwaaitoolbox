@@ -975,14 +975,6 @@ onMounted(async () => {
   loadChats()
 })
 
-// Watch for processingState changes
-watch(processingState, (state) => {
-  navItems.value = navItems.value.map((item) => ({
-    ...item,
-    processing: !!state[item.id], // Show spinner for ANY processing chat, not just active
-  }))
-})
-
 onUnmounted(() => {
   // No SSE teardown needed — ChatsList no longer owns a session-
   // event stream. The canonical subscription lives in the
