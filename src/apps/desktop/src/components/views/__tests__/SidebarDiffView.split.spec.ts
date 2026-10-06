@@ -94,6 +94,26 @@ describe('SidebarDiffView — split render', () => {
     expect(changed[1]!.findAll('td.split-blank').length).toBeGreaterThan(0)
   })
 
+  it('tints changed rows with the theme red/green, never a hardcoded grey', () => {
+    const wrapper = mountView({ mode: 'split' })
+    const changed = wrapper.findAll('tr[data-changed="true"]')
+    // Row 0 pairs a removal with an insertion: both sides carry their tint.
+    const first = changed[0]!.findAll('td')
+    expect(first[0]!.attributes('style')).toContain('var(--color-red)')
+    expect(first[1]!.attributes('style')).toContain('var(--color-red)')
+    expect(first[3]!.attributes('style')).toContain('var(--color-green)')
+    expect(first[4]!.attributes('style')).toContain('var(--color-green)')
+    // Row 1 is a lone removal: the old side is tinted, the new side is the
+    // untinted striped filler — it must not borrow either tint.
+    const second = changed[1]!.findAll('td')
+    expect(second[0]!.attributes('style')).toContain('var(--color-red)')
+    expect(second[1]!.attributes('style')).toContain('var(--color-red)')
+    expect(second[3]!.attributes('style') ?? '').not.toContain('var(--color-red)')
+    expect(second[3]!.attributes('style') ?? '').not.toContain('var(--color-green)')
+    expect(second[4]!.attributes('style') ?? '').not.toContain('var(--color-red)')
+    expect(second[4]!.attributes('style') ?? '').not.toContain('var(--color-green)')
+  })
+
   it('keeps the hunk header text in the full-width row', () => {
     const wrapper = mountView({ mode: 'split' })
     expect(wrapper.get('[data-testid="split-hunk"]').text()).toContain('@@ -24,3 +24,2 @@')
