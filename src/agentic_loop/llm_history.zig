@@ -1599,10 +1599,25 @@ pub fn saveMessage(
     var effective_content: []const u8 = contentStr;
     if (contentStr.len > 0 and !parsing.isChatEnvelope(allocator, contentStr)) {
         if (std.mem.eql(u8, roleStr, "user")) {
-            enveloped_owned = try parsing.encodeUserContent(allocator, "", agentStr, contentStr);
+            // Logged-in identity when the session has an owner; legacy
+            // defaults otherwise (auth off). Lookup failures never block
+            // the insert.
+            var ident = parsing.resolveChatUser(allocator, db, input.session_id) catch null;
+            defer if (ident) |*ci| ci.deinit(allocator);
+            const uid: []const u8 = if (ident) |*ci| ci.user_id else "";
+            const nm: []const u8 = if (ident) |*ci| (if (ci.name.len > 0) ci.name else agentStr) else agentStr;
+            enveloped_owned = try parsing.encodeUserContent(allocator, uid, nm, contentStr);
             effective_content = enveloped_owned.?;
         } else if (std.mem.eql(u8, roleStr, "assistant")) {
-            enveloped_owned = try parsing.encodeAssistantContent(allocator, model_guard.resolve(input.model), contentStr);
+            // Profile name the user picked (e.g. "900ribu"); raw model id
+            // when Default / auth off / lookup fails.
+            const profile_owned: ?[]u8 = parsing.resolveProfileName(allocator, db, input.session_id) catch null;
+            defer if (profile_owned) |pr| allocator.free(pr);
+            var label: []const u8 = model_guard.resolve(input.model);
+            if (profile_owned) |pr| {
+                if (pr.len > 0) label = pr;
+            }
+            enveloped_owned = try parsing.encodeAssistantContent(allocator, label, contentStr);
             effective_content = enveloped_owned.?;
         }
     }
@@ -10817,4 +10832,170 @@ test "getProgressiveTools: order is deterministic for tools equipped in the same
     try testing.expectEqualStrings("alpha", rows[0].tool_name);
     try testing.expectEqualStrings("mid", rows[1].tool_name);
     try testing.expectEqualStrings("zeta", rows[2].tool_name);
+}
+
+test "saveMessage: user envelope carries owner identity, assistant carries profile name" {
+    // Follow-up on the Option A envelopes: when the session has an owner
+    // (`sessions.user_id -> users.name`) and a picked profile
+    // (`sessions.selected_profile_model`), the persisted envelopes carry
+    // them. Auth-off sessions keep the legacy defaults (`""` + agent).
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT,
+        \\    response_content TEXT,
+        \\    finish_reason TEXT,
+        \\    role TEXT,
+        \\    tool_calls_json TEXT,
+        \\    tool_call_id TEXT,
+        \\    reasoning_content TEXT,
+        \\    reasoning_id TEXT,
+        \\    reasoning_encrypted_content TEXT,
+        \\    is_feed_to_llm INTEGER DEFAULT 1,
+        \\    agent TEXT,
+        \\    loop_index INTEGER,
+        \\    temperature REAL,
+        \\    is_thinking INTEGER,
+        \\    created_at_nano TEXT,
+        \\    created_iso TEXT,
+        \\    parent_session_id TEXT,
+        \\    parent_id TEXT,
+        \\    prompt_tokens INTEGER,
+        \\    completion_tokens INTEGER,
+        \\    total_tokens INTEGER,
+        \\    cache_creation_input_tokens INTEGER DEFAULT 0,
+        \\    cache_read_input_tokens INTEGER DEFAULT 0,
+        \\    is_input INTEGER,
+        \\    is_output INTEGER,
+        \\    tool_name TEXT,
+        \\    diffview_before TEXT,
+        \\    diffview_after TEXT,
+        \\    image_url TEXT,
+        \\    video_url TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    user_id TEXT,
+        \\    selected_profile_model TEXT,
+        \\    cwd TEXT,
+        \\    updated_at TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE users (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    try db.exec(alloc, "INSERT INTO sessions (id, user_id, selected_profile_model, cwd) VALUES ('s_owned', 'u1', '900ribu', '/tmp')", &.{});
+    try db.exec(alloc, "INSERT INTO users (id, name) VALUES ('u1', 'Budi')", &.{});
+    try db.exec(alloc, "INSERT INTO sessions (id, cwd) VALUES ('s_anon', '/tmp')", &.{});
+    try db.exec(alloc, "INSERT INTO users (id, name) VALUES ('u2', '')", &.{});
+    try db.exec(alloc, "INSERT INTO sessions (id, user_id, cwd) VALUES ('s_noname', 'u2', '/tmp')", &.{});
+    try saveMessage(alloc, io, &db, .{
+        .session_id = "s_owned",
+        .model = "MiniMax-M3",
+        .cwd = "/tmp",
+        .content = "i wanna ask",
+        .reasoning_content = null,
+        .role = "user",
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = "Agent",
+        .loop_index = 0,
+        .temperature = 0.2,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    });
+    try saveMessage(alloc, io, &db, .{
+        .session_id = "s_owned",
+        .model = "MiniMax-M3",
+        .cwd = "/tmp",
+        .content = "hey human",
+        .reasoning_content = null,
+        .role = "assistant",
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = "Agent",
+        .loop_index = 0,
+        .temperature = 0.2,
+        .is_thinking = false,
+        .is_input = false,
+        .is_output = true,
+    });
+    try saveMessage(alloc, io, &db, .{
+        .session_id = "s_anon",
+        .model = "MiniMax-M3",
+        .cwd = "/tmp",
+        .content = "anon hi",
+        .reasoning_content = null,
+        .role = "user",
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = "Agent",
+        .loop_index = 0,
+        .temperature = 0.2,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    });
+    try saveMessage(alloc, io, &db, .{
+        .session_id = "s_noname",
+        .model = "MiniMax-M3",
+        .cwd = "/tmp",
+        .content = "no name hi",
+        .reasoning_content = null,
+        .role = "user",
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = "Agent",
+        .loop_index = 0,
+        .temperature = 0.2,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    });
+
+    const Case = struct { session: []const u8, role: []const u8, key: []const u8, want: []const u8 };
+    const cases = [_]Case{
+        .{ .session = "s_owned", .role = "user", .key = "user", .want = "u1" },
+        .{ .session = "s_owned", .role = "user", .key = "name", .want = "Budi" },
+        .{ .session = "s_owned", .role = "user", .key = "msg", .want = "i wanna ask" },
+        .{ .session = "s_owned", .role = "assistant", .key = "model", .want = "900ribu" },
+        .{ .session = "s_owned", .role = "assistant", .key = "msg", .want = "hey human" },
+        .{ .session = "s_anon", .role = "user", .key = "user", .want = "" },
+        .{ .session = "s_anon", .role = "user", .key = "name", .want = "Agent" },
+        .{ .session = "s_anon", .role = "user", .key = "msg", .want = "anon hi" },
+        .{ .session = "s_noname", .role = "user", .key = "user", .want = "u2" },
+        .{ .session = "s_noname", .role = "user", .key = "name", .want = "Agent" },
+        .{ .session = "s_noname", .role = "user", .key = "msg", .want = "no name hi" },
+    };
+    for (cases) |c| {
+        const sql = try std.fmt.allocPrint(alloc, "SELECT response_content FROM llm_history WHERE session_id='{s}' AND role='{s}'", .{ c.session, c.role });
+        defer alloc.free(sql);
+        var q = try db.query(alloc, sql, &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        var parsed = try std.json.parseFromSlice(std.json.Value, alloc, row.values[0], .{});
+        defer parsed.deinit();
+        const got = parsed.value.object.get(c.key) orelse return error.KeyMissing;
+        try testing.expectEqualStrings(c.want, got.string);
+    }
 }
