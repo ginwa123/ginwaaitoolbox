@@ -232,6 +232,5 @@ harness is the new home for **systematic** functional coverage.
 
 ## Reference
 
-- Plan: `docs/SPEC.md` §3.13 (Testing / Tooling)
 - Safety guards: top of `tests/functional/harness.py`
 - Safety tests: `tests/functional/harness_safety_test.py`

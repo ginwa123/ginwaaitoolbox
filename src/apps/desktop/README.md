@@ -44,7 +44,7 @@ src/
 │   ├── dialogs/ · kanban/ · design/ · shell/ · git/ …
 ├── stores/           # Pinia stores
 ├── composables/ · helpers/ · api/
-├── sync/             # Effect-TS offline-sync slice (see docs/effect-migration.md)
+├── sync/             # Effect-TS offline-sync slice
 └── __tests__/        # 313 spec files (component specs also sit next to their subject)
 ```
 

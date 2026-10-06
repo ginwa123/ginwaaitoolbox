@@ -99,8 +99,4 @@ zig build functional-test-all                     # API + browser tests (pytest)
 
 ## Documentation
 
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — the full reference: every build
-  step, server flag, architecture note, and the complete agent tool list
-- [docs/SPEC.md](docs/SPEC.md) — the project specification
-- [docs/agent-tools.md](docs/agent-tools.md) — what each agent tool takes and returns
 - [AGENTS.md](AGENTS.md) / [CLAUDE.md](CLAUDE.md) — conventions for coding agents

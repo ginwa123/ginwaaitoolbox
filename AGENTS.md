@@ -345,7 +345,8 @@ lines; do not start a tree-wide emoji sweep inside an unrelated change.
 `src/apps/desktop/` enforces the Vue/TS analogue of React's **"You Might Not
 Need an Effect"** doctrine. The bans are LINT RULES, not advice — the full
 table, the React→Vue mapping, and the "what is NOT banned" list live in
-**`docs/vue-ts-banned-code.md`**. Read that before arguing with a lint error.
+the Vue/TS banned-code rules in `src/apps/desktop/eslint-rules/`. Read those
+before arguing with a lint error.
 
 | Rule | Bans | Fix |
 |---|---|---|
@@ -448,7 +449,6 @@ Repo-specific notes: `scrollLogger.*({ reason })` takes a closed `ScrollReason`
 union (a retry is not a scroll reason — use `console.warn`); `oxlint`'s
 `no-useless-catch` rejects a `catch (e) { throw e }` wrapper; and prettier
 wraps long `v-if` expressions across lines, so source-contract regexes must be
-whitespace-tolerant. See
-`.pabrik/skills/chatview-empty-state-gate/SKILL.MD` for a worked example.
+whitespace-tolerant.
 
 

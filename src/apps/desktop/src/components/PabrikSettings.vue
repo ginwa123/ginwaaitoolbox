@@ -73,7 +73,7 @@ const { config, loaded, dirty, unsavedCount, saving, setConfig, save, reset } = 
 
 // ─── Tab mode ────────────────────────────────────────────────────────────
 // This one is an app preference, not part of the server config: the tab set
-// is client-side state (see docs/tabs.md), so it is deliberately NOT a field
+// is client-side state, so it is deliberately NOT a field
 // in the config v-model.
 const tabsStore = useTabsStore()
 const router = useRouter()

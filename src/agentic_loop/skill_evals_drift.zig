@@ -748,7 +748,7 @@ test "stripLineSuffix handles a huge line number and a trailing colon" {
 test "a dot-directory path keeps its leading dot instead of being reported as rot" {
     const alloc = testing.allocator;
     // Both of these exist in this tree. Trimming the leading `.` turned them
-    // into `github/workflows/ci.yml` and `pabrik/skills`, which stat to nothing
+    // into `github/workflows/ci.yml` and `pabrik/hooks`, which stat to nothing
     // and were recorded as "this path does not exist any more" -- a lie about
     // files that are present. Asserted on the EXTRACTED token rather than only
     // on missing_count, so a change that quietly stopped checking dotfiles
@@ -758,18 +758,24 @@ test "a dot-directory path keeps its leading dot instead of being reported as ro
         \\name: dotpath
         \\description: dotpath
         \\---
-        \\See .github/workflows/ci.yml:210 and .pabrik/skills for the details.
+        \\See .github/workflows/ci.yml:210 and .pabrik/hooks for the details.
     ;
     const paths = try extractPaths(alloc, body);
     defer freePaths(alloc, paths);
 
     var saw_github = false;
+    var saw_hooks = false;
     for (paths) |p| {
         try testing.expect(!std.mem.eql(u8, p, "github/workflows/ci.yml"));
-        try testing.expect(!std.mem.eql(u8, p, "pabrik/skills"));
+        try testing.expect(!std.mem.eql(u8, p, "pabrik/hooks"));
         if (std.mem.eql(u8, p, ".github/workflows/ci.yml")) saw_github = true;
+        if (std.mem.eql(u8, p, ".pabrik/hooks")) saw_hooks = true;
     }
     try testing.expect(saw_github);
+    // Without this the loop's two `expect` lines pass vacuously whenever the
+    // extractor stops yielding the token at all, so the leading-dot behaviour
+    // would go untested while the test stayed green.
+    try testing.expect(saw_hooks);
 
     const a = try analyse(alloc, testing.io, ".", body);
     defer a.deinit(alloc);
