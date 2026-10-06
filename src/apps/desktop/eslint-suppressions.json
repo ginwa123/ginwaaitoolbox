@@ -40,14 +40,9 @@
       "count": 8
     }
   },
-  "src/components/design/AddDesignDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/components/design/AddDesignElementDialog.vue": {
     "local/no-watch": {
-      "count": 2
+      "count": 1
     }
   },
   "src/components/design/DesignChatDialog.vue": {
@@ -78,76 +73,8 @@
       "count": 3
     }
   },
-  "src/components/dialogs/AddAgentDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/AddItemDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/AddKanbanDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/AddMemoryDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/AddRoutineItemDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/AddTaskDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/AgentKnowledgeDetailDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/AgentKnowledgeDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/AgentSystemPromptDialog.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
   "src/components/dialogs/CopyKanbanSpecDialog.vue": {
     "local/no-silent-fallback-catch": {
-      "count": 1
-    },
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/RenameDesignPageModal.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/RenameTaskModal.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/RenameWorkspaceModal.vue": {
-    "local/no-watch": {
-      "count": 1
-    }
-  },
-  "src/components/dialogs/WorkspaceModal.vue": {
-    "local/no-watch": {
       "count": 1
     }
   },
@@ -192,11 +119,6 @@
   "src/components/kanban/KanbanColumn.vue": {
     "local/no-watch": {
       "count": 4
-    }
-  },
-  "src/components/kanban/KanbanColumnEditor.vue": {
-    "local/no-watch": {
-      "count": 1
     }
   },
   "src/components/kanban/KanbanDescriptionEditor.vue": {

@@ -25,7 +25,7 @@
   pick with "Path must be absolute" and disabled submit.
 -->
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted, onUpdated } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 import UiIcon from '../ui/UiIcon.vue'
@@ -131,11 +131,24 @@ const handleOpen = async () => {
   await nextTick()
   pathInput.value?.focus()
 }
+
+// Open-reset without watch(): seed on mount (initial show=true) and on
+// closed->open updates. A Transition before-enter hook cannot do this — it
+// never fires on initial mount (no `appear`) and VTU stubs Transition, so
+// specs that mount then setProps(show=true) would see empty fields.
+const wasShown = ref(props.show)
+onMounted(() => {
+  if (props.show) void handleOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShown.value) void handleOpen()
+  wasShown.value = props.show
+})
 </script>
 
 <template>
   <Teleport to="body">
-    <Transition name="agent-knowledge-modal" @before-enter="handleOpen">
+    <Transition name="agent-knowledge-modal">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"

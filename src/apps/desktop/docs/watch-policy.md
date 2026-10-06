@@ -37,9 +37,14 @@ bookkeeping merge, `KanbanTaskDetail` reset moved to the open handler).
 If a user action caused the change, the reaction belongs in that handler,
 not in a watcher:
 
-- dialog open resets (`name = ''`, `nextTick` + focus) → `openDialog()`
-  called from the parent's open path (plus `onMounted` for `immediate`).
-  Covers all 16 `watch(() => props.show)` dialog sites (Group A triage).
+- dialog open resets (`name = ''`, `nextTick` + focus) → child-owned
+  `handleOpen()` invoked from an `onMounted` + `onUpdated` closed→open
+  guard (`wasShown` ref; seed when `props.show` turns true). No parent
+  changes required. A Transition `@before-enter` hook was tried and
+  reverted: it never fires on initial mount (no `appear`) and VTU stubs
+  Transition, so specs that mount then `setProps({ show: true })` saw
+  empty fields (7 failures across 5 spec files).
+  Covers all 17 `watch(() => props.show)` dialog sites (Group A triage).
 - debounced search fetch → `@input` handler with its own timer.
 - `pendingAction = null` → the dialog-open reset, not `watch(isCreating)`.
 - v-model out (`emit('update:modelValue', v)`) → `@input` in the template,

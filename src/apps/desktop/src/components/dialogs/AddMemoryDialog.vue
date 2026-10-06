@@ -38,7 +38,7 @@
             create(name: string, content: string, path: string)  // task
 -->
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onMounted, onUpdated } from 'vue'
 import { createLocalMemory, getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import { useNotificationStore } from '../../stores/notifications'
 import FilePickerDialog from '../FilePickerDialog.vue'
@@ -204,7 +204,7 @@ const handleKeydown = (event: KeyboardEvent) => {
 // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
 // Reset state on every open — matches AddItemDialog's contract.
-// Runs as the Transition's before-enter hook so the fields are
+// Runs as the open-sync guard below so the fields are
 // seeded before the dialog paints.
 const handleOpen = async () => {
   name.value = ''
@@ -215,11 +215,24 @@ const handleOpen = async () => {
   await nextTick()
   nameInput.value?.focus()
 }
+
+// Open-reset without watch(): seed on mount (initial show=true) and on
+// closed->open updates. A Transition before-enter hook cannot do this — it
+// never fires on initial mount (no `appear`) and VTU stubs Transition, so
+// specs that mount then setProps(show=true) would see empty fields.
+const wasShown = ref(props.show)
+onMounted(() => {
+  if (props.show) void handleOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShown.value) void handleOpen()
+  wasShown.value = props.show
+})
 </script>
 
 <template>
   <Teleport to="body">
-    <Transition name="add-memory-modal" @before-enter="handleOpen">
+    <Transition name="add-memory-modal">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"

@@ -11,12 +11,12 @@
   Spec: docs/superpowers/specs/2026-08-15-agent-mode-design.md
 -->
 <script setup lang="ts">
-import { ref, computed, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, onMounted, onUpdated } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 import UiIcon from '../ui/UiIcon.vue'
 
-defineProps<{ show: boolean }>()
+const props = defineProps<{ show: boolean }>()
 
 const emit = defineEmits<{
   close: []
@@ -80,11 +80,24 @@ const handleOpen = async () => {
 onBeforeUnmount(() => {
   document.body.style.overflow = ''
 })
+
+// Open-reset without watch(): seed on mount (initial show=true) and on
+// closed->open updates. A Transition before-enter hook cannot do this — it
+// never fires on initial mount (no `appear`) and VTU stubs Transition, so
+// specs that mount then setProps(show=true) would see empty fields.
+const wasShown = ref(props.show)
+onMounted(() => {
+  if (props.show) void handleOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShown.value) void handleOpen()
+  wasShown.value = props.show
+})
 </script>
 
 <template>
   <Teleport to="body">
-    <Transition name="add-agent-modal" @before-enter="handleOpen">
+    <Transition name="add-agent-modal">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -152,10 +165,7 @@ onBeforeUnmount(() => {
             >
             <button
               type="button"
-              @click="
-                showPicker = true
-                pathTouched = true
-              "
+              @click="showPicker = true; pathTouched = true"
               data-testid="add-agent-choose-folder"
               class="w-full px-3 py-2 rounded-lg text-body flex items-center justify-between gap-2"
               :style="{

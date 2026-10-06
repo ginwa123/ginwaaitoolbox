@@ -35,7 +35,7 @@
     (Chunk 4, Task 4.1)
 -->
 <script setup lang="ts">
-import { ref, computed, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, onMounted, onUpdated } from 'vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
 import UiIcon from '../ui/UiIcon.vue'
@@ -152,7 +152,7 @@ const onDocumentClick = (e: MouseEvent) => {
 
 // ─── Lifecycle ────────────────────────────────────────────────────────
 
-// Reset + preselect on every open (Transition before-enter) and detach
+// Reset + preselect on every open (open-sync guard below) and detach
 // the outside-click listener after close (Transition after-leave).
 // onBeforeUnmount below remains as the unmount safety net.
 const handleOpen = async () => {
@@ -175,11 +175,24 @@ const handleCloseLeave = () => {
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocumentClick)
 })
+
+// Open-reset without watch(): seed on mount (initial show=true) and on
+// closed->open updates. A Transition before-enter hook cannot do this — it
+// never fires on initial mount (no `appear`) and VTU stubs Transition, so
+// specs that mount then setProps(show=true) would see empty fields.
+const wasShown = ref(props.show)
+onMounted(() => {
+  if (props.show) void handleOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShown.value) void handleOpen()
+  wasShown.value = props.show
+})
 </script>
 
 <template>
   <Teleport to="body">
-    <Transition name="copy-kanban-spec-modal" @before-enter="handleOpen" @after-leave="handleCloseLeave">
+    <Transition name="copy-kanban-spec-modal" @after-leave="handleCloseLeave">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
