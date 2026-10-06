@@ -709,17 +709,19 @@ const loadGitStatus = async () => {
 const loadFullList = async (cwd: string = props.cwd) => {
   if (!cwd) return
   const seq = loadSeq
-  const targets: { path: string; staged: boolean }[] = [
+  const targets: { path: string; staged: boolean; untracked?: boolean }[] = [
     ...stagedFiles.value.map((f) => ({ path: f.path, staged: true })),
     ...unstagedFiles.value.map((f) => ({ path: f.path, staged: false })),
-    ...untrackedFiles.value.map((f) => ({ path: f.path, staged: false })),
+    // Untracked files carry the flag to the centre diff's whole-file control:
+    // a new file's diff IS the whole file, so nothing needs fetching.
+    ...untrackedFiles.value.map((f) => ({ path: f.path, staged: false, untracked: true })),
   ]
   if (targets.length === 0) {
     if (seq === loadSeq) emit('show-diff-list', [])
     return
   }
   const toSelection = (
-    t: { path: string; staged: boolean },
+    t: { path: string; staged: boolean; untracked?: boolean },
     diff_content: string,
   ): DiffSelection => {
     const parsed = parseUnifiedDiff(diff_content)
@@ -729,15 +731,17 @@ const loadFullList = async (cwd: string = props.cwd) => {
       lines: parsed.lines,
       added: parsed.added,
       removed: parsed.removed,
+      untracked: t.untracked === true,
     }
   }
-  const toError = (t: { path: string; staged: boolean }): DiffSelection => ({
+  const toError = (t: { path: string; staged: boolean; untracked?: boolean }): DiffSelection => ({
     path: t.path,
     staged: t.staged,
     lines: [],
     added: 0,
     removed: 0,
     error: 'Failed to load file diff',
+    untracked: t.untracked === true,
   })
   try {
     // Folder mode: the server walks the repo itself, so this body stays

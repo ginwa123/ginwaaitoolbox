@@ -30,6 +30,12 @@ pub const BatchDiffBody = struct {
     path: []const u8,
     files: ?[]BatchFileItem = null,
     folder: ?[]const u8 = null,
+    /// WHOLE-FILE mode — `git diff -U<all>` for exactly ONE path, so the
+    /// client can render every line of the file with the changes still
+    /// marked. Only valid with a single entry in `files` (never folder mode):
+    /// one request per file is the point, and a folder-wide whole-file diff
+    /// would be a multi-megabyte response nobody asked for.
+    whole_file: ?bool = null,
 };
 
 pub const BatchDiffEntry = struct {
@@ -40,6 +46,10 @@ pub const BatchDiffEntry = struct {
 
 pub const BatchDiffResponse = struct {
     diffs: []BatchDiffEntry,
+    /// Set when a whole-file request could not be answered in full (the diff
+    /// exceeds `MAX_WHOLE_FILE_BYTES`). The entry's `diff_content` is then
+    /// EMPTY — never a partial file, which would read as a complete one.
+    whole_file_refused: bool = false,
 };
 
 /// Split a combined `git diff` output into per-file chunks.
@@ -167,6 +177,22 @@ pub fn freeTargetList(allocator: std.mem.Allocator, targets: []const BatchFileIt
     allocator.free(targets);
 }
 
+/// Whole-file mode is a DIFFERENT budget from the panel's diff view.
+/// `MAX_PER_FILE_BYTES` truncates a diff and marks the cut, which is fine for
+/// a hunk list — the reader scrolls and the diff keeps its meaning. The
+/// whole-file view has no such licence: its gutter numbers every line of the
+/// file, so a cut tail is indistinguishable from the end of the file. It is
+/// therefore all-or-nothing: over this cap the server REFUSES (serves nothing
+/// and sets `whole_file_refused`), and the client offers the code viewer
+/// instead.
+pub const MAX_WHOLE_FILE_BYTES: usize = 2 * 1024 * 1024;
+
+/// `-U` for whole-file mode. Larger than any file we are willing to serve, so
+/// git clamps it to the file's length and every line arrives as context —
+/// removals and insertions included, which is what lets ONE request render
+/// the whole file in both unified and split.
+pub const WHOLE_FILE_UNIFIED_FLAG = "--unified=100000";
+
 /// Marker appended to a diff that exceeded MAX_PER_FILE_BYTES.
 pub const TRUNCATION_SUFFIX = "\n... [truncated]\n";
 
@@ -186,6 +212,17 @@ fn capDiff(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     @memcpy(buf[0..MAX_PER_FILE_BYTES], s[0..MAX_PER_FILE_BYTES]);
     @memcpy(buf[MAX_PER_FILE_BYTES..total], TRUNCATION_SUFFIX);
     return buf;
+}
+
+/// Cap a whole-file diff — ALL OR NOTHING.
+///
+/// Returns `null` when the body is over `MAX_WHOLE_FILE_BYTES`, in which case
+/// the caller serves an empty diff plus `whole_file_refused`. Truncating here
+/// (as `capDiff` does for the hunk list) would produce a file that LOOKS
+/// complete — the gutter still numbers every line it shows — and just stops.
+pub fn capWholeFile(allocator: std.mem.Allocator, s: []const u8) !?[]const u8 {
+    if (s.len > MAX_WHOLE_FILE_BYTES) return null;
+    return try allocator.dupe(u8, s);
 }
 
 fn buildNewFileDiff(allocator: std.mem.Allocator, file_path: []const u8, content: []const u8) ![]const u8 {
@@ -277,6 +314,13 @@ pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     if (!folder_mode and list_mode_files.len == 0) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "No files") });
     }
+    const whole_file = parsed.whole_file orelse false;
+    // Whole-file is per FILE by construction: `-U<all>` for one path. A
+    // folder-wide or multi-file request would be a multi-megabyte response
+    // that the caller only ever asked for one section of.
+    if (whole_file and (folder_mode or list_mode_files.len != 1)) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "whole_file needs exactly one file and no folder") });
+    }
     if (list_mode_files.len > MAX_BATCH_FILES) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "Too many files (max 200)") });
     }
@@ -345,7 +389,9 @@ pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     if (staged.items.len > 0) {
         var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(allocator);
-        argv.appendSlice(allocator, &.{ "git", "-C", parsed.path, "diff", "--cached", "--" }) catch {};
+        argv.appendSlice(allocator, &.{ "git", "-C", parsed.path, "diff", "--cached" }) catch {};
+        if (whole_file) argv.append(allocator, WHOLE_FILE_UNIFIED_FLAG) catch {};
+        argv.append(allocator, "--") catch {};
         if (folder_mode) {
             if (folder.len > 0) argv.append(allocator, folder) catch {};
         } else {
@@ -363,7 +409,9 @@ pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     if (unstaged.items.len > 0) {
         var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(allocator);
-        argv.appendSlice(allocator, &.{ "git", "-C", parsed.path, "diff", "--" }) catch {};
+        argv.appendSlice(allocator, &.{ "git", "-C", parsed.path, "diff" }) catch {};
+        if (whole_file) argv.append(allocator, WHOLE_FILE_UNIFIED_FLAG) catch {};
+        argv.append(allocator, "--") catch {};
         if (folder_mode) {
             if (folder.len > 0) argv.append(allocator, folder) catch {};
         } else {
@@ -389,6 +437,7 @@ pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     defer unstaged_map.deinit();
 
     const targets: []const BatchFileItem = if (folder_mode) owned_targets else list_mode_files;
+    var whole_file_refused = false;
     var entries = std.ArrayList(BatchDiffEntry).empty;
     defer entries.deinit(allocator);
     for (targets) |f| {
@@ -402,18 +451,67 @@ pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
             need_free = owned.len > 0;
             content = owned;
         }
-        const capped = capDiff(allocator, content) catch "";
+        var capped: []const u8 = "";
+        if (whole_file) {
+            const maybe = capWholeFile(allocator, content) catch null;
+            if (maybe) |full| {
+                capped = full;
+            } else {
+                whole_file_refused = true;
+            }
+        } else {
+            capped = capDiff(allocator, content) catch "";
+        }
         if (need_free) allocator.free(owned);
         entries.append(allocator, .{ .path = f.file, .diff_content = capped, .staged = f.staged }) catch continue;
     }
 
-    const response = BatchDiffResponse{ .diffs = entries.items };
+    const response = BatchDiffResponse{ .diffs = entries.items, .whole_file_refused = whole_file_refused };
     const data = try std.json.Stringify.valueAlloc(allocator, response, .{});
     return res.jsonResponse(.{ .status_code = 200, .data = data });
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 // Splitter is pure (no IO) so it is unit-testable here.
+
+test "capWholeFile passes a body under the cap through unmarked" {
+    const allocator = std.testing.allocator;
+    const body = "diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n-old\n+new\n";
+    const capped = (try capWholeFile(allocator, body)).?;
+    defer allocator.free(capped);
+    try std.testing.expectEqualStrings(body, capped);
+    // The whole point of the whole-file budget: no truncation marker, because
+    // a marked-up file view would claim to be complete.
+    try std.testing.expect(std.mem.indexOf(u8, capped, TRUNCATION_SUFFIX) == null);
+}
+
+test "capWholeFile accepts the boundary exactly at the cap" {
+    const allocator = std.testing.allocator;
+    const at_cap = try allocator.alloc(u8, MAX_WHOLE_FILE_BYTES);
+    defer allocator.free(at_cap);
+    @memset(at_cap, 'x');
+    const capped = try capWholeFile(allocator, at_cap);
+    try std.testing.expect(capped != null);
+    allocator.free(capped.?);
+}
+
+test "capWholeFile REFUSES one byte over the cap instead of truncating" {
+    const allocator = std.testing.allocator;
+    const over = try allocator.alloc(u8, MAX_WHOLE_FILE_BYTES + 1);
+    defer allocator.free(over);
+    @memset(over, 'x');
+    // Null, not a shortened slice: the caller serves an empty diff and sets
+    // `whole_file_refused`, so the UI can offer the code viewer. Returning a
+    // 2 MiB prefix here would look like the end of the file.
+    try std.testing.expect(try capWholeFile(allocator, over) == null);
+}
+
+test "whole-file mode is a bigger budget than the panel diff cap" {
+    // If these two ever invert, whole-file mode can never serve a file that
+    // the hunk view already renders.
+    try std.testing.expect(MAX_WHOLE_FILE_BYTES > MAX_PER_FILE_BYTES);
+    try std.testing.expect(std.mem.startsWith(u8, WHOLE_FILE_UNIFIED_FLAG, "--unified="));
+}
 
 test "splitCombinedDiff splits two files" {
     const allocator = std.testing.allocator;

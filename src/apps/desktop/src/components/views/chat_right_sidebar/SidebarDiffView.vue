@@ -2,21 +2,22 @@
 import { computed, ref, watch } from 'vue'
 import UiIcon from '../../ui/UiIcon.vue'
 import DiffCommentBox, {
-  copyTextToClipboard,
-  deleteSavedComment,
-  formatReviewComment,
   listSavedComments,
   type DiffCommentSavePayload,
   type SavedComment,
 } from './DiffCommentBox.vue'
 import { escapeDiffHtml, type ParsedDiffLine } from './parseUnifiedDiff'
+import { pairSplitRows, splitRowIndexBySourceIndex, type SplitRow } from './pairSplitRows'
+import { fetchWholeFileDiff, type WholeFileDiff } from './wholeFileDiff'
+import SplitDiffTable from './SplitDiffTable.vue'
+import DiffThreads from './DiffThreads.vue'
 
 /**
- * Shared full diff view: file header (back/filename/stats/Open),
- * loading/error/empty states, GitHub-style hunk table, and the
- * review mini-chat popup. Presentational — data flows in via props,
- * user actions flow out via emits. Used full-height in ChatView's
- * center column; the sidebar panel is list-only.
+ * Shared full diff view: file header (collapse toggle, back/filename/stats,
+ * scope + mode, Open), loading/error/empty states, the unified OR split
+ * render of the hunks, and the review mini-chat popup. Presentational — data
+ * flows in via props, user actions flow out via emits. Used full-height in
+ * ChatView's centre column; the sidebar panel is list-only.
  */
 const props = defineProps<{
   path: string
@@ -26,20 +27,98 @@ const props = defineProps<{
   staged?: boolean
   loading?: boolean
   error?: string | null
-  /** cwd for the review DiffCommentBox. */
+  /** cwd for the review DiffCommentBox and the whole-file fetch. */
   cwd: string
   /** Show the back button (center mode). Panel list mode hides it. */
   showBack?: boolean
   backLabel?: string
+  /** 'unified' (default, today's render) or 'split' (side-by-side). */
+  mode?: 'unified' | 'split'
+  /** Collapsed = header only. The parsed diff stays in the parent's memory,
+   * so expanding is a render, never a refetch. */
+  collapsed?: boolean
+  /** Whole-file scope: every line of the file, changes still marked. */
+  wholeFile?: boolean
+  /** An untracked file's diff already IS the whole file, so the scope
+   * control renders locked at "Whole file" and never fetches. */
+  untracked?: boolean
 }>()
 
 const emit = defineEmits<{
   back: []
   open: [payload: { path: string; line?: number }]
   retry: []
+  'toggle-collapse': []
+  'toggle-whole-file': []
   'submit-review': [message: string]
   'comment-saved': [payload: DiffCommentSavePayload]
 }>()
+
+const mode = computed<'unified' | 'split'>(() => props.mode ?? 'unified')
+const collapsed = computed(() => props.collapsed === true)
+
+// ── whole-file scope ──────────────────────────────────────────────────────
+// Fetched here (not in the parent) because this component already owns the
+// path + cwd + staged triple the request needs. The cache is module-level, so
+// collapsing and re-expanding a section — which unmounts this component — is
+// still a cache read, not a second request.
+const wholeFileResult = ref<WholeFileDiff | null>(null)
+const wholeFileLoading = ref(false)
+const wholeFileError = ref<string | null>(null)
+
+const wholeFileRefused = computed(() => wholeFileResult.value?.refused === true)
+
+/** The lines actually rendered: the whole file when we have it, otherwise the
+ * hunks we were handed. A refusal falls back to the hunks rather than to
+ * nothing — the user still gets their diff, plus a notice. */
+const displayLines = computed<ParsedDiffLine[]>(() => {
+  if (!props.wholeFile) return props.lines
+  const result = wholeFileResult.value
+  if (!result || result.refused) return props.lines
+  return result.lines
+})
+
+async function loadWholeFile(): Promise<void> {
+  if (!props.wholeFile || props.untracked || !props.cwd || !props.path) return
+  const requested = `${props.staged ? 1 : 0}:${props.path}`
+  wholeFileLoading.value = true
+  wholeFileError.value = null
+  try {
+    const result = await fetchWholeFileDiff(props.cwd, props.path, props.staged === true)
+    // Stale guard: the user may have switched files (or scope) while this
+    // was in flight. Dropping the late answer beats showing file A's body
+    // under file B's header.
+    if (`${props.staged ? 1 : 0}:${props.path}` !== requested) return
+    wholeFileResult.value = result
+  } catch (err) {
+    if (`${props.staged ? 1 : 0}:${props.path}` !== requested) return
+    wholeFileError.value = err instanceof Error ? err.message : 'Failed to load the whole file'
+  } finally {
+    wholeFileLoading.value = false
+  }
+}
+
+watch(
+  () => [props.wholeFile, props.untracked, props.path, props.staged, props.cwd] as const,
+  ([whole]) => {
+    if (whole) void loadWholeFile()
+    else {
+      wholeFileResult.value = null
+      wholeFileError.value = null
+    }
+  },
+  // immediate: a section can MOUNT with the scope already on (the state lives
+  // in ChatView, so remounting after a collapse restores it). Waiting for a
+  // transition would leave that section showing hunks while its control says
+  // "Whole file".
+  { immediate: true },
+)
+
+// ── split render ──────────────────────────────────────────────────────────
+const splitRows = computed<SplitRow[]>(() => pairSplitRows(displayLines.value))
+/** source line index → split row index, so a review thread left in unified
+ * mode keeps its position when the user flips to split. */
+const splitRowBySource = computed(() => splitRowIndexBySourceIndex(splitRows.value))
 
 // Mini chat popup state (moved verbatim from SidebarDiffPanel).
 const showMiniChat = ref(false)
@@ -69,15 +148,25 @@ const openBoxAtRange = (start: number, end: number, context: string) => {
   showMiniChat.value = true
 }
 
-const openMiniChat = (event: MouseEvent, line: ParsedDiffLine) => {
+/**
+ * Open the review box for the line at `lineIdx` in the rendered lines.
+ *
+ * Both renders funnel through here: unified passes the clicked row's index,
+ * split passes the clicked side's SOURCE index — which is the same index
+ * space when whole-file scope replaced the line list, because the split rows
+ * are paired from those very lines.
+ */
+const openMiniChatAt = (event: MouseEvent, lineIdx: number) => {
+  const lines = displayLines.value
+  const line = lines[lineIdx]
+  if (!line) return
   if (line.type !== 'add' && line.type !== 'remove') return
   event.preventDefault()
   event.stopPropagation()
   miniChatPosition.value = { x: event.clientX, y: event.clientY }
-  const lineIdx = props.lines.indexOf(line)
   const startIdx = Math.max(0, lineIdx - 3)
-  const endIdx = Math.min(props.lines.length, lineIdx + 4)
-  const contextLines = props.lines.slice(startIdx, endIdx)
+  const endIdx = Math.min(lines.length, lineIdx + 4)
+  const contextLines = lines.slice(startIdx, endIdx)
   if (contextLines.length === 0) return
   const start = contextLines[0]!.newLineNum || contextLines[0]!.oldLineNum || 0
   const last = contextLines[contextLines.length - 1]!
@@ -90,6 +179,14 @@ const openMiniChat = (event: MouseEvent, line: ParsedDiffLine) => {
     })
     .join('\n')
   openBoxAtRange(start, end, content)
+}
+
+const openMiniChat = (event: MouseEvent, line: ParsedDiffLine) => {
+  openMiniChatAt(event, displayLines.value.indexOf(line))
+}
+
+const onSplitComment = (payload: { event: MouseEvent; sourceIndex: number }) => {
+  openMiniChatAt(payload.event, payload.sourceIndex)
 }
 
 const closeMiniChat = () => {
@@ -106,11 +203,13 @@ const savedThreads = computed(() => {
   return listSavedComments(props.cwd, props.path)
 })
 
-const threadsAfterRow = computed(() => {
-  const map = new Map<number, SavedComment[]>()
+/** Last source-line index a thread covers — the same anchor the unified
+ * render uses, computed once so both renders agree on where a thread hangs. */
+const threadAnchors = computed(() => {
+  const anchors: { thread: SavedComment; anchor: number }[] = []
   for (const thread of savedThreads.value) {
     let anchor = -1
-    props.lines.forEach((line, idx) => {
+    displayLines.value.forEach((line, idx) => {
       let n: number | undefined
       if (line.type === 'add') n = line.newLineNum
       else if (line.type === 'remove') n = line.oldLineNum
@@ -118,7 +217,14 @@ const threadsAfterRow = computed(() => {
       else return
       if (n != null && n >= thread.start && n <= thread.end) anchor = idx
     })
-    if (anchor < 0) continue
+    if (anchor >= 0) anchors.push({ thread, anchor })
+  }
+  return anchors
+})
+
+const threadsAfterRow = computed(() => {
+  const map = new Map<number, SavedComment[]>()
+  for (const { thread, anchor } of threadAnchors.value) {
     const list = map.get(anchor)
     if (list) list.push(thread)
     else map.set(anchor, [thread])
@@ -130,55 +236,24 @@ function threadsAfter(idx: number): SavedComment[] {
   return threadsAfterRow.value.get(idx) ?? []
 }
 
-function formatSavedTime(ts: number): string {
-  try {
-    return new Date(ts).toLocaleString()
-  } catch {
-    return ''
+/** Same threads, addressed by SPLIT row instead of source line. */
+function threadsAfterSplitRow(rowIndex: number): SavedComment[] {
+  const out: SavedComment[] = []
+  for (const { thread, anchor } of threadAnchors.value) {
+    if (splitRowBySource.value.get(anchor) === rowIndex) out.push(thread)
   }
-}
-
-const editingKey = ref<string | null>(null)
-const threadKey = (thread: SavedComment) => `${thread.start}-${thread.end}`
-
-const editThread = (thread: SavedComment) => {
-  editingKey.value = threadKey(thread)
-}
-
-const cancelEdit = () => {
-  editingKey.value = null
-}
-
-const deleteThread = (thread: SavedComment) => {
-  deleteSavedComment(props.cwd, props.path, thread.start, thread.end)
-  reviewedVersion.value++
-}
-
-const copiedKey = ref<string | null>(null)
-let copiedTimer: ReturnType<typeof setTimeout> | null = null
-
-const copyThread = async (thread: SavedComment) => {
-  await copyTextToClipboard(
-    formatReviewComment(props.path, thread.start, thread.end, thread.context, thread.message),
-  )
-  copiedKey.value = threadKey(thread)
-  if (copiedTimer) clearTimeout(copiedTimer)
-  copiedTimer = setTimeout(() => {
-    copiedKey.value = null
-  }, 2000)
+  return out
 }
 
 watch(
   () => props.path,
   () => {
     reviewedVersion.value = 0
-    editingKey.value = null
   },
 )
 
 const handleCommentSave = (payload: DiffCommentSavePayload) => {
   closeMiniChat()
-  editingKey.value = null
   reviewedVersion.value++
   emit('comment-saved', payload)
 }
@@ -205,6 +280,18 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
       >
         ‹ {{ backLabel ?? 'Back' }}
       </button>
+      <button
+        type="button"
+        class="shrink-0 w-5 h-7 rounded text-dense hover:opacity-70"
+        style="color: var(--semantic-text-dim)"
+        :title="collapsed ? 'Expand this file' : 'Collapse this file'"
+        :aria-label="collapsed ? 'Expand this file' : 'Collapse this file'"
+        :aria-expanded="!collapsed"
+        data-testid="sidebar-diff-toggle-collapse"
+        @click="emit('toggle-collapse')"
+      >
+        {{ collapsed ? '▸' : '▾' }}
+      </button>
       <span
         class="text-dense font-medium truncate flex-1"
         style="color: var(--semantic-text)"
@@ -222,6 +309,46 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
       </span>
       <span class="text-dense font-mono" style="color: var(--color-green)"> +{{ added }} </span>
       <span class="text-dense font-mono" style="color: var(--color-red)"> -{{ removed }} </span>
+      <!-- Scope axis: which lines. Layout (unified|split) is the toolbar's. -->
+      <span
+        class="shrink-0 inline-flex rounded overflow-hidden"
+        style="border: 1px solid var(--color-border)"
+        data-testid="sidebar-diff-scope"
+      >
+        <button
+          type="button"
+          class="px-1.5 text-dense"
+          :style="
+            untracked
+              ? { color: 'var(--semantic-text-dim)', opacity: '0.45', cursor: 'default' }
+              : wholeFile
+                ? { color: 'var(--semantic-text-dim)' }
+                : { background: 'var(--color-violet)', color: 'var(--color-bg-m2)' }
+          "
+          :disabled="untracked"
+          title="Show just the hunks"
+          data-testid="sidebar-diff-scope-diff"
+          @click="!untracked && wholeFile && emit('toggle-whole-file')"
+        >
+          Diff
+        </button>
+        <button
+          type="button"
+          class="px-1.5 text-dense"
+          :style="
+            untracked || wholeFile
+              ? { background: 'var(--color-violet)', color: 'var(--color-bg-m2)' }
+              : { color: 'var(--semantic-text-dim)' }
+          "
+          :title="
+            untracked ? 'A new file — the diff already is the whole file' : 'Show the whole file'
+          "
+          data-testid="sidebar-diff-scope-whole"
+          @click="!untracked && !wholeFile && emit('toggle-whole-file')"
+        >
+          Whole file
+        </button>
+      </span>
       <button
         type="button"
         class="px-2 py-1 text-dense rounded hover:opacity-70"
@@ -235,7 +362,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
       </button>
     </div>
 
-    <div v-if="loading" class="flex items-center justify-center py-6">
+    <div v-if="loading || wholeFileLoading" class="flex items-center justify-center py-6">
       <svg
         class="animate-spin w-5 h-5"
         style="color: var(--color-aqua)"
@@ -265,198 +392,187 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
       </button>
     </div>
 
-    <div v-else-if="lines.length === 0" class="flex flex-col items-center justify-center p-4">
+    <div
+      v-else-if="lines.length === 0 && !wholeFile"
+      class="flex flex-col items-center justify-center p-4"
+    >
       <UiIcon name="file" size-class="w-6 h-6" class="mb-2" />
       <p class="text-dense" style="color: var(--semantic-text-dim)">No changes detected</p>
     </div>
 
-    <div
-      v-else
-      class="flex-1 min-h-0 overflow-auto diff-wrap"
-      :style="{
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      }"
-    >
-      <table class="w-full border-collapse" style="font-size: var(--text-dense); line-height: 20px">
-        <tbody>
-          <template v-for="(line, idx) in lines" :key="idx">
-            <tr v-if="line.type === 'hunk'">
-              <td
-                colspan="3"
-                class="px-3 py-1"
-                style="background: rgba(139, 164, 176, 0.1); color: var(--color-blue)"
-              >
-                {{ line.content }}
-              </td>
-            </tr>
-            <tr
-              v-else-if="line.type === 'add'"
-              style="cursor: pointer"
-              @click="openMiniChat($event, line)"
-            >
-              <td
-                class="w-10 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none"
-              >
-                {{ line.newLineNum || '' }}
-              </td>
-              <td
-                class="w-10 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none"
-              ></td>
-              <td
-                class="px-2"
-                style="
-                  border-left: 3px solid var(--color-green);
-                  background: rgba(135, 169, 135, 0.15);
-                  color: var(--semantic-text);
-                "
-              >
-                <span style="color: var(--color-green); font-weight: bold">+</span>
-                <span v-html="escapeDiffHtml(line.content)"></span>
-              </td>
-            </tr>
-            <tr
-              v-else-if="line.type === 'remove'"
-              style="cursor: pointer"
-              @click="openMiniChat($event, line)"
-            >
-              <td
-                class="w-10 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none"
-              >
-                {{ line.oldLineNum || '' }}
-              </td>
-              <td
-                class="w-10 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none"
-              ></td>
-              <td
-                class="px-2"
-                style="
-                  border-left: 3px solid var(--color-red);
-                  background: rgba(169, 135, 135, 0.15);
-                  color: var(--semantic-text);
-                "
-              >
-                <span style="color: var(--color-red); font-weight: bold">−</span>
-                <span v-html="escapeDiffHtml(line.content)"></span>
-              </td>
-            </tr>
-            <tr v-else-if="line.type === 'context'">
-              <td
-                class="w-10 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none"
-              >
-                {{ line.oldLineNum || '' }}
-              </td>
-              <td
-                class="w-10 px-2 text-right select-none"
-                style="color: var(--semantic-text-dim); user-select: none"
-              >
-                {{ line.newLineNum || '' }}
-              </td>
-              <td class="px-2" style="color: var(--semantic-text-dim)">
-                <span>&nbsp;</span>
-                <span v-html="escapeDiffHtml(line.content)"></span>
-              </td>
-            </tr>
-            <tr
-              v-if="threadsAfter(idx).length > 0"
-              data-testid="diff-comment-thread"
-            >
-              <td colspan="3" class="px-2 py-1">
-                <div
-                  v-for="thread in threadsAfter(idx)"
-                  :key="`${thread.start}-${thread.end}`"
-                  class="rounded p-2 mb-1"
-                  style="border: 1px solid var(--color-border)"
+    <template v-else-if="!collapsed">
+      <!-- Split: five columns, pairing done by pairSplitRows. -->
+      <SplitDiffTable
+        v-if="mode === 'split'"
+        class="flex-1 min-h-0 overflow-auto diff-wrap"
+        :rows="splitRows"
+        @comment="onSplitComment"
+      >
+        <template #threads="{ rowIndex }">
+          <tr v-if="threadsAfterSplitRow(rowIndex).length > 0" data-testid="diff-comment-thread">
+            <td colspan="5" class="px-2 py-1">
+              <DiffThreads
+                :threads="threadsAfterSplitRow(rowIndex)"
+                :path="path"
+                :cwd="cwd"
+                @save="handleCommentSave"
+                @changed="reviewedVersion++"
+              />
+            </td>
+          </tr>
+        </template>
+      </SplitDiffTable>
+
+      <!-- Unified: today's three-column hunk table. -->
+      <div
+        v-else
+        class="flex-1 min-h-0 overflow-auto diff-wrap"
+        :style="{
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        }"
+      >
+        <table
+          class="w-full border-collapse"
+          style="font-size: var(--text-dense); line-height: 20px"
+        >
+          <tbody>
+            <template v-for="(line, idx) in displayLines" :key="idx">
+              <tr v-if="line.type === 'hunk'">
+                <td
+                  colspan="3"
+                  class="px-3 py-1"
+                  style="background: rgba(139, 164, 176, 0.1); color: var(--color-blue)"
                 >
-                  <div
-                    class="text-dense font-medium mb-1"
-                    style="color: var(--semantic-text)"
-                  >
-                    Comment on lines {{ thread.start }}–{{ thread.end }}
-                    <span
-                      v-if="thread.savedAt"
-                      class="font-normal"
-                      style="color: var(--semantic-text-dim)"
-                      data-testid="diff-comment-time"
-                      >· {{ formatSavedTime(thread.savedAt) }}</span
-                    >
-                  </div>
-                  <div v-if="editingKey === threadKey(thread)">
-                    <DiffCommentBox
-                      :file-path="path"
-                      :start-line="thread.start"
-                      :end-line="thread.end"
-                      :context="thread.context"
-                      :cwd="cwd"
-                      @save="handleCommentSave"
-                    />
-                    <button
-                      type="button"
-                      class="text-dense hover:opacity-70 mt-1"
-                      style="color: var(--color-blue)"
-                        data-testid="diff-comment-cancel"
-                      @click="cancelEdit"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                  <div v-else>
-                    <div
-                      class="text-dense whitespace-pre-wrap mb-1"
-                      style="color: var(--semantic-text)"
-                      data-testid="diff-comment-message"
-                    >
-                      {{ thread.message }}
-                    </div>
-                    <div class="flex gap-3">
-                      <button
-                        type="button"
-                        class="text-dense hover:opacity-70"
-                        style="color: var(--color-blue)"
-                        data-testid="diff-comment-edit"
-                        @click="editThread(thread)"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        class="text-dense hover:opacity-70"
-                        style="color: var(--color-blue)"
-                        data-testid="diff-comment-delete"
-                        @click="deleteThread(thread)"
-                      >
-                        Delete
-                      </button>
-                      <button
-                        type="button"
-                        class="text-dense hover:opacity-70"
-                        style="color: var(--color-blue)"
-                        data-testid="diff-comment-copy"
-                        @click="copyThread(thread)"
-                      >
-                        Copy
-                      </button>
-                      <span
-                        v-if="copiedKey === threadKey(thread)"
-                        class="text-dense"
-                        style="color: var(--color-green)"
-                        data-testid="diff-comment-copied"
-                      >
-                        Copied
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
-    </div>
+                  {{ line.content }}
+                </td>
+              </tr>
+              <tr
+                v-else-if="line.type === 'add'"
+                style="cursor: pointer"
+                @click="openMiniChat($event, line)"
+              >
+                <td
+                  class="w-10 px-2 text-right select-none"
+                  style="color: var(--semantic-text-dim); user-select: none"
+                >
+                  {{ line.newLineNum || '' }}
+                </td>
+                <td
+                  class="w-10 px-2 text-right select-none"
+                  style="color: var(--semantic-text-dim); user-select: none"
+                ></td>
+                <td
+                  class="px-2"
+                  style="
+                    border-left: 3px solid var(--color-green);
+                    background: rgba(135, 169, 135, 0.15);
+                    color: var(--semantic-text);
+                  "
+                >
+                  <span style="color: var(--color-green); font-weight: bold">+</span>
+                  <span v-html="escapeDiffHtml(line.content)"></span>
+                </td>
+              </tr>
+              <tr
+                v-else-if="line.type === 'remove'"
+                style="cursor: pointer"
+                @click="openMiniChat($event, line)"
+              >
+                <td
+                  class="w-10 px-2 text-right select-none"
+                  style="color: var(--semantic-text-dim); user-select: none"
+                >
+                  {{ line.oldLineNum || '' }}
+                </td>
+                <td
+                  class="w-10 px-2 text-right select-none"
+                  style="color: var(--semantic-text-dim); user-select: none"
+                ></td>
+                <td
+                  class="px-2"
+                  style="
+                    border-left: 3px solid var(--color-red);
+                    background: rgba(169, 135, 135, 0.15);
+                    color: var(--semantic-text);
+                  "
+                >
+                  <span style="color: var(--color-red); font-weight: bold">−</span>
+                  <span v-html="escapeDiffHtml(line.content)"></span>
+                </td>
+              </tr>
+              <tr v-else-if="line.type === 'context'">
+                <td
+                  class="w-10 px-2 text-right select-none"
+                  style="color: var(--semantic-text-dim); user-select: none"
+                >
+                  {{ line.oldLineNum || '' }}
+                </td>
+                <td
+                  class="w-10 px-2 text-right select-none"
+                  style="color: var(--semantic-text-dim); user-select: none"
+                >
+                  {{ line.newLineNum || '' }}
+                </td>
+                <td class="px-2" style="color: var(--semantic-text-dim)">
+                  <span>&nbsp;</span>
+                  <span v-html="escapeDiffHtml(line.content)"></span>
+                </td>
+              </tr>
+              <tr v-if="threadsAfter(idx).length > 0" data-testid="diff-comment-thread">
+                <td colspan="3" class="px-2 py-1">
+                  <DiffThreads
+                    :threads="threadsAfter(idx)"
+                    :path="path"
+                    :cwd="cwd"
+                    @save="handleCommentSave"
+                    @changed="reviewedVersion++"
+                  />
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Whole-file refused (too big to serve in full) or failed to load. -->
+      <div
+        v-if="wholeFile && (wholeFileRefused || wholeFileError)"
+        class="shrink-0 flex items-center gap-2 px-3 py-2 text-dense"
+        style="
+          background: var(--color-bg-m2);
+          border-top: 1px dashed var(--color-border-light);
+          color: var(--color-yellow);
+        "
+        data-testid="sidebar-diff-whole-file-notice"
+      >
+        <span class="flex-1">
+          {{
+            wholeFileError
+              ? `Could not load the whole file — ${wholeFileError}`
+              : 'Whole-file view unavailable — this file is too large. The hunks below are still the change.'
+          }}
+        </span>
+        <button
+          v-if="wholeFileError"
+          type="button"
+          class="px-2 py-0.5 rounded"
+          style="border: 1px solid var(--color-border); color: var(--semantic-text)"
+          data-testid="sidebar-diff-whole-file-retry"
+          @click="loadWholeFile()"
+        >
+          Retry
+        </button>
+        <button
+          type="button"
+          class="px-2 py-0.5 rounded"
+          style="border: 1px solid var(--color-border); color: var(--semantic-text)"
+          data-testid="sidebar-diff-whole-file-open"
+          @click="openFile"
+        >
+          Open in code viewer
+        </button>
+      </div>
+    </template>
 
     <Teleport to="body">
       <div
@@ -464,7 +580,10 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
         class="mini-chat-popup fixed z-50 rounded-lg shadow-lg p-3"
         :style="miniChatStyle"
       >
-        <div class="text-dense mb-2 flex items-center gap-2" style="color: var(--semantic-text-dim)">
+        <div
+          class="text-dense mb-2 flex items-center gap-2"
+          style="color: var(--semantic-text-dim)"
+        >
           <span class="flex-1"
             >Review {{ miniChatFilePath }} ({{ miniChatStartLine }}–{{ miniChatEndLine }})</span
           >

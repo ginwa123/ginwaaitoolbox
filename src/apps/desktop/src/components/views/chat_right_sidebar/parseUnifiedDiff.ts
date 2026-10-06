@@ -169,6 +169,9 @@ export interface DiffSelection {
   added: number
   removed: number
   error?: string | null
+  /** A new file: its diff already shows every line, so the whole-file scope
+   * is satisfied without a request (the control renders locked). */
+  untracked?: boolean
 }
 
 // Stacked center diff addressing: each section id is
