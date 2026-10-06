@@ -41,6 +41,7 @@
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
+const auth_common = @import("auth_common.zig");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const on_event_sent_kanban = pabrikcore.ai_mod.on_event_sent_kanban;
@@ -79,6 +80,11 @@ pub fn kanbanTasksCreateHandler(
 
     const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
+    // Per-user LLM config under `--auth` — the active-profile default and the
+    // model seed below both belong to the REQUESTING user, resolved through
+    // the one config-resolution module (`session_llm_config.zig`).
+    const user_cfg = auth_common.requestUserConfig(allocator, di.db, di.auth_enabled, req.headers) orelse
+        pabrikcore.getLlmConfig(di);
 
     // 1. Validate path params + body presence + JSON shape.
     const item_id = req.params.get("item_id") orelse "";
@@ -244,7 +250,7 @@ pub fn kanbanTasksCreateHandler(
         };
         var profile: []const u8 = parsed.selected_profile_model orelse "";
         if (profile.len == 0) {
-            if (pabrikcore.getLlmConfig(di).active_profile) |ap| {
+            if (user_cfg.active_profile) |ap| {
                 profile = ap;
             }
         }
@@ -346,7 +352,7 @@ pub fn kanbanTasksCreateHandler(
             // satisfied NOT NULL but wrote a blank model into chat history —
             // visible in the UI and useless to anything reading the row.
             const seed_model = model_guard.resolve(
-                pabrikcore.getLlmConfig(di).resolveEffectiveProfile(profile).model,
+                user_cfg.resolveEffectiveProfile(profile).model,
             );
             sqlite_db.exec(
                 allocator,

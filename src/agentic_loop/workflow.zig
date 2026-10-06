@@ -10,6 +10,7 @@ pub const on_event_sent = @import("on_event_sent.zig");
 const tool_registry = @import("tools_equipped.zig");
 const handle_tool = @import("handle_tool.zig").handle_tool;
 const skill_evals_config = @import("skill_evals_config.zig");
+const session_llm_config = @import("session_llm_config.zig");
 const ask_user_pending = @import("ask_user_pending.zig");
 // `MAIN_AGENT_ONLY_NAMES` (spawn_sub_agent, ask_user) — the tools a sub-agent
 // must not re-equip via `use_tool`.
@@ -188,7 +189,11 @@ pub const CallbackAiWorkerFlow = struct {
             const created_at = std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}) catch return;
             defer allocator.free(created_at);
 
-            _ = insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = pabrikcore.getLlmConfig(di).model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
+            // The model this error row names is the session owner's under
+            // `--auth` — same resolution module the loop below uses.
+            const error_row_model = (session_llm_config.forSession(allocator, db, session_id) orelse
+                pabrikcore.getLlmConfig(di)).model;
+            _ = insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = cwd, .entity = .{ .id = id, .session_id = session_id, .model = error_row_model, .response_content = error_message, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = initial_agent, .loop_index = 0, .temperature = initial_agent_state.temperature, .is_thinking = initial_agent_state.is_thinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = session_id, .parent_session_id = session_id, .is_input = true, .is_output = false, .is_feed_to_llm = false, .image_urls = null, .created_at = created_at } }) catch return;
         };
     }
 };
@@ -585,7 +590,16 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         .{ params.session_id, params.parent_session_id, params.is_sub_agent, params.message.len, params.allowed_tools.len, params.cwd },
     );
 
-    var config = pabrikcore.getLlmConfig(di.di);
+    // ─── Per-session config (auth mode) ───
+    // With `--auth` on, each user's LLM config lives in
+    // `users.config_json` and the process-global singleton still describes
+    // the on-disk `config.json` — it is never swapped, because one global
+    // pointer cannot serve per-user config (see `session_llm_config.zig`).
+    // Resolve the run's config from the session owner; every case the
+    // database cannot answer (file mode, no owner, user never saved) falls
+    // back to the singleton, i.e. to the previous behaviour.
+    var config = session_llm_config.forSession(parent_allocator, db, params.session_id) orelse
+        pabrikcore.getLlmConfig(di.di);
     var eff = config.resolveEffectiveProfile(params.selected_profile_model);
 
     logger.infoFmt(
@@ -773,7 +787,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // read timeout) to every tool-call iteration of every turn.
 
 
-    const initial_config = pabrikcore.getLlmConfig(di.di);
+    // Same source as `config` above: the session owner's stored config in
+    // auth mode, the process-global singleton otherwise. Named apart
+    // because this is the ENTRY config the MCP fetch below reads, while
+    // the loop body re-reads the live one every iteration.
+    const initial_config = config;
 
     touchCheckpointWorkers(.{
         .allocator = parent_allocator,
@@ -847,7 +865,14 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // end. `getLlmConfig` is a lock-free single-word pointer load;
         // memory safety is preserved by `LlmConfigHolder.previous`
         // keeping the swapped-out config alive until this run finishes.
-        config = pabrikcore.getLlmConfig(di.di);
+        // Auth mode re-resolves the owner's stored config (same fallback
+        // as the entry resolution), so a Settings save applies on the next
+        // iteration without waiting for the run to end. Allocated in the
+        // run arena, like every other per-iteration allocation, so the
+        // previous iteration's `eff` slices stay valid to the end of the
+        // run.
+        config = session_llm_config.forSession(parent_allocator, db, copy_session_id) orelse
+            pabrikcore.getLlmConfig(di.di);
 
         // ─── Live MCP tools refresh on config invalidation ───
         // PUT /api/config/pabrik and add_mcp_server call

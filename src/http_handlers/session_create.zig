@@ -1,5 +1,6 @@
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
+const session_llm_config = @import("../agentic_loop/session_llm_config.zig");
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 const gserverz = pabrikcore.gserverz;
@@ -168,6 +169,21 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     });
 }
 
+/// The `active_profile` in force for the new session: the owner's stored
+/// config under `--auth`, the process-global one otherwise.
+///
+/// Both paths go through the single config-resolution module
+/// (`agentic_loop/session_llm_config.zig`) so the snapshot cannot drift from
+/// what the workflow later resolves for the same session.
+fn activeProfileForOwner(
+    alloc: std.mem.Allocator,
+    di: *pabrikcore.App,
+    owner: []const u8,
+) ?[]const u8 {
+    const cfg = session_llm_config.forOwner(alloc, di.db, owner) orelse pabrikcore.getLlmConfig(di);
+    return cfg.active_profile;
+}
+
 fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.App, parsed: RequestSession, owner: []const u8) !ResponseSession {
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
 
@@ -306,7 +322,7 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.App, parsed: Re
     var selected_profile_model: []const u8 = "";
     if (parsed.selected_profile_model.len > 0) {
         selected_profile_model = parsed.selected_profile_model;
-    } else if (pabrikcore.getLlmConfig(di).active_profile) |ap| {
+    } else if (activeProfileForOwner(alloc, di, owner)) |ap| {
         // 2026-08-21 — snapshot the user's active profile into the
         // session row at create time. Without this, a "Default" chat
         // inherits the active profile only implicitly (via the workflow's
@@ -411,6 +427,10 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
     // compaction decision, and workflow all agree from message #1).
     const effective_profile: []const u8 = blk: {
         if (parsed.selected_profile_model.len > 0) break :blk parsed.selected_profile_model;
+        // NOTE: `insertWorker` has no caller today. If it is ever re-wired,
+        // this snapshot must resolve through `session_llm_config` like
+        // `useCase` above — the session row does not exist yet here, so
+        // `forOwner(alloc, di.db, owner)` is the entry point to use.
         const di = pabrikcore.getSingleton() catch break :blk "";
         if (pabrikcore.getLlmConfig(di).active_profile) |ap| break :blk ap;
         break :blk "";

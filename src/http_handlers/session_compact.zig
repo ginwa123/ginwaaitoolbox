@@ -1,5 +1,6 @@
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
+const session_llm_config = @import("../agentic_loop/session_llm_config.zig");
 const gserverz = pabrikcore.gserverz;
 const llm_history = pabrikcore.llm_history;
 const config = pabrikcore.config;
@@ -38,8 +39,11 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         break :blk try allocator.dupe(u8, ".");
     };
 
-    // Pull the LLM credentials from the live config (read-only borrows).
-    const live_cfg = pabrikcore.getLlmConfig(di);
+    // Pull the LLM credentials from the session's config (read-only
+    // borrows): the session OWNER's stored config under `--auth`, the
+    // process-global one otherwise (`session_llm_config.zig`).
+    const live_cfg = session_llm_config.forSession(allocator, di.db, session_id) orelse
+        pabrikcore.getLlmConfig(di);
     const api_key = live_cfg.api_key;
     const model = live_cfg.model;
     const base_url = live_cfg.base_url;

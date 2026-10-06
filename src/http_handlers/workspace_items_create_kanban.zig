@@ -28,6 +28,7 @@
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
+const auth_common = @import("auth_common.zig");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../agentic_loop/kanban_model.zig");
@@ -265,12 +266,14 @@ pub fn workspaceItemsCreateKanbanHandler(
 
     const di = try pabrikcore.getSingleton();
     const sqlite_db = di.db;
-    // Live config.json `tools` checklist — seeds the fresh board's
-    // allowlist instead of the defaults when set (plan
-    // 2026-09-22-tools-menu). `getLlmConfig` is the established
-    // hot-path accessor; the slice stays valid for the synchronous
-    // useCase below (only swapped on the next config PUT).
-    const config_tools = pabrikcore.getLlmConfig(di).tools;
+    // Live `tools` checklist — seeds the fresh board's allowlist instead of
+    // the defaults when set (plan 2026-09-22-tools-menu). Under `--auth` it
+    // is the REQUESTING user's checklist, resolved through the one
+    // config-resolution module (`session_llm_config.zig`); the slice stays
+    // valid for the synchronous useCase below.
+    const user_cfg = auth_common.requestUserConfig(allocator, di.db, di.auth_enabled, req.headers) orelse
+        pabrikcore.getLlmConfig(di);
+    const config_tools = user_cfg.tools;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
     if (workspace_id.len == 0) {

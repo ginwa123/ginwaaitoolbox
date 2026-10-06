@@ -5,6 +5,7 @@ const sqlite = pabrikcore.sqlite;
 const agent = pabrikcore.agent;
 const logger_mod = pabrikcore.loggermod;
 const helpers = @import("helpers");
+const session_llm_config = @import("session_llm_config.zig");
 const auth_common = @import("../http_handlers/auth_common.zig");
 const config_mod = pabrikcore.config;
 const TUIHistory = @import("models.zig").TUIHistory;
@@ -1093,7 +1094,10 @@ pub fn getSessionMessagesSorted(
             // the profile override still flows through the cascade.
             const di_opt = pabrikcore.getSingleton() catch null;
             if (di_opt) |di| {
-                const cfg = pabrikcore.getLlmConfig(di);
+                // The window a session renders with belongs to the session's
+                // owner under `--auth` (`session_llm_config.zig`).
+                const cfg = session_llm_config.forSession(allocator, db, session_id) orelse
+                    pabrikcore.getLlmConfig(di);
                 break :blk resolveMaxCapacityTotalTokens(cfg, profile, cfg.model);
             }
             const empty_cfg = config_mod.LlmConfig{
