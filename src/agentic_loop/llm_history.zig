@@ -12,6 +12,7 @@ const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("pabrikcore").llm_models;
 const on_event_sent = @import("on_event_sent.zig");
 const model_guard = @import("llm_history_model_guard.zig");
+const parsing = @import("parsing.zig");
 // NOTE: routines_model import deleted with the per-task `routines`
 // table (Migration 084, plan 2026-09-10-workspace-items-routines).
 
@@ -1591,6 +1592,21 @@ pub fn saveMessage(
     const reasoningStr = input.reasoning_content orelse "";
     const agentStr = input.agent_name orelse "Agent";
 
+    // Option A envelopes (mirrors insert_llm_histories): user rows carry
+    // {user,name,msg}, non-empty assistant text carries {model,msg}.
+    var enveloped_owned: ?[]u8 = null;
+    defer if (enveloped_owned) |e| allocator.free(e);
+    var effective_content: []const u8 = contentStr;
+    if (contentStr.len > 0 and !parsing.isChatEnvelope(allocator, contentStr)) {
+        if (std.mem.eql(u8, roleStr, "user")) {
+            enveloped_owned = try parsing.encodeUserContent(allocator, "", agentStr, contentStr);
+            effective_content = enveloped_owned.?;
+        } else if (std.mem.eql(u8, roleStr, "assistant")) {
+            enveloped_owned = try parsing.encodeAssistantContent(allocator, model_guard.resolve(input.model), contentStr);
+            effective_content = enveloped_owned.?;
+        }
+    }
+
     // tool_calls_json holds ONLY the serialized tool_calls array (assistant message wire format).
     // For tool result messages, the tool_call_id lives in the dedicated tool_call_id column —
     // do NOT overload tool_calls_json with the id. That overload caused the 2013 bug where the
@@ -1651,7 +1667,7 @@ pub fn saveMessage(
     // whole INSERT. See llm_history_model_guard.zig.
     const copy_model = try allocator.dupe(u8, model_guard.resolve(input.model));
     defer allocator.free(copy_model);
-    const copy_content = try allocator.dupe(u8, contentStr);
+    const copy_content = try allocator.dupe(u8, effective_content);
     defer allocator.free(copy_content);
     const copy_finish_reason = try allocator.dupe(u8, finishReasonStr);
     defer allocator.free(copy_finish_reason);

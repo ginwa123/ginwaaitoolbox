@@ -7,6 +7,7 @@ const helpers = @import("helpers");
 const ai_mod = pabrikcore.ai_mod;
 const config = pabrikcore.config;
 const llm_history = ai_mod.llm_history;
+const chat_parsing = @import("../agentic_loop/parsing.zig");
 
 /// Get messages for a session
 pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
@@ -133,7 +134,13 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
             .id = msg.id,
             .session_id = msg.session_id,
             .role = msg.role,
-            .content = try helpers.sanitize.sanitizeUtf8(allocator, msg.content),
+            // DB may hold Option A envelopes; wire stays plain `.msg` for
+            // current frontend bubbles. Unwrap with legacy fallback.
+            .content = blk: {
+                const unwrapped = chat_parsing.unwrapChatContent(allocator, msg.content) catch break :blk try helpers.sanitize.sanitizeUtf8(allocator, msg.content);
+                defer allocator.free(unwrapped);
+                break :blk try helpers.sanitize.sanitizeUtf8(allocator, unwrapped);
+            },
             .created_at = msg.timestamp,
             .is_input = msg.is_input,
             .is_output = msg.is_output,

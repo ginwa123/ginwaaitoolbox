@@ -65,12 +65,14 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
                         // hides the real failure and feeds the model its own
                         // call back as an empty object, so it retries the
                         // same mistake.
+                        var safe_owned: ?[]u8 = null;
                         const safe_args = blk: {
                             if (args_raw.len == 0) break :blk "{}";
                             const repaired = args_repair.repairToolCallArguments(allocator, args_raw) catch break :blk "{}";
                             if (repaired) |r| {
                                 defer r.deinit(allocator);
-                                break :blk try allocator.dupe(u8, r.slice());
+                                safe_owned = try allocator.dupe(u8, r.slice());
+                                break :blk safe_owned.?;
                             }
                             break :blk "{}";
                         };
@@ -81,6 +83,7 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
                                 .arguments = try allocator.dupe(u8, safe_args),
                             },
                         };
+                        if (safe_owned) |s| allocator.free(s);
                     } else {
                         calls[i] = .{
                             .id = try allocator.dupe(u8, ""),
@@ -95,7 +98,7 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
             }
         }
 
-        const content = try allocator.dupe(u8, message.response_content);
+        const content = try unwrapChatContent(allocator, message.response_content);
         const reasoning_content: ?[]const u8 = if (message.reasoning_content) |rc| try allocator.dupe(u8, rc) else null;
         const reasoning_id: ?[]const u8 = if (message.reasoning_id) |rid| try allocator.dupe(u8, rid) else null;
         const reasoning_encrypted_content: ?[]const u8 = if (message.reasoning_encrypted_content) |rec| try allocator.dupe(u8, rec) else null;
@@ -234,6 +237,72 @@ fn stripToolEnvelopeImpl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
         if (err != .string) return try allocator.dupe(u8, "");
         return try allocator.dupe(u8, err.string);
     }
+}
+
+// ─── Chat content envelopes (user + assistant) ────────────────────────────
+///
+/// Option A: `llm_history.response_content` holds a JSON object string for
+/// `role=user` (`{"user","name","msg"}`) and for non-empty `role=assistant`
+/// text (`{"model","msg"}`), including the screenshot case where an
+/// assistant row carries BOTH text and `tool_calls_json`. Never applied to
+/// `role=tool` (already has the v1 tool envelope) or `role=system`.
+/// Legacy plain-text rows fall back to raw on read — no backfill needed.
+pub const UserEnvelope = struct {
+    user: []const u8,
+    name: []const u8,
+    msg: []const u8,
+};
+
+pub const AssistantEnvelope = struct {
+    model: []const u8,
+    msg: []const u8,
+};
+
+pub fn encodeUserContent(allocator: std.mem.Allocator, user: []const u8, name: []const u8, msg: []const u8) ![]u8 {
+    return try std.json.Stringify.valueAlloc(allocator, UserEnvelope{ .user = user, .name = name, .msg = msg }, .{});
+}
+
+pub fn encodeAssistantContent(allocator: std.mem.Allocator, model: []const u8, msg: []const u8) ![]u8 {
+    return try std.json.Stringify.valueAlloc(allocator, AssistantEnvelope{ .model = model, .msg = msg }, .{});
+}
+
+/// True when `raw` already parses as a chat envelope (object with a string
+/// `msg` plus `user` or `model`). Used by write paths for idempotence —
+/// never double-envelop a row that is already enveloped.
+pub fn isChatEnvelope(allocator: std.mem.Allocator, raw: []const u8) bool {
+    const trimmed = std.mem.trim(u8, raw, &std.ascii.whitespace);
+    if (trimmed.len == 0 or trimmed[0] != '{') return false;
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const obj = parsed.value.object;
+    const msg = obj.get("msg") orelse return false;
+    if (msg != .string) return false;
+    if (obj.get("user") != null) return true;
+    if (obj.get("model") != null) return true;
+    return false;
+}
+
+/// Unwrap a chat envelope to its `.msg` text. Returns a heap-dupe the
+/// caller owns. Falls back to `raw` unchanged for legacy plain-text rows,
+/// empty input, non-JSON, or JSON without the envelope shape — so old
+/// history keeps working with zero migration.
+pub fn unwrapChatContent(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    const trimmed = std.mem.trim(u8, raw, &std.ascii.whitespace);
+    if (trimmed.len == 0) return try allocator.dupe(u8, raw);
+    if (trimmed[0] != '{') return try allocator.dupe(u8, raw);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch {
+        return try allocator.dupe(u8, raw);
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return try allocator.dupe(u8, raw);
+    const obj = parsed.value.object;
+    const msg = obj.get("msg") orelse return try allocator.dupe(u8, raw);
+    if (msg != .string) return try allocator.dupe(u8, raw);
+    // Require the identity marker so a user-typed `{"msg":"hi"}` literal
+    // without `user`/`model` stays verbatim instead of being unwrapped.
+    if (obj.get("user") == null and obj.get("model") == null) return try allocator.dupe(u8, raw);
+    return try allocator.dupe(u8, msg.string);
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -427,4 +496,95 @@ test "tool message data containing markup chars keeps the payload intact" {
     defer freeMessages(allocator, result);
 
     try testing.expectEqualStrings("{\"path\":\"/home/user/file.txt\",\"content\":\"<div>a & b</div>\"}", result[0].content.?);
+}
+
+// ─── Tests: chat content envelopes (user + assistant, Option A) ─────────
+
+fn makeChatMessage(allocator: std.mem.Allocator, role: []const u8, response_content: []const u8, tool_calls_json: []const u8) !LLMHistory {
+    return LLMHistory{
+        .id = try allocator.dupe(u8, "msg_chat_001"),
+        .session_id = try allocator.dupe(u8, "session_test"),
+        .model = try allocator.dupe(u8, "MiniMax-M3"),
+        .created_at = try allocator.dupe(u8, "2025-01-01T00:00:00Z"),
+        .response_content = try allocator.dupe(u8, response_content),
+        .finish_reason = try allocator.dupe(u8, "stop"),
+        .role = try allocator.dupe(u8, role),
+        .agent = try allocator.dupe(u8, "Agent"),
+        .session_name = try allocator.dupe(u8, ""),
+        .tool_name = try allocator.dupe(u8, ""),
+        .tool_calls_json = try allocator.dupe(u8, tool_calls_json),
+    };
+}
+
+test "user envelope round-trips through encode + unwrap" {
+    const allocator = testing.allocator;
+    const enc = try encodeUserContent(allocator, "usr_7f3a", "Budi", "i wanna ask with you");
+    defer allocator.free(enc);
+    try testing.expect(isChatEnvelope(allocator, enc));
+    const msg = try unwrapChatContent(allocator, enc);
+    defer allocator.free(msg);
+    try testing.expectEqualStrings("i wanna ask with you", msg);
+}
+
+test "assistant envelope round-trips through encode + unwrap" {
+    const allocator = testing.allocator;
+    const enc = try encodeAssistantContent(allocator, "MiniMax-M3", "hey human");
+    defer allocator.free(enc);
+    try testing.expect(isChatEnvelope(allocator, enc));
+    const msg = try unwrapChatContent(allocator, enc);
+    defer allocator.free(msg);
+    try testing.expectEqualStrings("hey human", msg);
+}
+
+test "unwrap falls back to raw for legacy plain text" {
+    const allocator = testing.allocator;
+    const msg = try unwrapChatContent(allocator, "i wanna ask with you");
+    defer allocator.free(msg);
+    try testing.expectEqualStrings("i wanna ask with you", msg);
+    try testing.expect(!isChatEnvelope(allocator, "i wanna ask with you"));
+}
+
+test "transform unwraps user envelope to .msg" {
+    const allocator = testing.allocator;
+    const enc = try encodeUserContent(allocator, "usr_7f3a", "Budi", "i wanna ask with you");
+    defer allocator.free(enc);
+    var hist = try makeChatMessage(allocator, "user", enc, "");
+    defer hist.deinit(allocator);
+    const result = try transformLLMHistoryToAgentMessage(allocator, hist);
+    defer freeMessages(allocator, result);
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("i wanna ask with you", result[0].content.?);
+}
+
+test "transform unwraps assistant envelope to .msg" {
+    const allocator = testing.allocator;
+    const enc = try encodeAssistantContent(allocator, "MiniMax-M3", "hey human");
+    defer allocator.free(enc);
+    var hist = try makeChatMessage(allocator, "assistant", enc, "");
+    defer hist.deinit(allocator);
+    const result = try transformLLMHistoryToAgentMessage(allocator, hist);
+    defer freeMessages(allocator, result);
+    try testing.expectEqualStrings("hey human", result[0].content.?);
+}
+
+test "transform unwraps assistant text even when tool_calls_json present (screenshot case)" {
+    const allocator = testing.allocator;
+    const enc = try encodeAssistantContent(allocator, "muse-spark-1.3-c", "Understood - ban and refactor");
+    defer allocator.free(enc);
+    var hist = try makeChatMessage(allocator, "assistant", enc, "[{\"id\":\"call_01\",\"function\":{\"name\":\"command\",\"arguments\":\"{}\"}}]");
+    defer hist.deinit(allocator);
+    const result = try transformLLMHistoryToAgentMessage(allocator, hist);
+    defer freeMessages(allocator, result);
+    try testing.expectEqualStrings("Understood - ban and refactor", result[0].content.?);
+    try testing.expect(result[0].tool_calls != null);
+    try testing.expectEqual(@as(usize, 1), result[0].tool_calls.?.len);
+}
+
+test "transform keeps legacy plain user text verbatim (positive control)" {
+    const allocator = testing.allocator;
+    var hist = try makeChatMessage(allocator, "user", "hello plain", "");
+    defer hist.deinit(allocator);
+    const result = try transformLLMHistoryToAgentMessage(allocator, hist);
+    defer freeMessages(allocator, result);
+    try testing.expectEqualStrings("hello plain", result[0].content.?);
 }

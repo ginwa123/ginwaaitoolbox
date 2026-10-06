@@ -11,6 +11,7 @@ const helpers = @import("helpers");
 const event_bus_mod = pabrikcore.event_bus;
 const keyword = "INSERTLLMHISTORIES";
 const model_guard = @import("llm_history_model_guard.zig");
+const parsing = @import("parsing.zig");
 
 pub const InsertLLMHistoriesInput = struct {
     allocator: std.mem.Allocator,
@@ -81,6 +82,24 @@ pub fn inserLLMHistories(
     const reasoningStr = input.reasoning_content orelse "";
     const agentStr = input.agent;
 
+    // Option A envelopes: user rows always carry {user,name,msg}; non-empty
+    // assistant text carries {model,msg} even when tool_calls_json is
+    // present (screenshot case). Never tool/system, never empty, never
+    // double-envelop. Identity fields default to empty until auth supplies
+    // them; model mirrors the resolved column value.
+    var enveloped_owned: ?[]u8 = null;
+    defer if (enveloped_owned) |e| allocator.free(e);
+    var effective_content: []const u8 = contentStr;
+    if (contentStr.len > 0 and !parsing.isChatEnvelope(allocator, contentStr)) {
+        if (std.mem.eql(u8, roleStr, "user")) {
+            enveloped_owned = try parsing.encodeUserContent(allocator, "", agentStr, contentStr);
+            effective_content = enveloped_owned.?;
+        } else if (std.mem.eql(u8, roleStr, "assistant")) {
+            enveloped_owned = try parsing.encodeAssistantContent(allocator, model, contentStr);
+            effective_content = enveloped_owned.?;
+        }
+    }
+
     const is_emit_sse = obj.is_emit_sse;
     const is_skip_db = obj.is_skip_db;
 
@@ -135,8 +154,12 @@ pub fn inserLLMHistories(
     defer allocator.free(copy_session_id);
     const copy_model = try allocator.dupe(u8, input.model);
     defer allocator.free(copy_model);
-    const copy_content = try allocator.dupe(u8, contentStr);
+    const copy_content = try allocator.dupe(u8, effective_content);
     defer allocator.free(copy_content);
+    // Wire compat: SSE + HTTP carry plain `.msg` so current frontend bubbles
+    // keep rendering. DB keeps the envelope; unwrap here for the live event.
+    const sse_content_owned = try parsing.unwrapChatContent(allocator, effective_content);
+    defer allocator.free(sse_content_owned);
     const copy_finish_reason = try allocator.dupe(u8, finishReasonStr);
     defer allocator.free(copy_finish_reason);
     const copy_role = try allocator.dupe(u8, roleStr);
@@ -236,7 +259,7 @@ pub fn inserLLMHistories(
                 .session_id = session_id,
                 .model = model,
                 .cwd = cwd,
-                .content = copy_content,
+                .content = sse_content_owned,
                 .reasoning_content = reasoning_content,
                 .role = copy_role,
                 .finish_reason = finish_reason,
