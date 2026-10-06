@@ -373,7 +373,11 @@ function maybeFetchVisibleTexts(): void {
   }
 }
 
-watch([isExpanded, files], () => maybeFetchVisibleTexts(), { immediate: true })
+// Two single-source watchers sharing one handler. `immediate` stays on the
+// first only, so mount fires once; the per-path fetchers dedupe by path, so
+// a same-tick change to both sources is harmless.
+watch(isExpanded, () => maybeFetchVisibleTexts(), { immediate: true })
+watch(files, () => maybeFetchVisibleTexts())
 
 const fileMeta = (f: ParsedPresentFile): string => `${formatBytes(f.bytes)} · ${f.mime}`
 

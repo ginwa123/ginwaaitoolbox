@@ -526,7 +526,10 @@ onMounted(() => {
   void loadPrStatus()
 })
 
-watch([gitBranchBadge, effectiveCwd], () => {
+watch(gitBranchBadge, () => {
+  void loadPrStatus()
+})
+watch(effectiveCwd, () => {
   void loadPrStatus()
 })
 </script>
