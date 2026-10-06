@@ -1315,6 +1315,67 @@ pub fn makeDocumentListResponse(allocator: std.mem.Allocator, documents: anytype
     );
 }
 
+// ─── Secrets response types ───────────────────────────────────────────────
+// Wire shapes for `/api/workspaces/:wsId/secrets[/:secretId]`
+// (Migration 103). Mirrors `src/agentic_loop/secrets_store.SecretRow`
+// field-for-field, and `SecretRow` has no `value` either — so this type
+// cannot carry one either.
+//
+// THERE IS NO `value` FIELD HERE, AND THAT IS THE DESIGN. A secret's value
+// travels in POST/PATCH request bodies and stops there: no read path
+// returns it, not masked, not as a `key_hint`, not truncated. A response
+// that carried it would put a live credential in the browser, where "we
+// chose not to render it" is one XSS away from a leak (Design Decision 9,
+// docs/superpowers/plans/2026-10-02-workspace-secrets.md). The cost is
+// that rotation cannot be read back — it is confirmed by having saved it.
+// DO NOT add a value field here to make some later feature easier.
+//
+// The list envelope is `{secrets, count}` rather than a bare array for the
+// same reason `DocumentListResponse` is an object: a future paginated
+// variant can add `has_more` / `next_cursor` without a breaking change.
+pub const SecretResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Map a `secrets_store.SecretRow` (or any struct with the same fields)
+/// into the wire shape. `anytype` for the same reason as
+/// `makeDocumentResponse`: the data layer and the wire shape must be
+/// able to move independently.
+pub fn makeSecretResponse(secret: anytype) SecretResponse {
+    return .{
+        .id = secret.id,
+        .name = secret.name,
+        .created_at = secret.created_at,
+        .updated_at = secret.updated_at,
+    };
+}
+
+pub const SecretListResponse = struct {
+    secrets: []const SecretResponse,
+    count: u32,
+};
+
+/// Build the `{"secrets":[...], "count": N}` envelope. The inner slice is
+/// a scratch allocation, freed before this returns; the envelope JSON is
+/// what the caller receives.
+pub fn makeSecretListResponse(allocator: std.mem.Allocator, secrets: anytype) ![]u8 {
+    const mapped = try allocator.alloc(SecretResponse, secrets.len);
+    defer allocator.free(mapped);
+    for (secrets, 0..) |s, i| mapped[i] = makeSecretResponse(s);
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        SecretListResponse{
+            .secrets = mapped,
+            .count = @intCast(secrets.len),
+        },
+        .{},
+    );
+}
+
 // ─── Frontend error log response types ────────────────────────────────────
 // Wire shapes for `POST /api/logs` (no response body, 204 No Content)
 // and `GET /api/logs` (returns `{ logs: [...], count: N }`). Mirrors

@@ -41,6 +41,9 @@ const remove_file_mod = pabrikcore.remove_file;
 const change_agent_mod = pabrikcore.change_agent;
 const web_search_mod = pabrikcore.web_search;
 const generate_image_mod = pabrikcore.generate_image;
+// Workspace credential discovery. Listed here so `filterAndMergeTools` can
+// find it — that function iterates THIS list, not UNIFIED_TOOL_REGISTRY.
+const list_secrets_mod = pabrikcore.list_secrets;
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // Markdown task plan with - [ ] / - [x] checklist, persisted across iterations.
 const update_plan_mod = pabrikcore.update_plan;
@@ -104,6 +107,12 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         save_memory_mod.save_memory_tool,
         load_memory_mod.load_memory_tool,
         read_workspace_session_mod.read_workspace_session_tool,
+        // Workspace secrets: the discovery half of `{{SECRETS:NAME}}`. Takes
+        // no parameters and returns NAMES only — the value is substituted at
+        // dispatch and never reaches a tool result. Like the two tools above
+        // it resolves its own workspace from the calling session, so its
+        // schema carries no `workspace_id` either.
+        list_secrets_mod.list_secrets_tool,
         // Workspace-scoped documents (Migration 098). Both resolve their
         // own workspace server-side from the calling session, so neither
         // schema carries a `workspace_id` — the model cannot choose which
@@ -250,6 +259,10 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         .{ .name = "save_memory", .exec = tools.execSaveMemory, .tool_def = save_memory_mod.save_memory_tool },
         .{ .name = "load_memory", .exec = tools.execLoadMemory, .tool_def = load_memory_mod.load_memory_tool },
         .{ .name = "read_workspace_session", .exec = tools.execReadWorkspaceSession, .tool_def = read_workspace_session_mod.read_workspace_session_tool },
+        // Workspace credential discovery. Without a registry entry here the
+        // name reaches the model and dispatch misses with `error.UnknownTool`
+        // — which the UI renders as a tool that is still running.
+        .{ .name = "list_secrets", .exec = tools.execListSecrets, .tool_def = list_secrets_mod.list_secrets_tool },
         // Workspace-scoped documents (Migration 098). Registry entries
         // here are what make the tools dispatchable at all — a name the
         // dispatcher cannot find falls through to the MCP check and then
@@ -378,6 +391,11 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     save_memory_mod.save_memory_tool.function.name,
     load_memory_mod.load_memory_tool.function.name,
     read_workspace_session_mod.read_workspace_session_tool.function.name,
+    // Credential discovery. Default-on because the `{{SECRETS:NAME}}`
+    // placeholder is inert without it: an agent that cannot learn the
+    // workspace's secret names can only guess at them. Inert (and harmless)
+    // in a workspace with no secrets stored.
+    list_secrets_mod.list_secrets_tool.function.name,
     // Workspace-scoped documents (Migration 098). Default-on: an agent
     // that cannot write a note the user asked for is not much use, and
     // both tools are inert outside a workspace-linked session (they

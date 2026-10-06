@@ -110,6 +110,19 @@ fn useCase(
         return error.DatabaseError;
     };
 
+    // `ON DELETE CASCADE` on `workspace_secrets` is documentation only —
+    // this project leaves `PRAGMA foreign_keys` off (Migration 072's tests),
+    // so the child rows have to go explicitly or a deleted workspace would
+    // leave every one of its credentials behind.
+    tx.exec(
+        allocator,
+        "DELETE FROM workspace_secrets WHERE workspace_id = ?",
+        &[_][]const u8{id},
+    ) catch {
+        std.log.warn("workspaceDelete: secret cleanup failed for {s}", .{id});
+        return error.DatabaseError;
+    };
+
     tx.commit() catch {
         std.log.warn("workspaceDelete: COMMIT failed for {s}", .{id});
         return error.DatabaseError;
@@ -163,6 +176,19 @@ fn setupDeleteDb() !DeleteCtx {
         \\  PRIMARY KEY (workspace_id, user_id)
         \\)
     , &.{});
+    // Mirrors Migration 103's `workspace_secrets` (the columns the delete
+    // path touches). Kept as a literal here, like the two tables above, so
+    // this fixture stays independent of the migration chain.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_secrets (
+        \\  id TEXT PRIMARY KEY,
+        \\  workspace_id TEXT NOT NULL,
+        \\  name TEXT NOT NULL,
+        \\  value TEXT NOT NULL,
+        \\  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -193,6 +219,7 @@ test "workspaceDelete removes the membership rows, not just the workspace" {
 
     try ctx.db.exec(alloc, "INSERT INTO workspaces (id, name, user_id) VALUES ('ws_x', 'X', 'user_a')", &.{});
     try ctx.db.exec(alloc, "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ('ws_x', 'user_a', 'owner'), ('ws_x', 'user_b', 'viewer')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO workspace_secrets (id, workspace_id, name, value) VALUES ('sec_1', 'ws_x', 'GITHUB_TOKEN', 'ghp_x')", &.{});
     try testing.expectEqual(@as(u64, 2), try countRows(&ctx, "SELECT COUNT(*) FROM workspace_members WHERE workspace_id = 'ws_x'", &.{}));
 
     const r = try useCase(alloc, &ctx.db, "ws_x", true, NoCookie{});
@@ -202,6 +229,9 @@ test "workspaceDelete removes the membership rows, not just the workspace" {
     // The assertion this whole use case was changed to make: `PRAGMA
     // foreign_keys` is OFF, so nothing else would ever remove these.
     try testing.expectEqual(@as(u64, 0), try countRows(&ctx, "SELECT COUNT(*) FROM workspace_members WHERE workspace_id = 'ws_x'", &.{}));
+    // The secrets cleanup (Migration 103): a deleted workspace leaves no
+    // credentials behind for a future workspace reusing the id.
+    try testing.expectEqual(@as(u64, 0), try countRows(&ctx, "SELECT COUNT(*) FROM workspace_secrets WHERE workspace_id = 'ws_x'", &.{}));
 }
 
 test "workspaceDelete refuses an unknown workspace and deletes nothing" {

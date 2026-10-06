@@ -2063,6 +2063,7 @@ pub const allMigrations: []const Migration = &.{
     // carries the companion files of bundled skills (`pdf`,
     // `skill-creator`) whose bodies reference them by relative path.
     .{ .version = Migration102CreateSkills.version, .name = Migration102CreateSkills.name, .up = Migration102CreateSkills.up },
+    .{ .version = Migration103CreateWorkspaceSecrets.version, .name = Migration103CreateWorkspaceSecrets.name, .up = Migration103CreateWorkspaceSecrets.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -15291,6 +15292,83 @@ pub const Migration102CreateSkills = struct {
     }
 };
 
+// ============================================================================
+// Migration 103 — `workspace_secrets`
+// ============================================================================
+//
+// WHY a table and not a field on `users.config_json`
+// ──────────────────────────────────────────────────
+// `config_json` is USER-scoped and carries no `workspace_id`, while the unit
+// of this feature is the workspace; and the whole blob is handed to the
+// browser verbatim by `GET /api/config/nalar` (`http_response.zig:365`), so a
+// credential map there would be readable by anyone sharing the account.
+//
+// `value` is PLAINTEXT
+// ─────────────────────
+// Deliberate, reviewer-decided: no master key, no cipher. It matches how
+// `config.json` already holds the LLM `api_key`, so this table does not
+// become the one place in the app that claims more protection than the rest.
+// Encryption at rest would only have protected the `agent.db` file, because
+// the key sits beside it in the same config dir — every backup and every
+// copied `.db` would still have exposed the value.
+//
+// NO `user_id` COLUMN
+// ───────────────────
+// Access is membership in `workspace_members` (Migration 100), answered
+// upstream by `auth_common.canSeeWorkspace`. An owner column would answer
+// authorship rather than entitlement, and would start disagreeing with the
+// middleware the moment a workspace is shared. See the module header of
+// `src/agentic_loop/secrets_store.zig`, which states the same rule for the
+// code that reads this table.
+//
+// `ON DELETE CASCADE` is documentation only — this project deliberately
+// leaves `PRAGMA foreign_keys` off (Migration 072's tests, Migration 093's
+// header), so the workspace-delete path issues the child DELETE itself.
+//
+// Every NOT NULL text column is written `COALESCE(NULLIF(?, ''), '')`:
+// `SqliteBackend.exec` binds a zero-length slice as SQL NULL, which is how
+// Migration 079's `content` column broke.
+//
+// Idempotency: CREATE TABLE/INDEX IF NOT EXISTS, and one statement per
+// `db.exec` (`sqlite3_prepare_v2` compiles only the first).
+
+pub const Migration103CreateWorkspaceSecrets = struct {
+    pub const version: u32 = 103;
+    pub const name = "create_workspace_secrets";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS workspace_secrets (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_id TEXT NOT NULL,
+            \\    name TEXT NOT NULL,
+            \\    value TEXT NOT NULL,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+
+        // Only ONE index, on purpose. `uq_workspace_secrets_name` is a
+        // UNIQUE index on `(workspace_id, name)`, and a unique index is an
+        // ordinary b-tree that SQLite will use for `WHERE workspace_id = ?`
+        // and for the `ORDER BY name` the list path carries. A second index
+        // on the same column pair would cost an extra write per INSERT and
+        // UPDATE for no additional lookup the first one cannot serve.
+        //
+        // One name per workspace, enforced in the database rather than only
+        // by the store's pre-check: two secrets called `GITHUB_TOKEN` in one
+        // workspace is a user mistake that deserves a clean 409, not a
+        // substitution that silently picks whichever row the planner finds
+        // first. Scoped to `workspace_id`, so a second workspace is free to
+        // reuse the same name.
+        try db.exec(allocator,
+            \\CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_secrets_name
+            \\ON workspace_secrets(workspace_id, name)
+        , &[_][]const u8{});
+    }
+};
+
 // Migration 101 — inline tests
 // ============================================================================
 //
@@ -15601,4 +15679,155 @@ test "Migration102 is registered in allMigrations" {
         if (m.version == Migration102CreateSkills.version) return;
     }
     return error.Migration102NotRegistered;
+}
+
+
+// ============================================================================
+// Migration 103 tests
+// ============================================================================
+//
+// Three properties, each pinned because its failure mode is invisible until
+// the feature ships:
+//
+//   1. The column set is EXACTLY six, and in particular carries no
+//      `user_id` — membership in `workspace_members` already answers "who may
+//      use this" one level up.
+//   2. Name uniqueness is per workspace, not per database: two workspaces
+//      must each be able to hold a secret called `GITHUB_TOKEN`.
+//   3. `value` is genuinely NOT NULL, so a writer that forgot the
+//      COALESCE(NULLIF(?, ''), '') idiom fails here rather than silently
+//      storing a credential that reads back as null.
+
+fn countWorkspaceSecrets(ctx: *TestCtx) !i64 {
+    const alloc = testing.allocator;
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM workspace_secrets", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    return std.fmt.parseInt(i64, row.values[0], 10);
+}
+
+test "Migration103 creates workspace_secrets with exactly the six agreed columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration103CreateWorkspaceSecrets.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "workspace_secrets");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id", "workspace_id", "name", "value", "created_at", "updated_at",
+    });
+
+    // `expectColumnsEqual` already pins the count, so a seventh column — an
+    // owner column above all — fails the assertion above. Name the ones the
+    // design ruled out so the failure says which was added rather than just
+    // "expected 6, found 7".
+    for (cols) |c| {
+        try testing.expect(!std.mem.eql(u8, c, "user_id"));
+        try testing.expect(!std.mem.eql(u8, c, "created_by"));
+        try testing.expect(!std.mem.eql(u8, c, "key_hint"));
+    }
+}
+
+test "Migration103's unique name index is scoped per workspace, not per database" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration103CreateWorkspaceSecrets.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_secrets (id, workspace_id, name, value) VALUES
+        \\  ('sec_a', 'ws_1', 'GITHUB_TOKEN', 'ghp_a'),
+        \\  ('sec_b', 'ws_2', 'GITHUB_TOKEN', 'ghp_b')
+    , &.{});
+
+    // Same name, different workspace: both rows stand. A globally unique
+    // index here would make the second workspace's most common secret name
+    // un-creatable.
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM workspace_secrets WHERE name = 'GITHUB_TOKEN'", &.{});
+    defer q.deinit();
+    const both = (try q.next()) orelse return error.RowMissing;
+    defer both.deinit(alloc);
+    try testing.expectEqualStrings("2", both.values[0]);
+
+    // Same name, SAME workspace: rejected. `ExecuteFailed` is what
+    // `SqliteBackend.exec` surfaces for a constraint violation — the
+    // "UNIQUE constraint failed" text only reaches the log — so the state
+    // check below is what actually proves the index fired.
+    try testing.expectError(error.ExecuteFailed, ctx.db.exec(alloc,
+        \\INSERT INTO workspace_secrets (id, workspace_id, name, value)
+        \\VALUES ('sec_c', 'ws_1', 'GITHUB_TOKEN', 'ghp_c')
+    , &.{}));
+    try testing.expectEqual(@as(i64, 2), try countWorkspaceSecrets(&ctx));
+}
+
+test "Migration103 stamps both timestamps and refuses a NULL value" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration103CreateWorkspaceSecrets.up(&ctx.db, alloc);
+
+    // Omit the timestamps so the schema DEFAULT applies, and read them back
+    // through COALESCE: a nullable stamp would reach the HTTP layer as a
+    // null where it declared a string.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_secrets (id, workspace_id, name, value)
+        \\VALUES ('sec_1', 'ws_1', 'GH', 'ghp_1')
+    , &.{});
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT COALESCE(created_at, ''), COALESCE(updated_at, '')
+        \\FROM workspace_secrets WHERE id = 'sec_1'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expect(row.values[0].len > 0);
+    try testing.expect(row.values[1].len > 0);
+
+    // A NULL value is the shape an empty slice binds to. The constraint has
+    // to be real, or a writer that skips COALESCE(NULLIF(?, ''), '') stores
+    // a credential that reads back as null.
+    try testing.expectError(error.ExecuteFailed, ctx.db.exec(alloc,
+        \\INSERT INTO workspace_secrets (id, workspace_id, name, value)
+        \\VALUES ('sec_2', 'ws_1', 'GH2', NULL)
+    , &.{}));
+}
+
+test "Migration103 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration103CreateWorkspaceSecrets.up(&ctx.db, alloc);
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_secrets (id, workspace_id, name, value)
+        \\VALUES ('sec_1', 'ws_1', 'GH', 'ghp_1')
+    , &.{});
+
+    try Migration103CreateWorkspaceSecrets.up(&ctx.db, alloc);
+    try Migration103CreateWorkspaceSecrets.up(&ctx.db, alloc);
+
+    // CREATE TABLE/INDEX IF NOT EXISTS means a re-run neither throws "table
+    // already exists" nor disturbs a stored credential.
+    try testing.expectEqual(@as(i64, 1), try countWorkspaceSecrets(&ctx));
+}
+
+test "Migration103 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration103CreateWorkspaceSecrets.version) return;
+    }
+    return error.Migration103NotRegistered;
 }

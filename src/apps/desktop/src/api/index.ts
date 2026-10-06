@@ -6204,3 +6204,110 @@ export async function deleteDocument(
     { method: 'DELETE' },
   )
 }
+
+// ─── Workspace secrets (Migration 101) ───────────────────────────────────
+// Named credentials scoped to one workspace: an API key the agent's tools
+// can substitute into a request, never displayed back to the browser.
+//
+// NO RESPONSE EVER CONTAINS THE VALUE. `listSecrets`, `createSecret` and
+// `updateSecret` all return rows with `{ id, name, created_at, updated_at }`
+// and nothing else — the backend stores an encrypted blob and does not
+// decrypt to answer a read. There is deliberately no `value` field on
+// `Secret` and no `key_hint`: a hint is a partial disclosure of the very
+// thing being stored, and the UI has no use for it that is not a leak.
+//
+// The write path DOES carry a value — `createSecret`/`updateSecret` take it
+// as the request body — but that value exists only for the duration of the
+// POST/PATCH. Nothing above this module should retain one: a value held in
+// a Pinia ref, a component ref or a `title=` attribute is exactly how a
+// write-only secret becomes a readable one.
+//
+// Like documents, the backend scopes every read AND every write by the
+// `workspace_id` taken from the path, so there is no client-side filter
+// doing that work — adding one would be a second, weaker copy of a rule
+// that already lives in SQL, and the kind of duplicate that drifts.
+
+/**
+ * One row of the `workspace_secrets` table.
+ *
+ * The absence of a value field is the contract, not an oversight. A row
+ * this shape cannot be rendered with its credential in it because the
+ * credential is not on it.
+ */
+export interface Secret {
+  id: string
+  name: string
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * GET /api/workspaces/:workspaceId/secrets
+ *
+ * Metadata only. A workspace with no secrets returns `{ secrets: [],
+ * count: 0 }` — which is a different answer from a failed request, and
+ * callers must keep the two apart.
+ */
+export async function listSecrets(
+  workspaceId: string,
+): Promise<{ secrets: Secret[]; count: number }> {
+  return await apiFetch<{ secrets: Secret[]; count: number }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/secrets`,
+    { track: false },
+  )
+}
+
+/**
+ * POST /api/workspaces/:workspaceId/secrets
+ *
+ * Body: `{ name, value }`. `name` must be non-blank and unique within the
+ * workspace; `value` is write-only — the response carries the created row
+ * WITHOUT it. The caller drops its copy of `value` on the floor once this
+ * resolves; there is nothing to read back later.
+ */
+export async function createSecret(
+  workspaceId: string,
+  name: string,
+  value: string,
+): Promise<{ secret: Secret }> {
+  return await apiFetch<{ secret: Secret }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/secrets`,
+    { method: 'POST', body: { name, value } },
+  )
+}
+
+/**
+ * PATCH /api/workspaces/:workspaceId/secrets/:secretId
+ *
+ * Body: `{ name?, value? }`. Both fields are partial — send `{ value }` to
+ * rotate a credential without touching its name, or `{ name }` to rename
+ * without re-supplying a value. An omitted field keeps its current value;
+ * `value: ''` is a rejected empty credential, not a clear operation. Like
+ * the reads, the response never carries the value back.
+ */
+export async function updateSecret(
+  workspaceId: string,
+  secretId: string,
+  patch: { name?: string; value?: string },
+): Promise<{ secret: Secret }> {
+  return await apiFetch<{ secret: Secret }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/secrets/${encodeURIComponent(secretId)}`,
+    { method: 'PATCH', body: patch },
+  )
+}
+
+/**
+ * DELETE /api/workspaces/:workspaceId/secrets/:secretId
+ *
+ * Returns 404 for another workspace's id, and deletes nothing in that
+ * case.
+ */
+export async function deleteSecret(
+  workspaceId: string,
+  secretId: string,
+): Promise<{ id: string; success: boolean }> {
+  return await apiFetch<{ id: string; success: boolean }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/secrets/${encodeURIComponent(secretId)}`,
+    { method: 'DELETE' },
+  )
+}
