@@ -3,6 +3,53 @@
 DONT KILL THE PORT 8081 SERVER,
 for testing use another port like 8080
 
+## Pre-PR Test Gate — Mandatory (run before every PR)
+
+Every AI agent MUST run these suites before opening or updating a PR, and
+paste the evidence into the PR description. No green gate = no merge review.
+A docs-only change still runs at least (1); anything touching `src/`,
+`tests/`, `build.zig`, or `src/apps/` runs all four.
+
+Run from the repo root, fast first:
+
+1. `zig build test --summary all` — fast unit suite (~60 s). Pass = exit 0
+   with every shard reporting `N pass` and zero failures.
+2. `zig build functional-test` — API functional suite. Boots a real pabrik
+   per test against an isolated tmpdir HOME (never port 8081 — see the
+   mandatory note above). Minutes long.
+3. `zig build functional-test-ui` — web UI suite (Playwright + Chromium +
+   Vite dev server). One-time setup: `pip install -r
+   tests/functional_ui/requirements.txt` then `playwright install chromium`.
+   `zig build functional-test-all` (the exact CI invocation: API + UI in one
+   pytest process) counts for (2)+(3) together.
+4. Android suite — no `zig build` step exists yet (the Zig port is tracked
+   separately). Run the documented pytest invocation with an emulator
+   running (see `tests/functional_android/README.md`):
+   `.venv-func/bin/python -m pytest tests/functional_android/ -q -rs`
+   If no emulator is available, write `SKIPPED (no emulator on <host>)` and
+   say so — never claim it passed.
+
+Paste this into the PR body with REAL terminal tails (last ~15 lines each),
+not prose like "all tests pass":
+
+```markdown
+## Test evidence
+- `zig build test --summary all`: PASS (exit 0, all shards N pass, <commit-sha>)
+- `zig build functional-test`: PASS (N passed, M skipped) / FAILED (<log link>)
+- `zig build functional-test-ui`: PASS (N passed) / SKIPPED (reason: ...)
+- `tests/functional_android`: PASS (N passed) / SKIPPED (no emulator on <host>)
+```
+
+Rules:
+
+- A failure blocks the PR: fix it, or quarantine it via
+  `tests/platform_gates.py` with a platform reason + a follow-up task.
+  Never delete or silently skip a failing test.
+- `curl` against a live server is NOT evidence (see Verification below) —
+  only the harness suites above count.
+- The harness picks its own ports; never bind 8081 (dev backend) or 5173
+  (Vite default) manually.
+
 ## Verification — Always Use Functional Tests, Never a Live Server
 
 When verifying HTTP behavior (route order, wire payloads, error messages, JSON
