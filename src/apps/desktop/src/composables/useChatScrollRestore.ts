@@ -1,4 +1,4 @@
-import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
+import { onBeforeUnmount, onMounted, onUpdated, ref, type Ref } from 'vue'
 
 /**
  * Persists a vertically-scrolling container's `scrollTop` to
@@ -164,22 +164,26 @@ export function useChatScrollRestore(
 
   let attachedEl: HTMLElement | null = null
 
-  // Watch for the container ref to become non-null. The chat's
+  // Wire the container when it becomes available. The chat's
   // VirtualScroller is conditionally rendered (v-if), so on first
   // mount containerRef may still be null — the scroller only
   // appears once `isLoading` flips to true inside loadChatHistory's
-  // initial-load branch. The watch fires synchronously when that
-  // happens (Vue's template refs populate on first paint).
-  const stopContainerWatch = watch(
-    containerRef,
-    async (el) => {
-      if (!el) return
-      if (attachedEl === el) return
-      attachedEl = el
-      await attachListenersWhenScrollable(el)
-    },
-    { immediate: true, flush: 'post' },
-  )
+  // initial-load branch. That arrival re-renders the host, which lands
+  // in the update hook (post-flush, like the old watcher) with the
+  // element present. Idempotent per element.
+  const wireChatContainer = (el: HTMLElement | null) => {
+    if (!el) return
+    if (attachedEl === el) return
+    attachedEl = el
+    void attachListenersWhenScrollable(el)
+  }
+
+  onMounted(() => {
+    wireChatContainer(containerRef.value)
+  })
+  onUpdated(() => {
+    wireChatContainer(containerRef.value)
+  })
 
   async function attachListenersWhenScrollable(el: HTMLElement): Promise<void> {
     // VirtualScroller takes ~100ms to measure items after mount.
@@ -200,7 +204,6 @@ export function useChatScrollRestore(
   }
 
   onBeforeUnmount(() => {
-    stopContainerWatch()
     flushPending()
     if (attachedEl) {
       attachedEl.removeEventListener('scroll', handleScroll)

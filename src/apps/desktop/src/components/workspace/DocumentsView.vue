@@ -18,7 +18,7 @@
 // repo's XSS model for every non-transcript markdown surface. A document
 // body is authored by an agent that may have quoted a file it read, so
 // this is not strictly self-XSS-only.
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUpdated, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDocumentsStore } from '../../stores/documents'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -61,20 +61,27 @@ const renderedHtml = computed(() => renderMarkdownHtml(draftContent.value))
 // Load on mount AND on id change: a Back/Forward between two documents
 // keeps the same component mounted, so an `onMounted`-only fetch would
 // leave the previous document's body on screen under the new title.
-watch(
-  () => props.documentId,
-  async (id) => {
-    if (!id || !workspaceId.value) return
-    const doc = await documentsStore.loadDocument(workspaceId.value, id)
-    if (!doc) return
-    draftTitle.value = doc.title
-    draftContent.value = doc.content
-    savedTitle.value = doc.title
-    savedContent.value = doc.content
-    editing.value = false
-  },
-  { immediate: true },
-)
+// Prev-value guard on update — same load the watcher did.
+async function loadForDocument(id: string) {
+  if (!id || !workspaceId.value) return
+  const doc = await documentsStore.loadDocument(workspaceId.value, id)
+  if (!doc) return
+  draftTitle.value = doc.title
+  draftContent.value = doc.content
+  savedTitle.value = doc.title
+  savedContent.value = doc.content
+  editing.value = false
+}
+
+let prevDocumentId = props.documentId
+onMounted(() => {
+  void loadForDocument(props.documentId)
+})
+onUpdated(() => {
+  if (props.documentId === prevDocumentId) return
+  prevDocumentId = props.documentId
+  void loadForDocument(props.documentId)
+})
 
 const startEditing = () => {
   editing.value = true

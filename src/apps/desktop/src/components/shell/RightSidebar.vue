@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onUpdated } from 'vue'
 import FolderExplorer from '../file/FolderExplorer.vue'
 import RightSideBarSkillList from './RightSideBarSkillList.vue'
 import GitCommits from '../git/GitCommits.vue'
@@ -188,23 +188,32 @@ const startGitPoll = () => {
   }, 30000)
 }
 
-// Watch for cwd changes
-watch(
-  () => props.cwd,
-  (newCwd) => {
-    if (newCwd) {
-      loadGitStatus()
-      startGitPoll()
-    } else {
-      stopGitPoll()
-      isGitRepo.value = false
-      stagedFiles.value = []
-      unstagedFiles.value = []
-      untrackedFiles.value = []
-    }
-  },
-  { immediate: true },
-)
+// Cwd sync: load status + poll while bound; stop the poll and clear the
+// lists when unbound. Prev-value guard on update — same body the watcher
+// ran; the mount call covers the initial load (the old `immediate: true`).
+function syncCwdGitStatus(newCwd: string | undefined) {
+  if (newCwd) {
+    loadGitStatus()
+    startGitPoll()
+  } else {
+    stopGitPoll()
+    isGitRepo.value = false
+    stagedFiles.value = []
+    unstagedFiles.value = []
+    untrackedFiles.value = []
+  }
+}
+
+let prevSidebarCwd: string | undefined = props.cwd
+onMounted(() => {
+  prevSidebarCwd = props.cwd
+  syncCwdGitStatus(props.cwd)
+})
+onUpdated(() => {
+  if (props.cwd === prevSidebarCwd) return
+  prevSidebarCwd = props.cwd
+  syncCwdGitStatus(props.cwd)
+})
 
 // Refresh git status
 const refreshGitStatus = () => {

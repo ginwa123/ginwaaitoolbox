@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import {
   deleteProfile as apiDeleteProfile,
@@ -153,6 +153,7 @@ onMounted(async () => {
     apiData = {}
   }
   setConfig(apiData)
+  syncFromConfig()
 })
 
 // ─── Per-section view state ──────────────────────────────────────────────
@@ -341,31 +342,6 @@ function profilesToRecord(list: ProfileRow[]): Record<string, PabrikProfile> {
   return out
 }
 
-// Populate section refs when the central config first loads.
-watch(
-  loaded,
-  (isLoaded) => {
-    if (isLoaded) syncFromConfig()
-  },
-  { immediate: true },
-)
-
-// Whenever any section ref mutates, push back to the central config
-// (which keeps the composable's dirty counter in sync).
-const onSectionMutated = () => {
-  if (loaded.value) syncToConfig()
-}
-// Seven single-source deep watchers sharing one handler. `syncToConfig`
-// derives the same record from current refs, so a same-tick change to
-// several sections re-syncs harmlessly rather than diverging.
-watch(profilesList, onSectionMutated, { deep: true })
-watch(activeProfile, onSectionMutated, { deep: true })
-watch(mcpServersList, onSectionMutated, { deep: true })
-watch(webSearchRows, onSectionMutated, { deep: true })
-watch(generalSettings, onSectionMutated, { deep: true })
-watch(toolsList, onSectionMutated, { deep: true })
-watch(skillEvalsSettings, onSectionMutated, { deep: true })
-
 // ─── Modal state ──────────────────────────────────────────────────────────
 type ProfileModalState = { mode: 'add' | 'edit'; value: LlmConfigModalValue } | null
 /**
@@ -462,6 +438,7 @@ function saveProfile() {
       p.name === name ? { ...p, ...v.config, sub_agents: p.sub_agents } : p,
     )
   }
+  syncToConfig()
   closeProfileModal()
 }
 function deleteProfile(name: string) {
@@ -470,9 +447,11 @@ function deleteProfile(name: string) {
   const previousActive = activeProfile.value
   profilesList.value = profilesList.value.filter((p) => p.name !== name)
   if (activeProfile.value === name) activeProfile.value = null
+  syncToConfig()
   apiDeleteProfile(name).catch((err) => {
     profilesList.value = previous
     activeProfile.value = previousActive
+    syncToConfig()
     emit(
       'notification',
       `Failed to delete profile "${name}": ${err instanceof Error ? err.message : String(err)}`,
@@ -560,6 +539,7 @@ function saveSubAgent() {
         : subs.map((s) => (s.name === name ? next : s))
     return { ...p, sub_agents: nextSubs }
   })
+  syncToConfig()
   closeSubAgentModal()
 }
 function deleteSubAgentInProfile(profileName: string, subAgentName: string) {
@@ -567,6 +547,7 @@ function deleteSubAgentInProfile(profileName: string, subAgentName: string) {
     if (p.name !== profileName) return p
     return { ...p, sub_agents: (p.sub_agents ?? []).filter((s) => s.name !== subAgentName) }
   })
+  syncToConfig()
 }
 
 function startAddMcpServer() {
@@ -656,21 +637,23 @@ function saveMcpServer() {
       mcpServersList.value = mcpServersList.value.map((s) => (s.name === name ? next : s))
     }
   }
+  syncToConfig()
   closeMcpServerModal()
 }
 function deleteMcpServer(name: string) {
   mcpServersList.value = mcpServersList.value.filter((s) => s.name !== name)
+  syncToConfig()
 }
 function toggleMcpServer(name: string) {
   mcpServersList.value = mcpServersList.value.map((s) =>
     s.name === name ? { ...s, enabled: (s.enabled ?? true) ? false : true } : s,
   )
+  syncToConfig()
 }
 
 // ToolsSection always emits the FULL explicit array — write it to
 // the section ref and re-serialize so the save bar sees the change
-// immediately (the deep watch on toolsList would do the same; the
-// explicit call keeps the flow obvious).
+// immediately.
 function handleToolsChange(list: string[]) {
   toolsList.value = list
   syncToConfig()
@@ -695,6 +678,7 @@ function addWebSearchRow() {
 const isSettingActive = ref(false)
 async function setActiveProfile(name: string) {
   activeProfile.value = name
+  syncToConfig()
   isSettingActive.value = true
   try {
     await savePabrikConfig({ ...config.value, active_profile: name } as PabrikConfig)
@@ -730,12 +714,14 @@ async function setActiveProfile(name: string) {
 async function clearActiveProfile() {
   const previous = activeProfile.value
   activeProfile.value = null
+  syncToConfig()
   isSettingActive.value = true
   try {
     await savePabrikConfig({ ...config.value, active_profile: '' } as PabrikConfig)
     emit('notification', `Active profile cleared — using top-level config`, 'success')
   } catch (err) {
     activeProfile.value = previous // optimistic-rollback on failure
+    syncToConfig()
     emit(
       'notification',
       `Failed to clear active: ${err instanceof Error ? err.message : String(err)}`,
@@ -874,6 +860,7 @@ const isLoading = computed(() => !loaded.value)
           v-if="activeTab === 'general'"
           v-model="generalSettings"
           :web-url="webUrl"
+          @update:model-value="syncToConfig"
           @open-web="openWeb"
           @copy-web="copyWeb"
         />
@@ -918,12 +905,14 @@ const isLoading = computed(() => !loaded.value)
           v-if="activeTab === 'evals'"
           v-model="skillEvalsSettings"
           :loaded="loaded"
+          @update:model-value="syncToConfig"
         />
 
         <ProfilesSection
           v-if="activeTab === 'profiles'"
           v-model="profilesList"
           :active-profile="activeProfile"
+          @update:model-value="syncToConfig"
           @set-active="setActiveProfile"
           @clear-active="clearActiveProfile"
           @edit="startEditProfile"
@@ -941,6 +930,7 @@ const isLoading = computed(() => !loaded.value)
         <McpServersSection
           v-else-if="activeTab === 'mcp'"
           v-model="mcpServersList"
+          @update:model-value="syncToConfig"
           @edit="startEditMcpServer"
           @delete="deleteMcpServer"
           @toggle="toggleMcpServer"

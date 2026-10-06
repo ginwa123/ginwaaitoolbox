@@ -13,7 +13,7 @@
   failed read cannot present as an empty detail pane.
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUpdated, ref } from 'vue'
 import { Effect } from 'effect'
 import UiIcon from '../ui/UiIcon.vue'
 import { getSkillDetail, deleteSkill, type SkillDetail } from '../../api'
@@ -51,51 +51,63 @@ const loadTarget = computed(() => {
 
 const fail = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason))
 
-watch(
-  loadTarget,
-  async (target) => {
-    if (!target) {
-      skillDetail.value = null
-      error.value = null
-      showDeleteConfirm.value = false
-      isLoading.value = false
-      return
-    }
-
-    isLoading.value = true
+// Reload when the skill identity changes (prev-value guard on update —
+// same fetch the watcher did; the mount call covers the initial load).
+async function syncSkillTarget(target: { name: string; workspaceId: string } | null) {
+  if (!target) {
+    skillDetail.value = null
     error.value = null
     showDeleteConfirm.value = false
-
-    const result = await runSyncResult(
-      Effect.tryPromise({
-        try: () => getSkillDetail(target.workspaceId, target.name),
-        catch: (e) => new SyncRemoteError({ op: 'skills.detail', reason: fail(e) }),
-      }),
-      'skills.detail',
-    )
-
     isLoading.value = false
-    if (!result.ok) {
-      skillDetail.value = null
-      error.value = result.reason
-      return
-    }
-    if (result.value.error_message) {
-      skillDetail.value = null
-      error.value = result.value.error_message
-      return
-    }
-    if (result.value.skill) {
-      skillDetail.value = result.value.skill
-      return
-    }
-    // Neither a skill nor a reason: say so rather than leaving a blank
-    // pane that reads like the load failed.
+    return
+  }
+
+  isLoading.value = true
+  error.value = null
+  showDeleteConfirm.value = false
+
+  const result = await runSyncResult(
+    Effect.tryPromise({
+      try: () => getSkillDetail(target.workspaceId, target.name),
+      catch: (e) => new SyncRemoteError({ op: 'skills.detail', reason: fail(e) }),
+    }),
+    'skills.detail',
+  )
+
+  isLoading.value = false
+  if (!result.ok) {
     skillDetail.value = null
-    error.value = `Skill "${target.name}" not found in this workspace`
-  },
-  { immediate: true },
-)
+    error.value = result.reason
+    return
+  }
+  if (result.value.error_message) {
+    skillDetail.value = null
+    error.value = result.value.error_message
+    return
+  }
+  if (result.value.skill) {
+    skillDetail.value = result.value.skill
+    return
+  }
+  // Neither a skill nor a reason: say so rather than leaving a blank
+  // pane that reads like the load failed.
+  skillDetail.value = null
+  error.value = `Skill "${target.name}" not found in this workspace`
+}
+
+const targetKey = (t: { name: string; workspaceId: string } | null) =>
+  t ? `${t.workspaceId}::${t.name}` : ''
+let prevSkillTargetKey = targetKey(loadTarget.value)
+onMounted(() => {
+  prevSkillTargetKey = targetKey(loadTarget.value)
+  void syncSkillTarget(loadTarget.value)
+})
+onUpdated(() => {
+  const key = targetKey(loadTarget.value)
+  if (key === prevSkillTargetKey) return
+  prevSkillTargetKey = key
+  void syncSkillTarget(loadTarget.value)
+})
 
 /** Companion files stored beside the body. Zero hides the row entirely. */
 const assetCount = computed(() => {

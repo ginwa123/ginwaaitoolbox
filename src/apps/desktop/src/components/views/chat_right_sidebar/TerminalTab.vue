@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import UiIcon from '../../ui/UiIcon.vue'
@@ -510,40 +510,48 @@ onMounted(() => {
   void restoreSessions()
 })
 
-watch(
-  () => props.cwd,
-  async (next, prev) => {
-    if (next === prev || disposed) return
-    // Initial '' → dir resolution is NOT a scope change: fresh mounts
-    // already waited for cwd in newSession, and restored sessions
-    // re-attach by id (cwd-independent). Dropping here is what wiped
-    // restored sessions on every chat return ("always a new term").
-    // Only a real scope change (dir → different dir) restarts shells.
-    if (!prev) return
-    // Mount-time resolution grace (git worktree '' → session → worktree
-    // flips): ignore dir → dir changes inside the grace window, only a
-    // settled scope change restarts shells.
-    if (Date.now() - mountedAt < 3000) return
-    // Cwd scope changed: drop every session. Only restart a shell when
-    // the user already had terminals — an empty tab stays empty until
-    // explicit action (no auto-spawn on view open / chat switch).
-    clearWsRetry()
-    closeWs()
-    const ids = sessions.value.map((s) => s.id)
-    const hadSessions = ids.length > 0
-    sessions.value = []
-    exitedIds.value = new Set()
-    activeId.value = null
-    await Promise.all(ids.map((id) => deleteTerminalSession(id).catch(() => {})))
-    if (disposed) return
-    term?.clear()
-    if (!hadSessions) {
-      status.value = 'No terminal — click + to start a new one'
-      return
-    }
-    await newSession()
-  },
-)
+// Cwd scope sync (prev-value guard on update — same guards the watcher
+// had; no immediate run, matching the old watcher).
+async function syncCwdScope(next: string, prev: string) {
+  if (next === prev || disposed) return
+  // Initial '' → dir resolution is NOT a scope change: fresh mounts
+  // already waited for cwd in newSession, and restored sessions
+  // re-attach by id (cwd-independent). Dropping here is what wiped
+  // restored sessions on every chat return ("always a new term").
+  // Only a real scope change (dir → different dir) restarts shells.
+  if (!prev) return
+  // Mount-time resolution grace (git worktree '' → session → worktree
+  // flips): ignore dir → dir changes inside the grace window, only a
+  // settled scope change restarts shells.
+  if (Date.now() - mountedAt < 3000) return
+  // Cwd scope changed: drop every session. Only restart a shell when
+  // the user already had terminals — an empty tab stays empty until
+  // explicit action (no auto-spawn on view open / chat switch).
+  clearWsRetry()
+  closeWs()
+  const ids = sessions.value.map((s) => s.id)
+  const hadSessions = ids.length > 0
+  sessions.value = []
+  exitedIds.value = new Set()
+  activeId.value = null
+  await Promise.all(ids.map((id) => deleteTerminalSession(id).catch(() => {})))
+  if (disposed) return
+  term?.clear()
+  if (!hadSessions) {
+    status.value = 'No terminal — click + to start a new one'
+    return
+  }
+  await newSession()
+}
+
+let prevCwd = props.cwd
+onUpdated(() => {
+  const next = props.cwd
+  if (next === prevCwd) return
+  const prev = prevCwd
+  prevCwd = next
+  void syncCwdScope(next, prev)
+})
 
 onUnmounted(() => {
   disposed = true

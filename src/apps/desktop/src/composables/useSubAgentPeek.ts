@@ -18,7 +18,7 @@
  * The panel component (`SubAgentPeekPanel.vue`) is presentational —
  * it only renders props.
  */
-import { onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
+import { onMounted, onUnmounted, ref, type Ref } from 'vue'
 import { apiFetch, type SseEvent, type Message } from '../api'
 import { useSseBus } from '../helpers/sseBus'
 
@@ -95,9 +95,7 @@ function applyChunkToMessages(
   } else {
     // Assistant / user chunks — find-or-create by ev.id.
     const chunkId = ev.id
-    const existingIdx = chunkId
-      ? messages.value.findIndex((m) => m.id === chunkId)
-      : -1
+    const existingIdx = chunkId ? messages.value.findIndex((m) => m.id === chunkId) : -1
 
     if (existingIdx >= 0) {
       // Append / update the existing message in place (immutable splice).
@@ -125,7 +123,9 @@ function applyChunkToMessages(
       // No matching id — append a new message.
       if (ev.content || (ev as { tool_calls?: unknown }).tool_calls || ev.role) {
         const newMsg = {
-          id: ev.id ?? `sse-${Math.floor(Date.now() / 1000)}-${Math.random().toString(36).slice(2, 8)}`,
+          id:
+            ev.id ??
+            `sse-${Math.floor(Date.now() / 1000)}-${Math.random().toString(36).slice(2, 8)}`,
           role: (ev.role as Message['role']) ?? 'assistant',
           content: ev.content ?? '',
           created_at: ev.created_at ?? Math.floor(Date.now() / 1000),
@@ -179,9 +179,12 @@ export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekRe
         messages: Message[]
         has_more: boolean
         next_cursor: string | null
-      }>(`/llm/session/${encodeURIComponent(opts.sessionId)}/messages?sort_by=created_at&direction=asc&limit=100`, {
-        silent: true,
-      })
+      }>(
+        `/llm/session/${encodeURIComponent(opts.sessionId)}/messages?sort_by=created_at&direction=asc&limit=100`,
+        {
+          silent: true,
+        },
+      )
       messages.value = Array.isArray(data.messages) ? data.messages : []
 
       // If the most recent message has a finish_reason, the
@@ -239,18 +242,11 @@ export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekRe
     void fetchInitial()
   })
 
-  // 2026-09-04 subagent-peek P1: eye-click from agent A -> agent B reuses
-  // the panel without unmount. Refetch when the sid changes.
-  watch(
-    () => opts.sessionId,
-    (next, prev) => {
-      if (next !== prev) {
-        closeSse()
-        messages.value = []
-        void fetchInitial()
-      }
-    },
-  )
+  // 2026-09-04 subagent-peek P1: eye-click from agent A -> agent B remounts
+  // the host (keyed by sessionId), and `opts` is a plain snapshot object —
+  // so observing `opts.sessionId` never fires (the source never changes).
+  // The mount fetch above is the only load path; reuse without
+  // remount has no trigger to preserve.
 
   onUnmounted(() => {
     closeSse()

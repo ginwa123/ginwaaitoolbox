@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 
 export interface LlmConfig {
   model: string
@@ -43,7 +43,8 @@ function update<K extends keyof LlmConfig>(key: K, value: LlmConfig[K]) {
   emit('update:modelValue', { ...props.modelValue, [key]: value })
 }
 
-const inputBase = 'w-full px-3 h-8 rounded-md border text-body font-sans transition-colors duration-150'
+const inputBase =
+  'w-full px-3 h-8 rounded-md border text-body font-sans transition-colors duration-150'
 const inputStyle = (hasError?: boolean): Record<string, string> => ({
   backgroundColor: 'var(--semantic-content-bg)',
   color: 'var(--semantic-text)',
@@ -80,18 +81,12 @@ const thresholdDisplay = computed<number>({
   get: () => props.modelValue.compaction_threshold_percent ?? 80,
   set: (v: number) => {
     if (!Number.isFinite(v)) return
-    update(
-      'compaction_threshold_percent',
-      Math.max(0, Math.min(100, Math.floor(v))),
-    )
+    update('compaction_threshold_percent', Math.max(0, Math.min(100, Math.floor(v))))
   },
 })
 
 function setCapacityOverride(on: boolean) {
-  update(
-    'max_capacity_tokens',
-    on ? (props.modelValue.max_capacity_tokens ?? 500000) : null,
-  )
+  update('max_capacity_tokens', on ? (props.modelValue.max_capacity_tokens ?? 500000) : null)
 }
 
 function setThresholdOverride(on: boolean) {
@@ -107,22 +102,21 @@ function setThresholdOverride(on: boolean) {
 // number in [0, 1]. Invalid input shows an inline error and is NOT
 // emitted (last valid value is preserved). A local draft ref allows
 // intermediate typing states (e.g. clearing the field) without the
-// input snapping back to the prop on every keystroke.
+// A local draft ref allows intermediate typing states (e.g. clearing the
+// field) without the input snapping back to the prop on every keystroke.
+// Seeded from the prop at mount (the open guard — the parent mounts this
+// form fresh per modal open) and owned by `onTemperatureInput` after that:
+// every temperature prop change originates from this form's own `update()`
+// emit, which already carries the draft's value, so there is nothing to
+// mirror back.
 const temperatureDraft = ref(props.modelValue.temperature)
-watch(
-  () => props.modelValue.temperature,
-  (v) => {
-    temperatureDraft.value = v
-  },
-)
 
 const temperatureError = computed<string | null>(() => {
   const trimmed = temperatureDraft.value.trim()
   if (trimmed.toLowerCase() === 'auto') return null
   if (trimmed === '') return 'Use auto or a number 0–1.'
   const parsed = Number(trimmed)
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1)
-    return 'Use auto or a number 0–1.'
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) return 'Use auto or a number 0–1.'
   return null
 })
 
@@ -130,10 +124,8 @@ function onTemperatureInput(raw: string) {
   temperatureDraft.value = raw
   if (temperatureError.value !== null) return
   const trimmed = raw.trim()
-  const normalized =
-    trimmed.toLowerCase() === 'auto' ? 'auto' : trimmed
-  if (normalized !== props.modelValue.temperature)
-    update('temperature', normalized)
+  const normalized = trimmed.toLowerCase() === 'auto' ? 'auto' : trimmed
+  if (normalized !== props.modelValue.temperature) update('temperature', normalized)
 }
 
 // === Per-style gating — plan 2026-09-01-migrate-openai-legacy-to-response ===
@@ -150,7 +142,7 @@ const isOpenAIStyle = computed(
     <!-- Model -->
     <div>
       <label :class="labelBase" :style="labelStyle">
-        Model <span style="color: var(--color-red);">*</span>
+        Model <span style="color: var(--color-red)">*</span>
       </label>
       <input
         :value="modelValue.model"
@@ -176,7 +168,9 @@ const isOpenAIStyle = computed(
         :style="inputStyle(!!errors?.base_url)"
         data-testid="base-url-input"
       />
-      <p v-if="errors?.base_url" class="text-dense mt-1" :style="errorStyle">{{ errors.base_url }}</p>
+      <p v-if="errors?.base_url" class="text-dense mt-1" :style="errorStyle">
+        {{ errors.base_url }}
+      </p>
     </div>
 
     <!-- Thinking / Temperature / URL style — 3 columns -->
@@ -214,7 +208,9 @@ const isOpenAIStyle = computed(
           <option value="0.5" />
           <option value="1" label="1 — Balanced" />
         </datalist>
-        <p v-if="temperatureError" class="text-dense mt-1" :style="errorStyle">{{ temperatureError }}</p>
+        <p v-if="temperatureError" class="text-dense mt-1" :style="errorStyle">
+          {{ temperatureError }}
+        </p>
       </div>
       <div>
         <label :class="labelBase" :style="labelStyle">URL style</label>
@@ -239,10 +235,7 @@ const isOpenAIStyle = computed(
          and the effort dropdown is meaningless when extended reasoning
          is disabled. Hidden fields preserve values (not nulled) so
          switching styles doesn't lose data — only visibility changes. -->
-    <div
-      v-if="modelValue.thinking !== 'off'"
-      class="grid grid-cols-2 gap-3"
-    >
+    <div v-if="modelValue.thinking !== 'off'" class="grid grid-cols-2 gap-3">
       <div v-if="isAnthropic">
         <label :class="labelBase" :style="labelStyle">
           Thinking budget tokens
@@ -252,15 +245,20 @@ const isOpenAIStyle = computed(
         </label>
         <input
           :value="modelValue.thinking_budget_tokens ?? ''"
-          @input="(e) => {
-            const raw = (e.target as HTMLInputElement).value
-            if (raw === '') {
-              update('thinking_budget_tokens', null)
-            } else {
-              const parsed = parseInt(raw, 10)
-              update('thinking_budget_tokens', Number.isFinite(parsed) ? Math.max(1024, parsed) : null)
+          @input="
+            (e) => {
+              const raw = (e.target as HTMLInputElement).value
+              if (raw === '') {
+                update('thinking_budget_tokens', null)
+              } else {
+                const parsed = parseInt(raw, 10)
+                update(
+                  'thinking_budget_tokens',
+                  Number.isFinite(parsed) ? Math.max(1024, parsed) : null,
+                )
+              }
             }
-          }"
+          "
           type="number"
           min="1024"
           step="512"
@@ -279,10 +277,15 @@ const isOpenAIStyle = computed(
         </label>
         <select
           :value="modelValue.reasoning_effort ?? ''"
-          @change="(e) => {
-            const raw = (e.target as HTMLSelectElement).value
-            update('reasoning_effort', raw === '' ? null : raw as 'low' | 'medium' | 'high' | 'auto')
-          }"
+          @change="
+            (e) => {
+              const raw = (e.target as HTMLSelectElement).value
+              update(
+                'reasoning_effort',
+                raw === '' ? null : (raw as 'low' | 'medium' | 'high' | 'auto'),
+              )
+            }
+          "
           :class="inputBase"
           :style="inputStyle()"
           data-testid="reasoning-effort-select"
@@ -299,7 +302,7 @@ const isOpenAIStyle = computed(
     <div>
       <label :class="labelBase" :style="labelStyle">
         API key
-        <span v-if="!modelValue.api_key" style="color: var(--color-red);">*</span>
+        <span v-if="!modelValue.api_key" style="color: var(--color-red)">*</span>
       </label>
       <div class="relative">
         <input
@@ -318,14 +321,16 @@ const isOpenAIStyle = computed(
           :title="showKey ? 'Hide' : 'Show'"
           data-testid="api-key-toggle"
           class="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-dense"
-          style="color: var(--semantic-text-dim);"
-        >{{ showKey ? '◉' : '○' }}</button>
+          style="color: var(--semantic-text-dim)"
+        >
+          {{ showKey ? '◉' : '○' }}
+        </button>
       </div>
       <p v-if="errors?.api_key" class="text-dense mt-1" :style="errorStyle">{{ errors.api_key }}</p>
     </div>
 
     <!-- Compaction overrides (per-profile) — plan 2026-07-07-compaction-inline -->
-    <div class="border-t pt-4 mt-2" style="border-color: var(--color-border);">
+    <div class="border-t pt-4 mt-2" style="border-color: var(--color-border)">
       <h3 class="font-mono text-dense uppercase tracking-wider mb-3" :style="labelStyle">
         ── Compaction overrides ──
       </h3>
@@ -338,7 +343,7 @@ const isOpenAIStyle = computed(
               @change="setCapacityOverride(($event.target as HTMLInputElement).checked)"
               type="checkbox"
               class="w-4 h-4 mt-0.5"
-              style="accent-color: var(--color-violet);"
+              style="accent-color: var(--color-violet)"
               data-testid="profile-capacity-override-checkbox"
             />
             <span>
@@ -350,9 +355,7 @@ const isOpenAIStyle = computed(
           </label>
         </div>
 
-        <div
-          :class="{ 'opacity-50 pointer-events-none': modelValue.max_capacity_tokens === null }"
-        >
+        <div :class="{ 'opacity-50 pointer-events-none': modelValue.max_capacity_tokens === null }">
           <label :class="labelBase" :style="labelStyle">Max capacity (tokens)</label>
           <input
             :value="capacityDisplay"
@@ -375,7 +378,7 @@ const isOpenAIStyle = computed(
               @change="setThresholdOverride(($event.target as HTMLInputElement).checked)"
               type="checkbox"
               class="w-4 h-4 mt-0.5"
-              style="accent-color: var(--color-violet);"
+              style="accent-color: var(--color-violet)"
               data-testid="profile-threshold-override-checkbox"
             />
             <span>
@@ -388,7 +391,9 @@ const isOpenAIStyle = computed(
         </div>
 
         <div
-          :class="{ 'opacity-50 pointer-events-none': modelValue.compaction_threshold_percent === null }"
+          :class="{
+            'opacity-50 pointer-events-none': modelValue.compaction_threshold_percent === null,
+          }"
         >
           <div class="flex items-center justify-between mb-1.5">
             <label :class="labelBase" :style="labelStyle" class="!mb-0">Threshold (%)</label>

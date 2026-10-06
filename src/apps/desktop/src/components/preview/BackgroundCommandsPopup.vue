@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import {
   ApiError,
   getBackgroundProcessLog,
@@ -214,13 +214,15 @@ const resetForSession = (sid: string): void => {
   subscribePush()
 }
 
-watch(
-  () => props.sessionId,
-  (newSid, oldSid) => {
-    if (newSid === oldSid) return
-    resetForSession(newSid)
-  },
-)
+// Reset on session switch (prev-value guard on update — same reset the
+// watcher did; mount is covered by the onMounted reset below).
+let prevPopupSessionId = props.sessionId
+onUpdated(() => {
+  const newSid = props.sessionId
+  if (newSid === prevPopupSessionId) return
+  prevPopupSessionId = newSid
+  resetForSession(newSid)
+})
 
 onMounted(() => {
   disposed = false
