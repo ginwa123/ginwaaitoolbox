@@ -38,6 +38,7 @@ const agent_tools_defaults_test = @import("agent_tools_defaults_test.zig");
 const agent_tools_toggle_test = @import("agent_tools_toggle_test.zig");
 const agent_video_upload_test = @import("agent_video_upload_test.zig");
 const agent_workspace_history_test = @import("agent_workspace_history_test.zig");
+const chat_content_envelope_test = @import("chat_content_envelope_test.zig");
 const android_sidebar_contract_test = @import("android_sidebar_contract_test.zig");
 const android_workers_contract_test = @import("android_workers_contract_test.zig");
 const anthropic_chat_headers_test = @import("anthropic_chat_headers_test.zig");
@@ -162,6 +163,7 @@ pub const suites = .{
     agent_tools_toggle_test,
     agent_video_upload_test,
     agent_workspace_history_test,
+    chat_content_envelope_test,
     android_sidebar_contract_test,
     android_workers_contract_test,
     anthropic_chat_headers_test,

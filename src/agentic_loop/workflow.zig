@@ -1813,10 +1813,17 @@ fn generateSessionNameNew(
 ) void {
     // Find the first user message from db_messages (TUIHistory)
     var first_user_message: ?[]const u8 = null;
+    var first_user_owned: ?[]u8 = null;
+    defer if (first_user_owned) |b| allocator.free(b);
     for (db_messages) |msg| {
         // role is stored as string "user" in TUIHistory
         if (std.mem.eql(u8, msg.role, "user") and msg.response_content.len > 0) {
-            first_user_message = msg.response_content;
+            // DB may hold the Option A user envelope; unwrap to .msg so the
+            // auto-name prompt sees human text, never raw JSON.
+            first_user_owned = parsing_mod.unwrapChatContent(allocator, msg.response_content) catch null;
+            if (first_user_owned) |b| {
+                if (b.len > 0) first_user_message = b;
+            }
             break;
         }
     }
@@ -3333,8 +3340,11 @@ test "flushCancelledPartial persists the streamed partial as a cancelled turn" {
     const row = (try rows.next()) orelse return error.NoRowInserted;
     defer row.deinit(a);
 
-    // The text the user already saw is preserved...
-    try testing.expectEqualStrings("hello wor", row.values[0]);
+    // The text the user already saw is preserved (Option A: assistant rows
+    // persist the {model,msg} envelope; unwrap to .msg for the assertion)...
+    const stored = row.values[0];
+    const unwrapped = try parsing_mod.unwrapChatContent(a, stored);
+    try testing.expectEqualStrings("hello wor", unwrapped);
     // ...flagged as cancelled, NOT "stop" — the frontend's completed-turn
     // affordances key off "stop", and an aborted turn must not claim them.
     try testing.expectEqualStrings("cancelled", row.values[1]);
