@@ -1,0 +1,219 @@
+//! Server-boot phases extracted from `main`: SIGPIPE handling, CLI parsing,
+//! TLS setup, database open + migrations, port resolution, static-dir config.
+//!
+//! Ownership rule: phase fns return owned values; `main` keeps every local
+//! and `defer`. Background threads outliving freed context segfault, so
+//! teardown order stays in exactly one place.
+
+const std = @import("std");
+const helpers = @import("helpers");
+const database = @import("databases").database;
+const gserverz = @import("kabelweb").server;
+const cli_args = @import("../cli_args.zig");
+const migration = @import("../migrations/mod.zig").migration;
+const static_files = @import("../modules/static_files.zig");
+const shutdown = @import("shutdown.zig");
+const static_serve = @import("../http_static/static_serve.zig");
+
+/// Ignore SIGPIPE process-wide (non-Windows). A peer vanishing mid-write
+/// must surface as a write error, not a signal (OpenSSL uses plain write(2)).
+pub fn ignoreSigpipe() void {
+    if (comptime @import("builtin").os.tag != .windows) {
+        var sa = std.posix.Sigaction{
+            .handler = .{ .handler = std.posix.SIG.IGN },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.PIPE, &sa, null);
+    }
+}
+
+/// Parse outcome with reporting left to the caller: asserting every variant
+/// emits no error-level logs (the test runner fails any test that logs at
+/// err level, which `reportFailure` does by design).
+pub const CliParseOutcome = union(enum) {
+    ok: cli_args.CliArgs,
+    help,
+    invalid: cli_args.Failure,
+};
+
+pub fn tryParseCliArgs(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+) cli_args.ParseError!CliParseOutcome {
+    var cli: cli_args.CliArgs = .{};
+    if (try cli_args.parse(allocator, argv, &cli)) |failure| {
+        return .{ .invalid = failure };
+    }
+    if (cli.help_requested) return .help;
+    return .{ .ok = cli };
+}
+
+/// tryParseCliArgs + report + remap to InvalidArgs.
+/// Runs BEFORE anything with side effects: `LlmConfig.init` starts the
+/// scheduler thread, after which an error exit segfaults instead of
+/// reporting the real error.
+pub fn parseCliArgs(allocator: std.mem.Allocator, argv: []const []const u8) !?cli_args.CliArgs {
+    return switch (try tryParseCliArgs(allocator, argv)) {
+        .ok => |cli| cli,
+        .help => null,
+        .invalid => |failure| {
+            cli_args.reportFailure(failure);
+            return error.InvalidArgs;
+        },
+    };
+}
+
+/// Explicit `--port` wins; otherwise `web_launch_enabled` decides: random
+/// (0) when on so browser-mode URLs never clash, 8081 when off.
+pub fn resolvePort(cli_port: ?u16, web_launch_enabled: bool) u16 {
+    return cli_port orelse (if (web_launch_enabled) 0 else 8081);
+}
+
+/// Generate/reuse the self-signed pair when asked, then load cert+key into
+/// a TLS context. Path typos fail here naming the flag and path, never as
+/// a silent plaintext fallback later. Null when TLS is off.
+pub fn setupTlsCtx(
+    allocator: std.mem.Allocator,
+    env: *const std.process.Environ.Map,
+    cli: *cli_args.CliArgs,
+) !?*gserverz.tls.Ctx {
+    if (cli.tls_selfsigned) {
+        const dir = try static_serve.tlsDataDir(allocator, env);
+        const paths = try gserverz.tls_cert.ensureSelfSigned(allocator, dir, "localhost", 365);
+        cli.tls_cert_path = paths.cert_pem;
+        cli.tls_key_path = paths.key_pem;
+    }
+    if (cli.tls_cert_path) |cert| {
+        const key = cli.tls_key_path orelse unreachable;
+        const ctx = gserverz.tls.Ctx.init(allocator, cert, key, &.{ gserverz.tls.alpn_h2, gserverz.tls.alpn_http1 }) catch |err| {
+            std.log.err("Error: --tls cannot load cert={s} key={s}: {s}", .{ cert, key, @errorName(err) });
+            return error.InvalidArgs;
+        };
+        // The functional tests parse this line for the certificate path.
+        std.debug.print("TLS enabled (ALPN: h2, http/1.1) cert={s}\n", .{cert});
+        return ctx;
+    }
+    return null;
+}
+
+pub const DatabaseHandles = struct {
+    db_path: [:0]const u8,
+    db: database.Db,
+
+    pub fn deinit(self: *DatabaseHandles, allocator: std.mem.Allocator) void {
+        self.db.deinit();
+        allocator.free(self.db_path);
+    }
+};
+
+/// Resolve the DB path, open with `.synchronous = .normal` (the ONLY knob
+/// the app sets; the rest is the databases package default), log the live
+/// config, and run migrations. Caller owns the handles.
+pub fn openDatabase(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+) !DatabaseHandles {
+    const db_path = try helpers.db_path.getDbPath(allocator, io, env);
+    errdefer allocator.free(db_path);
+    var db: database.Db = .{};
+    errdefer db.deinit();
+    try database.openWithConfig(&db, io, .{ .sqlite_path = db_path }, .{ .synchronous = .normal });
+    shutdown.logSqliteConfig(allocator, &db);
+    try runMigrations(allocator, &db);
+    return .{ .db_path = db_path, .db = db };
+}
+
+pub fn runMigrations(allocator: std.mem.Allocator, db: *database.Db) !void {
+    var mm = migration.MigrationManager.init(allocator, db);
+    defer mm.deinit();
+    try migration.registerAllMigrations(&mm);
+    try mm.runMigrations();
+}
+
+/// Build the `--static-dir DIR` config: absolutize first (`openDirAbsolute`
+/// asserts absolute and aborts on failure — a relative path must never
+/// reach it), then open + canonicalize, with the `/app` + `/login` SPA
+/// fallbacks so client-side routes survive reload. Caller frees via
+/// `freeStaticDir`.
+pub fn setupStaticDir(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: []const u8,
+) !*static_files.StaticDirConfig {
+    var abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const abs_static_dir = try static_files.resolveStaticDirAbs(io, allocator, dir, &abs_buf);
+    defer allocator.free(abs_static_dir);
+
+    const root_dir = std.Io.Dir.openDirAbsolute(io, abs_static_dir, .{}) catch |err| {
+        std.log.err("--static-dir '{s}' cannot be opened: {s}", .{ dir, @errorName(err) });
+        return err;
+    };
+    defer root_dir.close(io);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try root_dir.realPath(io, &path_buf);
+    const abs_dir = try allocator.dupe(u8, path_buf[0..path_len]);
+    errdefer allocator.free(abs_dir);
+
+    const cfg = try allocator.create(static_files.StaticDirConfig);
+    cfg.* = .{
+        .root_dir = abs_dir,
+        .allocator = allocator,
+        .spa_fallback_prefix = "/app",
+        .spa_fallback_prefix2 = "/login",
+    };
+    return cfg;
+}
+
+pub fn freeStaticDir(allocator: std.mem.Allocator, cfg: *static_files.StaticDirConfig) void {
+    allocator.free(cfg.root_dir);
+    allocator.destroy(cfg);
+}
+
+// ---------------------------------------------------------------------------
+// Behaviour tests (call the phase fns, assert outputs)
+// ---------------------------------------------------------------------------
+
+test "server_boot: resolvePort prefers an explicit --port either way" {
+    try std.testing.expectEqual(@as(u16, 9090), resolvePort(9090, true));
+    try std.testing.expectEqual(@as(u16, 9090), resolvePort(9090, false));
+}
+
+test "server_boot: resolvePort falls back to web-launch mode" {
+    try std.testing.expectEqual(@as(u16, 0), resolvePort(null, true));
+    try std.testing.expectEqual(@as(u16, 8081), resolvePort(null, false));
+}
+
+test "server_boot: tryParseCliArgs maps a bad --port to invalid" {
+    const argv: []const []const u8 = &.{ "pabrik", "--port", "abc" };
+    const outcome = try tryParseCliArgs(std.testing.allocator, argv);
+    try std.testing.expect(outcome == .invalid);
+    try std.testing.expectEqual(cli_args.FailureKind.invalid_port_value, outcome.invalid.kind);
+}
+
+test "server_boot: tryParseCliArgs maps --help to help" {
+    const argv: []const []const u8 = &.{ "pabrik", "--help" };
+    const outcome = try tryParseCliArgs(std.testing.allocator, argv);
+    try std.testing.expect(outcome == .help);
+}
+
+test "server_boot: tryParseCliArgs passes through a valid --port" {
+    const argv: []const []const u8 = &.{ "pabrik", "--port", "9090" };
+    const outcome = try tryParseCliArgs(std.testing.allocator, argv);
+    try std.testing.expect(outcome == .ok);
+    try std.testing.expectEqual(@as(?u16, 9090), outcome.ok.port);
+}
+
+test "server_boot: parseCliArgs returns null when --help is requested" {
+    const argv: []const []const u8 = &.{ "pabrik", "--help" };
+    const result = try parseCliArgs(std.testing.allocator, argv);
+    try std.testing.expect(result == null);
+}
+
+test "server_boot: parseCliArgs passes through a valid --port" {
+    const argv: []const []const u8 = &.{ "pabrik", "--port", "9090" };
+    const cli = (try parseCliArgs(std.testing.allocator, argv)) orelse return error.HelpUnexpected;
+    try std.testing.expectEqual(@as(?u16, 9090), cli.port);
+}

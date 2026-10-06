@@ -256,6 +256,13 @@ pub const gserverz = kabelweb.server;
 pub const ai_mod = @import("ai_workflow/tui/mod.zig");
 pub const event_bus = @import("modules/event_bus/src/event.zig");
 pub const static_files = @import("modules/static_files.zig");
+// Boot phases extracted from main.zig (refactor-main-zig): re-exported so
+// the exe module reaches them via pabrikcore.* without @import'ing the
+// files directly (dual-module error — see cleanup_stale_worker above).
+pub const boot_shutdown = @import("boot/shutdown.zig");
+pub const boot_cli_dispatch = @import("boot/cli_dispatch.zig");
+pub const boot_server_boot = @import("boot/server_boot.zig");
+pub const http_static_serve = @import("http_static/static_serve.zig");
 
 pub const startup = @import("startup.zig");
 pub const agentic_loop_mod = @import("agentic_loop/workflow.zig");
@@ -355,6 +362,12 @@ test {
     // 2026-09-10-web-launch-toggle): impl + unit tests in one file.
     // Same discovery workaround as mcp_http above.
     _ = @import("modules/config/web_port.zig");
+    // Boot phases extracted from main.zig: inline behaviour tests live in
+    // each file. Same discovery workaround as web_port above.
+    _ = @import("boot/shutdown.zig");
+    _ = @import("boot/cli_dispatch.zig");
+    _ = @import("boot/server_boot.zig");
+    _ = @import("http_static/static_serve.zig");
     // Config struct + its `test { ... }` block at the bottom of
     // Config.zig (the config_test.zig + parse_thinking_test.zig
     // suites are now inline in Config.zig itself). Registered here so
