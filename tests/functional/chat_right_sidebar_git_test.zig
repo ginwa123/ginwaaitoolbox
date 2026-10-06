@@ -7,7 +7,8 @@
 // this file proves the exact wire payloads it consumes:
 //
 //   1. GET /api/git/changes groups staged / modified / untracked files.
-//   2. GET /api/git/file/diff returns unified diff_content for a dirty file.
+//   2. POST /api/git/file/diffs (folder mode) returns unified diff_content
+//      for every dirty file in one response, each row tagged staged/not.
 //   3. POST /api/git/stage + GET /changes round-trips a file into staged.
 //   4. POST /api/git/unstage moves it back.
 //
@@ -88,13 +89,13 @@ fn git(cwd: []const u8, args: []const []const u8) !void {
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(gpa);
     try argv.appendSlice(gpa, &.{
-        "git", "-C", cwd,
-        "-c", "user.email=t@t",
-        "-c", "user.name=t",
+        "git",         "-C",             cwd,
+        "-c",          "user.email=t@t", "-c",
+        "user.name=t",
         // A machine-wide `commit.gpgsign=true` would make every
         // fixture commit fail for a reason that has nothing to do with
         // the code under test.
-        "-c", "commit.gpgsign=false",
+        "-c",             "commit.gpgsign=false",
     });
     try argv.appendSlice(gpa, args);
 
@@ -248,8 +249,10 @@ test "changes_groups_files" {
     }
 }
 
-// GET /api/git/file/diff returns the unified hunk the inline view renders.
-test "file_diff_content" {
+// FOLDER mode returns the unified hunk the inline view renders, and says
+// which side it came from. This used to be GET /api/git/file/diff, one git
+// spawn per file; it is now one POST for the whole repo.
+test "folder_diff_content" {
     try harness.requirePabrikBin(io, gpa);
 
     var s = try Scratch.init();
@@ -262,25 +265,69 @@ test "file_diff_content" {
         std.debug.print("teardown: {s}\n", .{@errorName(err)});
     };
 
-    const diff_url = try std.fmt.allocPrint(gpa, "/api/git/file/diff?path={s}&file=committed.txt&staged=false", .{diff_cwd});
-    defer gpa.free(diff_url);
+    const diff_body = try std.fmt.allocPrint(gpa, "{{\"path\":\"{s}\",\"folder\":\"\"}}", .{diff_cwd});
+    defer gpa.free(diff_body);
 
-    var r = try h.http(io, .GET, diff_url, .{
+    var r = try h.http(io, .POST, "/api/git/file/diffs", .{
+        .json_body = diff_body,
         .expect = &.{200},
-        .timeout_s = 15.0,
+        .timeout_s = 30.0,
     });
     defer r.deinit();
 
     var doc = try r.json();
     defer doc.deinit();
 
-    try testing.expectEqualStrings("committed.txt", doc.str("path").?);
-    try testing.expectEqual(false, doc.boolean("staged").?);
-
-    const diff_content = doc.str("diff_content").?;
+    // The whole repo comes back in one response, each row tagged with the
+    // side it belongs to.
+    const diffs = doc.array("diffs") orelse return error.TestUnexpectedResult;
+    var found: ?[]const u8 = null;
+    var found_staged: ?bool = null;
+    for (diffs.items) |row| {
+        if (!std.mem.eql(u8, row.object.get("path").?.string, "committed.txt")) continue;
+        found = row.object.get("diff_content").?.string;
+        found_staged = row.object.get("staged").?.bool;
+        break;
+    }
+    const diff_content = found orelse {
+        std.debug.print("committed.txt missing from folder diff: {s}\n", .{r.body});
+        return error.TestUnexpectedResult;
+    };
+    // committed.txt is modified in the worktree only, so it is NOT staged.
+    try testing.expectEqual(false, found_staged.?);
     try testing.expect(std.mem.indexOf(u8, diff_content, "-old") != null);
     try testing.expect(std.mem.indexOf(u8, diff_content, "+new") != null);
     try testing.expect(std.mem.indexOf(u8, diff_content, "@@") != null);
+}
+
+// The per-file diff route is gone: asking for it must 404, not fall through
+// to some other handler that happens to match the path.
+test "per_file_diff_route_is_gone" {
+    try harness.requirePabrikBin(io, gpa);
+
+    var s = try Scratch.init();
+    defer s.deinit();
+    const diff_cwd = try buildDiffRepo(&s);
+    defer gpa.free(diff_cwd);
+
+    var h = try Harness.boot(io, gpa, .{});
+    defer h.deinit(io) catch |err| {
+        std.debug.print("teardown: {s}\n", .{@errorName(err)});
+    };
+
+    var r = try h.http(io, .GET, "/api/git/file/diff", .{
+        .params = &.{
+            .{ .name = "path", .value = diff_cwd },
+            .{ .name = "file", .value = "committed.txt" },
+            .{ .name = "staged", .value = "false" },
+        },
+        // assert_status = false: THE STATUS IS THE ASSERTION. A hard-coded
+        // `.expect` would make the harness raise before we can look.
+        .assert_status = false,
+        .timeout_s = 15.0,
+    });
+    defer r.deinit();
+    try testing.expectEqual(@as(u16, 404), r.status);
 }
 
 // POST /stage|/unstage move committed.txt between groups on the wire.

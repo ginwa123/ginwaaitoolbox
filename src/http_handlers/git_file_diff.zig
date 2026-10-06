@@ -1,107 +1,19 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
-const pabrik_core = @import("pabrikcore");
-const gserverz = pabrik_core.gserverz;
+const photon = @import("pabrikcore");
+const gserverz = photon.gserverz;
 
-/// Git file diff response - returns unified diff output
-pub const GitFileDiffResponse = struct {
-    path: []const u8,
-    diff_content: []const u8,  // Unified diff output from git diff
-    staged: bool
-};
-
-/// Git file read response
-pub const GitFileReadResponse = struct {
-    content: []const u8,
-    encoding: []const u8
-};
-
-/// Get git diff for a specific file using git diff command
-pub fn gitFileDiffHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
-    const allocator = ctx.allocator;
-    const io = ctx.io;
-
-    // Get path and file from query parameters
-    const query = req.query;
-    const path_param = query.get("path") orelse {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "Missing path parameter") });
-    };
-    const file_param = query.get("file") orelse {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "Missing file parameter") });
-    };
-    const staged_param = query.get("staged") orelse "false";
-    const staged = std.mem.eql(u8, staged_param, "true");
-
-    // Both values come straight from the query string and `path` is later used
-    // as the BASE of a `std.fs.path.join` whose result is handed to
-    // `std.Io.Dir.openFileAbsolute`. That API asserts `path.isAbsolute(...)`,
-    // and a failed assertion ABORTS the whole process (Debug/ReleaseSafe)
-    // instead of returning an error — so a relative `?path=` would kill the
-    // server for every client. Reject it here.
-    if (!std.fs.path.isAbsolute(path_param)) {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "path must be an absolute directory") });
-    }
-    if (std.fs.path.isAbsolute(file_param)) {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "file must be relative to path") });
-    }
-
-    // Use git diff command to get proper diff output
-    // For staged: git diff --cached -- <file> (staged vs HEAD)
-    // For unstaged: git diff -- <file> (working tree vs staged area)
-    var diff_content: []const u8 = "";
-    
-    if (staged) {
-        const argv: [7][]const u8 = .{ "git", "-C", path_param, "diff", "--cached", "--", file_param };
-        if (std.process.run(allocator, io, .{ .argv = &argv })) |result| {
-            if (result.term.exited == 0 or result.term.exited == 1) {
-                diff_content = result.stdout;
-            }
-        } else |_| {}
-    } else {
-        const argv: [6][]const u8 = .{ "git", "-C", path_param, "diff", "--", file_param };
-        if (std.process.run(allocator, io, .{ .argv = &argv })) |result| {
-            if (result.term.exited == 0 or result.term.exited == 1) {
-                diff_content = result.stdout;
-            }
-        } else |_| {}
-    }
-    
-    // For files that are newly added (never committed), git diff returns empty
-    // Fall back to reading the working tree file to build a synthetic diff
-    // This handles both staged=true (new staged file) and staged=false (new unstaged file)
-    if (diff_content.len == 0) {
-        const full_file_path = std.fs.path.join(allocator, &.{ path_param, file_param }) catch "";
-        if (full_file_path.len > 0) {
-            defer allocator.free(full_file_path);
-            // Defence in depth: `path_param` is validated absolute above, so this
-            // join is absolute — but `openFileAbsolute` ASSERTS it and aborts the
-            // whole process instead of returning an error, so never hand it
-            // anything else.
-            if (!std.fs.path.isAbsolute(full_file_path)) {
-                return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "path must be an absolute directory") });
-            }
-            const file = std.Io.Dir.openFileAbsolute(io, full_file_path, .{}) catch null;
-            if (file) |f| {
-                defer f.close(io);
-                var read_buf: [8192]u8 = undefined;
-                var reader = f.reader(io, &read_buf);
-                const content = reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch "";
-                if (content.len > 0) {
-                    diff_content = buildNewFileDiff(allocator, file_param, content) catch "";
-                    allocator.free(content);
-                }
-            }
-        }
-    }
-
-    const response = GitFileDiffResponse{
-        .path = file_param,
-        .diff_content = diff_content,
-        .staged = staged
-    };
-
-    return res.jsonResponse(.{ .status_code = 200, .data = try makeGitFileDiffResponse(allocator, response) });
-}
+/// Git file read response.
+///
+/// The per-file DIFF endpoint that used to live here
+/// (`GET /api/git/file/diff?path=&file=&staged=`) is GONE. Reading a diff is
+/// `POST /api/git/file/diffs`, whose FOLDER mode answers a whole folder — or
+/// the whole repo — in one request and a fixed number of git spawns. The
+/// per-file endpoint cost one git spawn per call, so a panel that wanted 50
+/// changed files asked for 50 diffs and held 50 workers doing it.
+///
+/// This module keeps only the reader, which has no git in it at all.
+pub const GitFileReadResponse = struct { content: []const u8, encoding: []const u8 };
 
 /// Read a file from git repository (working tree)
 pub fn gitFileReadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
@@ -134,7 +46,7 @@ pub fn gitFileReadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     };
     defer allocator.free(file_path);
 
-    // Read the file using std.Io.Dir
+    // Open the file using std.Io.Dir
     const file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch |err| {
         return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeGitStatusErrorResponse(allocator, @errorName(err)) });
     };
@@ -146,108 +58,22 @@ pub fn gitFileReadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeGitStatusErrorResponse(allocator, @errorName(err)) });
     };
 
-    const response = GitFileReadResponse{
-        .content = content,
-        .encoding = "utf-8"
-    };
+    const response = GitFileReadResponse{ .content = content, .encoding = "utf-8" };
 
     return res.jsonResponse(.{ .status_code = 200, .data = try makeGitFileReadResponse(allocator, response) });
-}
-
-/// Build a synthetic unified diff for a newly staged file (never committed before)
-/// This shows the file as being added from /dev/null to the staged content
-fn buildNewFileDiff(allocator: std.mem.Allocator, file_path: []const u8, staged_content: []const u8) ![]const u8 {
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
-    
-    // Count lines in staged content
-    var line_count: usize = 0;
-    for (staged_content) |c| {
-        if (c == '\n') line_count += 1;
-    }
-    if (staged_content.len > 0 and staged_content[staged_content.len - 1] != '\n') {
-        line_count += 1;
-    }
-    
-    // Build the diff header
-    try buf.appendSlice(allocator, "diff --git a/");
-    try buf.appendSlice(allocator, file_path);
-    try buf.appendSlice(allocator, " b/");
-    try buf.appendSlice(allocator, file_path);
-    try buf.appendSlice(allocator, "\nnew file mode");
-    try buf.appendSlice(allocator, "\n--- /dev/null\n+++ b/");
-    try buf.appendSlice(allocator, file_path);
-    try buf.appendSlice(allocator, "\n@@ -0,0 +1,");
-    try buf.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{}", .{line_count}));
-    try buf.appendSlice(allocator, " @@\n");
-    
-    // Append each line with + prefix
-    var start: usize = 0;
-    while (std.mem.indexOfScalar(u8, staged_content[start..], '\n')) |idx| {
-        try buf.appendSlice(allocator, "+");
-        try buf.appendSlice(allocator, staged_content[start .. start + idx]);
-        try buf.append(allocator, '\n');
-        start += idx + 1;
-    }
-    // Handle last line without newline
-    if (start < staged_content.len) {
-        try buf.appendSlice(allocator, "+");
-        try buf.appendSlice(allocator, staged_content[start..]);
-        try buf.append(allocator, '\n');
-    }
-    
-    return try buf.toOwnedSlice(allocator);
-}
-
-/// Custom JSON serialization for GitFileDiffResponse
-fn makeGitFileDiffResponse(allocator: std.mem.Allocator, response: GitFileDiffResponse) ![]u8 {
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
-    
-    // Helper to escape a string for JSON
-    const escapeString = struct {
-        fn escape(a: std.mem.Allocator, s: []const u8) ![]u8 {
-            var result = std.ArrayList(u8).empty;
-            defer result.deinit(a);
-            
-            for (s) |c| {
-                switch (c) {
-                    '"' => try result.appendSlice(a, "\\\""),
-                    '\\' => try result.appendSlice(a, "\\\\"),
-                    '\n' => try result.appendSlice(a, "\\n"),
-                    '\r' => try result.appendSlice(a, "\\r"),
-                    '\t' => try result.appendSlice(a, "\\t"),
-                    else => try result.append(a, c)
-                }
-            }
-            return try result.toOwnedSlice(a);
-        }
-    }.escape;
-    
-    try buf.appendSlice(allocator, "{\"path\":\"");
-    const escaped_path = try escapeString(allocator, response.path);
-    try buf.appendSlice(allocator, escaped_path);
-    try buf.appendSlice(allocator, "\", \"diff_content\":\"");
-    const escaped_diff = try escapeString(allocator, response.diff_content);
-    try buf.appendSlice(allocator, escaped_diff);
-    try buf.appendSlice(allocator, "\", \"staged\":");
-    try buf.appendSlice(allocator, if (response.staged) "true" else "false");
-    try buf.appendSlice(allocator, "}");
-    
-    return try buf.toOwnedSlice(allocator);
 }
 
 /// Custom JSON serialization for GitFileReadResponse
 fn makeGitFileReadResponse(allocator: std.mem.Allocator, response: GitFileReadResponse) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
-    
+
     // Helper to escape a string for JSON
     const escapeString = struct {
         fn escape(a: std.mem.Allocator, s: []const u8) ![]u8 {
             var result = std.ArrayList(u8).empty;
             defer result.deinit(a);
-            
+
             for (s) |c| {
                 switch (c) {
                     '"' => try result.appendSlice(a, "\\\""),
@@ -255,19 +81,22 @@ fn makeGitFileReadResponse(allocator: std.mem.Allocator, response: GitFileReadRe
                     '\n' => try result.appendSlice(a, "\\n"),
                     '\r' => try result.appendSlice(a, "\\r"),
                     '\t' => try result.appendSlice(a, "\\t"),
-                    else => try result.append(a, c)
+                    else => try result.append(a, c),
                 }
             }
             return try result.toOwnedSlice(a);
         }
     }.escape;
-    
+
     try buf.appendSlice(allocator, "{\"content\":\"");
     const escaped_content = try escapeString(allocator, response.content);
+    defer allocator.free(escaped_content);
     try buf.appendSlice(allocator, escaped_content);
     try buf.appendSlice(allocator, "\", \"encoding\":\"");
-    try buf.appendSlice(allocator, response.encoding);
+    const escaped_encoding = try escapeString(allocator, response.encoding);
+    defer allocator.free(escaped_encoding);
+    try buf.appendSlice(allocator, escaped_encoding);
     try buf.appendSlice(allocator, "\"}");
-    
+
     return try buf.toOwnedSlice(allocator);
 }

@@ -76,6 +76,7 @@ fn buildFolderCwd(scratch: []const u8) ![]u8 {
     for ([_]struct { []const u8, []const u8 }{
         .{ "src/committed.txt", "keep\nold\n" },
         .{ "src/staged.txt", "keep\nold\n" },
+        .{ "src/both.txt", "keep\nold\n" },
         .{ "docs/readme.txt", "keep\nold\n" },
         .{ "top.txt", "keep\nold\n" },
         .{ "clean/untouched.txt", "never touched\n" },
@@ -88,6 +89,13 @@ fn buildFolderCwd(scratch: []const u8) ![]u8 {
     try writeFileAt(repo_dir, "src/committed.txt", "keep\nnew\n");
     try writeFileAt(repo_dir, "src/staged.txt", "keep\nnew\n");
     try git(repo, &.{ "add", "src/staged.txt" });
+    // Staged AND THEN modified again -> porcelain `MM`. This is the row that
+    // makes "staged or not" a real question rather than a tautology: the two
+    // sides carry different content, so a test that only checked the flag
+    // would pass even if the handler swapped them.
+    try writeFileAt(repo_dir, "src/both.txt", "keep\nstaged\n");
+    try git(repo, &.{ "add", "src/both.txt" });
+    try writeFileAt(repo_dir, "src/both.txt", "keep\nnew\n");
     try writeFileAt(repo_dir, "docs/readme.txt", "keep\nnew\n");
     try writeFileAt(repo_dir, "top.txt", "keep\nnew\n");
     try writeFileAt(repo_dir, "src/fresh.txt", "brand new\n");
@@ -148,18 +156,36 @@ fn postFolder(h: *Harness, body: []const u8, expect: []const u16) !harness.Respo
     });
 }
 
-/// `(staged, path) -> diff_content` for a parsed `diffs` array.
+/// A borrowed-key index over a parsed `diffs` array, plus the OWNED keys it
+/// points into.
+///
+/// `StringHashMap.keyIterator` yields pointers INTO the map's own key
+/// storage, not into the caller's allocation — so freeing what it returns
+/// frees the wrong pointer and leaks the original. This struct keeps the
+/// dups in a list it can actually hand back to the allocator.
+const OwnedIndex = struct {
+    map: std.StringHashMap([]const u8),
+    owned: std.ArrayList([]u8),
+
+    fn deinit(self: *OwnedIndex) void {
+        for (self.owned.items) |k| gpa.free(k);
+        self.owned.deinit(gpa);
+        self.map.deinit();
+    }
+};
+
+fn initIndex() OwnedIndex {
+    return .{ .map = std.StringHashMap([]const u8).init(gpa), .owned = .empty };
+}
+
+/// `(staged, path) -> diff_content`.
 ///
 /// The python used `{d["staged"], d["path"]: d["diff_content"] ...}`. A
 /// `std.json.Value` cannot be a map key, so this keys on the FORMATTED
-/// `"{staged}:{path}"` string instead — owned, and freed by the caller.
-fn indexBySideAndPath(gpa_: std.mem.Allocator, diffs: []const std.json.Value) !std.StringHashMap([]const u8) {
-    var map = std.StringHashMap([]const u8).init(gpa_);
-    errdefer {
-        var it = map.keyIterator();
-        while (it.next()) |k| gpa_.free(k.*);
-        map.deinit();
-    }
+/// `"{staged}:{path}"` string instead.
+fn indexBySideAndPath(diffs: []const std.json.Value) !OwnedIndex {
+    var ix = initIndex();
+    errdefer ix.deinit();
     for (diffs) |row| {
         const obj = switch (row) {
             .object => |o| o,
@@ -167,24 +193,39 @@ fn indexBySideAndPath(gpa_: std.mem.Allocator, diffs: []const std.json.Value) !s
         };
         const path = obj.get("path") orelse return error.TestUnexpectedResult;
         const staged = obj.get("staged") orelse return error.TestUnexpectedResult;
-        const key = switch (staged) {
-            .bool => |b| try std.fmt.allocPrint(gpa_, "{s}:{s}", .{ if (b) "1" else "0", path.string }),
+        const flag = switch (staged) {
+            .bool => |b| b,
             else => return error.TestUnexpectedResult,
         };
+        const key = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ if (flag) "1" else "0", path.string });
+        errdefer gpa.free(key);
         // First row wins; duplicates should not happen within one side.
-        if (map.contains(key)) {
-            gpa_.free(key);
+        if (ix.map.contains(key)) {
+            gpa.free(key);
             continue;
         }
-        try map.put(key, obj.get("diff_content").?.string);
+        try ix.owned.append(gpa, key);
+        try ix.map.put(key, obj.get("diff_content").?.string);
     }
-    return map;
+    return ix;
 }
 
-fn freeIndex(gpa_: std.mem.Allocator, map: *std.StringHashMap([]const u8)) void {
-    var it = map.keyIterator();
-    while (it.next()) |k| gpa_.free(k.*);
-    map.deinit();
+/// The set of paths a response reported.
+fn indexPaths(diffs: []const std.json.Value) !OwnedIndex {
+    var ix = initIndex();
+    errdefer ix.deinit();
+    for (diffs) |row| {
+        const path = row.object.get("path") orelse return error.TestUnexpectedResult;
+        const key = try gpa.dupe(u8, path.string);
+        errdefer gpa.free(key);
+        if (ix.map.contains(key)) {
+            gpa.free(key);
+            continue;
+        }
+        try ix.owned.append(gpa, key);
+        try ix.map.put(key, "");
+    }
+    return ix;
 }
 
 fn expectRow(map: *const std.StringHashMap([]const u8), staged: bool, path: []const u8) ![]const u8 {
@@ -208,9 +249,9 @@ fn pathSet(gpa_: std.mem.Allocator, diffs: []const std.json.Value) !std.StringHa
     return set;
 }
 
-fn expectSameSet(got: *const std.StringHashMap(void), want: []const []const u8) !void {
-    try testing.expectEqual(want.len, got.count());
-    for (want) |w| try testing.expect(got.contains(w));
+fn expectSameSet(got: *const OwnedIndex, want: []const []const u8) !void {
+    try testing.expectEqual(want.len, got.map.count());
+    for (want) |w| try testing.expect(got.map.contains(w));
 }
 
 // One POST on `folder: "src"` returns staged + unstaged + untracked.
@@ -227,17 +268,17 @@ test "folder_mode_returns_every_changed_file_under_the_folder_in_one_call" {
     defer doc.deinit();
 
     const diffs = doc.array("diffs") orelse return error.TestUnexpectedResult;
-    var by_key = try indexBySideAndPath(gpa, diffs.items);
-    defer freeIndex(gpa, &by_key);
+    var by_key = try indexBySideAndPath(diffs.items);
+    defer by_key.deinit();
 
     // The two sides the caller would otherwise have had to enumerate itself.
-    try testing.expect(std.mem.indexOf(u8, try expectRow(&by_key, false, "src/committed.txt"), "+new") != null);
-    try testing.expect(std.mem.indexOf(u8, try expectRow(&by_key, true, "src/staged.txt"), "+new") != null);
+    try testing.expect(std.mem.indexOf(u8, try expectRow(&by_key.map, false, "src/committed.txt"), "+new") != null);
+    try testing.expect(std.mem.indexOf(u8, try expectRow(&by_key.map, true, "src/staged.txt"), "+new") != null);
     // Untracked under src/ — `git diff` shows nothing for it, so this only
     // works if the server enumerated the path AND fell back to the synthetic
     // new-file diff. `-uall` on the status call is what surfaces the FILE
     // rather than the directory.
-    try testing.expect(std.mem.indexOf(u8, try expectRow(&by_key, false, "src/fresh.txt"), "+brand new") != null);
+    try testing.expect(std.mem.indexOf(u8, try expectRow(&by_key.map, false, "src/fresh.txt"), "+brand new") != null);
 }
 
 // `folder: "src"` must not leak sibling or root-level changes.
@@ -254,13 +295,9 @@ test "folder_mode_excludes_files_outside_the_folder" {
     defer doc.deinit();
 
     const diffs = doc.array("diffs") orelse return error.TestUnexpectedResult;
-    var got = try pathSet(gpa, diffs.items);
-    defer {
-        var it = got.keyIterator();
-        while (it.next()) |k| gpa.free(k.*);
-        got.deinit();
-    }
-    try expectSameSet(&got, &.{ "src/committed.txt", "src/staged.txt", "src/fresh.txt" });
+    var got = try indexPaths(diffs.items);
+    defer got.deinit();
+    try expectSameSet(&got, &.{ "src/committed.txt", "src/staged.txt", "src/fresh.txt", "src/both.txt" });
 }
 
 // `folder: ""` is the whole repo, and reaches docs/ and the root.
@@ -277,15 +314,12 @@ test "empty_folder_string_means_the_whole_repo" {
     defer doc.deinit();
 
     const diffs = doc.array("diffs") orelse return error.TestUnexpectedResult;
-    var got = try pathSet(gpa, diffs.items);
-    defer {
-        var it = got.keyIterator();
-        while (it.next()) |k| gpa.free(k.*);
-        got.deinit();
-    }
+    var got = try indexPaths(diffs.items);
+    defer got.deinit();
     try expectSameSet(&got, &.{
         "src/committed.txt",
         "src/staged.txt",
+        "src/both.txt",
         "src/fresh.txt",
         "docs/readme.txt",
         "top.txt",
@@ -322,8 +356,8 @@ test "folder_mode_matches_list_mode_content" {
     defer r.deinit();
     var doc = try r.json();
     defer doc.deinit();
-    var folder_side = try indexBySideAndPath(gpa, doc.array("diffs").?.items);
-    defer freeIndex(gpa, &folder_side);
+    var folder_side = try indexBySideAndPath(doc.array("diffs").?.items);
+    defer folder_side.deinit();
 
     const list_body = try std.fmt.allocPrint(
         gpa,
@@ -346,7 +380,7 @@ test "folder_mode_matches_list_mode_content" {
         const path = row.object.get("path").?.string;
         try testing.expectEqualStrings(
             row.object.get("diff_content").?.string,
-            try expectRow(&folder_side, false, path),
+            try expectRow(&folder_side.map, false, path),
         );
     }
 }
@@ -363,6 +397,59 @@ test "folder_mode_rejects_a_parent_escaping_path" {
         defer r.deinit();
         try testing.expectEqual(@as(u16, 400), r.status);
     }
+}
+
+// The response is a LIST of files, each tagged with the side it came from.
+// A path that is both staged and modified appears TWICE — once `staged:true`,
+// once `staged:false` — because those are two different diffs.
+test "folder_response_lists_each_file_with_its_staged_state" {
+    var f = try Fixture.init();
+    defer f.deinit();
+
+    const body = try folderBody(f.repo, "src");
+    defer gpa.free(body);
+
+    var r = try postFolder(&f.h, body, &.{200});
+    defer r.deinit();
+    var doc = try r.json();
+    defer doc.deinit();
+
+    const diffs = doc.array("diffs") orelse return error.TestUnexpectedResult;
+
+    // Count the rows per (path, side). `expectRow` cannot express "appears
+    // twice", so count directly.
+    var staged_both: usize = 0;
+    var unstaged_both: usize = 0;
+    for (diffs.items) |row| {
+        const path = row.object.get("path").?.string;
+        const flag = row.object.get("staged").?.bool;
+        if (std.mem.eql(u8, path, "src/both.txt")) {
+            if (flag) staged_both += 1 else unstaged_both += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), staged_both);
+    try testing.expectEqual(@as(usize, 1), unstaged_both);
+
+    // Every row carries all three fields, so a client can render the list
+    // without a second request to find out what a row means.
+    for (diffs.items) |row| {
+        try testing.expect(row.object.get("path") != null);
+        try testing.expect(row.object.get("diff_content") != null);
+        try testing.expect(row.object.get("staged") != null);
+    }
+
+    // And the two sides of `src/both.txt` are genuinely DIFFERENT diffs. The
+    // staged side is index-vs-HEAD, so it shows the edit that was `git add`ed
+    // (+staged); the unstaged side is worktree-vs-index, so it shows the edit
+    // made AFTER that (+new). Swapping them would fail here.
+    var by_key = try indexBySideAndPath(diffs.items);
+    defer by_key.deinit();
+    const staged_diff = try expectRow(&by_key.map, true, "src/both.txt");
+    const unstaged_diff = try expectRow(&by_key.map, false, "src/both.txt");
+    try testing.expect(std.mem.indexOf(u8, staged_diff, "+staged") != null);
+    try testing.expect(std.mem.indexOf(u8, unstaged_diff, "+new") != null);
+    try testing.expect(std.mem.indexOf(u8, staged_diff, "+new") == null);
+    try testing.expect(std.mem.indexOf(u8, unstaged_diff, "+staged") == null);
 }
 
 // Sending neither `files` nor `folder` is a 400, not a silent "no changes".

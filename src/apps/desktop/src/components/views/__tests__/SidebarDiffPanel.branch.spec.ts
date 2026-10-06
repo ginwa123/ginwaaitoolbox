@@ -18,9 +18,8 @@ const testRouter = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock } = vi.hoisted(() => ({
+const { getGitChangesMock, getGitFolderDiffsMock } = vi.hoisted(() => ({
   getGitChangesMock: vi.fn(),
-  getGitFileDiffMock: vi.fn(),
   getGitFolderDiffsMock: vi.fn(),
 }))
 
@@ -29,7 +28,6 @@ vi.mock('../../../api', async () => {
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: getGitFileDiffMock,
     getGitFolderDiffs: getGitFolderDiffsMock,
     stageGitFiles: vi.fn(),
     unstageGitFiles: vi.fn(),
@@ -50,7 +48,6 @@ describe('SidebarDiffPanel branch source of truth', () => {
     clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
-    getGitFileDiffMock.mockResolvedValue({ path: '', diff_content: '', staged: false })
     getGitFolderDiffsMock.mockResolvedValue({ diffs: [] })
   })
 

@@ -74,6 +74,22 @@ fn git(cwd: []const u8, args: []const []const u8) !void {
     }
 }
 
+/// Run `git` and return its stdout, for use as an ORACLE the handler is
+/// checked against. Distinct from `git` above, which only asserts rc=0 and
+/// throws the output away — comparing a handler against another handler only
+/// proves they agree, whereas this compares it against git itself.
+fn gitCapture(cwd: []const u8, args: []const []const u8) ![]u8 {
+    var full: std.ArrayList([]const u8) = .empty;
+    defer full.deinit(gpa);
+    try full.append(gpa, "git");
+    try full.appendSlice(gpa, args);
+
+    // Same (allocator, io, opts) shape the handlers themselves use.
+    const out = try std.process.run(gpa, io, .{ .argv = full.items, .cwd = .{ .path = cwd } });
+    if (out.term != .exited or out.term.exited != 0) return error.TestUnexpectedResult;
+    return out.stdout;
+}
+
 fn writeFileAt(dir: std.Io.Dir, name: []const u8, contents: []const u8) !void {
     var f = try dir.createFile(io, name, .{});
     defer f.close(io);
@@ -206,8 +222,8 @@ test "batch_returns_all_three_groups" {
     try testing.expect(std.mem.indexOf(u8, untracked, "+hello") != null);
 }
 
-// Batch content for one file equals the single-file endpoint.
-test "batch_matches_single_file_diff" {
+// Batch content for one file is byte-identical to `git diff` itself.
+test "batch_matches_git_diff_output" {
     var h: Harness = undefined;
     var scratch: []u8 = undefined;
     var repo: []u8 = undefined;
@@ -226,20 +242,12 @@ test "batch_matches_single_file_diff" {
     defer gpa.free(repo);
     defer h.deinit(io) catch |err| std.debug.print("teardown: {s}\n", .{@errorName(err)});
 
-    // The single-file endpoint takes query params; the batch one a body.
-    var single = try h.http(io, .GET, "/api/git/file/diff", .{
-        .params = &.{
-            .{ .name = "path", .value = repo },
-            .{ .name = "file", .value = "committed.txt" },
-            .{ .name = "staged", .value = "false" },
-        },
-        .expect = &.{200},
-        .timeout_s = 15.0,
-    });
-    defer single.deinit();
-    var single_doc = try single.json();
-    defer single_doc.deinit();
-    const single_content = single_doc.str("diff_content") orelse return error.TestUnexpectedResult;
+    // There is no per-file endpoint to compare against any more — it is
+    // deleted. So compare LIST mode against `git diff` ITSELF: that is a
+    // stronger oracle than the old handler-vs-handler comparison, which only
+    // proved two of our own handlers agreed.
+    const git_out = try gitCapture(repo, &.{ "diff", "--", "committed.txt" });
+    defer gpa.free(git_out);
 
     const entry = try fileEntry("committed.txt", false);
     defer gpa.free(entry);
@@ -257,10 +265,12 @@ test "batch_matches_single_file_diff" {
 
     const diffs = batch_doc.array("diffs") orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(usize, 1), diffs.items.len);
-    try testing.expectEqualStrings(
-        single_content,
-        diffs.items[0].object.get("diff_content").?.string,
-    );
+    const got = diffs.items[0].object.get("diff_content").?.string;
+    try testing.expectEqualStrings(git_out, got);
+    // …and the row carries the side it was asked for, which is how the
+    // client tells a staged diff from a worktree one.
+    try testing.expectEqual(false, diffs.items[0].object.get("staged").?.bool);
+    try testing.expectEqualStrings("committed.txt", diffs.items[0].object.get("path").?.string);
 }
 
 // An empty files list is a 400, not a 500.

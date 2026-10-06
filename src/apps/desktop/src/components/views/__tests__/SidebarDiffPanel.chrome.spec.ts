@@ -16,10 +16,9 @@ import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
  * split, the filter, and the one-word tab labels.
  */
 
-const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock, getGitCommitsMock } =
+const { getGitChangesMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock, getGitCommitsMock } =
   vi.hoisted(() => ({
     getGitChangesMock: vi.fn(),
-    getGitFileDiffMock: vi.fn(),
     getGitFolderDiffsMock: vi.fn(),
     getPrDiffMock: vi.fn(),
     getPrStatusMock: vi.fn(),
@@ -31,7 +30,6 @@ vi.mock('../../../api', async () => {
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: getGitFileDiffMock,
     getGitFolderDiffs: getGitFolderDiffsMock,
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,
@@ -90,7 +88,6 @@ describe('SidebarDiffPanel chrome — status letter chips', () => {
       total_count: 0,
       commits: [],
     })
-    getGitFileDiffMock.mockResolvedValue({ path: '', diff_content: '', staged: false })
   })
 
   it('renders one letter per git status, never a colour emoji', async () => {
@@ -151,7 +148,6 @@ describe('SidebarDiffPanel chrome — the filter', () => {
       total_count: 0,
       commits: [],
     })
-    getGitFileDiffMock.mockResolvedValue({ path: '', diff_content: '', staged: false })
     getPrDiffMock.mockResolvedValue({
       pr_url: 'https://github.com/acme/app/pull/42',
       base: 'main',
@@ -268,7 +264,6 @@ describe('SidebarDiffPanel chrome — the tab strip', () => {
       total_count: 0,
       commits: [],
     })
-    getGitFileDiffMock.mockResolvedValue({ path: '', diff_content: '', staged: false })
     getPrDiffMock.mockResolvedValue({
       pr_url: 'https://github.com/acme/app/pull/42',
       base: 'main',

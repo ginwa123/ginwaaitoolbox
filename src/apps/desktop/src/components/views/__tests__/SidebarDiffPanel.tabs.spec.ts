@@ -9,10 +9,9 @@ const testRouter = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock, getGitCommitsMock } =
+const { getGitChangesMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock, getGitCommitsMock } =
   vi.hoisted(() => ({
     getGitChangesMock: vi.fn(),
-    getGitFileDiffMock: vi.fn(),
     getGitFolderDiffsMock: vi.fn(),
     getPrDiffMock: vi.fn(),
     getPrStatusMock: vi.fn(),
@@ -24,7 +23,6 @@ vi.mock('../../../api', async () => {
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: getGitFileDiffMock,
     getGitFolderDiffs: getGitFolderDiffsMock,
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,
@@ -72,13 +70,15 @@ describe('SidebarDiffPanel tabs', () => {
     clearFolderDiffCache()
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
+    getGitFolderDiffsMock.mockResolvedValue({
+      diffs: [{ path: 'dirty.txt', diff_content: DIFF, staged: false }],
+    })
     getGitCommitsMock.mockResolvedValue({
       is_git_repo: true,
       branch: 'main',
       total_count: 1,
       commits: [],
     })
-    getGitFileDiffMock.mockResolvedValue({ path: 'dirty.txt', diff_content: DIFF, staged: false })
     getPrDiffMock.mockResolvedValue({
       pr_url: 'https://github.com/acme/app/pull/42',
       base: 'main',

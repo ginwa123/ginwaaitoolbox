@@ -22,7 +22,6 @@ vi.mock('../../../api', async () => {
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: vi.fn(),
     getGitFolderDiffs: vi.fn(async () => ({ diffs: [] })),
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,

@@ -19,8 +19,7 @@
 //
 //       /usr/lib/zig/std/Io/Dir.zig:486:11 in openFileAbsolute
 //           assert(path.isAbsolute(absolute_path));
-//       src/http_handlers/git_file_diff.zig:63 / :107 in gitFileDiffHandler /
-//       gitFileReadHandler
+//       src/http_handlers/git_file_diff.zig:63 / :107 in gitFileReadHandler
 //       === CRASH: received signal ABRT (signal number 6) ===
 //
 //   A `catch |err| ...` clause does NOT protect these calls — the panic happens
@@ -30,10 +29,14 @@
 //   guard on body.path, which `syntheticFallback` later feeds to the same API.
 //
 //   These are the exact query strings `src/apps/desktop/src/api/index.ts`
-//   builds (`/git/file/diff?path=…&file=…`, `/git/file/read?path=…&file=…`) and
-//   the exact POST body `SidebarDiffPanel.vue` sends, with the `path`
-//   downgraded from the frontend's absolute cwd to a relative one — the
-//   malicious/buggy-client case.
+//   builds (`/git/file/read?path=…&file=…`) and the exact POST body
+//   `SidebarDiffPanel.vue` sends, with the `path` downgraded from the
+//   frontend's absolute cwd to a relative one — the malicious/buggy-client
+//   case.
+//
+//   The per-file DIFF handler used to sit on the same guard and used to have
+//   its own test here. It is deleted; `file_diffs_batch_rejects_relative_
+//   body_path` covers the crash class for the endpoint that replaced it.
 //
 //   Why a wire test: the failure mode is SIGABRT of the whole process, which
 //   only a real round-trip can observe ("is this PID still answering
@@ -187,38 +190,6 @@ test "file_read_rejects_relative_path" {
     }
 
     try assertAlive(&h, "GET /api/git/file/read with a relative path");
-}
-
-// `GET /api/git/file/diff` shares the same join → same guard.
-test "file_diff_rejects_relative_path" {
-    try harness.requirePabrikBin(io, gpa);
-    var h = try Harness.boot(io, gpa, .{});
-    defer h.deinit(io) catch |err| {
-        std.debug.print("teardown: {s}\n", .{@errorName(err)});
-    };
-
-    var r = try h.http(io, .GET, "/api/git/file/diff", .{
-        .params = &.{
-            .{ .name = "path", .value = RELATIVE_PATH },
-            .{ .name = "file", .value = FILE },
-            .{ .name = "staged", .value = "false" },
-        },
-        .expect = &.{400},
-    });
-    defer r.deinit();
-
-    var doc = try r.json();
-    defer doc.deinit();
-    const message = doc.str("error") orelse {
-        std.debug.print("400 body should carry an `error` field: {s}\n", .{r.body});
-        return error.TestUnexpectedResult;
-    };
-    if (std.mem.indexOf(u8, message, "absolute") == null) {
-        std.debug.print("400 should name the absoluteness requirement, got: {s}\n", .{message});
-        return error.TestUnexpectedResult;
-    }
-
-    try assertAlive(&h, "GET /api/git/file/diff with a relative path");
 }
 
 // The batch endpoint's `path` reaches the same API via syntheticFallback.

@@ -296,7 +296,10 @@ fn registerConfigRoutes(authed: *Group) !void {
 fn registerGitRoutes(authed: *Group) !void {
     try authed.get("/api/git/status", ai_mod.http_handlers.gitStatusHandler);
     try authed.get("/api/git/changes", ai_mod.http_handlers.gitChangesHandler);
-    try authed.get("/api/git/file/diff", ai_mod.http_handlers.gitFileDiffHandler);
+    // No per-file diff route. Reading a diff is POST /api/git/file/diffs,
+    // whose folder mode covers a folder (or the whole repo) in one request
+    // and a fixed number of git spawns; the old GET /api/git/file/diff cost
+    // one spawn per call, so a panel with N changed files asked N times.
     try authed.post("/api/git/file/diffs", ai_mod.http_handlers.gitFileDiffsHandler);
     try authed.get("/api/git/file/read", ai_mod.http_handlers.gitFileReadHandler);
     try authed.post("/api/git/stage", ai_mod.http_handlers.gitStageHandler);

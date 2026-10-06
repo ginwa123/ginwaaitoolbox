@@ -11,14 +11,12 @@ const testRouter = createRouter({
 
 const {
   getGitChangesMock,
-  getGitFileDiffMock,
   getGitFolderDiffsMock,
   stageGitFilesMock,
   unstageGitFilesMock,
 } =
   vi.hoisted(() => ({
     getGitChangesMock: vi.fn(),
-    getGitFileDiffMock: vi.fn(),
     getGitFolderDiffsMock: vi.fn(),
     stageGitFilesMock: vi.fn(),
     unstageGitFilesMock: vi.fn(),
@@ -29,7 +27,6 @@ vi.mock('../../../api', async () => {
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: getGitFileDiffMock,
     getGitFolderDiffs: getGitFolderDiffsMock,
     stageGitFiles: stageGitFilesMock,
     unstageGitFiles: unstageGitFilesMock,
@@ -94,7 +91,6 @@ describe('SidebarDiffPanel', () => {
     await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
     await flushPromises()
     expect(getGitFolderDiffsMock.mock.calls.length).toBe(before)
-    expect(getGitFileDiffMock).not.toHaveBeenCalled()
     const emitted = wrapper.emitted('show-diff')
     expect(emitted).toHaveLength(1)
     expect(emitted![0]![0]).toMatchObject({ path: 'dirty.txt', staged: false, added: 1, removed: 1 })
