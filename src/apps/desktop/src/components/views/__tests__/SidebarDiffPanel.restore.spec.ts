@@ -11,10 +11,9 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import { encodePathParam } from '../chat_right_sidebar/parseUnifiedDiff'
 import { clearFolderDiffCache } from '../../../helpers/folderDiffCache'
 
-const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock, getPrStatusMock } =
+const { getGitChangesMock, getGitFolderDiffsMock, getPrStatusMock } =
   vi.hoisted(() => ({
     getGitChangesMock: vi.fn(),
-    getGitFileDiffMock: vi.fn(),
     getGitFolderDiffsMock: vi.fn(),
     getPrStatusMock: vi.fn(),
   }))
@@ -24,7 +23,6 @@ vi.mock('../../../api', async () => {
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: getGitFileDiffMock,
     getGitFolderDiffs: getGitFolderDiffsMock,
     getPrDiff: vi.fn(),
     getPrStatus: getPrStatusMock,

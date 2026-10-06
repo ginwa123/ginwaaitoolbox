@@ -24,10 +24,9 @@ const testRouter = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
+const { getGitChangesMock, getGitFolderDiffsMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
   () => ({
     getGitChangesMock: vi.fn(),
-    getGitFileDiffMock: vi.fn(),
     getGitFolderDiffsMock: vi.fn(),
     getPrDiffMock: vi.fn(),
     getPrStatusMock: vi.fn(),
@@ -39,7 +38,6 @@ vi.mock('../../../api', async () => {
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
-    getGitFileDiff: getGitFileDiffMock,
     getGitFolderDiffs: getGitFolderDiffsMock,
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,
@@ -124,7 +122,6 @@ describe('SidebarDiffPanel show-diff-list (3.1)', () => {
     })
     await flushPromises()
     expect(getPrDiffMock).toHaveBeenCalledTimes(1)
-    expect(getGitFileDiffMock).not.toHaveBeenCalled()
     const listed = wrapper.emitted('show-diff-list')
     expect(listed).toHaveLength(1)
     const files = listed![0]![0] as Array<{
@@ -157,7 +154,6 @@ describe('SidebarDiffPanel show-diff-list (3.1)', () => {
     // this path entirely.
     expect(getGitFolderDiffsMock).toHaveBeenCalledTimes(1)
     expect(getGitFolderDiffsMock).toHaveBeenCalledWith('/repo')
-    expect(getGitFileDiffMock).not.toHaveBeenCalled()
     const listed = wrapper.emitted('show-diff-list')
     expect(listed).toHaveLength(1)
     const files = listed![0]![0] as Array<{ path: string; staged: boolean; lines: unknown[] }>
@@ -193,7 +189,6 @@ describe('SidebarDiffPanel show-diff-list (3.1)', () => {
     // retry path is what turned one error into a session of requests.
     expect(errorLog).toHaveBeenCalled()
     expect(getGitFolderDiffsMock).toHaveBeenCalledTimes(1)
-    expect(getGitFileDiffMock).not.toHaveBeenCalled()
     errorLog.mockRestore()
   })
 
