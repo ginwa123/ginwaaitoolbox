@@ -130,40 +130,50 @@ pub fn startAgentUseCase(
     //    `insert_worker` step in `emit_run_agent` will upsert one
     //    using the task's name + cwd (matches the routine-fire
     //    pre-insert pattern).
-    var session_row = try db.query(
-        allocator,
-        "SELECT COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?",
-        &.{task_id},
-    );
-    defer session_row.deinit();
-
-    // `row.deinit` frees every `row.values[i]` at the end of the row
-    // scope below, but `emit_run_agent` reads these slices afterwards —
-    // borrow-then-free copies freed memory into the worker params, and
-    // `workflow.zig`'s non-empty write-back then persists the garbage
-    // as the session's profile (observed on the wire as
-    // `selected_profile_model: [170, 170, ...]` — Zig's 0xAA freed/
-    // byte pattern, serialized as a JSON array because it is not valid
-    // UTF-8). Dupe first, mirroring `wakeSessionForCompletion` in
-    // cleanup_stale_background_process.zig; the frees below are paired
-    // with the dupes (harmless on the request arena, required if the
-    // handler ever runs on a non-arena allocator).
-    var session_profile_owned: ?[]u8 = null;
-    var session_auto_retry_owned: ?[]u8 = null;
-    defer {
-        if (session_profile_owned) |b| allocator.free(b);
-        if (session_auto_retry_owned) |b| allocator.free(b);
-    }
-
     var session_profile: []const u8 = "";
     var session_auto_retry: []const u8 = "0";
-    if (try session_row.next()) |row| {
-        defer row.deinit(allocator);
-        if (row.values.len >= 2) {
-            session_profile_owned = try allocator.dupe(u8, row.values[0]);
-            session_auto_retry_owned = try allocator.dupe(u8, row.values[1]);
-            session_profile = session_profile_owned.?;
-            session_auto_retry = session_auto_retry_owned.?;
+    {
+        // Block scope, NOT function scope: `db.query` hands back a `Rows`
+        // holding an UNFINALIZED `sqlite3_stmt`, which is an open read
+        // transaction on the shared connection. At function scope the
+        // statement stayed open across `di.emit_run_agent` below, which
+        // itself writes to the DB (`updateSessionLastHumanTouchedAt`) and
+        // then spawns the agentic loop onto another thread. An open read
+        // statement pins the WAL's read mark, which is what keeps the
+        // `-wal` file growing instead of being checkpointed back.
+        var session_row = try db.query(
+            allocator,
+            "SELECT COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?",
+            &.{task_id},
+        );
+        defer session_row.deinit();
+
+        // `row.deinit` frees every `row.values[i]` at the end of the row
+        // scope below, but `emit_run_agent` reads these slices afterwards —
+        // borrow-then-free copies freed memory into the worker params, and
+        // `workflow.zig`'s non-empty write-back then persists the garbage
+        // as the session's profile (observed on the wire as
+        // `selected_profile_model: [170, 170, ...]` — Zig's 0xAA freed/
+        // byte pattern, serialized as a JSON array because it is not valid
+        // UTF-8). Dupe first, mirroring `wakeSessionForCompletion` in
+        // cleanup_stale_background_process.zig; the frees below are paired
+        // with the dupes (harmless on the request arena, required if the
+        // handler ever runs on a non-arena allocator).
+        var session_profile_owned: ?[]u8 = null;
+        var session_auto_retry_owned: ?[]u8 = null;
+        defer {
+            if (session_profile_owned) |b| allocator.free(b);
+            if (session_auto_retry_owned) |b| allocator.free(b);
+        }
+
+        if (try session_row.next()) |row| {
+            defer row.deinit(allocator);
+            if (row.values.len >= 2) {
+                session_profile_owned = try allocator.dupe(u8, row.values[0]);
+                session_auto_retry_owned = try allocator.dupe(u8, row.values[1]);
+                session_profile = session_profile_owned.?;
+                session_auto_retry = session_auto_retry_owned.?;
+            }
         }
     }
 

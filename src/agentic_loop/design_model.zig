@@ -2512,8 +2512,20 @@ pub fn reparentElements(
 
     // 9. Emit SSE events (one per element) AFTER the commit so listeners
     //    see state that's already committed. Best-effort.
-    committed = true;
+    //
+    //    `committed = true` MUST come after `try tx.commit()`. Clearing
+    //    it first disarms the `defer if (!committed) tx.rollback()`
+    //    safety net while the COMMIT is still pending, and
+    //    `Transaction._doFinalizeCommit` marks the Transaction `completed`
+    //    before it reports a COMMIT failure — so a COMMIT that comes back
+    //    `database is locked` leaves an OPEN transaction holding WAL's
+    //    single writer slot on this connection, with no code path left
+    //    that can close it. Every later write on this backend then fails
+    //    with the same message until the process restarts. The four
+    //    sibling functions in this file (lines 1272, 1604, 1914, 2225)
+    //    already order it this way.
     try tx.commit();
+    committed = true;
 
     for (input.element_ids) |eid| {
         on_event_sent_design.onEventSendDesignElementUpdated(allocator, .{

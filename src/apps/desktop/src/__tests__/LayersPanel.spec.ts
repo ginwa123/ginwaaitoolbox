@@ -334,7 +334,7 @@ describe('LayersPanel.vue — top-level drop-zone rows (must not look like eleme
     }
   })
 
-  it('does NOT render a type icon (▭ ◯ T 🖼 ◳ ◫ ◇) in any drop-zone row', async () => {
+  it('does NOT render a type icon in any drop-zone row', async () => {
     // Same root cause as above — LayerRow rendered typeIcon(node.element.type)
     // for ALL rows. The drop zone's synthetic element has type: 'rectangle'
     // so it rendered '▭', making the row look like a real rectangle element.
@@ -344,10 +344,18 @@ describe('LayersPanel.vue — top-level drop-zone rows (must not look like eleme
     wrapper = mountPanel({ elements })
     await nextTick()
 
+    // Positive control: the real element row DOES draw an icon, so the
+    // absence below is about the drop zone and not about a dead selector.
+    const realRows = wrapper.findAll('[data-testid="design-layer-elem_a"]')
+    expect(realRows.length).toBeGreaterThan(0)
+    expect(realRows.some((row) => row.find('[data-icon]').exists())).toBe(true)
+
     const dropZones = wrapper.findAll('[data-testid="design-layer-drop-zone-top-level"]')
+    expect(dropZones.length).toBeGreaterThan(0)
     for (const dz of dropZones) {
-      // None of the 7 known type icons should appear inside a drop zone.
-      expect(dz.text()).not.toMatch(/[▭◯T\u{1F5BC}◳◫◇]/u)
+      // LayerRow now draws its type through `UiIcon`, which stamps
+      // data-icon on every glyph — one selector covers all 7 types.
+      expect(dz.find('[data-icon]').exists()).toBe(false)
     }
   })
 

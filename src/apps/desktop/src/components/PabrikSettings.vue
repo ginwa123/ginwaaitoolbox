@@ -42,6 +42,7 @@ import { type LlmConfigModalValue } from './pabrik/LlmConfigModal.vue'
 import SubAgentModal, { type SubAgentModalValue } from './pabrik/SubAgentModal.vue'
 import McpServerModal, { type McpServerModalValue } from './pabrik/McpServerModal.vue'
 import ConfirmDialog from './dialogs/ConfirmDialog.vue'
+import UiIcon from './ui/UiIcon.vue'
 
 const emit = defineEmits<{
   notification: [message: string, type: 'success' | 'error']
@@ -889,7 +890,7 @@ const isLoading = computed(() => !loaded.value)
           "
         >
           <div class="flex items-center gap-2">
-            <span class="text-lead" aria-hidden="true">🗂️</span>
+            <UiIcon name="cards" class="w-4 h-4" />
             <h3 class="text-body font-semibold" style="color: var(--semantic-text)">Interface</h3>
           </div>
 

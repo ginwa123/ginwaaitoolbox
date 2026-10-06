@@ -11,6 +11,8 @@
 // AddTaskDialog.vue:44-143 so the visual language is consistent
 // with every other dialog in the app.
 
+import UiIcon from '../ui/UiIcon.vue'
+
 defineProps<{
   show: boolean
   projectName?: string
@@ -92,7 +94,7 @@ const handleKeydown = (event: KeyboardEvent) => {
               class="flex flex-col items-start gap-2 p-4 rounded-lg text-left transition-all duration-200 hover:scale-[1.02]"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);"
             >
-              <span class="text-title-lg" aria-hidden="true">💬</span>
+              <UiIcon name="chat" class="w-8 h-8" />
               <span class="text-body font-semibold" style="color: var(--semantic-text);">Standard Chat</span>
               <span class="text-dense" style="color: var(--semantic-text-dim);">
                 An interactive chat with the AI. You send messages, the AI responds.
@@ -110,7 +112,7 @@ const handleKeydown = (event: KeyboardEvent) => {
               class="flex flex-col items-start gap-2 p-4 rounded-lg text-left transition-all duration-200 hover:scale-[1.02]"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);"
             >
-              <span class="text-title-lg" aria-hidden="true">📝</span>
+              <UiIcon name="note" class="w-8 h-8" />
               <span class="text-body font-semibold" style="color: var(--semantic-text);">Memory</span>
               <span class="text-dense" style="color: var(--semantic-text-dim);">
                 A local .md file. The AI sees its content on every chat in this project.

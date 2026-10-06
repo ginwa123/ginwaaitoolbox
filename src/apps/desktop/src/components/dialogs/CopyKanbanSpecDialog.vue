@@ -38,6 +38,7 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = defineProps<{
   show: boolean
@@ -221,7 +222,7 @@ onBeforeUnmount(() => {
                   class="text-title-sm font-semibold flex items-center gap-2"
                   style="color: var(--semantic-text);"
                 >
-                  <span aria-hidden="true" class="text-title">📋</span>
+                  <UiIcon name="clipboard" class="w-7 h-7" />
                   Copy spec from…
                 </h3>
                 <p
@@ -275,7 +276,7 @@ onBeforeUnmount(() => {
                 aria-haspopup="listbox"
               >
                 <span class="flex items-center gap-2 truncate">
-                  <span aria-hidden="true">📂</span>
+                  <UiIcon name="folder-open" />
                   <span class="truncate">
                     {{ selectedSource?.name || (availableSources.length === 0 ? 'No other kanbans' : 'Select a kanban…') }}
                   </span>
@@ -329,7 +330,7 @@ onBeforeUnmount(() => {
                       }"
                     >
                       <span class="flex items-center gap-2 truncate">
-                        <span aria-hidden="true">📂</span>
+                        <UiIcon name="folder-open" />
                         <span class="truncate">{{ item.name || '(unnamed)' }}</span>
                       </span>
                       <span

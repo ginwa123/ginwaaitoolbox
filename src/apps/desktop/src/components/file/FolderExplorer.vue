@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { listFolder, type FolderEntry } from '../../api'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = defineProps<{
   cwd?: string
@@ -187,7 +188,7 @@ const handleClick = (entry: FolderEntry) => {
       v-else-if="!hasInput"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
-      <span class="text-display mb-3">📂</span>
+      <UiIcon name="folder-open" size-class="w-7 h-7" class="mb-3" />
       <p class="text-dense" style="color: var(--semantic-text-dim)">Pass a cwd to browse files</p>
     </div>
 
@@ -196,7 +197,7 @@ const handleClick = (entry: FolderEntry) => {
       v-else-if="flattenedEntries.length === 0 && !isLoading"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
-      <span class="text-title-lg mb-2">📭</span>
+      <UiIcon name="inbox" size-class="w-6 h-6" class="mb-2" />
       <p class="text-dense" style="color: var(--semantic-text-dim)">Empty folder</p>
     </div>
 

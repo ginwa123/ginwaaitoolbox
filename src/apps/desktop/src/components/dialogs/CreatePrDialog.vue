@@ -11,6 +11,7 @@
 import { ref, onMounted, computed } from 'vue'
 import * as api from '../../api'
 import { forgeWording } from '../../helpers/forgeWording'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = defineProps<{
   worktreePath: string
@@ -109,7 +110,7 @@ const onClose = () => {
         style="border-bottom: 1px solid var(--color-border)"
       >
         <h2 class="text-body font-semibold" style="color: var(--semantic-text)">
-          🔀 Create a {{ forge.label.toLowerCase() }}
+          <UiIcon name="pr" /> Create a {{ forge.label.toLowerCase() }}
         </h2>
         <div class="flex items-center gap-2">
           <!-- Auto-fill button: re-fetches worktree info against the

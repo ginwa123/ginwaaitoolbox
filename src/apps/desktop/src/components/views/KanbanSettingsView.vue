@@ -1,7 +1,8 @@
 <!--
   KanbanSettingsView — dedicated full-page route for per-board kanban
   settings. Replaces KanbanSettingsDialog (the centered modal that
-  used to pop up when the user clicked ⚙ on a kanban board header).
+  used to pop up when the user clicked the board header's Settings
+  button).
 
   URL: /app/kanban/:itemId/settings (path-based vue-router route).
   The page reads itemId from route.params and derives workspaceId
@@ -9,9 +10,9 @@
 
   Layout (single column, no sidebar — the page REPLACES the kanban
   board entirely, not overlays it):
-    1. Top header bar — back button + "⚙ Kanban Settings" title +
+    1. Top header bar — back button + "Kanban Settings" title +
        kanban name (inline rename) all on one row.
-    2. Tab strip below the header — "Columns" / "🤖 Agent"
+    2. Tab strip below the header — "Columns" / "Agent"
        (Local Memories is now embedded inside the Agent tab when
        item.path is set, instead of a standalone tab).
     3. Content area (full width):
@@ -41,6 +42,7 @@ import AgentSystemPromptDialog from '../dialogs/AgentSystemPromptDialog.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { buildAppUrl } from '../../helpers/appUrl'
 import * as api from '../../api'
+import UiIcon from '../ui/UiIcon.vue'
 import { buildToggle } from '../../stores/agentToolToggle'
 
 type SettingsMode = 'columns' | 'agent'
@@ -571,7 +573,7 @@ function sortedColumns() {
       data-testid="kanban-settings-page-no-item"
     >
       <p class="text-body" style="color: var(--semantic-text-dim)">
-        No kanban selected. Open this page from a kanban board's ⚙ Settings button.
+        No kanban selected. Open this page from a kanban board's Settings button.
       </p>
     </div>
     <div
@@ -615,7 +617,7 @@ function sortedColumns() {
           style="color: var(--semantic-text)"
           data-testid="kanban-settings-page-title"
         >
-          <span aria-hidden="true">⚙️</span>
+          <UiIcon name="settings" />
           <span>Kanban Settings</span>
           <span style="color: var(--semantic-text-dim)" class="text-body font-normal">·</span>
           <InlineEditableText
@@ -663,7 +665,7 @@ function sortedColumns() {
               : 'background-color: transparent; color: var(--semantic-text-muted);'
           "
         >
-          🤖 Agent
+          <UiIcon name="robot" class="mr-1" />Agent
         </button>
       </div>
 
@@ -824,7 +826,7 @@ function sortedColumns() {
               color: var(--semantic-text-muted);
             "
           >
-            <span aria-hidden="true">📋</span>
+            <UiIcon name="clipboard" />
             <span class="ml-1">Copy spec from…</span>
           </button>
           <p class="text-meta mt-2 italic" style="color: var(--semantic-text-dim)">
@@ -881,7 +883,7 @@ function sortedColumns() {
                 "
                 data-testid="kanban-settings-page-agent-memories-no-path"
               >
-                <div class="text-title-sm mb-1" aria-hidden="true">📁</div>
+                <UiIcon name="folder" class="w-5 h-5 mb-1" />
                 <div>No directory is set on this kanban.</div>
                 <div class="mt-1">Pick one when creating the kanban to enable local memories.</div>
               </div>

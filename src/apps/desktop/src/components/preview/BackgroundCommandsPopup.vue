@@ -7,6 +7,7 @@ import {
   type BackgroundProcess,
 } from '../../api'
 import { formatRelativeTime } from '../../helpers/relativeTime'
+import UiIcon from '../ui/UiIcon.vue'
 import { useSseBus } from '../../helpers/sseBus'
 
 const props = defineProps<{
@@ -248,7 +249,7 @@ onUnmounted(() => {
     :title="`${runningCount} background command${runningCount !== 1 ? 's' : ''} running — click to view output`"
   >
     <span class="bg-running-dot" aria-hidden="true"></span>
-    <span>⌨️</span>
+    <UiIcon name="keyboard" />
     <span style="color: var(--semantic-text)">{{ runningCount }}</span>
     <span style="color: var(--semantic-text-dim)">running</span>
   </button>
@@ -275,7 +276,7 @@ onUnmounted(() => {
             style="border-bottom: 1px solid var(--color-border)"
           >
             <div class="flex items-center gap-2">
-              <span class="text-title">⌨️</span>
+              <UiIcon name="keyboard" size-class="w-5 h-5" />
               <h3 class="text-lead font-semibold" style="color: var(--semantic-text)">
                 Background commands
               </h3>
@@ -326,7 +327,7 @@ onUnmounted(() => {
               {{ listError }}
             </div>
             <div v-else-if="processes.length === 0" data-testid="bg-empty" class="text-center py-8">
-              <span class="text-display mb-2 block">📭</span>
+              <UiIcon name="inbox" size-class="w-7 h-7" class="mb-2" />
               <p class="text-body" style="color: var(--semantic-text-dim)">
                 No background commands for this session
               </p>

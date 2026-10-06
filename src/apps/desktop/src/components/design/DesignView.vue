@@ -76,6 +76,7 @@ import PropertiesPanel from './PropertiesPanel.vue'
 import AddDesignElementDialog from './AddDesignElementDialog.vue'
 import DesignContextMenu from './DesignContextMenu.vue'
 import MoveToPageDialog from './MoveToPageDialog.vue'
+import UiIcon from '../ui/UiIcon.vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import { useNotificationStore } from '../../stores/notifications'
 import { useDesignHandlers } from '../../composables/useDesignHandlers'
@@ -1960,7 +1961,7 @@ watch(
         title="Open design chat"
         @click="handleOpenChat"
       >
-        <span aria-hidden="true">💬</span>
+        <UiIcon name="chat" />
         <span>Chat</span>
       </button>
     </div>

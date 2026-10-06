@@ -28,8 +28,8 @@
     `list_directory → <path> · error ✗`            (failure)
 
   Expanded body (click header to toggle):
-    Success: one row per entry. Directories render with a folder glyph
-    (`📁`), files with a file glyph (`📄`). Symlinks show a `→` marker.
+    Success: one row per entry. Directories render with a folder icon,
+    files with a file icon. Symlinks show a `→` marker.
     Each row carries copy-path + open-in-editor buttons (on hover).
     Error:   Red error block with the full error message.
 
@@ -44,6 +44,8 @@ import { normalizeToolContent, parseListDirectory } from './_shared/toolOutputPa
 import ToolParameters from './_shared/ToolParameters.vue'
 import { extractParam } from '@/helpers/extractParam'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
+import UiIcon from '../ui/UiIcon.vue'
+import type { UiIconName } from '../ui/icons'
 
 const props = defineProps<{
   content: unknown
@@ -141,13 +143,12 @@ const openInEditorClick = (e: Event, fullPath: string) => {
   openInEditor({ filePath: fullPath, cwd: props.cwd })
 }
 
-// Per-row glyph: 📁 for directories, 📄 for files, with a → marker
-// for symlinks. Matches the visual conventions of `ls -F` / `eza`
-// without dragging in the icon-font dependency.
-const rowGlyph = (entry: { isDirectory: boolean; isSymlink: boolean }) => {
-  if (entry.isSymlink) return '→'
-  return entry.isDirectory ? '📁' : '📄'
-}
+// Per-row icon: `folder` for directories, `file` for files. The symlink
+// marker is a separate `→` in the template — it is typographic text,
+// not an icon, and stays outside the registry. Matches the visual
+// conventions of `ls -F` / `eza`.
+const rowIcon = (entry: { isDirectory: boolean }): UiIconName =>
+  entry.isDirectory ? 'folder' : 'file'
 
 const rowKind = (entry: { isDirectory: boolean }) => (entry.isDirectory ? 'directory' : 'file')
 
@@ -215,8 +216,12 @@ const canOpenInEditor = computed(() => !!props.cwd && !!openInEditor)
           :data-kind="rowKind(entry)"
           :data-is-symlink="entry.isSymlink ? 'true' : 'false'"
         >
-          <span class="w-4 text-center text-[var(--semantic-text-muted)] text-meta shrink-0" aria-hidden="true">
-            {{ rowGlyph(entry) }}
+          <span
+            class="min-w-4 text-center text-[var(--semantic-text-muted)] text-meta shrink-0 inline-flex items-center justify-center gap-0.5"
+            aria-hidden="true"
+          >
+            <UiIcon :name="rowIcon(entry)" class="w-3.5 h-3.5" />
+            <template v-if="entry.isSymlink">→</template>
           </span>
           <span
             class="flex-1 truncate text-[var(--semantic-text)] text-meta"

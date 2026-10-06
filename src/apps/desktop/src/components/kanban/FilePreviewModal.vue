@@ -34,6 +34,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import * as api from '../../api'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -140,7 +141,7 @@ const handleKeydown = (event: KeyboardEvent) => {
                 style="color: var(--semantic-text)"
                 data-testid="file-preview-modal-title"
               >
-                📄 {{ filePath }}
+                <UiIcon name="file" /> {{ filePath }}
               </h3>
               <div
                 class="text-meta truncate"

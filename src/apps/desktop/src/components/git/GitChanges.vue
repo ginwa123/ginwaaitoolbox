@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import * as api from '../../api'
+import UiIcon from '../ui/UiIcon.vue'
+import type { UiIconName } from '../ui/icons'
 
 const props = defineProps<{
   cwd?: string
@@ -35,16 +37,16 @@ const contextMenu = ref<{ visible: boolean; x: number; y: number; file: api.GitF
 const isStaging = ref(false)
 
 // Get status character description
-const getStatusIcon = (status: string): string => {
-  const icons: Record<string, string> = {
-    'M': '📝',  // Modified
-    'A': '➕',  // Added
-    'D': '🗑️',  // Deleted
-    'R': '🔄',  // Renamed
-    'C': '📋',  // Copied
-    '??': '❓',  // Untracked
+const getStatusIcon = (status: string): UiIconName => {
+  const icons: Record<string, UiIconName> = {
+    'M': 'note',  // Modified
+    'A': 'plus',  // Added
+    'D': 'trash',  // Deleted
+    'R': 'refresh',  // Renamed
+    'C': 'clipboard',  // Copied
+    '??': 'circle',  // Untracked
   }
-  return icons[status] || '📄'
+  return icons[status] || 'file'
 }
 
 const getStatusText = (status: string): string => {
@@ -60,13 +62,13 @@ const getStatusText = (status: string): string => {
 }
 
 // Get combined status for display
-const getDisplayStatus = (file: api.GitFileChange): { icon: string; text: string } => {
+const getDisplayStatus = (file: api.GitFileChange): { icon: UiIconName; text: string } => {
   const indexStatus = file.index_status === ' ' ? '' : file.index_status
   const worktreeStatus = file.worktree_status === ' ' ? '' : file.worktree_status
   
   // Handle untracked files
   if (file.index_status === '??') {
-    return { icon: '❓', text: 'Untracked' }
+    return { icon: 'circle', text: 'Untracked' }
   }
   
   // Staged change
@@ -79,7 +81,7 @@ const getDisplayStatus = (file: api.GitFileChange): { icon: string; text: string
     return { icon: getStatusIcon(worktreeStatus), text: getStatusText(worktreeStatus) }
   }
   
-  return { icon: '📄', text: 'Changed' }
+  return { icon: 'file', text: 'Changed' }
 }
 
 // Load git status
@@ -295,7 +297,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           v-else-if="!isGitRepo || !hasInput"
           class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         >
-          <span class="text-display mb-3">🌿</span>
+          <UiIcon name="leaf" size-class="w-6 h-6" class="mb-3" />
           <p class="text-dense" style="color: var(--semantic-text-dim);">
             {{ !hasInput ? 'Select a workspace to view git status' : 'Not a git repository' }}
           </p>
@@ -322,7 +324,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
             class="px-3 py-2 text-dense flex items-center gap-2"
             style="border-bottom: 1px solid var(--color-border);"
           >
-            <span style="color: var(--semantic-text-muted);">🌿</span>
+            <UiIcon name="leaf" style="color: var(--semantic-text-muted);" />
             <span style="color: var(--semantic-text);">{{ branch }}</span>
             <button
               @click="refreshGitStatus"
@@ -359,7 +361,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
               @contextmenu="showContextMenu($event, file, true)"
               @click="emit('file-click', file, true)"
             >
-              <span class="text-lead">{{ getDisplayStatus(file).icon }}</span>
+              <UiIcon :name="getDisplayStatus(file).icon" size-class="w-4 h-4" />
               <span class="flex-1 truncate" style="color: var(--semantic-text);">
                 {{ file.path }}
               </span>
@@ -408,7 +410,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
               @contextmenu="showContextMenu($event, file, false)"
               @click="emit('file-click', file, false)"
             >
-              <span class="text-lead">{{ getDisplayStatus(file).icon }}</span>
+              <UiIcon :name="getDisplayStatus(file).icon" size-class="w-4 h-4" />
               <span class="flex-1 truncate" style="color: var(--semantic-text);">
                 {{ file.path }}
               </span>
@@ -455,7 +457,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
               class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:bg-white/5 group"
               @contextmenu="showContextMenu($event, file, false)"
             >
-              <span class="text-lead">❓</span>
+              <UiIcon name="circle" size-class="w-4 h-4" />
               <span class="flex-1 truncate" style="color: var(--semantic-text-muted);">
                 {{ file.path }}
               </span>

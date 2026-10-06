@@ -4,6 +4,7 @@ import { normalizeToolContent } from './_shared/toolOutputParser'
 import type { SubAgentArgs } from '../../helpers/parseSpawnSubAgentArgs'
 import type { SubAgentProgress } from '../../helpers/subagentProgress'
 import ToolParameters from './_shared/ToolParameters.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = defineProps<{
   content: unknown
@@ -28,7 +29,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   /**
-   * Fired when the user clicks 👁 on a sub-agent row. The parent
+   * Fired when the user clicks the peek button on a sub-agent row. The parent
    * (ChatView) opens <SubAgentPeekPanel> with this payload.
    */
   peek: [payload: { sessionId: string; agentName: string; instruction: string }]
@@ -454,7 +455,7 @@ function formatElapsed(ms: number): string {
                 :title="`Peek into ${row.name}'s progress`"
                 @click.stop="peekLiveAgent(idx, row)"
               >
-                👁
+                <UiIcon name="eye" class="w-4 h-4" />
               </button>
               <span class="flex-1"></span>
               <span
@@ -517,7 +518,7 @@ function formatElapsed(ms: number): string {
             >
               parent: {{ subAgentArgs[idx].inherited_context }}
             </span>
-            <!-- 👁 peek button — opens <SubAgentPeekPanel> in ChatView.
+            <!-- Peek button — opens <SubAgentPeekPanel> in ChatView.
                  Emits the sub-agent's sessionId + the parsed
                  instruction so the panel can stream its progress
                  without leaving the parent chat. -->
@@ -528,7 +529,7 @@ function formatElapsed(ms: number): string {
               :title="`Peek into ${agent.name}'s progress`"
               @click.stop="peekAgent(idx, agent)"
             >
-              👁
+              <UiIcon name="eye" class="w-4 h-4" />
             </button>
             <span class="flex-1"></span>
             <span 

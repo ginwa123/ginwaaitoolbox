@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import UiIcon from '../../ui/UiIcon.vue'
 import '@xterm/xterm/css/xterm.css'
 import {
   ApiError,
@@ -635,7 +636,7 @@ onUnmounted(() => {
         data-testid="terminal-cwd"
         :title="cwd"
       >
-        📂 {{ cwd || '(no cwd)' }}
+        <UiIcon name="folder-open" size-class="w-3 h-3" /> {{ cwd || '(no cwd)' }}
       </span>
       <button
         type="button"
@@ -655,7 +656,7 @@ onUnmounted(() => {
         data-testid="terminal-clear"
         @click="clear"
       >
-        🧹
+        <UiIcon name="sparkle" />
       </button>
       <button
         type="button"

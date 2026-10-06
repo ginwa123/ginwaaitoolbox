@@ -244,9 +244,11 @@ describe('ChatView worktree status button', () => {
     // items ("Create a PR", "Clear worktree").
     const htmlBtn = btn.element as HTMLButtonElement
     expect(htmlBtn.disabled).toBe(false)
-    // The 🌳-basename template block should be absent (it's gated on
-    // v-if="gitWorktreeCwd").
-    expect(wrapper!.text()).not.toContain('🌳')
+    // The worktree-basename block should be absent (it's gated on
+    // v-if="gitWorktreeCwd"). Assert the icon it would have drawn
+    // rather than the glyph's text, which `WorktreeMenu` replaced with
+    // an SVG — the string check passed for the wrong reason.
+    expect(wrapper!.find('[data-icon="tree"]').exists()).toBe(false)
 
     // Open the dropdown.
     await btn.trigger('click')
@@ -276,7 +278,7 @@ describe('ChatView worktree status button', () => {
     // branch and basename were nearly identical strings); the menu
     // header carries the worktree info instead.
     expect(btn.text()).toContain('main')
-    expect(btn.text()).not.toContain('🌳')
+    expect(btn.find('[data-icon="tree"]').exists()).toBe(false)
     expect(btn.text()).not.toContain('auth-fix')
     // The dropdown caret is always rendered now (chip is always clickable).
     expect(btn.text()).toContain('▾')

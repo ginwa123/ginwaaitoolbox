@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
+import UiIcon from '../ui/UiIcon.vue'
 import type { GitFileDiff } from '../../api'
 import { fetchFolderDiff } from '../../helpers/folderDiffCache'
 import DiffCommentBox, {
@@ -163,7 +164,7 @@ onMounted(() => {
     >
       <!-- File icon and name -->
       <div class="flex items-center gap-2 flex-1 min-w-0">
-        <span class="text-body">📄</span>
+        <UiIcon name="file" size-class="w-3.5 h-3.5" />
         <span
           class="text-body font-medium truncate"
           style="color: var(--semantic-text)"
@@ -244,9 +245,9 @@ onMounted(() => {
       v-else-if="diffLines.length === 0"
       class="flex-1 flex flex-col items-center justify-center p-4"
     >
-      <span class="text-display mb-3">📄</span>
-      <p class="text-body" style="color: var(--semantic-text-dim)">No changes detected</p>
-      <p class="text-dense mt-1" style="color: var(--semantic-text-dim)">
+      <UiIcon name="file" size-class="w-6 h-6" class="mb-3" />
+      <p class="text-body" style="color: var(--semantic-text-dim);">No changes detected</p>
+      <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
         File may be identical to the committed version
       </p>
     </div>
@@ -379,10 +380,8 @@ onMounted(() => {
         }"
       >
         <div class="mini-chat-header">
-          <span style="color: var(--color-green)">💬</span>
-          <span class="text-body font-medium" style="color: var(--semantic-text)"
-            >Review this code</span
-          >
+          <UiIcon name="chat" style="color: var(--color-green);" />
+          <span class="text-body font-medium" style="color: var(--semantic-text);">Review this code</span>
           <button @click="closeMiniChat" class="ml-auto p-1 rounded hover:opacity-70">
             <svg
               class="w-4 h-4"

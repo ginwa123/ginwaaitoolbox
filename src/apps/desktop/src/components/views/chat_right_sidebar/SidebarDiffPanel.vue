@@ -145,7 +145,6 @@ const showEvals = computed(() => activeTab.value === 'evals')
 // PrChecksPanel loads itself, so the sidebar's ↻ asks it directly rather
 // than going through loadTab (which has nothing to fetch for this tab).
 const checksRef = ref<InstanceType<typeof PrChecksPanel> | null>(null)
-const showTabs = computed(() => isPrMode.value)
 const showPr = computed(() => isPrMode.value && activeTab.value === 'pr')
 const loadedTabs = ref(new Set<string>())
 const prFiles = ref<SplitDiffFile[]>([])
@@ -953,14 +952,12 @@ defineExpose({
          five tabs fit at the 200px minimum — "Pull request (43)" is 148px,
          "PR" plus a pill is 46px. -->
     <div
-      v-if="showTabs || showEvals || showChecks || !isPrMode"
       class="flex items-center gap-2 px-2 h-9 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
       role="tablist"
     >
       <div class="flex items-center gap-1 flex-1 min-w-0 h-full overflow-x-auto">
         <button
-          v-if="isPrMode"
           type="button"
           class="shrink-0 h-8 px-2.5 rounded flex items-center gap-1.5 text-dense transition-colors duration-150"
           data-testid="sidebar-tab-files"
@@ -1070,17 +1067,6 @@ defineExpose({
         </button>
       </div>
       <div class="flex items-center gap-0.5 shrink-0">
-        <button
-          v-if="!isPrMode"
-          type="button"
-          class="h-7 px-2 rounded text-dense transition-colors duration-150"
-          style="color: var(--semantic-text-dim)"
-          :title="showCommits ? 'Show changed files' : 'Show commit history'"
-          data-testid="sidebar-diff-commits-toggle"
-          @click="setActiveTab(showCommits ? 'files' : 'commits')"
-        >
-          {{ showCommits ? 'Files' : 'Commits' }}
-        </button>
         <button
           type="button"
           class="w-7 h-7 rounded flex items-center justify-center hover:opacity-70 transition-opacity"

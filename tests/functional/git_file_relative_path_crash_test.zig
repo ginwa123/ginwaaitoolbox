@@ -1,0 +1,354 @@
+// Wire test: a relative `path` query/body value no longer ABORTS the server in
+// the git file handlers.
+//
+// Zig port of `tests/functional/git_file_relative_path_crash_test.py`
+// (same test names, same order).
+//
+// Python docstring, preserved verbatim:
+//
+//   """Wire test: a relative `path` query/body value no longer ABORTS the
+//   server in the git file handlers.
+//
+//   Crash class (remote-reachable)
+//   ==============================
+//   `GET /api/git/file/read?path=<relative>&file=<x>` joined the two query
+//   values and handed the result to `std.Io.Dir.openFileAbsolute`, whose
+//   precondition is `assert(path.isAbsolute(...))`. In a Debug build that
+//   assertion is `unreachable`, so instead of returning 400/404 the process
+//   called `std.process.abort()`:
+//
+//       /usr/lib/zig/std/Io/Dir.zig:486:11 in openFileAbsolute
+//           assert(path.isAbsolute(absolute_path));
+//       src/http_handlers/git_file_diff.zig:63 / :107 in gitFileDiffHandler /
+//       gitFileReadHandler
+//       === CRASH: received signal ABRT (signal number 6) ===
+//
+//   A `catch |err| ...` clause does NOT protect these calls — the panic happens
+//   inside the callee before any error value can be returned — so the handlers
+//   now reject a non-absolute `path` (and an absolute `file`) with 400 BEFORE
+//   the join. The batch endpoint (`POST /api/git/file/diffs`) has the same
+//   guard on body.path, which `syntheticFallback` later feeds to the same API.
+//
+//   These are the exact query strings `src/apps/desktop/src/api/index.ts`
+//   builds (`/git/file/diff?path=…&file=…`, `/git/file/read?path=…&file=…`) and
+//   the exact POST body `SidebarDiffPanel.vue` sends, with the `path`
+//   downgraded from the frontend's absolute cwd to a relative one — the
+//   malicious/buggy-client case.
+//
+//   Why a wire test: the failure mode is SIGABRT of the whole process, which
+//   only a real round-trip can observe ("is this PID still answering
+//   /health?").
+//
+//   Run:
+//       PABRIK_BIN=<worktree>/zig-out/bin/pabrikcore-linux-x86_64 \\
+//         zig build test
+//   """
+//
+// The Python `harness` fixture was FUNCTION-scoped, so every test here boots
+// and tears down its own server — that is also the only honest witness for the
+// crash class: a SIGABRT that killed a shared server would take every later
+// test down with it and report them, not the offender.
+
+const std = @import("std");
+const testing = std.testing;
+const harness = @import("harness.zig");
+const Harness = harness.Harness;
+
+const gpa = testing.allocator;
+const io = testing.io;
+
+/// Substrings that only appear in the process log if the worker aborted.
+const CRASH_MARKERS = [_][]const u8{
+    "received signal ABRT",
+    "reached unreachable code",
+    "openFileAbsolute",
+    "panic:",
+};
+
+/// The frontend's cwd, downgraded to a relative path — the malicious/buggy
+/// client case. It must stay RELATIVE: `std.fs.path.isAbsolute` is
+/// platform-relative, so a "/tmp/..." literal is not absolute on windows and
+/// the handler would 400 for the OTHER reason, failing the assertion on a
+/// message that names a different bug.
+const RELATIVE_PATH = "relative/repo";
+const FILE = "src/main.zig";
+
+/// pytest's `tmp_path`: a scratch directory outside the harness HOME, gone on
+/// the way out whatever the test's outcome.
+const Scratch = struct {
+    tmp: std.testing.TmpDir,
+    root: []u8,
+
+    fn init() !Scratch {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const len = try tmp.dir.realPath(io, &buf);
+        return .{ .tmp = tmp, .root = try gpa.dupe(u8, buf[0..len]) };
+    }
+
+    fn deinit(self: *Scratch) void {
+        self.tmp.cleanup();
+        gpa.free(self.root);
+    }
+};
+
+/// The last `n` lines of the server log. Owned by the caller (free, or leak
+/// into a `defer if (len > 0)` as the call sites below do).
+///
+/// This duplicates `harness.Harness.tailLog` on purpose. That helper calls
+/// `std.mem.trimRight`, which Zig 0.16 does not have (it is `trimEnd` now), so
+/// the first suite to CALL it fails to compile with an error inside
+/// `harness.zig`. Function bodies are only analysed when referenced, which is
+/// why nothing else in the package has tripped it. The fix belongs in
+/// `harness.zig` — which this port does not own — so this file reads the log
+/// itself rather than blocking on it.
+fn logTail(h: *Harness, n: usize) ![]u8 {
+    const data = std.Io.Dir.cwd().readFileAlloc(io, h.log_path, gpa, .limited(1 << 20)) catch |err| switch (err) {
+        error.FileNotFound => return gpa.dupe(u8, ""),
+        else => return err,
+    };
+    defer gpa.free(data);
+
+    var lines: std.ArrayList([]const u8) = .empty;
+    defer lines.deinit(gpa);
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        try lines.append(gpa, line);
+    }
+    const start = if (lines.items.len > n) lines.items.len - n else 0;
+    return std.mem.join(gpa, "\n", lines.items[start..]);
+}
+
+/// The server is STILL answering, and its log carries no crash marker.
+///
+/// This is the whole assertion. A 400 with the right message proves the guard
+/// fired; `health()` plus the marker scan proves the guard fired BEFORE the
+/// `openFileAbsolute` assertion rather than after it — which is the bug, since
+/// the panic is not catchable.
+fn assertAlive(h: *Harness, what: []const u8) !void {
+    const log_tail = logTail(h, 4000) catch "";
+    defer if (log_tail.len > 0) gpa.free(log_tail);
+
+    if (!h.health(io)) {
+        std.debug.print(
+            "pabrik died while handling {s} — the relative-path abort is back.\n--- log tail ---\n{s}\n",
+            .{ what, log_tail },
+        );
+        return error.TestUnexpectedResult;
+    }
+    for (CRASH_MARKERS) |marker| {
+        if (std.mem.indexOf(u8, log_tail, marker) != null) {
+            std.debug.print(
+                "{s}: log contains crash marker \"{s}\":\n{s}\n",
+                .{ what, marker, log_tail },
+            );
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+/// `POST /api/git/file/diffs` body — the `SidebarDiffPanel.vue` payload with a
+/// relative `path`.
+const BatchBody = struct {
+    path: []const u8,
+    files: []const BatchFile,
+};
+
+const BatchFile = struct { file: []const u8, staged: bool };
+
+// `?path=<relative>` must 400, not abort the process.
+test "file_read_rejects_relative_path" {
+    try harness.requirePabrikBin(io, gpa);
+    var h = try Harness.boot(io, gpa, .{});
+    defer h.deinit(io) catch |err| {
+        std.debug.print("teardown: {s}\n", .{@errorName(err)});
+    };
+
+    var r = try h.http(io, .GET, "/api/git/file/read", .{
+        .params = &.{
+            .{ .name = "path", .value = RELATIVE_PATH },
+            .{ .name = "file", .value = FILE },
+        },
+        .expect = &.{400},
+    });
+    defer r.deinit();
+
+    var doc = try r.json();
+    defer doc.deinit();
+    const message = doc.str("error") orelse {
+        std.debug.print("400 body should carry an `error` field: {s}\n", .{r.body});
+        return error.TestUnexpectedResult;
+    };
+    if (std.mem.indexOf(u8, message, "absolute") == null) {
+        std.debug.print("400 should name the absoluteness requirement, got: {s}\n", .{message});
+        return error.TestUnexpectedResult;
+    }
+
+    try assertAlive(&h, "GET /api/git/file/read with a relative path");
+}
+
+// `GET /api/git/file/diff` shares the same join → same guard.
+test "file_diff_rejects_relative_path" {
+    try harness.requirePabrikBin(io, gpa);
+    var h = try Harness.boot(io, gpa, .{});
+    defer h.deinit(io) catch |err| {
+        std.debug.print("teardown: {s}\n", .{@errorName(err)});
+    };
+
+    var r = try h.http(io, .GET, "/api/git/file/diff", .{
+        .params = &.{
+            .{ .name = "path", .value = RELATIVE_PATH },
+            .{ .name = "file", .value = FILE },
+            .{ .name = "staged", .value = "false" },
+        },
+        .expect = &.{400},
+    });
+    defer r.deinit();
+
+    var doc = try r.json();
+    defer doc.deinit();
+    const message = doc.str("error") orelse {
+        std.debug.print("400 body should carry an `error` field: {s}\n", .{r.body});
+        return error.TestUnexpectedResult;
+    };
+    if (std.mem.indexOf(u8, message, "absolute") == null) {
+        std.debug.print("400 should name the absoluteness requirement, got: {s}\n", .{message});
+        return error.TestUnexpectedResult;
+    }
+
+    try assertAlive(&h, "GET /api/git/file/diff with a relative path");
+}
+
+// The batch endpoint's `path` reaches the same API via syntheticFallback.
+test "file_diffs_batch_rejects_relative_body_path" {
+    try harness.requirePabrikBin(io, gpa);
+    var h = try Harness.boot(io, gpa, .{});
+    defer h.deinit(io) catch |err| {
+        std.debug.print("teardown: {s}\n", .{@errorName(err)});
+    };
+
+    const body = try std.json.Stringify.valueAlloc(gpa, BatchBody{
+        .path = RELATIVE_PATH,
+        .files = &.{.{ .file = FILE, .staged = false }},
+    }, .{});
+    defer gpa.free(body);
+
+    var r = try h.http(io, .POST, "/api/git/file/diffs", .{
+        .json_body = body,
+        .expect = &.{400},
+    });
+    defer r.deinit();
+
+    var doc = try r.json();
+    defer doc.deinit();
+    const message = doc.str("error") orelse {
+        std.debug.print("400 body should carry an `error` field: {s}\n", .{r.body});
+        return error.TestUnexpectedResult;
+    };
+    if (std.mem.indexOf(u8, message, "absolute") == null) {
+        std.debug.print("400 should name the absoluteness requirement, got: {s}\n", .{message});
+        return error.TestUnexpectedResult;
+    }
+
+    try assertAlive(&h, "POST /api/git/file/diffs with a relative body path");
+}
+
+// An absolute `file` escapes `path`; the sibling handler rejects it too.
+//
+// The absolute probe is BUILT (not hardcoded as `/etc/passwd`) because the
+// guard under test is "this `file` is absolute, so it escapes `path`", and
+// `/etc/passwd` is not absolute on Windows — the handler would reject it for
+// the OTHER reason ("path must be an absolute directory") and the assertion
+// below would fail on a message that names a different bug.
+//
+// Python's `os.path.join(str(tmp_path), os.pardir, "escaped.txt")` does NOT
+// normalise: it yields a literal `<tmp_path>/../escaped.txt`. That exact
+// spelling is reproduced with `std.fs.path.sep_str`, because `std.fs.path.join`
+// WOULD collapse the `..` and hand the handler a clean absolute path — which
+// is still absolute, but is no longer the string under test.
+test "file_read_rejects_absolute_file" {
+    try harness.requirePabrikBin(io, gpa);
+    var h = try Harness.boot(io, gpa, .{});
+    defer h.deinit(io) catch |err| {
+        std.debug.print("teardown: {s}\n", .{@errorName(err)});
+    };
+
+    var scratch = try Scratch.init();
+    defer scratch.deinit();
+
+    const escaping_file = try std.fmt.allocPrint(
+        gpa,
+        "{s}{s}..{s}escaped.txt",
+        .{ scratch.root, std.fs.path.sep_str, std.fs.path.sep_str },
+    );
+    defer gpa.free(escaping_file);
+
+    var r = try h.http(io, .GET, "/api/git/file/read", .{
+        .params = &.{
+            .{ .name = "path", .value = scratch.root },
+            .{ .name = "file", .value = escaping_file },
+        },
+        .expect = &.{400},
+    });
+    defer r.deinit();
+
+    var doc = try r.json();
+    defer doc.deinit();
+    const message = doc.str("error") orelse {
+        std.debug.print("400 body should carry an `error` field: {s}\n", .{r.body});
+        return error.TestUnexpectedResult;
+    };
+    if (std.mem.indexOf(u8, message, "relative") == null) {
+        std.debug.print("400 should say the file must be relative to path, got: {s}\n", .{message});
+        return error.TestUnexpectedResult;
+    }
+
+    try assertAlive(&h, "GET /api/git/file/read with an absolute file");
+}
+
+// Positive control: the guard must not break the normal (absolute) call.
+//
+// If the 400s above were a blanket failure this test would not reach a real
+// file read. Reads a fixture under the scratch tmpdir and asserts its bytes.
+test "file_read_still_works_for_absolute_paths" {
+    try harness.requirePabrikBin(io, gpa);
+    var h = try Harness.boot(io, gpa, .{});
+    defer h.deinit(io) catch |err| {
+        std.debug.print("teardown: {s}\n", .{@errorName(err)});
+    };
+
+    var scratch = try Scratch.init();
+    defer scratch.deinit();
+
+    const notes = try std.fs.path.join(gpa, &.{ scratch.root, "notes.txt" });
+    defer gpa.free(notes);
+    {
+        var f = try std.Io.Dir.cwd().createFile(io, notes, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, "hello from the wire test\n");
+    }
+
+    var r = try h.http(io, .GET, "/api/git/file/read", .{
+        .params = &.{
+            .{ .name = "path", .value = scratch.root },
+            .{ .name = "file", .value = "notes.txt" },
+        },
+        .expect = &.{200},
+    });
+    defer r.deinit();
+
+    var doc = try r.json();
+    defer doc.deinit();
+    const content = doc.str("content") orelse {
+        std.debug.print("200 body should carry a `content` field: {s}\n", .{r.body});
+        return error.TestUnexpectedResult;
+    };
+    if (std.mem.indexOf(u8, content, "hello from the wire test") == null) {
+        std.debug.print("file read returned the wrong bytes: {s}\n", .{content});
+        return error.TestUnexpectedResult;
+    }
+
+    try assertAlive(&h, "GET /api/git/file/read with an absolute path");
+}

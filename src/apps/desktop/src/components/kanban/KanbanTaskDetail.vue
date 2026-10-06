@@ -104,6 +104,7 @@ import * as api from '../../api'
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 import GitBaseBranchSelect from './GitBaseBranchSelect.vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -1245,7 +1246,7 @@ const isMediaLoading = computed<boolean>(() => {
             class="text-lead font-semibold flex items-center gap-2 truncate"
             style="color: var(--semantic-text)"
           >
-            <span aria-hidden="true">{{ isCreateMode ? '➕' : '✏️' }}</span>
+            <UiIcon :name="isCreateMode ? 'plus' : 'pencil'" />
             {{ isCreateMode ? 'New task' : 'Task details' }}
           </h3>
         </div>
@@ -1381,7 +1382,7 @@ const isMediaLoading = computed<boolean>(() => {
             data-testid="kanban-task-detail-column-picker"
           >
             <span class="inline-flex items-center gap-1.5">
-              <span aria-hidden="true">📋</span>
+              <UiIcon name="clipboard" />
               <span class="font-medium">{{ columnLabel }}</span>
             </span>
             <span class="text-micro" style="color: var(--semantic-text-dim)">▾</span>
@@ -1421,7 +1422,7 @@ const isMediaLoading = computed<boolean>(() => {
             color: var(--semantic-text);
           "
         >
-          <span aria-hidden="true">📋</span>
+          <UiIcon name="clipboard" />
           {{ columnLabel }}
         </span>
         <span
@@ -1446,7 +1447,7 @@ const isMediaLoading = computed<boolean>(() => {
             color: var(--semantic-text-muted);
           "
         >
-          <span aria-hidden="true">📌</span>
+          <UiIcon name="pin" />
           Pinned
         </span>
         <!-- The read-only cwd strip (legacy) was removed by the
@@ -1672,7 +1673,7 @@ const isMediaLoading = computed<boolean>(() => {
               "
               data-testid="kanban-task-detail-profile-picker"
             >
-              <span aria-hidden="true">🤖</span>
+              <UiIcon name="robot" />
               <span class="font-medium">Profile</span>
               <span style="color: var(--semantic-text-muted)">{{
                 selectedProfile || 'Default'

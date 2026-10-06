@@ -49,6 +49,7 @@ import {
   disableAgentKanbanTool,
   type AgentKanban,
 } from '../../api'
+import UiIcon from '../ui/UiIcon.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -240,7 +241,7 @@ const handleApplyRecommended = async () => {
     <div class="flex flex-col gap-2">
       <div class="flex items-center justify-between gap-2 flex-wrap">
         <h3 class="text-body font-semibold flex items-center gap-2" style="color: var(--semantic-text)">
-          <span aria-hidden="true">🛠</span>
+          <UiIcon name="tools" />
           <span>Available tools</span>
         </h3>
         <span
@@ -292,7 +293,7 @@ const handleApplyRecommended = async () => {
         "
         data-testid="kanban-tools-unconfigured"
       >
-        <span aria-hidden="true">💡</span>
+        <UiIcon name="tip" />
         <span>
           This board has no agent config yet. <strong>Tick the first tool</strong> below
           to create one — Knowledge &amp; System Prompts unlock once you've started.

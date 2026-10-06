@@ -5,19 +5,23 @@
  * Shows different actions based on whether a worktree is bound:
  *
  * With worktree (`hasWorktree=true`):
- *   - 🔀 "Create a PR"    — currently disabled (frontend-only)
- *   - 📁 "View in folder" — currently disabled (frontend-only)
- *   - 🗑️ "Clear worktree" — currently disabled (frontend-only)
+ *   - `pr`      "Create a PR"    — currently disabled (frontend-only)
+ *   - `folder`  "View in folder" — currently disabled (frontend-only)
+ *   - `trash`   "Clear worktree" — currently disabled (frontend-only)
  *
  * Without worktree (`hasWorktree=false`):
- *   - 🌳 "Create worktree" — emits 'create-worktree' (parent opens CreateWorktreeDialog)
- *   - 📁 "Open in folder" — currently disabled (frontend-only, same feature as "View in folder")
- *   - 🔄 "Refresh status" — emits 'refresh' so the parent re-fetches git status
+ *   - `tree`    "Create worktree" — emits 'create-worktree' (parent opens CreateWorktreeDialog)
+ *   - `folder`  "Open in folder" — currently disabled (frontend-only, same feature as "View in folder")
+ *   - `refresh` "Refresh status" — emits 'refresh' so the parent re-fetches git status
+ *
+ * Every leading glyph is a `<UiIcon>`, so the rows line up on one box and
+ * take their colour from the surrounding CSS variable.
  *
  * The menu closes itself after any action via the parent's v-if binding.
  * Disabled items stay visible but cannot be clicked.
  */
 import { ref, onMounted, onUnmounted } from 'vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const props = defineProps<{
@@ -99,7 +103,7 @@ const onCreateWorktree = () => {
       "
     >
       <div class="flex items-center gap-1.5">
-        <span>🌿</span>
+        <UiIcon name="leaf" size-class="w-3 h-3" />
         <span style="font-family: monospace">{{ branch || 'detached' }}</span>
       </div>
       <div
@@ -121,7 +125,7 @@ const onCreateWorktree = () => {
         class="w-full text-left px-3 py-2 text-dense flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--semantic-text)"
       >
-        <span>🔀</span>
+        <UiIcon name="pr" size-class="w-3 h-3" />
         <span>Create a PR</span>
       </button>
       <button
@@ -132,7 +136,7 @@ const onCreateWorktree = () => {
         class="w-full text-left px-3 py-2 text-dense flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
       >
-        <span>📁</span>
+        <UiIcon name="folder" size-class="w-3 h-3" />
         <span>View in folder</span>
       </button>
       <button
@@ -143,7 +147,7 @@ const onCreateWorktree = () => {
         class="w-full text-left px-3 py-2 text-dense flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--color-red); border-top: 1px solid var(--color-border)"
       >
-        <span>🗑️</span>
+        <UiIcon name="trash" size-class="w-3 h-3" />
         <span>Clear worktree</span>
       </button>
     </template>
@@ -156,7 +160,7 @@ const onCreateWorktree = () => {
         class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center gap-2"
         style="color: var(--semantic-text)"
       >
-        <span>🌳</span>
+        <UiIcon name="tree" size-class="w-3 h-3" />
         <span>Create worktree</span>
       </button>
       <button
@@ -167,7 +171,7 @@ const onCreateWorktree = () => {
         class="w-full text-left px-3 py-2 text-dense flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
       >
-        <span>📁</span>
+        <UiIcon name="folder" size-class="w-3 h-3" />
         <span>Open in folder</span>
       </button>
       <button
@@ -176,7 +180,7 @@ const onCreateWorktree = () => {
         class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center gap-2"
         style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
       >
-        <span>🔄</span>
+        <UiIcon name="refresh" size-class="w-3 h-3" />
         <span>Refresh status</span>
       </button>
     </template>

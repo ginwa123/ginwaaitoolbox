@@ -22,6 +22,7 @@
  * via `syncToConfig` — same pattern as the other sections.
  */
 import { computed } from 'vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 export interface PabrikGeneralSettings {
   /** OS notification on `finish_reason === 'stop'`. Mirrors
@@ -111,7 +112,7 @@ function onRetryDelayChange(event: Event) {
       style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
     >
       <div class="flex items-center gap-2">
-        <span class="text-lead" aria-hidden="true">🔔</span>
+        <UiIcon name="bell" size-class="w-4 h-4" />
         <h3 class="text-body font-semibold" style="color: var(--semantic-text);">Notifications</h3>
       </div>
 
@@ -224,7 +225,7 @@ function onRetryDelayChange(event: Event) {
       style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
     >
       <div class="flex items-center gap-2">
-        <span class="text-lead" aria-hidden="true">⏱️</span>
+        <UiIcon name="stopwatch" size-class="w-4 h-4" />
         <h3 class="text-body font-semibold" style="color: var(--semantic-text);">Retry</h3>
       </div>
 

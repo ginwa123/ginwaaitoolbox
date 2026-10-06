@@ -42,6 +42,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import FilePreview, { type PreviewFile } from '../file/FilePreview.vue'
+import UiIcon from '../ui/UiIcon.vue'
 import * as api from '../../api'
 
 interface FileEntry {
@@ -155,7 +156,7 @@ const setFileSearchCache = (cwd: string, entries: FileEntry[]) => {
 
 // Server rows are snake_case (`is_directory`); legacy raw-walk rows were
 // camelCase (`isDirectory`). Accept both so mixed shapes never render a
-// dir as 📄.
+// dir with the file mark.
 const toRelativeFileEntry = (
   rootPath: string,
   entry: { name: string; path: string; is_directory?: boolean; isDirectory?: boolean },
@@ -705,7 +706,7 @@ defineExpose({ pendingFiles })
           @click="selectFile(file)"
           @mouseenter="selectedFileIndex = idx"
         >
-          <span>{{ file.isDirectory ? '📁' : '📄' }}</span>
+          <UiIcon :name="file.isDirectory ? 'folder' : 'file'" />
           <span class="truncate font-mono text-dense">{{ file.path }}</span>
         </button>
       </div>

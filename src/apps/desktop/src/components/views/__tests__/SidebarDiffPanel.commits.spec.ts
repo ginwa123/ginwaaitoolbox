@@ -61,7 +61,7 @@ const mountOnCommits = async () => {
     props: { cwd: '/repo' },
   })
   await flushPromises()
-  await wrapper.get('[data-testid="sidebar-diff-commits-toggle"]').trigger('click')
+  await wrapper.get('[data-testid="sidebar-tab-commits"]').trigger('click')
   await flushPromises()
   const commitRow = wrapper.findAll('button').find((b) => b.text().includes('prefetch older'))
   await commitRow!.trigger('click')

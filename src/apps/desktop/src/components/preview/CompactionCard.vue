@@ -1,7 +1,7 @@
 <template>
   <div class="compaction-card" data-testid="compaction-card">
     <header class="compaction-header" :class="{ 'compaction-header-clickable': true }">
-      <span class="compaction-icon" aria-hidden="true">📦</span>
+      <UiIcon name="box" class="compaction-icon" size-class="w-4.5 h-4.5" />
       <span class="compaction-title">Conversation Compaction</span>
       <span class="compaction-count" data-testid="compaction-count">
         {{ entries.length }} message{{ entries.length === 1 ? '' : 's' }} compacted
@@ -84,6 +84,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import UiIcon from '../ui/UiIcon.vue'
 
 /**
  * CompactionCard — renders the rich `<compact_messages>` envelope that
