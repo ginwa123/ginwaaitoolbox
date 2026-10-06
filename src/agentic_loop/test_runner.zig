@@ -97,6 +97,7 @@ test {
     _ = @import("tools_exec_glob.zig");
     _ = @import("tools_exec_search.zig");
     _ = @import("tools_exec_skills.zig");
+    _ = @import("slash_skill_expand.zig"); // send-time /skill token expansion for session_create
     _ = @import("tools_exec_list_directory.zig");
 
     // task_1787855066467_8 — bash/pwsh lenient JSON argument parser.
