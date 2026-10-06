@@ -25,7 +25,7 @@
   pick with "Path must be absolute" and disabled submit.
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 import UiIcon from '../ui/UiIcon.vue'
@@ -119,23 +119,23 @@ const handleFileSelected = (path: string) => {
   pathInput.value?.focus()
 }
 
-watch(() => props.show, async (show) => {
-  if (show) {
-    mode.value = 'file'
-    filePath.value = ''
-    label.value = ''
-    content.value = ''
-    pathTouched.value = false
-    showPicker.value = false
-    await nextTick()
-    pathInput.value?.focus()
-  }
-})
+// Reset state on every open. Runs as the Transition's before-enter
+// hook so the fields are seeded before the dialog paints.
+const handleOpen = async () => {
+  mode.value = 'file'
+  filePath.value = ''
+  label.value = ''
+  content.value = ''
+  pathTouched.value = false
+  showPicker.value = false
+  await nextTick()
+  pathInput.value?.focus()
+}
 </script>
 
 <template>
   <Teleport to="body">
-    <Transition name="agent-knowledge-modal">
+    <Transition name="agent-knowledge-modal" @before-enter="handleOpen">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"

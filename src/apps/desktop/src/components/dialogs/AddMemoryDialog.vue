@@ -38,7 +38,7 @@
             create(name: string, content: string, path: string)  // task
 -->
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, nextTick } from 'vue'
 import { createLocalMemory, getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import { useNotificationStore } from '../../stores/notifications'
 import FilePickerDialog from '../FilePickerDialog.vue'
@@ -204,26 +204,22 @@ const handleKeydown = (event: KeyboardEvent) => {
 // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
 // Reset state on every open — matches AddItemDialog's contract.
-// `immediate: true` ensures the default content is populated on
-// the very first mount when `show=true` is passed as a prop (no
-// `show` change has happened yet, so the watcher would otherwise
-// never fire). Mirrors the pattern in MemoryDetail.vue:79.
-watch(() => props.show, async (show) => {
-  if (show) {
-    name.value = ''
-    cwd.value = props.cwd
-    content.value = '# New Memory\n\nWrite your notes here.\n'
-    isSubmitting.value = false
-    showPicker.value = false
-    await nextTick()
-    nameInput.value?.focus()
-  }
-}, { immediate: true })
+// Runs as the Transition's before-enter hook so the fields are
+// seeded before the dialog paints.
+const handleOpen = async () => {
+  name.value = ''
+  cwd.value = props.cwd
+  content.value = '# New Memory\n\nWrite your notes here.\n'
+  isSubmitting.value = false
+  showPicker.value = false
+  await nextTick()
+  nameInput.value?.focus()
+}
 </script>
 
 <template>
   <Teleport to="body">
-    <Transition name="add-memory-modal">
+    <Transition name="add-memory-modal" @before-enter="handleOpen">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
