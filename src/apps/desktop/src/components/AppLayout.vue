@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, provide } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onUpdated, provide } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './shell/Sidebar.vue'
 import GitFileViewer from './git/GitFileViewer.vue'
@@ -345,13 +345,12 @@ const activeWorkspaceId = computed(() => activeWorkspace.value?.id ?? '')
 
 // Subscribe to /api/kanban/events on the FIRST truthy activeWorkspaceId
 // and update the client-side filter on every subsequent change.
-// `watch + { immediate: true }` replaces the previous `onMounted + watch`
-// pair — the onMounted fired while `workspaces.value` was still empty
-// (initializeFromSystemFolder is async and not awaited), so the if-guard
-// was always skipped and initKanbanSse never ran. This watcher covers
-// all three startup shapes:
+// `initSseStores` (onMounted + store-subscription pump) covers all three
+// startup shapes:
 //   - URL has ?task=...  → setActiveTask ran before mount; immediate=true
 //     opens the SSE on the first tick with the already-truthy id.
+// (The old text referenced an `immediate` watcher; the trigger is now
+// the explicit init call + pump.)
 //   - URL has ?session=... (chat) or no URL params → activeWorkspaceId
 //     is '' at mount; the watch sits idle until
 //     initializeFromSystemFolder's post-init restoration
@@ -368,20 +367,9 @@ const activeWorkspaceId = computed(() => activeWorkspace.value?.id ?? '')
 // cooperative with other same-tick fetch API calls (workspace data,
 // chat history) and prevents the EventSource HTTP request from
 // saturating the browser's per-origin 6-connection pool.
-let didInitSse = false
-watch(
-  activeWorkspaceId,
-  async (newId) => {
-    if (!newId) return
-    if (!didInitSse) {
-      didInitSse = true
-      await kanbanSseStore.initKanbanSse(newId)
-    } else {
-      await kanbanSseStore.setActiveWorkspaceId(newId)
-    }
-  },
-  { immediate: true },
-)
+// SSE subscription init lives in `initSseStores` (defined at the Design SSE
+// section below, merging both stores under one did-init guard). It runs
+// from onMounted + the store subscription pump at the bottom of this file.
 
 // ─── URL → activeWorkspaceItemId / activeDesignPageId restoration ─────
 //
@@ -448,9 +436,11 @@ const pendingUrlRestore = ref<{
 // checking that first snapshot would incorrectly clear the pending URL
 // restore and leave a project deep link on the blank Chats view.
 let urlRestoreInFlight = false
-watch(
-  () => workspacesStore.workspaces,
-  async (wsList) => {
+// URL restore (replaces the old workspaces watcher). Runs once from
+// onMounted (covers fixtures seeded before mount) and from the store
+// subscription pump (covers the async initializeFromSystemFolder path).
+// Reads the live list by default so pump callers pass nothing.
+const restoreUrlState = async (wsList = workspacesStore.workspaces) => {
     if (urlRestoreInFlight) return
     const pending = pendingUrlRestore.value
     if (!pending) return
@@ -499,13 +489,19 @@ watch(
     } finally {
       urlRestoreInFlight = false
     }
-  },
-  { immediate: true },
-)
+}
+
+// Run once at setup (replicates the old `{ immediate: true }` watcher):
+// with fixtures seeded before mount this restores synchronously, BEFORE
+// initializeFromSystemFolder's seedList replaces the rows (a later call
+// would see the seeded items as "loaded" and skip the fetch, stranding
+// an empty tree — see ensureWorkspaceItemsLoaded). The onMounted + pump
+// calls below cover the async-init path.
+void restoreUrlState()
 
 // IMPORTANT (2026-07-28 per-page chat scoping):
 // When the user switches design pages (activeDesignPageId changes
-// in the store, mirrored from DesignView's `watch(activePageId)`),
+// in the store, mirrored from DesignView's activePageId sync),
 // we DO NOT swap the active chat task. The chat is bound to the
 // page that opened it (via `handleDesignOpenChat`'s per-page
 // lookup); switching tabs leaves that conversation alone. Closing
@@ -528,7 +524,7 @@ watch(
 // from localStorage), the URL would NOT update and a refresh
 // would lose the context. This watcher fills that gap. Also covers
 // the active design page (DesignView emits selectPage → no URL
-// update; DesignView's watch(activePageId) writes to the store,
+// update; DesignView's activePageId sync writes to the store,
 // this watcher mirrors the store back to the URL).
 //
 // We guard against two footguns:
@@ -539,9 +535,12 @@ watch(
 //   2. The watcher must NOT call router.replace when the URL
 //      already matches the active state (would push redundant
 //      history entries).
-watch(
-  () => [workspacesStore.activeWorkspaceItemId, workspacesStore.activeDesignPageId] as const,
-  ([itemId, pageId], [oldItemId]) => {
+// activeWorkspaceItem / activeDesignPage -> URL mirror (replaces the old
+// watcher). Called from the store subscription pump whenever either id
+// changes, with the previous item id for the clear-guard below.
+const syncItemToUrl = (oldItemId: string | null) => {
+    const itemId = workspacesStore.activeWorkspaceItemId
+    const pageId = workspacesStore.activeDesignPageId
     const wsId = workspacesStore.activeWorkspace?.id ?? ''
     const currentView = route.query.view as string | undefined
     // FIX (task-url-overwrite, task_1785959660154, 2026-08-06):
@@ -715,8 +714,7 @@ watch(
       if (same) return
     }
     router.replace(target)
-  },
-)
+}
 
 // ─── Design SSE — mirror the kanban pattern ─────────────────────────────
 //
@@ -730,7 +728,21 @@ watch(
 // `didInitDesignSse` keeps the SSE idempotent across remounts (e.g.
 // HMR, route changes that briefly tear down AppLayout).
 const designSseStore = useDesignSseStore()
-let didInitDesignSse = false
+// Merged SSE init (replaces the old kanban + design activeWorkspaceId
+// watchers): ONE connection pair for the app lifetime, filter updates on
+// workspace switches. Runs from onMounted + the store subscription pump.
+let didInitSse = false
+const initSseStores = async (newId: string) => {
+  if (!newId) return
+  if (!didInitSse) {
+    didInitSse = true
+    await kanbanSseStore.initKanbanSse(newId)
+    await designSseStore.initDesignSse(newId)
+  } else {
+    await kanbanSseStore.setActiveWorkspaceId(newId)
+    await designSseStore.setActiveWorkspaceId(newId)
+  }
+}
 
 // NEW (Chunk 1, Task 1.3 of design-element-drag-and-drop plan).
 // Extracted handlers so they're directly unit-testable. Reads the
@@ -738,19 +750,6 @@ let didInitDesignSse = false
 // Task 1.2) and routes patches to the geometry endpoint vs the
 // full-update endpoint based on which keys are present.
 const designHandlers = useDesignHandlers()
-watch(
-  activeWorkspaceId,
-  async (newId) => {
-    if (!newId) return
-    if (!didInitDesignSse) {
-      didInitDesignSse = true
-      await designSseStore.initDesignSse(newId)
-    } else {
-      await designSseStore.setActiveWorkspaceId(newId)
-    }
-  },
-  { immediate: true },
-)
 
 onUnmounted(() => {
   kanbanSseStore.closeKanbanSse()
@@ -1107,6 +1106,7 @@ const fetchChatSessionCwd = async (sessionId: string) => {
     const session = await api.getSession(sessionId)
     if (session && session.cwd) {
       chatSessionCwd.value = session.cwd
+      writeSessionCwdCache(session.cwd)
       return
     }
 
@@ -1114,6 +1114,7 @@ const fetchChatSessionCwd = async (sessionId: string) => {
     const historyData = await api.getChatHistory(sessionId, 1)
     if (historyData.cwd) {
       chatSessionCwd.value = historyData.cwd
+      writeSessionCwdCache(historyData.cwd)
     }
   } catch (err) {
     console.error('Failed to fetch chat session cwd:', err)
@@ -1281,21 +1282,11 @@ const activeDesignChatPageName = ref<string>('')
 //     called in `handleDesignOpenChat` (drives URL sync + handleCloseTaskView),
 //     but the dialog no longer depends on its computed.
 const activeDesignChatTaskId = ref<string>('')
-// Watch the store's `activeTaskId` directly (NOT the computed
-// `activeTask`) so the watcher fires even when activeTask stays
-// null the whole time (the case for design items — see the bug
-// comment above). handleCloseTaskView calls setActiveTask(null) →
-// activeTaskId.value becomes '' → this watcher fires → clear
-// activeDesignChatTaskId.value so the dialog unmounts.
-watch(
-  () => workspacesStore.activeTaskId,
-  (taskId) => {
-    if (!taskId) {
-      activeDesignChatTaskId.value = ''
-      activeDesignChatPageName.value = ''
-    }
-  },
-)
+// The store's `activeTaskId` going falsy clears the design-chat refs so
+// the dialog unmounts — handled by the store subscription pump below,
+// which reads `activeTaskId` directly (NOT the computed `activeTask`)
+// so it fires even when activeTask stays null the whole time (the case
+// for design items — see the bug comment above).
 
 // Synthetic Task for DesignChatDialog. ChatView's API expects a
 // Task object with at minimum `id` (chat-id) and `name` (for the
@@ -1393,16 +1384,24 @@ async function loadAgentData(agentItemId: string) {
   }
 }
 
-watch(
-  () => activeWorkspaceItem.value?.id,
-  (id) => {
-    if (id && activeWorkspaceItem.value?.item_type === 'agent') {
-      // Fire-and-forget; loadAgentData assigns the refs itself.
-      void loadAgentData(id)
-    }
-  },
-  { immediate: true },
-)
+// Load agent bundle for agent items (replaces the old item-id watcher).
+// Runs from onMounted (covers direct landing, keeps
+// AppLayout.agentToolsFetchOnView green) + the store subscription pump
+// (covers in-app navigation to an agent item).
+let lastAgentLoadItemId: string | null = null
+const maybeLoadAgentData = () => {
+  const id = activeWorkspaceItem.value?.id
+  if (!id || activeWorkspaceItem.value?.item_type !== 'agent') return
+  // Fire once per item id (replicates the old watcher, which only fired
+  // on change): setup + onMounted + pump must not triple-fetch.
+  if (id === lastAgentLoadItemId) return
+  lastAgentLoadItemId = id
+  // Fire-and-forget; loadAgentData assigns the refs itself.
+  void loadAgentData(id)
+}
+// Setup-time call (replicates the old immediate watcher): the setup-time
+// restore above already set the item for direct landings.
+maybeLoadAgentData()
 
 // Agent knowledge dialog open state + last-targeted agent id.
 // `show` drives `AgentKnowledgeDialog`'s v-model:show. We capture
@@ -1733,15 +1732,16 @@ async function handleAgentToggleToolsBulk(toolNames: string[], enabled: boolean)
 //   - Forward (suffix back, chat closed) → re-open that task.
 // Tab mode owns its own URL contract (tabs drive the URL via
 // applyActiveTabToUrl), so this watcher stays out of its way there.
-watch(
-  () => {
+// Browser Back/forward task-chat sync (replaces the old itemId watcher;
+// runs from the render pump below — see the block comment there for the
+// Back/Forward contract). Kept as a named function for the pump.
+const syncTaskFromItemId = () => {
+    let rawItemId: string | undefined
     try {
-      return route.query.itemId as string | undefined
+      rawItemId = route.query.itemId as string | undefined
     } catch {
-      return undefined
+      return
     }
-  },
-  (rawItemId) => {
     try {
       if (tabsStore.enabled) return
       if (workspacesStore.isNavigatingToTask) return
@@ -1758,8 +1758,7 @@ watch(
     } catch {
       // Router/store absent in unit tests — nothing to sync.
     }
-  },
-)
+}
 
 // Close the chatview column (the 3-column layout's right pane).
 // Triggered by the ChatView's ✕ header button. Clears the active
@@ -2255,7 +2254,7 @@ const handleKanbanPinTask = (
 // active page. The selectPage/selectElement emits are currently
 // noops — the parent doesn't need the info, the child already
 // owns the state. Element mutations need pageId, which the store's
-// `activeDesignPageId` (mirrored by DesignView's `watch(activePageId,
+// `activeDesignPageId` (mirrored by DesignView's activePageId sync,
 // ...)`) provides.
 //
 // Page CRUD (add / delete) used to live here too — we would bounce
@@ -2498,14 +2497,12 @@ const effectiveChatCwd = computed(() => {
   return chatSessionCwd.value || activeWorkspaceItem.value?.path || ''
 })
 
-// Watch route changes (Back/Forward/deep-link drift) to sync app state.
-// Watches path + query so both path-only navigations (no query change)
-// and query-only mutations (tests, legacy query URLs) reconcile —
-// watching query alone would miss /app/ws → /app/ws/chat/s hops,
-// watching fullPath alone would miss direct query mutations.
-watch(
-  () => [route.path, route.query],
-  async () => {
+// Route-change reconcile (Back/Forward/deep-link drift) — replaces the old
+// path+query watcher; runs from the render pump below. Covers both
+// path-only navigations (no query change) and query-only mutations
+// (tests, legacy query URLs): query alone would miss /app/ws →
+// /app/ws/chat/s hops, fullPath alone would miss direct query mutations.
+const reconcileRoute = async () => {
     const query = route.query as Record<string, string | undefined>
     const sessionId = query.session as string
     const taskId = query.task as string
@@ -2714,17 +2711,17 @@ watch(
         chatSessionCwd.value = ''
       }
     }
-  },
-)
+}
 
-// Watch chatSessionCwd changes and sync to GitFileViewer if needed
-watch(chatSessionCwd, (newCwd) => {
-  // Update localStorage cache when cwd becomes available
+// Session-cwd localStorage cache (replaces the old chatSessionCwd watcher).
+// Called from fetchChatSessionCwd after every assignment; clearing to ''
+// needs no cache write (the old watcher only wrote truthy cwds).
+const writeSessionCwdCache = (newCwd: string) => {
   if (newCwd && activeChatId.value) {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
     localStorage.setItem(`session_cwd_${sessionId}`, newCwd)
   }
-})
+}
 
 // Retry the editor restore when the cwd context arrives late. A cold
 // boot of a project editor link restores before the workspace tree
@@ -2732,7 +2729,8 @@ watch(chatSessionCwd, (newCwd) => {
 // when the item adoption then flips rightSidebarCwd, this replays the
 // same URL params instead of stranding the error. Only fires for that
 // exact error — successful loads and read failures are left alone.
-watch(rightSidebarCwd, (cwd) => {
+const retryEditorRestore = () => {
+  const cwd = rightSidebarCwd.value
   if (!cwd) return
   const q = route.query as Record<string, string | undefined>
   if (q.view !== 'code-editor' || !q.file) return
@@ -2743,7 +2741,7 @@ watch(rightSidebarCwd, (cwd) => {
     fallbackCwd: cwd,
     lineParam: q.line,
   })
-})
+}
 
 // Expose the design chat open handler so tests can simulate the
 // user clicking the 💬 button in DesignView (which emits `openChat`).
@@ -2881,12 +2879,91 @@ onUnmounted(() => {
   stopTabShortcuts()
 })
 
-watch(
-  () => route.fullPath,
-  () => {
+// ─── Subscription pumps (replace every watcher removed above) ────────────
+// Two explicit mechanisms, no reactive watchers:
+//
+// 1. Store pump — `workspacesStore.$subscribe` fires synchronously on
+//    every store mutation (same trigger set as the old watchers, with no
+//    render dependency, so Sidebar/DesignView-initiated changes are seen):
+//      - first truthy workspace id → initSseStores (one-shot guard inside)
+//      - item/page id change → syncItemToUrl mirror (with previous id)
+//      - item change → maybeLoadAgentData (agent branch)
+//      - activeTaskId falsy → clear the design-chat refs (dialog unmount)
+//      - workspaces populated while a URL restore is pending → restoreUrlState
+//      - rightSidebarCwd change → retryEditorRestore
+// 2. Render pump — `onUpdated` with prev-value refs replays the old route
+//    watchers. Any route mutation re-renders (route is read by computeds
+//    and the template), so Back/Forward/deep-link drift reconciles with
+//    the same equality guards the watchers had (no mirror loops).
+let prevPumpItemId: string | null = workspacesStore.activeWorkspaceItemId
+let prevPumpPageId: string | null | undefined = workspacesStore.activeDesignPageId
+let prevPumpCwd = rightSidebarCwd.value ?? ''
+workspacesStore.$subscribe(() => {
+  const wsId = activeWorkspaceId.value
+  if (wsId) void initSseStores(wsId)
+  const itemId = workspacesStore.activeWorkspaceItemId
+  const pageId = workspacesStore.activeDesignPageId
+  if (itemId !== prevPumpItemId || pageId !== prevPumpPageId) {
+    const oldId = prevPumpItemId
+    prevPumpItemId = itemId
+    prevPumpPageId = pageId
+    syncItemToUrl(oldId)
+    maybeLoadAgentData()
+  }
+  if (!workspacesStore.activeTaskId) {
+    if (activeDesignChatTaskId.value !== '' || activeDesignChatPageName.value !== '') {
+      activeDesignChatTaskId.value = ''
+      activeDesignChatPageName.value = ''
+    }
+  }
+  if (pendingUrlRestore.value) void restoreUrlState()
+  const cwd = rightSidebarCwd.value ?? ''
+  if (cwd !== prevPumpCwd) {
+    prevPumpCwd = cwd
+    retryEditorRestore()
+  }
+})
+
+let prevRoutePath: string | null = null
+let prevRouteQuery: unknown = null
+let prevFunnelFullPath: string | null = null
+// Router-absent unit mounts: `route` may be undefined — optional chaining
+// keeps the pump idle instead of throwing (same guard the old watchers
+// carried via their try/catch sources).
+if (route) {
+  prevRoutePath = route.path
+  prevRouteQuery = route.query
+  prevFunnelFullPath = route.fullPath
+}
+onUpdated(() => {
+  if (!route) return
+  const path = route.path
+  const query = route.query
+  const full = route.fullPath
+  if (path !== prevRoutePath || query !== prevRouteQuery) {
+    prevRoutePath = path
+    prevRouteQuery = query
+    prevFunnelFullPath = full
+    syncTaskFromItemId()
+    void reconcileRoute()
+  }
+  if (full !== prevFunnelFullPath) {
+    prevFunnelFullPath = full
     if (tabsFunnelReady) syncFromRoute()
-  },
-)
+  }
+})
+
+// Mount arms (replace the old `{ immediate: true }` watchers):
+//   - initSseStores: no-op until the workspace id is truthy; the store
+//     pump retries on every later mutation.
+//   - restoreUrlState: covers fixtures seeded before mount; the store pump
+//     covers the async initializeFromSystemFolder path.
+//   - maybeLoadAgentData: covers landing directly on an agent item.
+onMounted(() => {
+  void initSseStores(activeWorkspaceId.value)
+  void restoreUrlState()
+  maybeLoadAgentData()
+})
 
 defineExpose({
   handleDesignOpenChat,

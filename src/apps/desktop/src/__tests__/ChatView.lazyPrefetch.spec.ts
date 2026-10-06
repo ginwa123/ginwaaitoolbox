@@ -201,7 +201,14 @@ describe('older-history prefetch — commit invariants', () => {
 describe('older-history prefetch — invalidation', () => {
   it('drops the buffer on session change, refresh, and unmount', async () => {
     const source = await readChatViewSource()
-    expect(source.match(/resetOlderPrefetch\('session-change'\)/g) ?? []).toHaveLength(2)
+    // Single session-change entry point (watch-zero: the two sessionId
+    // watchers merged into onSessionChanged) still drops the buffer.
+    const entryBody = fnBody(
+      source,
+      'const onSessionChanged = async (newId: string) => {',
+      '// Auto-stick on new messages',
+    )
+    expect(entryBody).toContain("resetOlderPrefetch('session-change')")
     expect(source).toContain("resetOlderPrefetch('refresh')")
     expect(source).toContain("resetOlderPrefetch('unmount')")
     const unmountBody = fnBody(source, 'onUnmounted(() => {', '\n// Load available profiles')

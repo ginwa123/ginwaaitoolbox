@@ -55,7 +55,7 @@
     user navigates between kanbans).
 -->
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
 import KanbanRowView from './KanbanRowView.vue'
 import type { KanbanRowDensity } from './KanbanTaskRow.vue'
@@ -65,7 +65,7 @@ import { buildTaskCreateMessage } from './buildTaskCreateMessage'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { buildAppUrl } from '../../helpers/appUrl'
 import type { PreviewFile } from '../file/FilePreview.vue'
 import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../../stores/workspaces'
@@ -187,6 +187,9 @@ const loadColumnsAndTasks = async () => {
       next[entry.columnId] = entry
     }
     columnSorts.value = next
+    // The old columnSorts watcher mirrored this assignment back to the
+    // URL; call it explicitly (no-op — the URL already matches).
+    writeSortsToUrl()
     void nextTick(() => {
       for (const entry of urlEntries) {
         const col = columnRefs.value[entry.columnId] as
@@ -288,15 +291,9 @@ const loadColumnsAndTasks = async () => {
 // a single pass. ONE endpoint per column on mount.
 onMounted(loadColumnsAndTasks)
 
-// Re-run when the user navigates to a different kanban
-// (workspaceId or itemId change). The URL restore logic above
-// also re-fires because the URL query carries over.
-watch(
-  () => [props.workspaceId, effectiveItemId.value],
-  () => {
-    loadColumnsAndTasks()
-  },
-)
+// Navigating to a different kanban remounts this component (AppLayout's
+// KanbanView branch carries `:key` on the item id), so `onMounted` above
+// is the only load trigger — no reload-on-prop-change subscription needed.
 
 // ─── Horizontal scroll position preservation ──────────────────────────
 //
@@ -542,7 +539,11 @@ const clearSearchDebounce = () => {
   }
 }
 
-watch(searchQuery, (newQ) => {
+// Search input handler (replaces the old searchQuery watcher): every
+// keystroke restarts the 300 ms debounce, then fires one request per
+// column. Wired via `@update:model-value` on the search input below.
+const onSearchInput = (newQ: string) => {
+  searchQuery.value = newQ
   clearSearchDebounce()
   searchDebounceTimer = setTimeout(() => {
     searchDebounceTimer = null
@@ -557,7 +558,7 @@ watch(searchQuery, (newQ) => {
       trimmed || undefined,
     )
   }, 300)
-})
+}
 
 onUnmounted(clearSearchDebounce)
 
@@ -652,8 +653,12 @@ const setColumnRef = (columnId: string) => (el: unknown) => {
 // changed.)
 //
 // Plan: docs/superpowers/plans/2026-08-06-kanban-sort-independence.md
-watch(columnSorts, (next) => {
-  const encoded = encodeSortsParam(Object.values(next))
+// URL mirror for per-column sorts (replaces the old columnSorts watcher).
+// Called explicitly from `handleColumnSortChange` and from the mount-time
+// URL restore in `loadColumnsAndTasks` (where it is a no-op — the URL
+// already carries the restored entries).
+const writeSortsToUrl = () => {
+  const encoded = encodeSortsParam(Object.values(columnSorts.value))
   // Preserve sibling params (`?detail=`, `?layout=`, …) — rebuilding the
   // query from scratch here used to silently drop them, so picking a
   // column sort closed the detail panel and reset the layout.
@@ -675,10 +680,10 @@ watch(columnSorts, (next) => {
   // any param it does not know about (e.g. `layout`) is dropped on reload,
   // which silently loses row mode for shared links and second machines.
   void router.replace(buildAppUrlForBoard(query))
-})
+}
 
 // Handler for the column's sort-change emit. Updates the map
-// (which triggers the URL watcher above) AND fires the fetch
+// (which mirrors the URL via writeSortsToUrl below) AND fires the fetch
 // for ONLY the changed column — other columns' data is untouched
 // (they keep their previously-fetched state, which still matches
 // their own last sort).
@@ -696,12 +701,14 @@ const handleColumnSortChange = (
   columnId: string,
   payload: { sortBy: SortEntry['sortBy']; direction: SortEntry['direction'] },
 ) => {
-  // 1. Update the columnSorts map. Triggers the watcher above to
-  //    write the URL (`?sorts=col_X:...`).
+  // 1. Update the columnSorts map + mirror the URL
+  //    (`?sorts=col_X:...`) via writeSortsToUrl.
   columnSorts.value = {
     ...columnSorts.value,
     [columnId]: { columnId, sortBy: payload.sortBy, direction: payload.direction },
   }
+  // Mirror to the URL (replaces the old columnSorts watcher arm).
+  writeSortsToUrl()
 
   // 2. Fire the fetch for ONLY this column with its own sort.
   //    Other columns are untouched — their local tasks still
@@ -929,19 +936,11 @@ const closeTaskDetail = () => {
   }
 }
 
-// Open the inline panel when the URL carries ?detail=<taskId>
-// (deep-link from "Open details in new tab", refresh, or shared
-// link). Runs on mount + whenever the query changes while this
-// kanban stays mounted. Unknown ids are ignored so a stale link
-// renders the plain board instead of an empty panel.
-const openDetailFromRoute = () => {
-  let detailId: string | null = null
-  try {
-    const raw = (route.query as Record<string, unknown> | undefined)?.detail
-    detailId = typeof raw === 'string' && raw.trim() !== '' ? raw : null
-  } catch {
-    detailId = null
-  }
+// Open the inline panel for a ?detail=<taskId> value (deep-link from
+// "Open details in new tab", refresh, or shared link). Unknown ids are
+// ignored so a stale link renders the plain board instead of an empty
+// panel.
+const openDetailFromId = (detailId: string) => {
   if (!detailId) return
   if (activeTaskDetailId.value === detailId && showTaskDetail.value) return
   const exists = (props.item.tasks ?? []).some((t) => t.id === detailId)
@@ -951,68 +950,73 @@ const openDetailFromRoute = () => {
   void workspacesStore.refreshTask(props.workspaceId, props.itemId || props.item.id, detailId)
 }
 
+// Read the ?detail= param defensively (route may be absent in tests).
+const readDetailParam = (): string | null => {
+  try {
+    const raw = (route.query as Record<string, unknown> | undefined)?.detail
+    return typeof raw === 'string' && raw.trim() !== '' ? raw : null
+  } catch {
+    return null
+  }
+}
+
+const openDetailFromRoute = () => {
+  const detailId = readDetailParam()
+  if (detailId) openDetailFromId(detailId)
+}
+
+// Close the panel locally WITHOUT touching the router (the URL is
+// already the board URL — used for Back/forward where the history
+// entry the user navigated to must win).
+const closeDetailLocal = () => {
+  showTaskDetail.value = false
+  activeTaskDetailId.value = null
+}
+
 onMounted(() => {
   openDetailFromRoute()
 })
 
-watch(
-  () => {
-    try {
-      return (route.query as Record<string, unknown> | undefined)?.detail
-    } catch {
-      return undefined
-    }
-  },
-  (detail) => {
-    if (typeof detail === 'string' && detail.trim() !== '') {
-      openDetailFromRoute()
-    } else if (showTaskDetail.value) {
-      // Browser Back/forward dropped ?detail= — close the panel
-      // locally WITHOUT touching the router (the URL is already
-      // the board URL). This is what makes Back return to kanban.
-      showTaskDetail.value = false
-      activeTaskDetailId.value = null
-    }
-  },
-)
-
-// Browser Back/forward across a layout switch. The URL is the source of
-// truth, so mirror it into the ref WITHOUT writing back (writing here
-// would fight the history entry the user just navigated to).
-watch(
-  () => {
-    try {
-      return (route.query as Record<string, unknown> | undefined)?.[LAYOUT_PARAM]
-    } catch {
-      return undefined
-    }
-  },
-  (raw) => {
-    const next: KanbanLayout = raw === 'rows' ? 'rows' : 'columns'
-    if (next !== layout.value) layout.value = next
-  },
-)
-
-// When the panel closes via v-model (X / Cancel / Esc inside the
-// panel), also drop the ?detail= param so the URL stays truthful.
-watch(showTaskDetail, (open) => {
-  if (open) return
-  try {
-    const raw = (route.query as Record<string, unknown> | undefined)?.detail
-    if (typeof raw === 'string' && raw !== '') {
-      const next = flatQuery()
-      delete next.detail
-      void router.replace(buildAppUrlForBoard(next))
-    }
-  } catch {
-    // Router absent in tests — nothing to sync.
+// Back/forward + in-app query navigations while this kanban stays
+// mounted (replaces the old ?detail= / ?layout= watchers):
+//   - ?detail= present → open that task's panel.
+//   - ?detail= dropped while the panel is open → close locally (no
+//     router call — the URL is already the board URL).
+//   - ?layout= mirrored into the ref without writing back (writing
+//     here would fight the history entry just navigated to).
+onBeforeRouteUpdate((to) => {
+  const toQuery = to.query as Record<string, unknown>
+  const rawDetail = toQuery.detail
+  if (typeof rawDetail === 'string' && rawDetail.trim() !== '') {
+    openDetailFromId(rawDetail)
+  } else if (showTaskDetail.value) {
+    // Browser Back/forward dropped ?detail= — close the panel
+    // locally WITHOUT touching the router (the URL is already
+    // the board URL). This is what makes Back return to kanban.
+    closeDetailLocal()
   }
-  if (activeTaskDetailId.value !== null && !open) {
-    // Keep the id clear so a re-open always goes through
-    // handleViewTaskDetail's refresh path.
-    activeTaskDetailId.value = null
-  }
+  const rawLayout = toQuery[LAYOUT_PARAM]
+  const nextLayout: KanbanLayout = rawLayout === 'rows' ? 'rows' : 'columns'
+  if (nextLayout !== layout.value) layout.value = nextLayout
 })
+
+// (The old ?detail= watcher lived here — now handled by the
+// `onBeforeRouteUpdate` guard above.)
+
+// (The old ?layout= watcher lived here — now handled by the
+// `onBeforeRouteUpdate` guard above.)
+
+// Panel visibility handler (replaces the old showTaskDetail watcher).
+// When the panel closes via X / Cancel / Esc inside the panel, drop
+// the ?detail= param so the URL stays truthful, and clear the id so a
+// re-open always goes through handleViewTaskDetail's refresh path.
+const onDetailShowUpdate = (open: boolean) => {
+  if (open) {
+    showTaskDetail.value = true
+    return
+  }
+  closeTaskDetail()
+}
 
 // Dialog save handler — delegates to the store action which runs the
 // optimistic update + API call + rollback-on-error. We close the
@@ -1460,7 +1464,7 @@ const handleCreateTaskSave = async (payload: {
           <span aria-hidden="true">⚠️</span>
           <span class="ml-1">{{ pathPickerBusy ? 'Setting…' : 'Set project root' }}</span>
         </button>
-        <KanbanSearchInput v-model="searchQuery" />
+        <KanbanSearchInput :model-value="searchQuery" @update:model-value="onSearchInput" />
 
         <!-- Layout toggle — Columns (the board) vs Rows (a grouped
              linear list). URL-backed via `?layout=rows`; `columns` is
@@ -1733,7 +1737,8 @@ const handleCreateTaskSave = async (payload: {
       <div class="w-full max-w-6xl mx-auto p-4 sm:p-6">
         <KanbanTaskDetail
           v-if="showTaskDetail"
-          v-model:show="showTaskDetail"
+          :show="showTaskDetail"
+          @update:show="onDetailShowUpdate"
           :task="activeTaskDetail"
           :column="activeTaskDetailColumn"
           :cwd="item.path || ''"

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, provide, onMounted, onUnmounted, watch } from 'vue'
+import { ref, provide, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import * as api from './api'
 import TopLoadingBar from './components/shell/TopLoadingBar.vue'
-import { installSseBus, useSseBus } from './helpers/sseBus'
+import { installSseBus, useSseBus, __getSseBusGlobalClient } from './helpers/sseBus'
 import { useTabsStore } from './stores/tabs'
 import { useNavigationStore } from './stores/navigation'
 import { useDocumentTitle } from './composables/useDocumentTitle'
@@ -72,6 +72,7 @@ const fetchInitialWorkers = async () => {
 }
 
 let offWorker: (() => void) | null = null
+let offBusOpen: (() => void) | null = null
 
 onMounted(() => {
   // `installSseBus(_app?: App)` takes an optional `App` parameter for
@@ -124,17 +125,17 @@ onMounted(() => {
   // (built from earlier `worker` events) is stale and may include
   // sessions that no longer exist or omit new ones.
   //
-  // `{ immediate: true }` covers the fast path where the SseClient
-  // is already `'open'` by the time the watcher is registered (the
-  // SseClient defers its first `start()` via `setTimeout(0)`, so
-  // there's a race between bus install and watch registration).
-  watch(
-    () => bus.state.value,
-    (s) => {
+  // Explicit subscription on the underlying SseClient (not a reactive
+  // watcher): `onStateChange` fires on every transition including the
+  // reconnect path. The immediate check below covers the fast path
+  // where the SseClient is already `'open'` by the time this hook runs
+  // (the SseClient defers its first `start()` via `setTimeout(0)`, so
+  // there's a race between bus install and subscription).
+  if (bus.state.value === 'open') void fetchInitialWorkers()
+  offBusOpen =
+    __getSseBusGlobalClient()?.onStateChange((s) => {
       if (s === 'open') void fetchInitialWorkers()
-    },
-    { immediate: true },
-  )
+    }) ?? null
 })
 
 onUnmounted(() => {
@@ -144,6 +145,10 @@ onUnmounted(() => {
   if (offWorker) {
     offWorker()
     offWorker = null
+  }
+  if (offBusOpen) {
+    offBusOpen()
+    offBusOpen = null
   }
   useTabsStore().disposeTitleFeed()
   // Close the bus. Forwards to all underlying SseClients (global +
