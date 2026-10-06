@@ -54,7 +54,7 @@
   ✗/✓ status indicators, expand/collapse `+`/`−` toggle.
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
@@ -373,11 +373,23 @@ function maybeFetchVisibleTexts(): void {
   }
 }
 
-// Two single-source watchers sharing one handler. `immediate` stays on the
-// first only, so mount fires once; the per-path fetchers dedupe by path, so
-// a same-tick change to both sources is harmless.
-watch(isExpanded, () => maybeFetchVisibleTexts(), { immediate: true })
-watch(files, () => maybeFetchVisibleTexts())
+// Fetch visible texts when the card expands or the file list changes.
+// Prev-value guards on update instead of watchers; the per-path fetchers
+// dedupe by path, so repeat runs are harmless. Mount covers the
+// mount-expanded case the old `immediate` watcher handled.
+const prevFetchKey = ref('')
+const fetchKey = () => `${isExpanded.value ? '1' : '0'}|${files.value.map((f) => f.path).join(',')}`
+onMounted(() => {
+  prevFetchKey.value = fetchKey()
+  maybeFetchVisibleTexts()
+})
+onUpdated(() => {
+  const key = fetchKey()
+  if (key !== prevFetchKey.value) {
+    prevFetchKey.value = key
+    maybeFetchVisibleTexts()
+  }
+})
 
 const fileMeta = (f: ParsedPresentFile): string => `${formatBytes(f.bytes)} · ${f.mime}`
 

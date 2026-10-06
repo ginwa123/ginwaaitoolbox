@@ -37,7 +37,7 @@
   in the cache; fetch elements for that page via
   workspacesStore.fetchDesignElements.
 
-  watch(activePageId): re-fetch elements for the new page.
+  page activation (claimAndActivatePage): re-fetch elements for the new page.
 
   Canvas click on empty area clears selectedElementId. Escape keypress
   clears selectedElementId.
@@ -69,7 +69,7 @@
   export size".
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import DesignElement from './DesignElement.vue'
 import LayersPanel from './LayersPanel.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
@@ -142,11 +142,13 @@ const emit = defineEmits<{
   // the payload now also carries `workspaceItemTaskId` from the page
   // row. AppLayout uses this directly as the chat task id — no name
   // matching, no legacy migration, no `taskHasMessages` probe.
-  openChat: [payload: {
-    pageId: string
-    pageName: string
-    workspaceItemTaskId: string
-  }]
+  openChat: [
+    payload: {
+      pageId: string
+      pageName: string
+      workspaceItemTaskId: string
+    },
+  ]
 }>()
 
 const workspacesStore = useWorkspacesStore()
@@ -240,20 +242,33 @@ const effectiveItemId = computed(() => props.itemId || props.item.id)
 // live in the workspaces store's `designPagesByItemId` cache, NOT
 // in DesignView-local state. The sidebar tree (WorkspaceItem.vue)
 // and the canvas header both read from the same map. DesignView
-// only mirrors `activeDesignPageId` from the store into its local
-// `activePageId` ref so the existing watch on `activePageId` (which
-// fetches elements for the new page) doesn't need to change.
+// reads `activeDesignPageId` from the store through its single-source
+// `activePageId` computed; page activation (which fetches elements for
+// the new page) runs from the explicit claim-and-activate path.
 const pages = computed<DesignPage[]>(() => {
   if (!effectiveItemId.value) return []
   return workspacesStore.designPagesByItemId[effectiveItemId.value] ?? []
 })
-const activePageId = ref('')
+// Single source of truth: the store's `activeDesignPageId` (set by the
+// sidebar tree, the URL restore, and this component's page handlers).
+// The computed setter routes every local assignment through the store,
+// so sidebar-driven changes are visible here without a mirror.
+const activePageId = computed<string>({
+  get: () => workspacesStore.activeDesignPageId,
+  set: (v: string) => {
+    // Skip no-op sets: the old local-ref assignment only propagated
+    // (via its watcher) when the value actually changed. Blindly
+    // writing would wipe a preset store page (e.g. loadPages falling
+    // back to '' when the page list is empty — see
+    // AppLayout.createElement.spec.ts).
+    const next = v ?? ''
+    if (workspacesStore.activeDesignPageId !== next) workspacesStore.setActiveDesignPage(next)
+  },
+})
 const pagesLoading = ref(false)
 const pagesError = ref<string | null>(null)
 
-const activePage = computed(() =>
-  pages.value.find((p) => p.id === activePageId.value) ?? null,
-)
+const activePage = computed(() => pages.value.find((p) => p.id === activePageId.value) ?? null)
 
 // NEW (2026-08-06, design-move-to-page plan, Chunk 8): pass-through
 // computed properties for the MoveToPageDialog. `pages` is already
@@ -349,15 +364,11 @@ const isPreviewMode = ref<boolean>(false)
 
 const togglePreviewMode = (): void => {
   isPreviewMode.value = !isPreviewMode.value
+  // Exiting Preview mode clears the selection so the user isn't surprised
+  // by a now-visible resize handle on an element they didn't pick during
+  // preview.
+  if (!isPreviewMode.value) selectedIds.value = new Set()
 }
-
-// Exiting Preview mode clears the selection so the user isn't surprised
-// by a now-visible resize handle on an element they didn't pick during
-// preview. Doing this in a watcher keeps the prop drill minimal — we
-// only need to react to the toggle, not poll for it.
-watch(isPreviewMode, (now) => {
-  if (!now) selectedIds.value = new Set()
-})
 
 // ─── Right sidebar width (drag-resize handle) ──────────────────────────
 
@@ -398,10 +409,7 @@ const startSidebarResize = (event: MouseEvent): void => {
 
   const onMove = (e: MouseEvent): void => {
     const dx = startX - e.clientX
-    const next = Math.max(
-      SIDEBAR_MIN_WIDTH,
-      Math.min(SIDEBAR_MAX_WIDTH, startWidth + dx),
-    )
+    const next = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, startWidth + dx))
     sidebarWidth.value = next
   }
   const onUp = (): void => {
@@ -490,10 +498,7 @@ const loadPages = async (): Promise<void> => {
     // in-flight guard, so concurrent calls (sidebar expand + canvas
     // mount) share the same network request. The `pages` computed
     // above updates from the cached value once the promise resolves.
-    const fetched = await workspacesStore.fetchDesignPages(
-      props.workspaceId,
-      effectiveItemId.value,
-    )
+    const fetched = await workspacesStore.fetchDesignPages(props.workspaceId, effectiveItemId.value)
     // Pick the active page in this priority:
     //   1. The store's activeDesignPageId (set by AppLayout's URL restore
     //      watcher when the page reloads with ?pageId=Z) — wins over
@@ -508,16 +513,19 @@ const loadPages = async (): Promise<void> => {
       fetched.some((p) => p.id === storePageId) &&
       storePageId !== activePageId.value
     ) {
-      activePageId.value = storePageId
-    } else if (
-      !activePageId.value ||
-      !fetched.some((p) => p.id === activePageId.value)
-    ) {
-      activePageId.value = fetched[0]?.id ?? ''
+      choosePage(storePageId)
+    } else if (!activePageId.value || !fetched.some((p) => p.id === activePageId.value)) {
+      choosePage(fetched[0]?.id ?? '')
+    } else {
+      // Choice unchanged but the cursor may be stale (e.g. a sidebar
+      // switch landed on this same page via the store): converge the
+      // choice cursor and run effects only if the page is unclaimed.
+      lastChosenPage.value = activePageId.value
+      claimAndActivatePage()
     }
   } catch (err) {
     pagesError.value = err instanceof Error ? err.message : String(err)
-    activePageId.value = ''
+    choosePage('')
   } finally {
     pagesLoading.value = false
   }
@@ -527,61 +535,51 @@ onMounted(() => {
   void loadPages()
 })
 
-watch(
-  () => [props.workspaceId, effectiveItemId.value] as const,
-  () => {
-    void loadPages()
-  },
-)
-
-// watch(activePageId) → fetch elements for the new page (mirrors
-// KanbanView's loadColumns pattern).
-//
-// NEW (design-page-sync fix, 2026-08-06, post-#170): the local
-// `activePageId` ref is the source-of-truth for DesignView's
-// internal watchers (elements fetch, canvas rendering, undo/redo).
-// But when the user clicks a different page in the workspace
-// sidebar tree, the workspace store's `activeDesignPageId` changes
-// WITHOUT going through this watcher (the sidebar tree emits a
-// navigate event, AppLayout routes to ?view=workspace&pageId=B,
-// DesignView's keyed-by-item-id Vue component is REUSED — same
-// instance). Without a sync from the store → local ref, the canvas
-// stays stuck on the originally-mounted page.
-//
-// Fix: watch the STORE's activeDesignPageId (single source of
-// truth from the sidebar) and mirror it into the local ref. We
-// guard with `!isInitialLoad` to avoid a feedback loop with the
-// `watch(activePageId)` below — both would fire when
-// loadPages() sets the initial page, causing a duplicate
-// elements fetch on first mount.
-const storeActiveDesignPageId = computed(() => workspacesStore.activeDesignPageId)
-watch(storeActiveDesignPageId, (pageId, oldPageId) => {
-  // No-op if the page hasn't actually changed (prevents feedback
-  // with setActiveDesignPage calls inside this component).
-  if (pageId === oldPageId) return
-  // No-op when the store value already matches the local ref
-  // (e.g. loadPages just set both to the same page).
-  if (pageId === activePageId.value) return
-  activePageId.value = pageId
-})
-watch(activePageId, (pageId) => {
-  // Mirror to the store FIRST so AppLayout's design handlers
-  // (handleDesignUpdateElement / handleDesignDeleteElement) always
-  // see the latest selection, even if the early-return below fires
-  // (no item, no workspace, empty page). The store ref starts at ''
-  // and clears in onUnmounted (below).
-  workspacesStore.setActiveDesignPage(pageId ?? '')
+// Page activation (mirrors KanbanView's loadColumns pattern). Runs the
+// side effects of a page change: clear the selection (it belongs to the
+// old page), drop cached nudge offsets, and fetch the new page's
+// elements. Every assignment to `activePageId` flows through the
+// computed setter into the store FIRST, so AppLayout's design handlers
+// (handleDesignUpdateElement / handleDesignDeleteElement) always see
+// the latest selection — the store ref starts at '' and clears in
+// onUnmounted (below).
+const activatePage = (pageId: string): void => {
   selectedIds.value = new Set()
   // Nudge offsets are per-element; fresh page means every cached
   // offset is for an element that no longer exists.
   nudgeOffsets.clear()
   if (!pageId) return
   if (!props.workspaceId || !effectiveItemId.value) return
-  void workspacesStore.fetchDesignElements(
-    props.workspaceId,
-    effectiveItemId.value,
-    pageId,
-  )
+  void workspacesStore.fetchDesignElements(props.workspaceId, effectiveItemId.value, pageId)
+}
+// Effect cursor: the page the effects last ran for. Local page changes
+// claim it synchronously (so the update guard below stays silent);
+// sidebar-tree store changes arrive via the guard.
+const prevActivePage = ref(activePageId.value)
+const claimAndActivatePage = (): void => {
+  const pageId = activePageId.value
+  if (pageId === prevActivePage.value) return
+  prevActivePage.value = pageId
+  activatePage(pageId)
+}
+// Choice gate: replicates the old local-ref assignment semantics — the
+// store (and the effects) only see a choice that differs from the last
+// one this component made. In particular, loadPages falling back to ''
+// on an empty page list must NOT wipe a preset store page (the old ref
+// started at '' so that fallback was a silent no-op — see
+// AppLayout.createElement.spec.ts).
+const lastChosenPage = ref('')
+const choosePage = (choice: string): void => {
+  if (choice === lastChosenPage.value) return
+  lastChosenPage.value = choice
+  activePageId.value = choice
+  claimAndActivatePage()
+}
+onMounted(() => {
+  prevActivePage.value = activePageId.value
+})
+onUpdated(() => {
+  claimAndActivatePage()
 })
 
 // ─── Keyboard shortcuts ────────────────────────────────────────────────
@@ -598,9 +596,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
   const target = event.target as HTMLElement | null
   if (
     target &&
-    (target.tagName === 'INPUT' ||
-      target.tagName === 'TEXTAREA' ||
-      target.isContentEditable)
+    (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
   ) {
     return
   }
@@ -609,13 +605,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
   // and Alt+Space is the window-menu shortcut on Linux/macOS). Plain Space
   // should NOT scroll the page when the design view is mounted — that's
   // the browser default we override here.
-  if (
-    event.key === ' ' &&
-    !event.ctrlKey &&
-    !event.metaKey &&
-    !event.altKey &&
-    !event.shiftKey
-  ) {
+  if (event.key === ' ' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
     if (!isSpacePressed.value) {
       isSpacePressed.value = true
       document.body.style.cursor = 'grab'
@@ -629,7 +619,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
     // — the user is trying to get back to editing). Only clear the
     // selection if we're already in Edit mode.
     if (isPreviewMode.value) {
-      isPreviewMode.value = false
+      togglePreviewMode()
       return
     }
     selectedIds.value = new Set()
@@ -660,11 +650,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
   // reorder call lives in `workspacesStore.reorderDesignElements`,
   // which Chunk 5 introduces — until then the shortcut fires the
   // stub that no-ops with a warning.
-  if (
-    event.key === ']' &&
-    (event.ctrlKey || event.metaKey) &&
-    !event.altKey
-  ) {
+  if (event.key === ']' && (event.ctrlKey || event.metaKey) && !event.altKey) {
     event.preventDefault()
     if (event.shiftKey) {
       void dispatchReorder('bring_to_front')
@@ -676,11 +662,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
 
   // Chunk 4: Cmd/Ctrl+[ (send backward) and Cmd/Ctrl+Shift+[
   // (send to back).
-  if (
-    event.key === '[' &&
-    (event.ctrlKey || event.metaKey) &&
-    !event.altKey
-  ) {
+  if (event.key === '[' && (event.ctrlKey || event.metaKey) && !event.altKey) {
     event.preventDefault()
     if (event.shiftKey) {
       void dispatchReorder('send_to_back')
@@ -797,18 +779,17 @@ const handleKeydown = (event: KeyboardEvent): void => {
   // Arrow keys nudge the selection by 1 design-px; Shift+arrow by 10.
   // Gated on `selectedIds.size > 0` (Figma-style: arrows do nothing
   // when there's nothing to nudge).
-  if (selectedIds.value.size > 0 && (
-    event.key === 'ArrowLeft' || event.key === 'ArrowRight' ||
-    event.key === 'ArrowUp' || event.key === 'ArrowDown'
-  )) {
+  if (
+    selectedIds.value.size > 0 &&
+    (event.key === 'ArrowLeft' ||
+      event.key === 'ArrowRight' ||
+      event.key === 'ArrowUp' ||
+      event.key === 'ArrowDown')
+  ) {
     event.preventDefault()
     const step = event.shiftKey ? 10 : 1
-    const dx =
-      event.key === 'ArrowLeft' ? -step :
-      event.key === 'ArrowRight' ? step : 0
-    const dy =
-      event.key === 'ArrowUp' ? -step :
-      event.key === 'ArrowDown' ? step : 0
+    const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0
+    const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0
     // Undo/redo plan (Chunk 4): each keypress is one undo entry
     // (Figma parity). Pre-state is captured BEFORE the PATCH loop;
     // post-state AFTER. capturePostState is async (reads HTML body);
@@ -1052,9 +1033,7 @@ const handleOpenChat = (): void => {
 // try to POST another `"Untitled"` and the backend would 409.
 const UNTITLEDBASE_NAME = 'Untitled'
 const UNTITLEDPATTERN = /^Untitled (\d+)$/
-const computeNextUntitledName = (
-  existingPages: ReadonlyArray<{ name: string }>,
-): string => {
+const computeNextUntitledName = (existingPages: ReadonlyArray<{ name: string }>): string => {
   let hasUnnumbered = false
   let maxNumbered = 0
   for (const p of existingPages) {
@@ -1084,8 +1063,8 @@ const computeNextUntitledName = (
 // through the workspaces store so the sidebar tree's DesignPageRow
 // array updates without a refetch. The store's `addDesignPage`
 // action returns the new page object; we set it as active and
-// update the local `activePageId` ref so the watcher (which
-// fetches elements) fires.
+// update the store's active page (claim-and-activate, which
+// fetches elements, runs when the page actually changed).
 //
 // Returns the new page id for test convenience.
 const handleAddPage = async (): Promise<string | undefined> => {
@@ -1099,7 +1078,7 @@ const handleAddPage = async (): Promise<string | undefined> => {
       computeNextUntitledName(pages.value),
     )
     if (newPage) {
-      activePageId.value = newPage.id
+      choosePage(newPage.id)
       return newPage.id
     }
     return undefined
@@ -1130,10 +1109,10 @@ const handleSelectPage = (pageId: string): void => {
   // see the latest selection, even if the page-change early-returns
   // below. The store ref is the single source of truth from the
   // sidebar tree's click handler too.
-  workspacesStore.setActiveDesignPage(pageId)
-  if (pageId !== activePageId.value) {
-    activePageId.value = pageId
-  }
+  // choosePage mirrors to the store (guarded setter), then runs the
+  // selection-clear + elements fetch exactly when the page changed
+  // (no-op when re-clicking the current tab).
+  choosePage(pageId)
   // Re-emit for any external listener (AppLayout's @select-page
   // does nothing today, but the contract is preserved).
   emit('selectPage', pageId)
@@ -1145,29 +1124,24 @@ const handleSelectPage = (pageId: string): void => {
 // through the store so the cache + `activeDesignPageId` fallback
 // happen in one place. The store's `deleteDesignPage` action picks
 // the next-active page (same index as the deleted one, falling
- 
+
 // back to the previous; or empty if the item now has no pages).
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const _handleDeletePage = async (pageId: string): Promise<void> => {
   if (!props.workspaceId || !effectiveItemId.value) return
   if (deletePageInFlight.value) return
   if (
-    !confirm(
-      'Delete this page? This removes the page, its elements, and their on-disk HTML files.',
-    )
+    !confirm('Delete this page? This removes the page, its elements, and their on-disk HTML files.')
   ) {
     return
   }
   deletePageInFlight.value = true
   try {
-    await workspacesStore.deleteDesignPage(
-      props.workspaceId,
-      effectiveItemId.value,
-      pageId,
-    )
-    // The store already picked the next-active page. Mirror it into
-    // the local ref so the watcher (which fetches elements) fires.
-    activePageId.value = workspacesStore.activeDesignPageId
+    await workspacesStore.deleteDesignPage(props.workspaceId, effectiveItemId.value, pageId)
+    // The store already picked the next-active page. choosePage
+    // converges the choice cursor and runs the elements fetch when
+    // the active page actually changed.
+    choosePage(workspacesStore.activeDesignPageId)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     useNotificationStore().notifyError('Failed to delete page', message)
@@ -1202,7 +1176,7 @@ const handleElementToggle = (elementId: string, additive: boolean): void => {
 // `@select="_handleElementSelect"` (which emits a plain elementId with
 // no additive flag) still works — LayersPanel gets the additive flag
 // from the Shift state on the row click and emits a structured
- 
+
 // payload instead.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const _handleElementSelect = (elementId: string): void => {
@@ -1338,7 +1312,10 @@ const handleLayerSelect = (payload: { elementId: string; additive: boolean }): v
 // is the raw composable result `{ elementIds, newParentId }` — we
 // just relay it to `designHandlers.reparentLayers`, which routes
 // through the batch endpoint and handles errors via toast.
-const handleLayerReparent = (payload: { elementIds: string[]; newParentId: string | null }): void => {
+const handleLayerReparent = (payload: {
+  elementIds: string[]
+  newParentId: string | null
+}): void => {
   void designHandlers.reparentLayers({
     workspaceId: props.workspaceId,
     itemId: effectiveItemId.value,
@@ -1371,7 +1348,7 @@ const handleDesignGroupFromContextMenu = (targetIds: string[]): void => {
 // children), this lets them drag the group AND every descendant in one
 // motion — matching Figma's behaviour. The expansion is per-call (does
 // NOT mutate `selectedIds`) so the layers panel / context menu still
- 
+
 // show the user-selected set.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 function _expandSelectionWithDescendants(
@@ -1496,7 +1473,10 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
 
   // ─── Snap (Chunk 3) ───────────────────────────────────────────────
   const selected = elements.value.filter((e) => selectedIds.value.has(e.id))
-  console.log('[handleGroupDrag] selected elements', selected.map((e) => e.id))
+  console.log(
+    '[handleGroupDrag] selected elements',
+    selected.map((e) => e.id),
+  )
   if (selected.length > 0) {
     if (dragStartPositions === null) {
       dragStartPositions = new Map()
@@ -1535,12 +1515,8 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
 
     const minX = Math.min(...selected.map((e) => originalPos(e).x + delta.dx))
     const minY = Math.min(...selected.map((e) => originalPos(e).y + delta.dy))
-    const maxX = Math.max(
-      ...selected.map((e) => originalPos(e).x + delta.dx + e.width),
-    )
-    const maxY = Math.max(
-      ...selected.map((e) => originalPos(e).y + delta.dy + e.height),
-    )
+    const maxX = Math.max(...selected.map((e) => originalPos(e).x + delta.dx + e.width))
+    const maxY = Math.max(...selected.map((e) => originalPos(e).y + delta.dy + e.height))
     const unionBbox = {
       id: '__union__',
       x: minX,
@@ -1553,18 +1529,17 @@ const handleGroupDrag = (delta: { dx: number; dy: number }): void => {
     const others = elements.value.filter((e) => !selectedIds.value.has(e.id))
     console.log('[handleGroupDrag] snap targets (others) count', others.length)
 
-    const snapResult = computeSnapDelta(
-      [unionBbox, ...others],
-      '__union__',
-      0,
-      0,
-    )
+    const snapResult = computeSnapDelta([unionBbox, ...others], '__union__', 0, 0)
     console.log('[handleGroupDrag] snapResult', snapResult)
 
     snapGuides.value = snapResult.guides
     const finalDx = delta.dx + snapResult.dx
     const finalDy = delta.dy + snapResult.dy
-    console.log('[handleGroupDrag] finalDx/finalDy', { finalDx, finalDy, rounded: { dx: Math.round(finalDx), dy: Math.round(finalDy) } })
+    console.log('[handleGroupDrag] finalDx/finalDy', {
+      finalDx,
+      finalDy,
+      rounded: { dx: Math.round(finalDx), dy: Math.round(finalDy) },
+    })
 
     void designHandlers.moveElementWithDescendants({
       workspaceId,
@@ -1627,21 +1602,25 @@ const handleDragEnd = (): void => {
     extra: { previousSnapshotSize: 'reset to null' },
   })
   dragStartPositions = null
-  void history.capturePostState(
-    // For single-element drag, ids is implicit (just this element).
-    // For multi-element drag, ids has been captured. We pass an
-    // empty array as a safety net — capturePostState re-reads the
-    // live state from the store and diffs against the pre-state we
-    // captured above.
-    Array.from(selectedIds.value),
-  ).then(() => {
-    snapGuides.value = []
-  })
+  void history
+    .capturePostState(
+      // For single-element drag, ids is implicit (just this element).
+      // For multi-element drag, ids has been captured. We pass an
+      // empty array as a safety net — capturePostState re-reads the
+      // live state from the store and diffs against the pre-state we
+      // captured above.
+      Array.from(selectedIds.value),
+    )
+    .then(() => {
+      snapGuides.value = []
+    })
 }
 
-const handleCreateElement = (
-  body: { name: string; type: DesignElementApi['type']; html: string },
-): void => {
+const handleCreateElement = (body: {
+  name: string
+  type: DesignElementApi['type']
+  html: string
+}): void => {
   emit('createElement', body)
 }
 
@@ -1668,7 +1647,7 @@ const ZOOM_KEY_PREFIX = 'design-view-zoom-'
 const ZOOM_DEFAULT = 1.0
 const ZOOM_MIN = 0.1
 const ZOOM_MAX = 4.0
-const ZOOM_STEP = 0.1        // each toolbar button click
+const ZOOM_STEP = 0.1 // each toolbar button click
 const ZOOM_WHEEL_STEP = 0.05 // each Ctrl+wheel notch (Shift = ×4)
 
 const loadZoom = (itemId: string): number => {
@@ -1812,14 +1791,8 @@ const onPinchPointerDown = (event: PointerEvent): void => {
     currentY: event.clientY,
   })
   if (pinchPointers.size === 2) {
-    const [p1, p2] = [...pinchPointers.values()] as [
-      PinchPointer,
-      PinchPointer,
-    ]
-    pinchStartDistance = Math.hypot(
-      p2.startX - p1.startX,
-      p2.startY - p1.startY,
-    )
+    const [p1, p2] = [...pinchPointers.values()] as [PinchPointer, PinchPointer]
+    pinchStartDistance = Math.hypot(p2.startX - p1.startX, p2.startY - p1.startY)
     pinchStartZoom = zoom.value
   }
 }
@@ -1833,19 +1806,10 @@ const onPinchPointerMove = (event: PointerEvent): void => {
   // Two fingers starting at the same point gives distance=0; division
   // would explode. Treat as no-op until the user actually moves a finger.
   if (pinchStartDistance <= 0) return
-  const [p1, p2] = [...pinchPointers.values()] as [
-    PinchPointer,
-    PinchPointer,
-  ]
-  const currentDistance = Math.hypot(
-    p2.currentX - p1.currentX,
-    p2.currentY - p1.currentY,
-  )
+  const [p1, p2] = [...pinchPointers.values()] as [PinchPointer, PinchPointer]
+  const currentDistance = Math.hypot(p2.currentX - p1.currentX, p2.currentY - p1.currentY)
   const ratio = currentDistance / pinchStartDistance
-  const newZoom = Math.max(
-    ZOOM_MIN,
-    Math.min(ZOOM_MAX, pinchStartZoom * ratio),
-  )
+  const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchStartZoom * ratio))
   setZoom(newZoom)
 }
 
@@ -1895,13 +1859,20 @@ const handleCanvasWheel = (event: WheelEvent): void => {
 }
 
 // Restore zoom on design-item change (different localStorage key).
-watch(
-  () => effectiveItemId.value,
-  (newId) => {
-    zoom.value = newId ? loadZoom(newId) : ZOOM_DEFAULT
-  },
-  { immediate: true },
-)
+// Mount covers the initial item (the parent keys this component by
+// item id, so item switches remount); the prev-id guard covers
+// itemId prop changes on a reused instance.
+const prevZoomItemId = ref(effectiveItemId.value)
+onMounted(() => {
+  prevZoomItemId.value = effectiveItemId.value
+  zoom.value = effectiveItemId.value ? loadZoom(effectiveItemId.value) : ZOOM_DEFAULT
+})
+onUpdated(() => {
+  if (effectiveItemId.value !== prevZoomItemId.value) {
+    prevZoomItemId.value = effectiveItemId.value
+    zoom.value = effectiveItemId.value ? loadZoom(effectiveItemId.value) : ZOOM_DEFAULT
+  }
+})
 
 // ─── Page-size inputs were removed ──────────────────────────────────────
 //
@@ -1938,12 +1909,15 @@ watch(
     -->
     <div
       class="px-3 py-2 flex items-center gap-3 shrink-0"
-      style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);"
+      style="
+        border-bottom: 1px solid var(--color-border);
+        background-color: var(--semantic-sidebar-bg);
+      "
       data-testid="design-toolbar"
     >
       <div
         class="text-dense font-medium truncate"
-        style="color: var(--semantic-text-dim);"
+        style="color: var(--semantic-text-dim)"
         :title="item.name"
       >
         {{ item.name }}
@@ -1980,7 +1954,7 @@ watch(
     <div
       v-if="pagesLoading"
       class="flex-1 flex items-center justify-center text-body"
-      style="color: var(--semantic-text-dim);"
+      style="color: var(--semantic-text-dim)"
       data-testid="design-pages-loading"
     >
       Loading pages…
@@ -1990,7 +1964,7 @@ watch(
     <div
       v-else-if="pagesError"
       class="flex-1 flex items-center justify-center text-body"
-      style="color: rgb(248, 113, 113);"
+      style="color: rgb(248, 113, 113)"
       data-testid="design-pages-error"
     >
       Failed to load pages: {{ pagesError }}
@@ -2003,14 +1977,17 @@ watch(
       data-testid="design-pages-empty"
     >
       <div class="text-center">
-        <div class="text-display mb-2" style="color: var(--semantic-text-dim);" aria-hidden="true">▤</div>
-        <div class="text-body mb-4" style="color: var(--semantic-text-dim);">
-          No pages yet
+        <div class="text-display mb-2" style="color: var(--semantic-text-dim)" aria-hidden="true">
+          ▤
         </div>
+        <div class="text-body mb-4" style="color: var(--semantic-text-dim)">No pages yet</div>
         <button
           type="button"
           class="px-3 py-1.5 rounded-lg text-body font-medium"
-          style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+          style="
+            background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+            color: var(--color-bg);
+          "
           @click="handleAddPage"
         >
           + Add the first page
@@ -2021,21 +1998,24 @@ watch(
     <!-- ─── Main split (canvas + right sidebar) ──────────────────── -->
     <div v-else class="flex-1 flex min-h-0">
       <!-- Canvas column -->
-      <div
-        class="flex-1 flex flex-col min-w-0 min-h-0"
-        data-testid="design-canvas-column"
-      >
+      <div class="flex-1 flex flex-col min-w-0 min-h-0" data-testid="design-canvas-column">
         <!-- Canvas header bar -->
         <div
           class="px-3 py-2 flex items-center gap-3 shrink-0"
-          style="border-bottom: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);"
+          style="
+            border-bottom: 1px solid var(--color-border);
+            background-color: var(--semantic-sidebar-bg);
+          "
           data-testid="design-canvas-header"
         >
           <button
             v-if="!isPreviewMode"
             type="button"
             class="px-2 py-1 rounded text-dense font-medium"
-            style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+            style="
+              background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+              color: var(--color-bg);
+            "
             data-testid="design-add-element-button"
             @click="openAddElementDialog"
           >
@@ -2051,19 +2031,15 @@ watch(
           <div
             v-if="activePage"
             class="text-dense flex-1 truncate"
-            style="color: var(--semantic-text);"
+            style="color: var(--semantic-text)"
             :title="activePage.name"
           >
             {{ activePage.name }}
           </div>
-          <div
-            v-else
-            class="text-dense flex-1"
-            style="color: var(--semantic-text-dim);"
-          >
+          <div v-else class="text-dense flex-1" style="color: var(--semantic-text-dim)">
             (no page selected)
           </div>
-          <div class="text-dense" style="color: var(--semantic-text-dim);">
+          <div class="text-dense" style="color: var(--semantic-text-dim)">
             {{ elements.length }} element{{ elements.length === 1 ? '' : 's' }}
           </div>
           <!--
@@ -2076,18 +2052,23 @@ watch(
           <button
             type="button"
             class="px-2 py-0.5 rounded text-dense font-medium transition-colors"
-            :style="isPreviewMode
-              ? 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border: none;'
-              : 'color: var(--semantic-text); border: 1px solid var(--color-border); opacity: 0.8;'"
-            :title="isPreviewMode
-              ? 'Exit Preview mode (shortcut: Esc)'
-              : 'Preview the mockup — type into inputs, click buttons (shortcut: Cmd/Ctrl+P)'"
+            :style="
+              isPreviewMode
+                ? 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border: none;'
+                : 'color: var(--semantic-text); border: 1px solid var(--color-border); opacity: 0.8;'
+            "
+            :title="
+              isPreviewMode
+                ? 'Exit Preview mode (shortcut: Esc)'
+                : 'Preview the mockup — type into inputs, click buttons (shortcut: Cmd/Ctrl+P)'
+            "
             :aria-label="isPreviewMode ? 'Exit Preview mode' : 'Enter Preview mode'"
             :aria-pressed="isPreviewMode"
             data-testid="design-preview-toggle"
             @click="togglePreviewMode"
           >
-            <span aria-hidden="true">{{ isPreviewMode ? '■ ' : '▶ ' }}</span>Preview
+            <span aria-hidden="true">{{ isPreviewMode ? '■ ' : '▶ ' }}</span
+            >Preview
           </button>
           <div
             class="flex items-center gap-1 shrink-0"
@@ -2097,46 +2078,54 @@ watch(
             <button
               type="button"
               class="px-1.5 py-0.5 rounded text-dense font-medium hover:opacity-100 opacity-80"
-              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border)"
               aria-label="Zoom out (Ctrl+wheel down)"
               title="Zoom out (Ctrl+wheel down)"
               data-testid="design-zoom-out"
               @click="zoomOut"
-            >−</button>
+            >
+              −
+            </button>
             <button
               type="button"
               class="px-2 py-0.5 rounded text-dense font-medium hover:opacity-100 opacity-80 min-w-[3.5rem] text-center"
-              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border)"
               :title="`Reset zoom (currently ${Math.round(zoom * 100)}%)`"
               aria-label="Reset zoom"
               data-testid="design-zoom-reset"
               @click="zoomReset"
-            >{{ Math.round(zoom * 100) }}%</button>
+            >
+              {{ Math.round(zoom * 100) }}%
+            </button>
             <button
               type="button"
               class="px-1.5 py-0.5 rounded text-dense font-medium hover:opacity-100 opacity-80"
-              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border)"
               aria-label="Fit page to viewport (shortcut: F or Shift+1)"
               title="Fit page to viewport (F or Shift+1)"
               data-testid="design-zoom-fit"
               @click="zoomFit"
-            >⛶</button>
+            >
+              ⛶
+            </button>
             <button
               type="button"
               class="px-1.5 py-0.5 rounded text-dense font-medium hover:opacity-100 opacity-80"
-              style="color: var(--semantic-text); border: 1px solid var(--color-border);"
+              style="color: var(--semantic-text); border: 1px solid var(--color-border)"
               aria-label="Zoom in (Ctrl+wheel up)"
               title="Zoom in (Ctrl+wheel up)"
               data-testid="design-zoom-in"
               @click="zoomIn"
-            >+</button>
+            >
+              +
+            </button>
           </div>
         </div>
 
         <!-- Canvas viewport -->
         <div
           class="flex-1 overflow-auto min-h-0"
-          style="background-color: var(--color-bg-m2); touch-action: pan-x pan-y;"
+          style="background-color: var(--color-bg-m2); touch-action: pan-x pan-y"
           data-testid="design-canvas-scroll-container"
           @click="handleCanvasClick"
           @wheel="handleCanvasWheel"
@@ -2225,7 +2214,7 @@ watch(
             <div
               v-if="elements.length === 0"
               class="absolute inset-0 flex items-center justify-center text-body pointer-events-none"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
               data-testid="design-canvas-empty"
             >
               <div class="text-center">
@@ -2270,10 +2259,7 @@ watch(
         data-testid="design-right-sidebar"
       >
         <!-- Layers (top, flexible height by layersHeightRatio) -->
-        <div
-          class="min-h-0 overflow-hidden"
-          :style="{ height: `${layersHeightRatio * 100}%` }"
-        >
+        <div class="min-h-0 overflow-hidden" :style="{ height: `${layersHeightRatio * 100}%` }">
           <LayersPanel
             :elements="elements"
             :selected-ids="Array.from(selectedIds)"

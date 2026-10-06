@@ -11,7 +11,7 @@
   in component state is unreachable by all three.
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   applySkillEvalResult,
@@ -152,23 +152,39 @@ onUnmounted(() => {
   unsubscribe = null
 })
 
-watch(
-  () => props.sessionId,
-  () => {
+// Reload when the session or the selected run changes: mount covers the
+// initial load, prev-value guards on update cover both. The run branch
+// keeps the select+load pairing the old watcher had — a param echo of
+// our own selectRun (param already equals selectedRunId) stays load-free.
+const readEvalRun = () => (typeof route.query.eval_run === 'string' ? route.query.eval_run : '')
+// Subscribed in the template (data-eval-run below) so back/forward
+// navigation that changes ?eval_run= re-renders this panel — that
+// render is what fires the onUpdated guard above. Row slots alone
+// would not subscribe the panel itself (same trap as ChatsList's
+// data-workspace-scope binding).
+const evalRunParam = computed(readEvalRun)
+const prevSessionId = ref(props.sessionId)
+const prevEvalRun = ref(readEvalRun())
+onMounted(() => {
+  prevSessionId.value = props.sessionId
+  prevEvalRun.value = readEvalRun()
+})
+onUpdated(() => {
+  const run = readEvalRun()
+  if (props.sessionId !== prevSessionId.value) {
+    prevSessionId.value = props.sessionId
+    prevEvalRun.value = run
     void load()
-  },
-)
-
-watch(
-  () => route.query.eval_run,
-  (v) => {
-    const next = typeof v === 'string' ? v : ''
-    if (next !== selectedRunId.value) {
-      selectedRunId.value = next
+    return
+  }
+  if (run !== prevEvalRun.value) {
+    prevEvalRun.value = run
+    if (run !== selectedRunId.value) {
+      selectedRunId.value = run
       void load()
     }
-  },
-)
+  }
+})
 
 // ─── derived ────────────────────────────────────────────────────────────
 
@@ -199,7 +215,11 @@ const hasAnything = computed(() => runs.value.length > 0 || results.value.length
 </script>
 
 <template>
-  <div class="flex flex-col h-full min-h-0" data-testid="skill-evals-panel">
+  <div
+    class="flex flex-col h-full min-h-0"
+    data-testid="skill-evals-panel"
+    :data-eval-run="evalRunParam"
+  >
     <header class="flex items-center justify-between px-3 py-2 border-b border-neutral-800">
       <h2 class="text-sm font-medium">Skill Evals</h2>
       <div class="flex items-center gap-2">

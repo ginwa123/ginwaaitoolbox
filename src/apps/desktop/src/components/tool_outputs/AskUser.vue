@@ -50,7 +50,7 @@
   Wireframe: docs/wireframes/ask-user-tool.html
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import { tryUnwrapToolOutput } from '../../helpers/unwrapToolOutput'
@@ -365,6 +365,8 @@ async function submit(skip: boolean): Promise<void> {
   const nextState = (res.status as ViewState) ?? (skip ? 'skipped' : 'answered')
   locallyResolved.value = nextState === 'pending' ? null : nextState
   if (!skip) locallyAnswered.value = String(body.answer ?? '')
+  // Leaving `pending` drops the card-level keydown listener right away.
+  window.removeEventListener('keydown', onKeydown)
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -458,8 +460,16 @@ onMounted(() => {
   }
 })
 
-watch(waiting, (isWaiting) => {
-  if (isWaiting) window.addEventListener('keydown', onKeydown)
+// Card-level Enter/Escape/number shortcuts live only while pending.
+// The submit handler above removes the listener when it resolves the
+// card; the prev-value guard below covers parent-driven transitions
+// (a fresh pending question arriving via props on an existing card).
+const prevWaiting = ref(waiting.value)
+onUpdated(() => {
+  const now = waiting.value
+  if (now === prevWaiting.value) return
+  prevWaiting.value = now
+  if (now) window.addEventListener('keydown', onKeydown)
   else window.removeEventListener('keydown', onKeydown)
 })
 

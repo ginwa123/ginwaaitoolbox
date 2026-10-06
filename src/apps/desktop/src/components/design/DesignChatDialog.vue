@@ -45,7 +45,7 @@
     - backdrop: rgba(0, 0, 0, 0.65) with backdrop-blur
 -->
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onMounted, onUpdated, ref } from 'vue'
 import ChatView from '../views/ChatView.vue'
 import type { Task } from '../../stores/workspaces'
 
@@ -89,15 +89,19 @@ const handleKeydown = (e: KeyboardEvent) => {
 // (Do NOT auto-focus the chat input — would steal typing position
 // from a previously-open chat.)
 const dialogRootRef = ref<HTMLDivElement | null>(null)
-watch(
-  () => props.show,
-  async (open) => {
-    if (open) {
-      await nextTick()
-      dialogRootRef.value?.focus()
-    }
-  },
-)
+const focusOnOpen = async () => {
+  await nextTick()
+  dialogRootRef.value?.focus()
+}
+// Open guard: focus on mount-with-show plus closed->open updates.
+const wasShownChat = ref(props.show)
+onMounted(() => {
+  if (props.show) void focusOnOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShownChat.value) void focusOnOpen()
+  wasShownChat.value = props.show
+})
 
 // Header title: prefer the pageName (matches the FK pair name pattern)
 // when set, otherwise fall back to the task name. Mirrors the
@@ -133,7 +137,11 @@ const headerTitle = (): string => {
       -->
       <div
         class="absolute inset-0"
-        style="background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);"
+        style="
+          background: rgba(0, 0, 0, 0.65);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+        "
         data-testid="design-chat-dialog-backdrop"
         @click="closeDialog"
       ></div>
@@ -178,7 +186,7 @@ const headerTitle = (): string => {
             background: linear-gradient(
               90deg,
               rgba(137, 146, 167, 0.18),
-              rgba(142, 164, 162, 0.10) 70%,
+              rgba(142, 164, 162, 0.1) 70%,
               transparent
             );
             border-bottom: 1px solid var(--color-border);
@@ -207,7 +215,7 @@ const headerTitle = (): string => {
           </div>
           <h3
             class="text-lead font-semibold truncate flex-1"
-            style="color: var(--semantic-text);"
+            style="color: var(--semantic-text)"
             data-testid="design-chat-dialog-title"
           >
             {{ headerTitle() }}
@@ -224,8 +232,20 @@ const headerTitle = (): string => {
             aria-label="Close chat"
             title="Close (Esc)"
             @click="closeDialog"
-            @mouseover="(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(196, 116, 110, 0.18)'; (e.currentTarget as HTMLElement).style.color = 'var(--color-red)'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(196, 116, 110, 0.4)' }"
-            @mouseleave="(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'var(--semantic-text-muted)'; (e.currentTarget as HTMLElement).style.borderColor = 'transparent' }"
+            @mouseover="
+              (e) => {
+                ;(e.currentTarget as HTMLElement).style.background = 'rgba(196, 116, 110, 0.18)'
+                ;(e.currentTarget as HTMLElement).style.color = 'var(--color-red)'
+                ;(e.currentTarget as HTMLElement).style.borderColor = 'rgba(196, 116, 110, 0.4)'
+              }
+            "
+            @mouseleave="
+              (e) => {
+                ;(e.currentTarget as HTMLElement).style.background = 'transparent'
+                ;(e.currentTarget as HTMLElement).style.color = 'var(--semantic-text-muted)'
+                ;(e.currentTarget as HTMLElement).style.borderColor = 'transparent'
+              }
+            "
           >
             ✕
           </button>

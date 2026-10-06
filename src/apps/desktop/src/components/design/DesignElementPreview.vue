@@ -51,7 +51,7 @@
       Vue's reactivity keeps the srcdoc in sync with `props.html`.
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUpdated, ref } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -101,9 +101,7 @@ const emit = defineEmits<{
 // Prepending a stylesheet that forces html/body to fill the iframe
 // makes percentage-based layouts (and position:relative containing
 // blocks) behave as users expect.
-const iframeHtml = computed(
-  () => `<style>html,body{margin:0;height:100%;}</style>${props.html}`,
-)
+const iframeHtml = computed(() => `<style>html,body{margin:0;height:100%;}</style>${props.html}`)
 
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 
@@ -129,17 +127,14 @@ const onIframeLoad = (): void => {
 
 // Re-attach the listener when `editable` flips from false to true
 // (the user just opened the edit panel). The load event fires only
-// once per srcdoc change, so this is necessary for the
-// readonly→editable transition.
-watch(
-  () => props.editable,
-  (next, prev) => {
-    if (next && !prev) {
-      // nextTick: the srcdoc has already loaded; attach directly.
-      onIframeLoad()
-    }
-  },
-)
+// once per srcdoc change, so a prev-value guard on update covers the
+// readonly→editable transition; onIframeLoad itself already guards on
+// `props.editable` for the mount path.
+const prevEditable = ref(props.editable)
+onUpdated(() => {
+  if (props.editable && !prevEditable.value) onIframeLoad()
+  prevEditable.value = props.editable
+})
 </script>
 
 <template>

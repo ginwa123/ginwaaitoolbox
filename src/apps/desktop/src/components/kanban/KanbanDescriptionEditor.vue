@@ -40,7 +40,7 @@
     See docs/superpowers/plans/2026-08-06-kanban-no-base64-in-desc.md.
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, onUpdated } from 'vue'
 import FilePreview, { type PreviewFile } from '../file/FilePreview.vue'
 import UiIcon from '../ui/UiIcon.vue'
 import * as api from '../../api'
@@ -82,13 +82,18 @@ const emit = defineEmits<{
 
 // ─── State ──────────────────────────────────────────────────────────────
 
+// Local editable copy of the prop (uncontrolled between parent syncs:
+// typing works even when the parent does not round-trip our emits, e.g.
+// in specs that mount without v-model). Every local write goes through
+// commitText so the parent stays in sync and the rehydrate guard below
+// recognises our own keystrokes' round-trip echo.
 const text = ref(props.modelValue)
-// Tracks the last value seen from EITHER side (local edit or prop).
-// The modelValue watcher below uses it to tell an echo of our own emit
-// (parent round-tripped our text back) from a genuine external change
-// (dialog re-open with new images). Updated here on local edits so the
-// echo check stays correct without a second watcher.
 let lastSeenText = props.modelValue
+const commitText = (v: string): void => {
+  text.value = v
+  lastSeenText = v
+  emit('update:modelValue', v)
+}
 const previewFiles = ref<PreviewFile[]>([])
 // Files staged in CREATE mode (taskId='') — uploaded by the host AFTER
 // the task exists. Mirrors previewFiles but exists only for the
@@ -108,22 +113,6 @@ const filePickerRef = ref<HTMLElement | null>(null)
 
 // Caps
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024
-
-// Mirror the prop into a local ref so the textarea is editable.
-watch(
-  () => props.modelValue,
-  (v) => {
-    if (v !== text.value) text.value = v
-  },
-)
-
-// Emit on every text edit (v-model out). Also records the value as seen
-// so the modelValue watcher below recognises the parent's round-trip
-// echo and does not rehydrate previews for our own keystrokes.
-watch(text, (v) => {
-  lastSeenText = v
-  emit('update:modelValue', v)
-})
 
 const counterText = computed<string>(() =>
   props.maxLength != null
@@ -300,9 +289,9 @@ const selectFile = (file: FileEntry) => {
   const atMatch = before.match(/@([\w./\\:-]*)$/)
   const insertText = file.path
   if (atMatch && atMatch.index !== undefined) {
-    text.value = before.slice(0, atMatch.index) + insertText + after
+    commitText(before.slice(0, atMatch.index) + insertText + after)
   } else {
-    text.value = before + insertText + after
+    commitText(before + insertText + after)
   }
   showFilePicker.value = false
   fileQuery.value = ''
@@ -368,7 +357,7 @@ const handleKeydown = (e: KeyboardEvent) => {
 
 const onTextareaInput = (event: Event) => {
   const target = event.target as HTMLTextAreaElement
-  text.value = target.value
+  commitText(target.value)
   handleTextareaInput()
   autoResize(event)
 }
@@ -544,7 +533,7 @@ const handlePreviewUpdate = (newFiles: PreviewFile[]) => {
     const fileName = r.file.name
     const escapedName = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const blockRegex = new RegExp(`!\\[${escapedName}\\]\\([^)]+\\)`, 'g')
-    text.value = text.value.replace(blockRegex, '').replace(/[ \t]+(\n|$)/g, '$1')
+    commitText(text.value.replace(blockRegex, '').replace(/[ \t]+(\n|$)/g, '$1'))
     // Drop the corresponding entry from pendingFiles (create mode).
     // The user's intent on removing a preview is "don't upload this
     // either" — otherwise the host would silently upload a file the
@@ -635,23 +624,33 @@ onMounted(() => {
   rehydratePreviews()
 })
 
-// ─── Watch modelValue for external image changes (e.g. dialog re-open) ──
+// ─── Rehydrate on external modelValue changes (e.g. dialog re-open) ──
 // We only re-hydrate when the modelValue grows (new image added externally).
-// `lastSeenText` is declared with the state above and updated in the
-// text-emit watcher, so this is the single place that reads it.
-watch(
-  () => props.modelValue,
-  (v) => {
-    if (v === lastSeenText) return
-    lastSeenText = v
-    // Only re-hydrate when the new value contains image references
-    // (inline data: OR server-side attachment URLs) and the preview
-    // list is currently empty (avoids duplicate previews).
-    if (previewFiles.value.length === 0 && /!\[.*?\]\(((data:image\/|\/api\/))/.test(v)) {
-      rehydratePreviews()
-    }
-  },
-)
+// `lastSeenText` is set by the bridge setter above, so the parent's
+// round-trip echo of our own keystrokes is recognised and skipped here.
+const prevModelValue = ref(props.modelValue)
+onUpdated(() => {
+  const v = props.modelValue
+  if (v === prevModelValue.value) return
+  prevModelValue.value = v
+  // Mirror externally-changed props into the editable copy (mount seeds
+  // it; this covers dialog re-opens with new content). The echo emit
+  // preserves the old mirror-watcher's cascade; lastSeenText updates
+  // below so the echo check sees pre-mirror state, exactly like the
+  // old watcher ordering did.
+  if (v !== text.value) {
+    text.value = v
+    emit('update:modelValue', v)
+  }
+  if (v === lastSeenText) return
+  lastSeenText = v
+  // Only re-hydrate when the new value contains image references
+  // (inline data: OR server-side attachment URLs) and the preview
+  // list is currently empty (avoids duplicate previews).
+  if (previewFiles.value.length === 0 && /!\[.*?\]\(((data:image\/|\/api\/))/.test(v)) {
+    rehydratePreviews()
+  }
+})
 
 const autoResize = (event: Event) => {
   const target = event.target as HTMLTextAreaElement

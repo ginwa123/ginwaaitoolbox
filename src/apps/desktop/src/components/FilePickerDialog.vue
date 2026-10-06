@@ -34,7 +34,7 @@
   only trigger on drive-letter / UNC prefixes.
 -->
 <script setup lang="ts" generic="T">
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onUpdated, onBeforeUnmount } from 'vue'
 import { useRecentFoldersStore } from '../stores/recentFolders'
 import { formatRelativeTime } from '../helpers/relativeTime'
 import UiIcon from './ui/UiIcon.vue'
@@ -146,7 +146,15 @@ const selectedPath = ref<string>(props.selectedPath || '')
 const highlightedIndex = ref<number>(-1)
 const searchQuery = ref('')
 const filterMode = ref<FilterMode>('all')
-const showHiddenLocal = ref(showHiddenDefault.value)
+// Local toggle with prop default. The override captures user toggles;
+// opening the dialog clears it so each open starts from the prop.
+const showHiddenOverride = ref<boolean | null>(null)
+const showHiddenLocal = computed<boolean>({
+  get: () => showHiddenOverride.value ?? showHiddenDefault.value,
+  set: (v: boolean) => {
+    showHiddenOverride.value = v
+  },
+})
 // ── Address-bar editing state ──────────────────────────────────────────
 // When isPathEditing is true the clickable breadcrumb is replaced with a
 // single text input pre-filled with currentPath. Enter navigates to
@@ -498,6 +506,9 @@ function handleSelect() {
   // the last gate before a picked path is persisted as
   // workspace_items.path and flows into sessions.cwd and the agent prompt.
   if (!isAbsPath(path)) return
+  // Record every selection in the recent store (Recent rows AND Browse
+  // rows both go through handleSelect). The store dedupes by path.
+  recentStore.addRecent(path)
   emit('select', path)
   // Note: Vue 3.5 auto-defaults `boolean?` to `false`, so the only way to opt
   // INTO close-on-select is to explicitly pass `closeOnSelect={true}`. If the
@@ -554,11 +565,6 @@ const recentStore = useRecentFoldersStore()
 const recentList = computed(() => recentStore.list())
 const recentCount = computed(() => recentList.value.length)
 
-// Record every selection in the recent store (Recent rows AND Browse rows
-// both go through handleSelect). The store dedupes by path.
-watch(effectiveSelection, (path) => {
-  if (path) recentStore.addRecent(path)
-})
 
 function handleRecentRowClick(path: string): void {
   selectedPath.value = path
@@ -819,7 +825,7 @@ async function openDialog() {
   searchQuery.value = ''
   highlightedIndex.value = -1
   filterMode.value = 'all'
-  showHiddenLocal.value = showHiddenDefault.value
+  showHiddenOverride.value = null
   isPathEditing.value = false
   pathDraft.value = ''
   loadError.value = null
@@ -850,32 +856,33 @@ function closeDialog() {
   }
 }
 
-watch(
-  () => props.modelValue,
-  (show) => {
-    if (show) {
-      previouslyFocused = document.activeElement as HTMLElement
-      document.body.style.overflow = 'hidden'
-      openDialog()
-    } else {
-      closeDialog()
-    }
-  },
-  // `immediate: true` so openDialog runs on mount when the parent
-  // created this dialog with modelValue already true (the common
-  // v-if + v-model="show" pattern). Without this, the watcher is
-  // lazy and never fires for the initial value — the dialog renders
-  // but contentEntries / treeEntriesCache stay empty, so the user
-  // sees "No folders / Empty folder" until they navigate manually.
-  { immediate: true },
-)
+// Open guard: run openDialog on mount when the parent created this
+// dialog with modelValue already true (the common v-if +
+// v-model="show" pattern) plus closed->open updates. Without the mount
+// run the dialog renders but contentEntries / treeEntriesCache stay
+// empty, so the user sees "No folders / Empty folder" until they
+// navigate manually.
+const wasOpen = ref(props.modelValue)
+const syncModelValue = (show: boolean) => {
+  if (show) {
+    previouslyFocused = document.activeElement as HTMLElement
+    document.body.style.overflow = 'hidden'
+    void openDialog()
+  } else {
+    closeDialog()
+  }
+}
+onMounted(() => {
+  wasOpen.value = props.modelValue
+  syncModelValue(props.modelValue)
+})
+onUpdated(() => {
+  if (props.modelValue !== wasOpen.value) {
+    wasOpen.value = props.modelValue
+    syncModelValue(props.modelValue)
+  }
+})
 
-watch(
-  () => props.showHidden,
-  (v) => {
-    showHiddenLocal.value = v ?? false
-  },
-)
 
 onBeforeUnmount(() => {
   document.body.style.overflow = ''

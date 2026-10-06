@@ -17,7 +17,7 @@
  * error yields an empty list and the widget degrades to a free-text
  * search box, so the user can still type a ref by hand.
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue'
 
 import { listGitBranches, type GitBranchEntry } from '@/api'
 import UiIcon from '../ui/UiIcon.vue'
@@ -119,8 +119,7 @@ const move = (delta: number) => {
   const n = filtered.value.length
   if (n === 0) return
   const base = activeIndex.value
-  activeIndex.value =
-    base < 0 ? (delta > 0 ? 0 : n - 1) : (base + delta + n) % n
+  activeIndex.value = base < 0 ? (delta > 0 ? 0 : n - 1) : (base + delta + n) % n
 }
 
 const commitActive = () => {
@@ -158,19 +157,19 @@ const onDocumentMouseDown = (event: MouseEvent) => {
 }
 
 onMounted(() => document.addEventListener('mousedown', onDocumentMouseDown))
-onBeforeUnmount(() =>
-  document.removeEventListener('mousedown', onDocumentMouseDown),
-)
+onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseDown))
 
 // A new project root invalidates the cache; the next open refetches.
-watch(
-  () => props.repoPath,
-  () => {
+// Runs on update with a prev-value guard instead of a watcher.
+const prevRepoPath = ref(props.repoPath)
+onUpdated(() => {
+  if (props.repoPath !== prevRepoPath.value) {
+    prevRepoPath.value = props.repoPath
     loadedFor.value = null
     loadAttempted.value = false
     branches.value = []
-  },
-)
+  }
+})
 </script>
 
 <template>
@@ -196,27 +195,21 @@ watch(
       <span class="font-medium">Base branch</span>
       <span
         class="font-mono truncate max-w-[200px] inline-block align-middle"
-        style="color: var(--semantic-text-muted);"
+        style="color: var(--semantic-text-muted)"
       >
         {{ selected || 'HEAD (default)' }}
       </span>
-      <span
-        class="text-micro shrink-0"
-        style="color: var(--semantic-text-dim);"
-      >▾</span>
+      <span class="text-micro shrink-0" style="color: var(--semantic-text-dim)">▾</span>
     </button>
 
     <div
       v-if="open"
       class="absolute top-full mt-1 left-0 w-[320px] max-w-[80vw] rounded-lg shadow-lg z-30 overflow-hidden"
-      style="
-        background-color: var(--semantic-card-bg);
-        border: 1px solid var(--color-border);
-      "
+      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
       data-testid="git-base-branch-select-dropdown"
       @click.stop
     >
-      <div class="p-2" style="border-bottom: 1px solid var(--color-border);">
+      <div class="p-2" style="border-bottom: 1px solid var(--color-border)">
         <input
           ref="searchRef"
           type="text"
@@ -237,7 +230,7 @@ watch(
         <button
           type="button"
           class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center justify-between gap-2"
-          style="color: var(--semantic-text);"
+          style="color: var(--semantic-text)"
           data-testid="git-base-branch-select-clear"
           @click="select('')"
         >
@@ -248,7 +241,7 @@ watch(
         <div
           v-if="loading"
           class="px-3 py-2 text-dense"
-          style="color: var(--semantic-text-muted);"
+          style="color: var(--semantic-text-muted)"
           data-testid="git-base-branch-select-loading"
         >
           Loading branches…
@@ -259,10 +252,7 @@ watch(
             v-if="customRef !== ''"
             type="button"
             class="w-full text-left px-3 py-2 text-dense font-mono hover:opacity-80 flex items-center gap-2"
-            style="
-              color: var(--semantic-text);
-              border-top: 1px solid var(--color-border);
-            "
+            style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
             data-testid="git-base-branch-select-custom"
             @click="select(customRef)"
           >
@@ -277,22 +267,19 @@ watch(
             :style="{
               color: 'var(--semantic-text)',
               borderTop: '1px solid var(--color-border)',
-              backgroundColor:
-                idx === activeIndex ? 'var(--semantic-sidebar-bg)' : 'transparent',
+              backgroundColor: idx === activeIndex ? 'var(--semantic-sidebar-bg)' : 'transparent',
             }"
             data-testid="git-base-branch-select-item"
             @click="select(branch.name)"
           >
             <span class="truncate">
               {{ branch.name }}
-              <span
-                v-if="branch.is_default"
-                style="color: var(--semantic-text-dim);"
-              >· default</span>
-              <span
-                v-else-if="branch.is_current"
-                style="color: var(--semantic-text-dim);"
-              >· current</span>
+              <span v-if="branch.is_default" style="color: var(--semantic-text-dim)"
+                >· default</span
+              >
+              <span v-else-if="branch.is_current" style="color: var(--semantic-text-dim)"
+                >· current</span
+              >
             </span>
             <span v-if="selected === branch.name">✓</span>
           </button>
@@ -300,7 +287,7 @@ watch(
           <div
             v-if="filtered.length === 0"
             class="px-3 py-2 text-dense"
-            style="color: var(--semantic-text-muted);"
+            style="color: var(--semantic-text-muted)"
             data-testid="git-base-branch-select-empty"
           >
             {{
