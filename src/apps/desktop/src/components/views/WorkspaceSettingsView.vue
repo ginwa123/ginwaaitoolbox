@@ -12,8 +12,8 @@
 // The query key is `section`, not `tab`: `?tab=` belongs to browser tab-mode
 // (`helpers/tabTarget.ts`, `stores/tabs.ts`), and reusing it here would make
 // "which browser tab" and "which settings section" the same value.
-import { computed, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { useSecretsStore } from '../../stores/secrets'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import SecretsSection from '../workspace/SecretsSection.vue'
@@ -114,14 +114,27 @@ const itemCount = computed<number>(() => {
 // Fetch per workspace, and only when there IS one. `reset()` on every id
 // change is what stops one workspace's secrets (or its failure banner) from
 // being painted under another workspace's header.
-watch(
-  workspaceId,
-  (id) => {
-    secretsStore.reset()
-    if (id) void secretsStore.fetchSecrets(id)
-  },
-  { immediate: true },
-)
+//
+// A navigation guard, not a `watch()`: new watchers are banned
+// (local/no-watch) — reacting must live in the event handler that caused
+// the change, and a workspace switch IS a navigation.
+function loadSecretsFor(id: string): void {
+  secretsStore.reset()
+  if (id) void secretsStore.fetchSecrets(id)
+}
+
+onMounted(() => {
+  loadSecretsFor(workspaceId.value)
+})
+
+onBeforeRouteUpdate((to) => {
+  const raw = to.params.workspaceId
+  const next = typeof raw === 'string' ? raw : ''
+  // Query-only navigations (e.g. `?section=` tab switches) reuse this
+  // component too — refetching there would wipe the list mid-click.
+  if (next === workspaceId.value) return
+  loadSecretsFor(next)
+})
 
 /**
  * Hand a new credential to the store, which forwards it to the API and
