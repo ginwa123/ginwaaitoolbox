@@ -20,7 +20,7 @@
             delete()
 -->
 <script setup lang="ts">
-import { ref, watch, nextTick, computed, onBeforeUnmount } from 'vue'
+import { ref, nextTick, computed, onBeforeUnmount } from 'vue'
 import UiIcon from '../ui/UiIcon.vue'
 import type { UiIconName } from '../ui/icons'
 
@@ -133,28 +133,20 @@ const handleKeydown = (event: KeyboardEvent) => {
 
 // Seed the name field on first render (so a rename modal opened with
 // show=true at mount time has the column's name pre-filled, not an
-// empty string), and reset + refocus on every subsequent open.
-// Mirrors the AddKanbanDialog / AddItemDialog pattern. The
-// `immediate: true` flag is critical — without it the watcher never
-// fires on first render (Vue's watch defaults to skip-the-current-
-// value), so the rename input would open blank.
+// empty string), and reset + refocus on every subsequent open via
+// the Transition's before-enter hook.
 name.value = props.initialName ?? ''
-watch(
-  () => props.show,
-  async (show) => {
-    if (show) {
-      name.value = props.initialName ?? ''
-      description.value = props.initialDescription ?? ''
-      await nextTick()
-      // Focus the name input when it exists; in delete mode there is
-      // no input to focus, but focusing the dialog itself is harmless.
-      if (showNameInput.value) {
-        nameInput.value?.focus()
-        nameInput.value?.select()
-      }
-    }
-  },
-)
+const handleOpen = async () => {
+  name.value = props.initialName ?? ''
+  description.value = props.initialDescription ?? ''
+  await nextTick()
+  // Focus the name input when it exists; in delete mode there is
+  // no input to focus, but focusing the dialog itself is harmless.
+  if (showNameInput.value) {
+    nameInput.value?.focus()
+    nameInput.value?.select()
+  }
+}
 
 onBeforeUnmount(() => {
   document.body.style.overflow = ''
@@ -163,7 +155,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <Transition name="kanban-column-editor-modal">
+    <Transition name="kanban-column-editor-modal" @before-enter="handleOpen">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"

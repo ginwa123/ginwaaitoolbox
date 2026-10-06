@@ -35,7 +35,7 @@
     (Chunk 4, Task 4.1)
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount } from 'vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
 import UiIcon from '../ui/UiIcon.vue'
@@ -152,26 +152,25 @@ const onDocumentClick = (e: MouseEvent) => {
 
 // ─── Lifecycle ────────────────────────────────────────────────────────
 
-watch(
-  () => props.show,
-  async (show) => {
-    if (show) {
-      sourceItemId.value = ''
-      mode.value = 'replace'
-      sourceColumns.value = []
-      const first = availableSources.value[0]
-      if (first) {
-        sourceItemId.value = first.id
-        void loadSourceColumns(first.id)
-      }
-      sourceDropdownOpen.value = false
-      await nextTick()
-      document.addEventListener('click', onDocumentClick)
-    } else {
-      document.removeEventListener('click', onDocumentClick)
-    }
-  },
-)
+// Reset + preselect on every open (Transition before-enter) and detach
+// the outside-click listener after close (Transition after-leave).
+// onBeforeUnmount below remains as the unmount safety net.
+const handleOpen = async () => {
+  sourceItemId.value = ''
+  mode.value = 'replace'
+  sourceColumns.value = []
+  const first = availableSources.value[0]
+  if (first) {
+    sourceItemId.value = first.id
+    void loadSourceColumns(first.id)
+  }
+  sourceDropdownOpen.value = false
+  await nextTick()
+  document.addEventListener('click', onDocumentClick)
+}
+const handleCloseLeave = () => {
+  document.removeEventListener('click', onDocumentClick)
+}
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocumentClick)
@@ -180,7 +179,7 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <Transition name="copy-kanban-spec-modal">
+    <Transition name="copy-kanban-spec-modal" @before-enter="handleOpen" @after-leave="handleCloseLeave">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"

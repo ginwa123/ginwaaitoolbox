@@ -15,7 +15,7 @@
   Task: task_1787408958280_1
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import type { AgentSystemPromptRow } from '../../api'
 
 const props = withDefaults(
@@ -65,27 +65,21 @@ const handleKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Escape' && !props.busy) handleClose()
 }
 
-watch(
-  () => props.show,
-  async (show) => {
-    if (show) {
-      // Populate from the row in edit mode; blank in add mode.
-      title.value = props.row?.title ?? ''
-      content.value = props.row?.content ?? ''
-      await nextTick()
-      titleInput.value?.focus()
-    }
-  },
-  // immediate: the dialog can be mounted with show=true already set
-  // (AppLayout renders it v-if'd on item_type, not on show), so the
-  // watcher must also run for the initial value.
-  { immediate: true },
-)
+// Populate on every open. Runs as the Transition's before-enter hook,
+// which also covers the mount-with-show=true case the old
+// { immediate: true } watcher handled.
+const handleOpen = async () => {
+  // Populate from the row in edit mode; blank in add mode.
+  title.value = props.row?.title ?? ''
+  content.value = props.row?.content ?? ''
+  await nextTick()
+  titleInput.value?.focus()
+}
 </script>
 
 <template>
   <Teleport to="body">
-    <Transition name="agent-system-prompt-modal">
+    <Transition name="agent-system-prompt-modal" @before-enter="handleOpen">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
