@@ -80,6 +80,8 @@ pub const save_memory = memory;
 pub const load_memory = memory;
 pub const add_mcp_server = @import("modules/agent/tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool
 pub const read_workspace_session_tool = @import("modules/agent/tools/read_workspace_session.zig");
+// Workspace credential discovery: names only, never a value.
+pub const list_secrets = @import("modules/agent/tools/list_secrets.zig");
 /// `add_document` / `edit_document` agent tools (Migration 098). The
 /// module resolves its own workspace from the calling session, so the
 /// tool schema deliberately carries no `workspace_id` parameter.
@@ -215,6 +217,11 @@ pub const documents_store = @import("agentic_loop/documents_store.zig");
 /// obey ONE scoping rule — and so the database, not a directory walk, is
 /// the only place a skill body lives.
 pub const skills_store = @import("agentic_loop/skills_store.zig");
+/// Workspace-scoped secret storage (Migration 103). Every function takes
+/// `workspace_id` as a parameter that appears in the `WHERE` clause, and
+/// `listSecretNames` / `listSecrets` never select the value column — only
+/// `loadSecretValues` does, for dispatch-time substitution.
+pub const secrets_store = @import("agentic_loop/secrets_store.zig");
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // Storage layer for the per-session markdown task plan (savePlan / getPlan / getPlanOpt).
 pub const session_plan = @import("agentic_loop/session_plan.zig");
@@ -276,6 +283,23 @@ test {
     // mcp_http above — the `pub const` re-export alone doesn't pull tests.
     _ = @import("agentic_loop/lua_bindings.zig");
     _ = @import("agentic_loop/hooks.zig");
+    // Workspace-scoped secret storage (Migration 103): impl + inline tests
+    // in one file. Same discovery workaround as the Lua hooks above — the
+    // `pub const secrets_store` re-export alone doesn't pull tests in.
+    _ = @import("agentic_loop/secrets_store.zig");
+    // Workspace-secret placeholder substitution: a pure module whose inline
+    // tests are otherwise invisible to `zig build test` — the same discovery
+    // workaround as the Lua hooks above.
+    _ = @import("agentic_loop/secrets_substitution.zig");
+    // The workspace-secrets HTTP surface (Migration 103): one file per verb,
+    // each carrying its own `useCase` tests plus the route-registration
+    // contracts that pin the literal routes ahead of the `:secret_id` ones.
+    // Same discovery workaround as the store above — the `http_handlers`
+    // re-exports alone do not pull these files' tests in.
+    _ = @import("http_handlers/secrets_list.zig");
+    _ = @import("http_handlers/secrets_create.zig");
+    _ = @import("http_handlers/secrets_update.zig");
+    _ = @import("http_handlers/secrets_delete.zig");
     // `databases` package tests run in the ruangsql repo's own CI
     // (github.com/ginwa123/ruangsql) — see the package's build.zig.
     // The main test step doesn't import them here because the package

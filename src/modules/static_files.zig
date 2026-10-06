@@ -669,10 +669,16 @@ test "resolveStaticDirAbs: a relative dir resolves to the same absolute path as 
 
     // Same directory, reached the other way round: relpath(cwd, abs) walked
     // back by resolveStaticDirAbs must land on abs again.
-    const cwd = try std.process.getCwdAlloc(testing.io, allocator);
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(testing.io, ".", allocator);
     defer allocator.free(cwd);
-    const rel = try std.fs.path.relative(allocator, cwd, abs);
+    var rel = try std.fs.path.relative(allocator, cwd, null, cwd, abs);
     defer allocator.free(rel);
+    // Same directory: the relative path is empty, and an empty path is not
+    // resolvable — spell it the way a caller would.
+    if (rel.len == 0) {
+        allocator.free(rel);
+        rel = try allocator.dupe(u8, ".");
+    }
     try testing.expect(!std.fs.path.isAbsolute(rel));
 
     var rel_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;

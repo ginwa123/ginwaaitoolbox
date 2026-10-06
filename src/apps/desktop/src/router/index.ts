@@ -82,6 +82,18 @@ const router = createRouter({
       name: 'workspace-doc',
       component: AppLayout,
     },
+    // Workspace settings page. Which settings SECTION is open is a query
+    // param (`?section=`), not a second path segment — `?tab=` belongs to
+    // browser tab-mode. Must stay BEFORE `/app/:workspaceId`: Vue matches
+    // in registration order and that route's catch would otherwise swallow
+    // `/app/ws_1/settings` as `workspaceId='ws_1'` and drop the `/settings`
+    // segment entirely. Same trap as `/app/:workspaceId/chat/:sessionId`
+    // and `/app/:workspaceId/doc/:documentId` above.
+    {
+      path: '/app/:workspaceId/settings',
+      name: 'workspace-settings',
+      component: AppLayout,
+    },
     {
       path: '/app/:workspaceId',
       name: 'workspace',
