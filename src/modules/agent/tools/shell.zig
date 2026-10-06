@@ -65,6 +65,20 @@ pub const ShellOutput = struct {
 /// Same semantics as the bash.zig version; shell-neutral.
 pub const MandatoryTimeoutMissing = error{MandatoryTimeoutMissing};
 
+/// Returned by `execute_shell` when the caller passes a `mandatory_timeout`
+/// above `MAX_MANDATORY_TIMEOUT_SEC`. A huge deadline is the same as no
+/// deadline — it lets a runaway command hang the agent until the outer
+/// harness gives up. Reject explicitly so the caller splits the work
+/// (smaller steps, `background=true`, or the functional harness).
+pub const MandatoryTimeoutTooLarge = error{MandatoryTimeoutTooLarge};
+
+/// Reasonable upper bound for a single foreground command: 10 minutes.
+/// Covers the prompt's own guidance (a few seconds for ls/cat, 30–60 s
+/// for builds, 300+ s for long compilations) with headroom, while turning
+/// absurd values like 120000 (33 h) into an instant learnable error.
+/// Background mode is exempt (it detaches and ignores the timeout by design).
+pub const MAX_MANDATORY_TIMEOUT_SEC: u32 = 600;
+
 // POSIX `nanosleep(req, rem)` — declared as `extern "c"` so the call
 // doesn't go through Zig 0.16's Io runtime. We deliberately avoid
 // `std.Io.sleep` here because shell.zig is invoked from the AI
@@ -407,6 +421,12 @@ pub fn run_shell_command(
     }
     if (input.mandatory_timeout) |t| {
         if (t == 0) return error.MandatoryTimeoutMissing;
+        // Foreground only: the background path detaches and ignores the
+        // timeout by design, so an over-max deadline there is harmless.
+        // In foreground a huge deadline is the same as no deadline.
+        if (!input.background and t > MAX_MANDATORY_TIMEOUT_SEC) {
+            return error.MandatoryTimeoutTooLarge;
+        }
     }
 
     // --- Background mode ---
@@ -1057,6 +1077,66 @@ test "shell.execute_shell enforces mandatory_timeout (returns MandatoryTimeoutMi
         .mandatory_timeout = null,
     });
     try testing.expectError(error.MandatoryTimeoutMissing, out);
+}
+
+test "shell.execute_shell rejects mandatory_timeout above MAX_MANDATORY_TIMEOUT_SEC" {
+    // A huge deadline is the same as no deadline. The over-max guard
+    // fires before any child is spawned, so these run on ALL platforms.
+    // Boundary: MAX is accepted (validation passes), MAX+1 is rejected.
+    try testing.expectEqual(@as(u32, 600), shell.MAX_MANDATORY_TIMEOUT_SEC);
+
+    const over_max = shell.execute_shell(testing.allocator, std.testing.io, &.{ "bash", "-c" }, .{
+        .command = "echo should-never-run",
+        .cwd = "/tmp",
+        .mandatory_timeout = shell.MAX_MANDATORY_TIMEOUT_SEC + 1,
+    });
+    try testing.expectError(error.MandatoryTimeoutTooLarge, over_max);
+
+    // The exact value from the user report that motivated the cap.
+    const absurd = shell.execute_shell(testing.allocator, std.testing.io, &.{ "bash", "-c" }, .{
+        .command = "echo should-never-run",
+        .cwd = "/tmp",
+        .mandatory_timeout = 120000,
+    });
+    try testing.expectError(error.MandatoryTimeoutTooLarge, absurd);
+}
+
+test "shell.execute_shell accepts mandatory_timeout at exactly MAX_MANDATORY_TIMEOUT_SEC" {
+    // Positive control: the boundary value itself must pass validation.
+    // Runs `true` (instant) so the 600 s deadline never matters.
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    const out = try shell.execute_shell(testing.allocator, std.testing.io, &.{ "bash", "-c" }, .{
+        .command = "true",
+        .cwd = "/tmp",
+        .mandatory_timeout = shell.MAX_MANDATORY_TIMEOUT_SEC,
+    });
+    defer {
+        testing.allocator.free(out.command);
+        testing.allocator.free(out.stdout);
+        testing.allocator.free(out.stderr);
+    }
+    try testing.expectEqual(@as(i32, 0), out.exit_code);
+}
+
+test "shell.execute_shell background mode is exempt from the max-timeout cap" {
+    // Background detaches via nohup and ignores the timeout by design,
+    // so an over-max deadline there must NOT return MandatoryTimeoutTooLarge.
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    const out = shell.execute_shell(testing.allocator, std.testing.io, &.{ "bash", "-c" }, .{
+        .command = "true",
+        .cwd = "/tmp",
+        .background = true,
+        .mandatory_timeout = 120000,
+    });
+    if (out) |r| {
+        testing.allocator.free(r.command);
+        testing.allocator.free(r.stdout);
+        testing.allocator.free(r.stderr);
+    } else |err| {
+        try testing.expect(err != error.MandatoryTimeoutTooLarge);
+    }
 }
 
 // Task 6 — schema-shape parity lock. The user requirement: "bash and

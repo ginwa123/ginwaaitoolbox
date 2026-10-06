@@ -91,12 +91,9 @@ pub const command_result_to_json = shell.result_to_json;
 
 pub const command_tool_system_prompt =
     \\## Command Tool — Behavior
-    \\Use `command` to execute shell commands. The host OS picks the shell automatically: `bash` on Linux/macOS, `pwsh` (PowerShell Core) on Windows, with automatic silent fallback to `cmd.exe /c` on Windows when `pwsh` is not installed.
-    \\Do NOT prefix commands with a shell `timeout` utility — the mandatory_timeout field is the deadline enforcer, and a `timeout N ...` prefix is both redundant and unavailable on Windows. Bound output with `| head -n <N>` or `| tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh) (except under the cmd.exe fallback — see below).
-    \\- Prefer `search`/`read_file`/`glob` for code exploration over shell `rg`/`grep`/`find`.
-    \\- Always set `cwd` explicitly to an absolute path. Never assume the working directory.
-    \\- Use `background=true` for long-running processes; it returns PID + log path.
-    \\- Under the cmd.exe fallback (Windows without pwsh): do NOT use `| head -n` (use max_lines, findstr, or more); use cmd syntax — dir / where / type / %VAR% / && chaining / double-quotes for URLs (single quotes are literal under cmd).
+    \\Host picks the shell: `bash` on Linux/macOS, `pwsh` on Windows (silent `cmd.exe /c` fallback when pwsh is missing).
+    \\Do NOT prefix commands with a shell `timeout` utility — `mandatory_timeout` (required, max 600) is the only deadline. Bound output with `| head -n <N>` / `| tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh).
+    \\Prefer `search` / `read_file` / `glob` over shell search; always set `cwd` explicitly; use `background=true` (returns PID + log path) for long-running processes — never start dev servers. Under cmd.exe: no `| head -n`, use cmd syntax (dir / where / type / %VAR% / && / double-quoted URLs).
     \\
 ;
 
@@ -105,56 +102,22 @@ pub const command_tool = AgentTool{
     .function = .{
         .name = "command",
         .description =
-        \\Execute a shell command and return:
-        \\stdout, stderr, exit_code, truncated, timeout flags.
+        \\Run one shell command; return stdout, stderr, exit_code, truncated, timeout.
+        \\Host picks the shell: `bash -c` on Linux/macOS, `pwsh -NoProfile -NonInteractive -Command` on Windows (silent `cmd.exe /c` fallback when pwsh is missing; background=true fails there instead of detaching).
         \\
-        \\## Per-OS shell dispatch (automatic — you do NOT choose)
-        \\- Linux / macOS: runs `bash -c <command>`.
-        \\- Windows: runs `pwsh -NoProfile -NonInteractive -Command <command>`,
-        \\  falling back silently to `cmd.exe /c <command>` when `pwsh` is not on PATH.
-        \\  It is foreground-only (background=true on a pwsh-less box fails instead
-        \\  of detaching).
+        \\## Rules (enforced in code — violations return errors)
+        \\- `mandatory_timeout`: REQUIRED, the ONLY deadline (max 600). No shell `timeout` prefix — do not add one.
+        \\- `cwd`: always an explicit absolute path.
+        \\- Bound output: `| head -n <N>` / `| tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh); under cmd.exe use max_lines / findstr / more.
+        \\- Prefer `search` / `read_file` / `glob` over shell rg/grep/find; use `rg` over grep, `fd` over find, `tree` for directory structure.
+        \\- No unbounded output, no destructive commands, no dev servers (`vite`, `http.server`, `nohup ... &`) — use `background=true` (PID + log path) or the functional harness instead.
+        \\- Web fetch: use the `agent-browser` CLI.
         \\
-        \\## Command Rules (enforced in code)
-        \\Every command MUST:
-        \\- set `mandatory_timeout` (the deadline IS the timeout — there is no
-        \\  shell `timeout` prefix to write; do not add one)
-        \\- limit output using `| head -n <N> or tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh) to prevent huge output
-        \\- avoid commands that produce unbounded output
-        \\- use ripgrep (rg) instead of grep/find for searching
-        \\- use fd for finding files (faster alternative to find/glob)
-        \\- use tree for directory structure
-        \\## Web Browsing
-        \\To browse the web or fetch URLs, use the `agent-browser` CLI:
+        \\## Platform notes
+        \\Install pwsh via `winget install Microsoft.PowerShell` (Windows) or brew/snap (macOS/Linux); missing binary fails with `FileNotFound` at spawn (Windows retries under cmd.exe). Under cmd.exe: double-quote URLs, `%NAME%` env vars, `&&` chaining, `dir` / `where` / `type`.
         \\
-        \\## Safety
-        \\Avoid destructive or system-modifying commands.
-        \\Never assume the working directory — always set cwd explicitly.
-        \\
-        \\## Platform Notes
-        \\The shell is `bash` on Linux/macOS and PowerShell Core (`pwsh`) on
-        \\Windows. On Windows `pwsh` ships preinstalled (powershell.exe 5.1 +
-        \\`pwsh` 7+ via `winget install Microsoft.PowerShell`); on macOS /
-        \\Linux install with `brew install --cask powershell` or
-        \\`snap install powershell --classic` if the Windows path ever runs
-        \\there. If the shell executable is not on PATH, the spawn fails
-        \\with `FileNotFound` at spawn time — except on Windows, where a
-        \\missing `pwsh` retries the command under `cmd.exe /c` (see dispatch
-        \\above). Under `cmd.exe`: no `| head -n` (use max_lines / findstr / more),
-        \\single quotes are literal (keep URLs in double quotes), env vars are
-        \\`%NAME%`, chain with `&&`, list with `dir`, locate with `where`,
-        \\print files with `type`.
-        \\
-        \\## Argument Type Coercion (lenient)
-        \\Numeric fields (`mandatory_timeout`, `max_output`, `max_lines`)
-        \\accept either a JSON number or a numeric string. A stray
-        \\trailing `</fieldname>` is auto-stripped (e.g.
-        \\`"5</mandatory_timeout>"` → 5) — this commonly happens when
-        \\the model accidentally echoes back a fragment of a previous
-        \\tool envelope. On a real type mismatch the tool returns
-        \\`invalid field '<name>': got JSON value "<verbatim>", expected <type>`
-        \\so you can self-correct on the next turn. Boolean fields
-        \\accept JSON bool or the strings `"true"` / `"false"`.
+        \\## Lenient types
+        \\Numbers (`mandatory_timeout`, `max_output`, `max_lines`) accept JSON numbers or numeric strings; a stray trailing `</fieldname>` is auto-stripped. Booleans accept JSON bool or `"true"` / `"false"`. Real mismatches return an `invalid field` error naming the field so you can self-correct.
         ,
         .parameters = .{
             .type = "object",
@@ -163,14 +126,8 @@ pub const command_tool = AgentTool{
                     .name = "command",
                     .type = "string",
                     .description =
-                    \\Command to execute. Do NOT prefix it with a shell
-                    \\`timeout N` — mandatory_timeout is the deadline.
-                    \\
-                    \\On bash hosts: `zig build 2>&1 | head -n 50`.
-                    \\On pwsh hosts: `Get-ChildItem | Select-Object -First 30`.
-                    \\GOOD (bash): `rg 'MyStruct' src/ | head -n 50`
-                    \\GOOD (bash): `fd MyStruct src/ | head -n 50`
-                    \\GOOD (pwsh): `Get-ChildItem | Select-Object -First 30`
+                    \\Command to execute. Do NOT prefix it with a shell `timeout N` — mandatory_timeout is the deadline.
+                    \\Bound output (`| head -n 50`, `| Select-Object -First 30`); prefer `rg` / `fd` over grep/find.
                     ,
                 },
                 .{
@@ -182,16 +139,8 @@ pub const command_tool = AgentTool{
                     .name = "mandatory_timeout",
                     .type = "number",
                     .description =
-                    \\REQUIRED. Maximum wall-clock seconds the command is allowed
-                    \\to run. When the deadline elapses the shell process is killed
-                    \\(SIGKILL on POSIX, TerminateProcess on Windows) so the agent
-                    \\cannot hang on a runaway command. There is no default — the
-                    \\tool returns `MandatoryTimeoutMissing` if you omit this, and
-                    \\it is the ONLY timeout — never prefix the command itself with
-                    \\a shell `timeout N`.
-                    \\Pick a value that matches what the command realistically
-                    \\needs (a few seconds for ls/cat, 30–60 s for builds,
-                    \\300+ s for long compilations).
+                    \\REQUIRED. Wall-clock seconds before the process is killed (SIGKILL / TerminateProcess). No default — omitted or 0 returns `MandatoryTimeoutMissing`; above 600 returns `MandatoryTimeoutTooLarge` (use `background=true` or split the command for longer work).
+                    \\It is the ONLY timeout — never prefix the command with a shell `timeout N`. Match the value to the job (seconds for ls/cat, 30–60 for builds, 300+ for long compilations).
                     ,
                 },
                 .{
