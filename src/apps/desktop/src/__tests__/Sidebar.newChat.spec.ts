@@ -342,6 +342,35 @@ describe('Sidebar.handleNewChat — creates a chat in the workspace default proj
     wrapper.unmount()
   })
 
+  it('fresh boot with no explicit selection: falls back to first workspace instead of staying disabled', async () => {
+    const store = useWorkspacesStore()
+    // Fresh boot: workspaces loaded but `activeWorkspaceId` ref never set
+    // (no dropdown pick, no ?workspaceId= URL). The header already shows
+    // the first workspace via the `activeWorkspace` computed — the button
+    // must follow the same precedence instead of staying disabled.
+    store.workspaces = [makeWorkspace()]
+    // NOTE: no setActiveWorkspace call — this is the regression.
+    const addSpy = vi.spyOn(store, 'addTask').mockResolvedValue('task_new_1')
+    vi.spyOn(store, 'setActiveTask').mockImplementation(() => {})
+
+    const wrapper = mountSidebar()
+    await nextTick()
+    await flushAsync()
+
+    const btn = newChatButton() as HTMLButtonElement | null
+    expect(btn).not.toBeNull()
+    expect(btn?.disabled).toBe(false)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sidebar = wrapper.vm as any
+    await sidebar.handleNewChat()
+    await flushAsync()
+
+    expect(addSpy).toHaveBeenCalledWith(WS_ID, DEFAULT_ID, { name: 'New Chat' })
+    expect(replaceMock).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it('collapsed: the row becomes an icon but keeps its accessible name', async () => {
     const store = useWorkspacesStore()
     store.workspaces = [makeWorkspace()]
