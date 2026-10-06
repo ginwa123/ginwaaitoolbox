@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import SidebarDiffView from './SidebarDiffView.vue'
 import type { DiffCommentSavePayload } from './DiffCommentBox.vue'
 import type { ParsedDiffLine } from './parseUnifiedDiff'
@@ -20,11 +20,19 @@ const props = defineProps<{
   staged?: boolean
   error?: string | null
   cwd: string
+  /** Collapsed = header only. Owned by ChatView, so it survives this
+   * section unmounting its own body. */
+  collapsed?: boolean
+  mode?: 'unified' | 'split'
+  wholeFile?: boolean
+  untracked?: boolean
 }>()
 
 const emit = defineEmits<{
   open: [payload: { path: string; line?: number }]
   retry: []
+  'toggle-collapse': []
+  'toggle-whole-file': []
   'submit-review': [message: string]
   'comment-saved': [payload: DiffCommentSavePayload]
 }>()
@@ -56,6 +64,24 @@ onMounted(() => {
   observer.observe(el)
 })
 
+/**
+ * Expanding a section must mount its body NOW.
+ *
+ * The observer is the only automatic gate, and a COLLAPSED section never
+ * intersects — so relying on it alone would leave a section the user just
+ * expanded as an empty stub, i.e. "expand all" would appear to do nothing.
+ *
+ * The transition is what matters, not the value: `props.collapsed === false`
+ * at mount is today's behaviour (the observer decides), while a real
+ * collapsed → expanded flip is the user asking for this file's diff.
+ */
+watch(
+  () => props.collapsed,
+  (now, before) => {
+    if (before === true && now === false) isMounted.value = true
+  },
+)
+
 onUnmounted(() => {
   observer?.disconnect()
   observer = null
@@ -70,11 +96,7 @@ onUnmounted(() => {
     data-testid="center-diff-section"
     style="content-visibility: auto; contain-intrinsic-size: auto 400px"
   >
-    <div
-      v-if="!isMounted"
-      data-testid="center-diff-placeholder"
-      style="min-height: 200px"
-    />
+    <div v-if="!isMounted" data-testid="center-diff-placeholder" style="min-height: 200px" />
     <SidebarDiffView
       v-else
       :path="path"
@@ -86,8 +108,14 @@ onUnmounted(() => {
       :error="error ?? null"
       :cwd="cwd"
       :show-back="false"
+      :mode="mode"
+      :collapsed="collapsed"
+      :whole-file="wholeFile"
+      :untracked="untracked"
       @open="(payload) => emit('open', payload)"
       @retry="() => emit('retry')"
+      @toggle-collapse="() => emit('toggle-collapse')"
+      @toggle-whole-file="() => emit('toggle-whole-file')"
       @submit-review="(message) => emit('submit-review', message)"
       @comment-saved="(payload) => emit('comment-saved', payload)"
     />

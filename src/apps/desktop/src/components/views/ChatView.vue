@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
+import {
+  ref,
+  reactive,
+  watch,
+  onMounted,
+  onUnmounted,
+  nextTick,
+  computed,
+  inject,
+  type Ref,
+} from 'vue'
 import { marked } from 'marked'
 import * as api from '../../api'
 import { chatEngineDb, newestCursor, toChatMessage } from '../../sync/ChatEngineDb'
@@ -112,6 +122,7 @@ import { useInjectCodeViewer, useInjectOpenInCodeEditor } from '@/composables/us
 import type { CodeViewerView } from '@/composables/useCodeEditor'
 import CodeViewerStage from './CodeViewerStage.vue'
 import { useRouter, useRoute } from 'vue-router'
+import type { LocationQueryRaw } from 'vue-router'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { buildAppUrl } from '../../helpers/appUrl'
 import CompactionCard from '../preview/CompactionCard.vue'
@@ -637,6 +648,114 @@ const centerDiffScrollRef = ref<HTMLElement | null>(null)
 
 const showCenterDiff = computed(() => centerDiff.value !== null)
 
+// ── Centre-diff view state: two axes, one owner ───────────────────────────
+//   mode          — LAYOUT (unified | split). Global, so it lives in the URL
+//                   (?diffmode=) with a localStorage fallback for "I always
+//                   read split". A view switch must be linkable + survive
+//                   refresh (house rule), hence the param and not a bare ref.
+//   collapsedPaths / wholeFilePaths — SCOPE, per file. Session state like a
+//                   scroll position: 40 stale per-file rows in the URL would
+//                   be worse than a reset. Only the BULK collapse is mirrored
+//                   into ?diffcollapse=1, so "show me just the file list" is
+//                   still deep-linkable in one param.
+const DIFF_MODE_STORAGE_KEY = 'pabrik.centerdiff.mode'
+
+const readStoredDiffMode = (): 'unified' | 'split' => {
+  try {
+    const stored = localStorage.getItem(DIFF_MODE_STORAGE_KEY)
+    if (stored === 'unified' || stored === 'split') return stored
+  } catch {
+    // No storage (private mode / jsdom) — the documented default stands.
+  }
+  return 'unified'
+}
+
+/**
+ * Read `?diffmode=` at SETUP time, unlike `syncDiffParam` (a click handler).
+ * That makes the read optional-router-safe: ~30 ChatView specs mount the
+ * component with no router installed, where `useRoute()` is undefined and a
+ * bare `route.query` throws inside setup, failing the whole mount. With no
+ * router there is no URL to read, and no URL to keep in sync either — so the
+ * default is the correct answer, not a swallowed error.
+ */
+const readDiffModeParam = (): 'unified' | 'split' | null => {
+  const v = route?.query?.diffmode
+  return v === 'unified' || v === 'split' ? v : null
+}
+
+const diffMode = ref<'unified' | 'split'>(readDiffModeParam() ?? readStoredDiffMode())
+const collapsedPaths = reactive(new Set<string>())
+const wholeFilePaths = reactive(new Set<string>())
+
+const collapsedCount = computed(
+  () => centerFiles.value.filter((f) => collapsedPaths.has(f.path)).length,
+)
+/** True when every listed file is collapsed — the state ?diffcollapse=1 names. */
+const allCollapsed = computed(
+  () => centerFiles.value.length > 0 && collapsedCount.value === centerFiles.value.length,
+)
+
+/**
+ * Write one of the diff view's params, skipping stale writes during a chat
+ * switch (the same guard `syncDiffParam` needs: ChatsList replaces the URL at
+ * the same time, and a second replace from the dying view corrupts the patch).
+ */
+function syncDiffQuery(mutate: (query: LocationQueryRaw) => void) {
+  // Same optional-router guard as `syncDiffParam`: a ChatView mounted outside
+  // the router tree has no URL to write to.
+  if (!route) return
+  if (route.query.view !== undefined && route.query.view !== 'chat') return
+  const routeSession = route.query.session
+  if (typeof routeSession === 'string' && routeSession !== sessionId.value) return
+  const query: LocationQueryRaw = { ...route.query }
+  mutate(query)
+  router.replace({ path: route.path, query }).catch(() => {})
+}
+
+const syncCollapseParam = () => {
+  syncDiffQuery((query) => {
+    if (allCollapsed.value) query.diffcollapse = '1'
+    else delete query.diffcollapse
+  })
+}
+
+/** Replace-all rather than per-file: the bulk button is one user gesture, and
+ * `?diffcollapse=1` can only mean "all of them". */
+function setAllCollapsed(collapsed: boolean, paths: DiffSelection[] = centerFiles.value) {
+  collapsedPaths.clear()
+  if (collapsed) for (const f of paths) collapsedPaths.add(f.path)
+  syncCollapseParam()
+}
+
+function toggleCollapse(path: string) {
+  if (collapsedPaths.has(path)) collapsedPaths.delete(path)
+  else collapsedPaths.add(path)
+  syncCollapseParam()
+}
+
+/**
+ * Whole file is per section — 40 whole-file requests and a wall of text is
+ * not what "show me this file" means. The untracked case is refused UP FRONT:
+ * a new file's diff already IS the whole file, so the control stays locked at
+ * "Whole file" and no request is ever made.
+ */
+function toggleWholeFile(path: string) {
+  if (wholeFilePaths.has(path)) wholeFilePaths.delete(path)
+  else wholeFilePaths.add(path)
+}
+
+function setDiffMode(next: 'unified' | 'split') {
+  diffMode.value = next
+  try {
+    localStorage.setItem(DIFF_MODE_STORAGE_KEY, next)
+  } catch {
+    // Storage unavailable — the URL still carries the choice.
+  }
+  syncDiffQuery((query) => {
+    query.diffmode = next
+  })
+}
+
 /**
  * The code viewer's open file, shared by `AppLayout` (which owns the
  * session). Non-null ⇒ this chat renders the file in its center column,
@@ -670,6 +789,12 @@ const showCenterStage = computed(() => showCenterDiff.value || showCodeViewer.va
 function scrollToCenterFile(path: string) {
   // Click on an already-loaded file scrolls instead of refetching.
   currentPath.value = path
+  // Expand before scrolling: landing on a collapsed section would scroll to a
+  // one-line stub and look like the click did nothing.
+  if (collapsedPaths.has(path)) {
+    collapsedPaths.delete(path)
+    syncCollapseParam()
+  }
   scrollToSectionElement(path)
 }
 
@@ -690,6 +815,11 @@ function onChatSidebarShowDiffList(files: DiffSelection[]) {
     if (!incoming.has(existing.path)) merged.push(existing)
   }
   centerFiles.value = merged
+  // A file that arrived WHILE the bulk state was "all collapsed" must arrive
+  // collapsed too, or the next poll would silently expand one row.
+  if (allCollapsed.value) {
+    for (const f of merged) collapsedPaths.add(f.path)
+  }
   // Refresh an open selection in place when the list reloads, but never
   // auto-open from a background list load — refresh must land on chat.
   if (centerDiff.value) {
@@ -702,6 +832,12 @@ function onCenterDiffBack() {
   centerDiff.value = null
   centerFiles.value = []
   currentPath.value = null
+  // Per-file view state dies with the stage, and the bulk param with it.
+  collapsedPaths.clear()
+  wholeFilePaths.clear()
+  syncDiffQuery((query) => {
+    delete query.diffcollapse
+  })
   stopCenterSpy()
   // Back exits the diff view: drop the param so reload lands on chat,
   // not a stale file. The currentPath watcher skips while hidden, so
@@ -747,6 +883,11 @@ function stopCenterSpy() {
 }
 
 function syncDiffParam(path: string | null) {
+  // No router = nothing to keep in sync. Unit mounts (and any host that
+  // renders ChatView outside the router tree) have `useRoute() === undefined`,
+  // where a bare `route.query` throws from the currentPath watcher and fails
+  // the mount. There is no URL to be stale in that case.
+  if (!route) return
   // Skip stale writes during chat switch: ChatsList replaces the URL
   // with the new session at the same time; a second replace from the
   // dying view races it and corrupts Vue's patch (null vnode).
@@ -4161,6 +4302,12 @@ onMounted(async () => {
   // ?diff= the scroll-spy wrote while the viewer was open, and the panel
   // no longer restores from it — strip it here so the URL stays truthful
   // (Back does the same on explicit exit).
+  // NOTE: left exactly as-is on purpose. Optional-chaining this read (the
+  // obvious fix for a router-less mount) makes onMounted run FURTHER in unit
+  // mounts where `useRoute()` is undefined, and two unrelated ChatView specs
+  // (profile picker, autofocus) were written against the early-abort
+  // behaviour — they fail. Turning it into a behaviour change belongs with
+  // those specs, not with the diff view.
   if (typeof route.query.diff === 'string' && !showCenterDiff.value) syncDiffParam(null)
 
   if (sessionId.value) {
@@ -5628,8 +5775,61 @@ const compactSession = async () => {
             style="color: var(--semantic-text-dim)"
             data-testid="chat-center-diff-count"
           >
-            {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : '' }}
+            {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : '' }}<template
+              v-if="collapsedCount > 0"
+              > · {{ collapsedCount }} collapsed</template
+            >
           </span>
+          <!-- LAYOUT axis (global): how the lines are laid out. -->
+          <span
+            class="inline-flex rounded overflow-hidden shrink-0"
+            style="border: 1px solid var(--color-border)"
+            data-testid="chat-center-diff-mode"
+          >
+            <button
+              type="button"
+              class="px-2 py-0.5 text-dense"
+              :style="
+                diffMode === 'unified'
+                  ? { background: 'var(--color-violet)', color: 'var(--color-bg-m2)' }
+                  : { color: 'var(--semantic-text-dim)' }
+              "
+              title="Unified — one column, git-style hunks"
+              data-testid="chat-center-diff-mode-unified"
+              @click="setDiffMode('unified')"
+            >
+              Unified
+            </button>
+            <button
+              type="button"
+              class="px-2 py-0.5 text-dense"
+              :style="
+                diffMode === 'split'
+                  ? { background: 'var(--color-violet)', color: 'var(--color-bg-m2)' }
+                  : { color: 'var(--semantic-text-dim)' }
+              "
+              title="Split — side by side, before | after"
+              data-testid="chat-center-diff-mode-split"
+              @click="setDiffMode('split')"
+            >
+              Split
+            </button>
+          </span>
+          <!-- One state-aware button: the label IS the current state. -->
+          <button
+            type="button"
+            class="text-dense px-2 py-1 rounded hover:opacity-70 shrink-0"
+            style="color: var(--semantic-text-dim)"
+            :title="
+              collapsedCount > 0
+                ? 'Expand every file section'
+                : 'Collapse every file section to its header'
+            "
+            data-testid="chat-center-diff-toggle-all"
+            @click="setAllCollapsed(collapsedCount === 0)"
+          >
+            {{ collapsedCount > 0 ? '⌄ Expand all' : '⌃ Collapse all' }}
+          </button>
           <button
             v-if="reviewCommentsForDiff.length > 0"
             type="button"
@@ -5665,8 +5865,14 @@ const compactSession = async () => {
             :staged="file.staged"
             :error="file.error ?? null"
             :cwd="effectiveCwd"
+            :collapsed="collapsedPaths.has(file.path)"
+            :mode="diffMode"
+            :whole-file="wholeFilePaths.has(file.path) || file.untracked === true"
+            :untracked="file.untracked === true"
             @open="onChatSidebarOpenFile"
             @retry="onCenterDiffRetry"
+            @toggle-collapse="toggleCollapse(file.path)"
+            @toggle-whole-file="toggleWholeFile(file.path)"
             @submit-review="onChatSidebarSubmitReview"
             @comment-saved="onChatSidebarCommentSaved"
           />

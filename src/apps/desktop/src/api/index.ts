@@ -4847,6 +4847,10 @@ export interface GitFileDiffsBatchItem {
 
 export interface GitFileDiffsResponse {
   diffs: GitFileDiff[]
+  /** Whole-file mode only: the file's full-context diff exceeded the
+   * server's budget and was REFUSED (`diff_content` is empty) rather than
+   * truncated into something that reads as a complete file. */
+  whole_file_refused?: boolean
 }
 
 export async function getGitFileDiffs(
@@ -4872,6 +4876,23 @@ export async function getGitFolderDiffs(
   return await apiFetch<GitFileDiffsResponse>(`/git/file/diffs`, {
     method: 'POST',
     body: { path: cwd, folder },
+    silent: true,
+  })
+}
+
+// WHOLE-FILE mode — `git diff -U<all>` for exactly ONE path, so the caller can
+// render every line of the file with the changes still marked. One request per
+// file by construction (the server 400s on a folder or a multi-file body), and
+// all-or-nothing: `whole_file_refused` means "too big to serve in full", never
+// a partial file.
+export async function getGitWholeFileDiff(
+  cwd: string,
+  filePath: string,
+  staged: boolean,
+): Promise<GitFileDiffsResponse> {
+  return await apiFetch<GitFileDiffsResponse>(`/git/file/diffs`, {
+    method: 'POST',
+    body: { path: cwd, files: [{ file: filePath, staged }], whole_file: true },
     silent: true,
   })
 }
