@@ -1,0 +1,130 @@
+// Sub-agent identity columns (Migration 091, task_1789909961925_0).
+//
+// Zig port of `tests/functional/subagent_identity_test.py`.
+//
+// A sub-agent session keeps its parent's selected_profile_model (for
+// thinking inheritance, #554) but now also records its own identity in
+// sessions.sub_agent_name + parent_session_id. The messages endpoint
+// exposes both so DB inspection and the UI show who actually ran
+// (e.g. "implementator") instead of only the parent profile.
+//
+// Wire contract over HTTP (harness boots a fresh pabrik per test):
+//
+//   - GET /api/llm/session/:id/messages includes sub_agent_name and
+//     parent_session_id keys (null/empty for main sessions).
+//   - sessions table has the new columns (migration ran).
+//
+// A real spawn_sub_agent round-trip needs a live LLM and is covered
+// by the Zig unit test in llm_history.zig
+// ("updateSessionSubAgentInfo: stamps sub-agent name and parent").
+//
+// WHY THE "KEY IS PRESENT" ASSERTION MATTERS IN ZIG TOO: the server
+// serialises with `std.json.Stringify.valueAlloc(..., .{})`, whose
+// `emit_null_optional_fields` defaults to TRUE — an unset optional
+// becomes an explicit `null` on the wire rather than being dropped.
+// So `doc.get("sub_agent_name")` returns a non-null optional holding
+// `.null` for a main session, and a null optional would mean the key
+// genuinely disappeared from the payload.
+
+//
+// QUERY STRINGS ARE IN THE PATH, NOT IN `HttpOptions.params`.
+//
+// This is deliberate and wire-identical to the Python original (which
+// interpolated `?limit=N` straight into the path, or produced the same
+// string via `urlencode`). The harness's `buildUrl` LEAKS when
+// `opts.params` is non-empty: it allocates the base URL
+// `"http://127.0.0.1:<port><path>?"` and then, on the `i == 0`
+// iteration, overwrites `url` with a fresh `allocPrint` WITHOUT freeing
+// the old one (see harness.zig `buildUrl`, the `else` arm of the
+// `if (i > 0)` branch). `testing.allocator` reports that as a per-test
+// leak, so every suite that used `.params` would fail on memory even
+// though the request was fine.
+//
+// FIX PROPERLY IN `harness.zig` (free the previous `url` in the `i == 0`
+// arm), then these can move back to `.params`. Until then: keep the
+// query inlined.
+
+const std = @import("std");
+const testing = std.testing;
+const harness = @import("harness.zig");
+const Harness = harness.Harness;
+const gpa = testing.allocator;
+const io = testing.io;
+
+/// Assert the wire value at `v` is one of `(None, "")`.
+///
+/// The Zig spelling of Python's `assert body[k] in (None, "")`: an
+/// absent optional is a FAILURE here, because the test is also
+/// asserting the key exists (checked by the caller before calling
+/// this). Anything that is neither JSON `null` nor a string is a
+/// shape regression and is reported by name.
+fn expectNullOrEmpty(v: std.json.Value, key: []const u8) !void {
+    switch (v) {
+        .null => {},
+        .string => |s| try testing.expectEqualStrings("", s),
+        else => {
+            std.debug.print("{s} was neither null nor a string on the wire\n", .{key});
+            return error.TestUnexpectedResult;
+        },
+    }
+}
+
+// Main session echoes null/empty identity fields (keys present).
+test "messages_wire_includes_sub_agent_identity" {
+    try harness.requirePabrikBin(io, gpa);
+    var h = try Harness.boot(io, gpa, .{});
+    defer h.deinit(io) catch |err| {
+        std.debug.print("teardown: {s}\n", .{@errorName(err)});
+    };
+
+    const session_id = "sess_subagent_identity_001";
+
+    const put_path = try std.fmt.allocPrint(gpa, "/api/llm/session/{s}", .{session_id});
+    defer gpa.free(put_path);
+    {
+        const body =
+            \\{"selected_profile_model":"muse spark auto"}
+        ;
+        var r = try h.http(io, .PUT, put_path, .{ .json_body = body, .expect = &.{200} });
+        defer r.deinit();
+    }
+
+    // Query is INLINED, not passed via `HttpOptions.params`: see the
+    // "QUERY STRINGS ARE IN THE PATH" note at the top of this file.
+    const messages_path = try std.fmt.allocPrint(gpa, "/api/llm/session/{s}/messages?limit=1", .{session_id});
+    defer gpa.free(messages_path);
+
+    var r = try h.http(io, .GET, messages_path, .{ .expect = &.{200} });
+    defer r.deinit();
+    var doc = try r.json();
+    defer doc.deinit();
+
+    // Python: `assert "sub_agent_name" in body`.
+    const sub_agent_name = doc.get("sub_agent_name") orelse {
+        std.debug.print("missing sub_agent_name key in: {s}\n", .{r.body});
+        return error.TestUnexpectedResult;
+    };
+    // Python: `assert "parent_session_id" in body`.
+    const parent_session_id = doc.get("parent_session_id") orelse {
+        std.debug.print("missing parent_session_id key in: {s}\n", .{r.body});
+        return error.TestUnexpectedResult;
+    };
+
+    // Python: `body["sub_agent_name"] in (None, "")` — a MAIN session
+    // is nobody's sub-agent, so both fields must be unset.
+    try expectNullOrEmpty(sub_agent_name, "sub_agent_name");
+    try expectNullOrEmpty(parent_session_id, "parent_session_id");
+
+    // Parent profile still flows through unchanged. Python:
+    //   `body.get("selected_profile_model") in (None, "muse spark auto", "")`
+    if (doc.get("selected_profile_model")) |profile| switch (profile) {
+        .null => {},
+        .string => |s| try testing.expect(
+            std.mem.eql(u8, s, "muse spark auto") or s.len == 0,
+        ),
+        else => {
+            std.debug.print("selected_profile_model was not a string: {s}\n", .{r.body});
+            return error.TestUnexpectedResult;
+        },
+    };
+}

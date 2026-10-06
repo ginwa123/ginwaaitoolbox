@@ -4003,6 +4003,57 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     functional_test_step.dependOn(&run_functional.step);
 
     // =====================================================================
+    // Functional tests (Zig) — tests/functional/, its OWN package.
+    //
+    // The Python+pytest suite above is being ported to Zig file-by-file
+    // (same filenames, same test function names). Each ported suite is a
+    // `*_test.zig` inside `tests/functional/`, which is a STANDALONE
+    // package: its `build.zig.zon` declares no dependencies at all, so a
+    // functional test can never `@import` a `src/` internal and pass
+    // without crossing the wire.
+    //
+    // Why a separate step rather than folding these into `b.step("test")`:
+    //   1. Isolation. `zig build test` is the fast unit suite (~60 s) and
+    //      runs on every save; `functional-test` boots a real binary per
+    //      test and is minutes long. Merging them would make the inner
+    //      loop unusable.
+    //   2. The package genuinely cannot share the app's module graph.
+    //   3. It needs `zig-out/bin/pabrik` to exist. `zig build test` must
+    //      stay runnable on a clean checkout with no binary built.
+    //
+    // `functional-test` (Python) above stays registered while the port is
+    // in flight; once every `*_test.py` has a Zig twin, delete it and
+    // rename this step to `functional-test`.
+    //
+    // Build the binary first, then the suite:
+    //     zig build functional-test:zig
+    // =====================================================================
+    // The suite is its own package (empty dependency list), but the TEST
+    // ROOT is compiled here rather than through `b.dependency(...).step`
+    // because cross-package step handles do not exist in 0.16 — same
+    // shape as the `run_captured_tests` / `test_path_tests` roots above.
+    // What the separate package buys is the empty dependency list: this
+    // module imports nothing but `std`, so a functional test cannot
+    // reach a `src/` internal.
+    const func_tests_module = b.createModule(.{
+        .root_source_file = b.path("tests/functional/root.zig"),
+        .target = test_target,
+        .optimize = optimize,
+    });
+    const func_tests = b.addTest(.{ .root_module = func_tests_module });
+    const run_func_zig = b.addRunArtifact(func_tests);
+    // The suite resolves `pabrik` through relative `zig-out/bin/*`
+    // paths, so it must run from the repo root.
+    run_func_zig.setCwd(b.path(""));
+    // Same dependency the Python runner has: the suite boots this binary.
+    run_func_zig.step.dependOn(b.getInstallStep());
+    // And the HTTP MCP fixture server, for the `mcp_http_*` suites.
+    run_func_zig.step.dependOn(mcp_http_hello_world_step);
+
+    b.step("functional-test:zig", "Run the Zig functional test suite (tests/functional/)")
+        .dependOn(&run_func_zig.step);
+
+    // =====================================================================
     // Functional UI tests (Python+Playwright) — see tests/functional_ui/README.md.
     //
     // Boots a real pabrik backend + Vite dev server against isolated

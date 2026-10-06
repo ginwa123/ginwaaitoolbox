@@ -60,11 +60,23 @@
         .helpers = .{
             .path = "src/helpers",
         },
+        // The Zig functional test suite (tests/functional/). A SEPARATE
+        // package with an EMPTY dependency list of its own: it boots the
+        // `pabrik` binary as a child process and drives it over HTTP, and
+        // must never be able to `@import` a `src/` internal - a test that
+        // bound to an internal type could pass without crossing the wire,
+        // which is the one class of test this suite exists to rule out.
+        .functional_tests = .{
+            .path = "tests/functional",
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        // The functional test package is a path dependency, so it must be
+        // inside the package hash.
+        "tests",
         // Exclude vendored deps from the package hash — they're
         // hermetic (sqlite3 amalgamation is deterministic) but bloat
         // the cache. Same convention as kabelweb/build.zig.zon.
