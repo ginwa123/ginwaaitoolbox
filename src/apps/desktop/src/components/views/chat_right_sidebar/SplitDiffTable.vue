@@ -64,7 +64,9 @@ const onRowClick = (event: MouseEvent, row: SplitRow) => {
               class="split-ln"
               :class="{ 'split-blank': row.oldText === null }"
               :style="
-                row.isChanged && row.oldText !== null ? { background: 'rgba(169,135,135,.15)' } : {}
+                row.isChanged && row.oldText !== null
+                  ? { background: 'color-mix(in srgb, var(--color-red) 15%, transparent)' }
+                  : {}
               "
             >
               {{ row.oldLineNum ?? '' }}
@@ -75,7 +77,7 @@ const onRowClick = (event: MouseEvent, row: SplitRow) => {
               :style="
                 row.isChanged && row.oldText !== null
                   ? {
-                      background: 'rgba(169,135,135,.15)',
+                      background: 'color-mix(in srgb, var(--color-red) 15%, transparent)',
                       borderLeft: '3px solid var(--color-red)',
                     }
                   : {}
@@ -91,7 +93,9 @@ const onRowClick = (event: MouseEvent, row: SplitRow) => {
               class="split-ln"
               :class="{ 'split-blank': row.newText === null }"
               :style="
-                row.isChanged && row.newText !== null ? { background: 'rgba(135,169,135,.15)' } : {}
+                row.isChanged && row.newText !== null
+                  ? { background: 'color-mix(in srgb, var(--color-green) 15%, transparent)' }
+                  : {}
               "
             >
               {{ row.newLineNum ?? '' }}
@@ -102,7 +106,7 @@ const onRowClick = (event: MouseEvent, row: SplitRow) => {
               :style="
                 row.isChanged && row.newText !== null
                   ? {
-                      background: 'rgba(135,169,135,.15)',
+                      background: 'color-mix(in srgb, var(--color-green) 15%, transparent)',
                       borderLeft: '3px solid var(--color-green)',
                     }
                   : {}
