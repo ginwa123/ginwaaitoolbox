@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, nextTick } from 'vue'
 
-const props = defineProps<{
+defineProps<{
   show: boolean
   projectName?: string
 }>()
@@ -15,13 +15,11 @@ const name = ref('')
 const description = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 
-watch(() => props.show, (show) => {
-  if (show) {
-    name.value = ''
-    description.value = ''
-    nextTick(() => nameInput.value?.focus())
-  }
-})
+const handleOpen = () => {
+  name.value = ''
+  description.value = ''
+  nextTick(() => nameInput.value?.focus())
+}
 
 const handleCreate = () => {
   if (name.value.trim()) {
@@ -43,7 +41,7 @@ const handleKeydown = (event: KeyboardEvent) => {
 
 <template>
   <Teleport to="body">
-    <Transition name="modal">
+    <Transition name="modal" @before-enter="handleOpen">
       <div
         v-if="show"
         class="fixed inset-0 z-50 flex items-center justify-center"
@@ -51,25 +49,17 @@ const handleKeydown = (event: KeyboardEvent) => {
         @keydown="handleKeydown"
       >
         <!-- Backdrop -->
-        <div
-          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          @click="handleClose"
-        />
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="handleClose" />
 
         <!-- Dialog Content -->
         <div
           class="relative w-full max-w-sm mx-4 rounded-xl shadow-2xl"
-          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
         >
           <!-- Header -->
           <div class="px-5 pt-5 pb-4">
-            <h3
-              class="text-lead font-semibold"
-              style="color: var(--semantic-text);"
-            >
-              New Task
-            </h3>
-            <p v-if="projectName" class="text-dense mt-1" style="color: var(--semantic-text-dim);">
+            <h3 class="text-lead font-semibold" style="color: var(--semantic-text)">New Task</h3>
+            <p v-if="projectName" class="text-dense mt-1" style="color: var(--semantic-text-dim)">
               Add task to "{{ projectName }}"
             </p>
           </div>
@@ -78,7 +68,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <div class="px-5 pb-4">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               Task Name
             </label>
@@ -101,7 +91,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <div class="px-5 pb-4">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               Description (optional)
             </label>
@@ -123,7 +113,10 @@ const handleKeydown = (event: KeyboardEvent) => {
             <button
               @click="handleClose"
               class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
-              style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
+              style="
+                background-color: var(--semantic-sidebar-bg);
+                color: var(--semantic-text-muted);
+              "
             >
               Cancel
             </button>
@@ -131,7 +124,10 @@ const handleKeydown = (event: KeyboardEvent) => {
               @click="handleCreate"
               :disabled="!name.trim()"
               class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+              style="
+                background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+                color: var(--color-bg);
+              "
             >
               Create Task
             </button>
