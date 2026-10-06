@@ -23,6 +23,15 @@
 
 set -e
 
+# 2026-10-07 incident: git exports GIT_DIR/GIT_WORK_TREE to hook children,
+# and `git -C <fixture> commit` obeys the env over `-C` — so this hook's own
+# `zig build test` sprayed sixteen fixture `init` commits into the pushing
+# worktree, which the follow-up push then shipped onto the PR. Unset the
+# redirect vars so the suite can never again commit into a real repo from
+# here (test fixtures ALSO refuse a dirty env loudly via
+# helpers/git_env_guard.zig — belt and suspenders).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+
 echo "→ zig build test"
 zig build test
 

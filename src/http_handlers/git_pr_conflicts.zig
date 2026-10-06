@@ -570,6 +570,10 @@ fn writeFixture(dir: *const FixtureDir, name: []const u8, data: []const u8) !voi
 }
 
 fn git(path: []const u8, args: []const []const u8) !void {
+    // Same guard as set_git_worktree's GitFixture: under hook-exported
+    // GIT_DIR/GIT_WORK_TREE this `git -C` would write into the real repo
+    // instead of the fixture (2026-10-07 incident). Fail loudly here.
+    try @import("helpers").git_env_guard.requireCleanGitEnv();
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(testing.allocator);
     try argv.appendSlice(testing.allocator, &.{ "git", "-C", path });

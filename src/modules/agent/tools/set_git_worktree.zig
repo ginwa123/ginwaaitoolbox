@@ -1896,6 +1896,11 @@ const GitFixture = struct {
     allocator: std.mem.Allocator,
 
     fn init(allocator: std.mem.Allocator) !GitFixture {
+        // Refuse fixture git under hook-exported GIT_DIR/GIT_WORK_TREE:
+        // `git -C <fixture> commit` obeys the env over `-C` and would land
+        // in the real repo (2026-10-07 incident: sixteen `init` commits on
+        // a live PR branch). Loud error here, never silent corruption.
+        try @import("helpers").git_env_guard.requireCleanGitEnv();
         var tmp = std.testing.tmpDir(.{});
         errdefer tmp.cleanup();
         var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1910,8 +1915,8 @@ const GitFixture = struct {
         // `git worktree add` needs a resolvable start-point, so the repo
         // needs one commit before it can hand out a branch.
         try fx.git(&.{
-            "-C", repo, "-c", "user.email=pabrik@example.com", "-c", "user.name=pabrik",
-            "commit", "-q", "--allow-empty", "-m", "init",
+            "-C",     repo, "-c",            "user.email=pabrik@example.com", "-c",   "user.name=pabrik",
+            "commit", "-q", "--allow-empty", "-m",                            "init",
         });
         return fx;
     }
