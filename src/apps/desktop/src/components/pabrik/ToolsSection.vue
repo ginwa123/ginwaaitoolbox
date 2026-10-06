@@ -129,6 +129,7 @@ const GROUP_BY_TOOL: Record<string, string> = {
   use_tool: 'Progressive tool search',
   set_git_worktree: 'Git',
   set_pull_request: 'Git',
+  status_pull_request: 'Git',
   kanban_list: 'Kanban',
   kanban_move_task: 'Kanban',
   create_kanban_task: 'Kanban',

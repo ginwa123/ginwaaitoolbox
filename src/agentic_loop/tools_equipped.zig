@@ -23,6 +23,7 @@ const add_skill_mod = pabrikcore.skill_tools;
 const edit_skill_mod = pabrikcore.skill_tools;
 const set_git_worktree_mod = pabrikcore.set_git_worktree;
 const set_pull_request_mod = pabrikcore.set_pull_request;
+const status_pull_request_mod = pabrikcore.status_pull_request;
 const kanban_list_mod = pabrikcore.kanban_list;
 const kanban_move_task_mod = pabrikcore.kanban_move_task;
 const set_design_page_mod = pabrikcore.set_design_page;
@@ -146,6 +147,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         generate_image_mod.generate_image_tool,
         set_git_worktree_mod.set_git_worktree_tool,
         set_pull_request_mod.set_pull_request_tool,
+        status_pull_request_mod.status_pull_request_tool,
         present_files_mod.present_files_tool,
         // Interactive: asks the human and ends the turn.
         ask_user_mod.ask_user_tool,
@@ -286,6 +288,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // === GIT WORKTREE BINDING ===
         .{ .name = "set_git_worktree", .exec = tools.execSetGitWorktree, .tool_def = set_git_worktree_mod.set_git_worktree_tool },
         .{ .name = "set_pull_request", .exec = tools.execSetPullRequest, .tool_def = set_pull_request_mod.set_pull_request_tool },
+        .{ .name = "status_pull_request", .exec = tools.execStatusPullRequest, .tool_def = status_pull_request_mod.status_pull_request_tool },
 
         // === KANBAN TOOLS ===
         // Both tools read directly from the DB (kanban_model.listColumns

@@ -3664,6 +3664,20 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     b.step("test:helpers:ansi", "Run ansi (ANSI escape stripper) helper tests")
         .dependOn(&run_ansi_tests.step);
 
+    // Standalone helper (std + libc getenv only), so it needs its own test root.
+    const git_env_guard_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/helpers/git_env_guard.zig"),
+            .target = test_target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_git_env_guard_tests = b.addRunArtifact(git_env_guard_tests);
+    test_step.dependOn(&run_git_env_guard_tests.step);
+    b.step("test:helpers:git_env_guard", "Run git_env_guard helper tests")
+        .dependOn(&run_git_env_guard_tests.step);
+
     // kabelweb's own suites (server + client) run in the kabelweb
     // repo's CI (github.com/ginwa123/kabelweb), not here — it's an
     // external URL dependency, and a consumer build never runs a

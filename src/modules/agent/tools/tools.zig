@@ -15,6 +15,7 @@ pub const edit_skill = skill_tools;
 pub const semantic_search = @import("semantic_search.zig");
 pub const set_git_worktree = @import("set_git_worktree.zig");
 pub const set_pull_request = @import("set_pull_request.zig");
+pub const status_pull_request = @import("status_pull_request.zig");
 pub const pr_provider = @import("pr_provider.zig");
 
 pub const list_agents_tool = list_agents.list_agents_tool;
@@ -27,6 +28,7 @@ pub const semantic_search_tool = semantic_search.semantic_search_tool;
 pub const index_codebase_tool = semantic_search.index_codebase_tool;
 pub const set_git_worktree_tool = set_git_worktree.set_git_worktree_tool;
 pub const set_pull_request_tool = set_pull_request.set_pull_request_tool;
+pub const status_pull_request_tool = status_pull_request.status_pull_request_tool;
 
 // Path validation: `helpers.path_validate.invalidPathReason` is the single
 // implementation, and every path-taking agent tool calls it before its first
