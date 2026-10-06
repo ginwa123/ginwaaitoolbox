@@ -7,6 +7,7 @@ const gserverz = pabrikcore.gserverz;
 const auth_common = @import("auth_common.zig");
 const ai_workflow = pabrikcore.ai_mod;
 const sqlite_db_mod = pabrikcore.sqlite;
+const slash_skill_expand = @import("../agentic_loop/slash_skill_expand.zig");
 
 /// Create a sandbox directory in data/apps and return the path
 fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, session_id: []const u8) ![]u8 {
@@ -377,6 +378,34 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.App, parsed: Re
                 "[session_create] abandoned {d} pending ask_user question(s) for {s} — the human moved on",
                 .{ abandoned, session_id },
             );
+        }
+    }
+
+    // Slash-command skills: `/skill-<name>` and bare `/<name>` tokens in
+    // the human's message resolve server-side against the session's
+    // workspace and append their bodies as a trailing `<slash_skills>`
+    // block, so the model reads the instructions without a `use_skill`
+    // round trip. Best-effort by design: any failure keeps the original
+    // text rather than dropping the send, and unknown names stay literal
+    // (no toast in v1).
+    if (queue_message.len > 0) {
+        const expanded = slash_skill_expand.expandSlashSkills(alloc, di.io, di.db, session_id, queue_message) catch |err| blk: {
+            std.log.warn(
+                "session_create: slash-skill expansion failed (non-fatal, keeping original message): {s}",
+                .{@errorName(err)},
+            );
+            break :blk null;
+        };
+        if (expanded) |result| {
+            queue_message = result.message;
+            if (result.unknown.len > 0) {
+                std.log.info(
+                    "session_create: {d} unknown slash-skill token(s) left literal in the text",
+                    .{result.unknown.len},
+                );
+            }
+            // `alloc` is the per-request arena: the rewritten message and
+            // the unknown names live until teardown, so nothing to free.
         }
     }
 
