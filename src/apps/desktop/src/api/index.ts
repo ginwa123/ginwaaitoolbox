@@ -5,6 +5,7 @@ import { createSseClient, type SseClient } from '../helpers/sseClient'
 import { readGitStatusCache, writeGitStatusCache } from '../helpers/gitStatusCache'
 import { Cause, Data, Effect } from 'effect'
 import { describeCause } from '../helpers/effectRuntime'
+import { joinMediaUrlsWire } from '../helpers/mediaUrls'
 
 export const API_BASE = '/api'
 
@@ -970,8 +971,8 @@ export async function createTask(
   // Migration 090 — split data:video/... out to video_urls.
   {
     const { images, videos } = splitMediaUrls(params.imageUrls, params.videoUrls)
-    if (images.length > 0) body.image_urls = images.join('||')
-    if (videos.length > 0) body.video_urls = videos.join('||')
+    if (images.length > 0) body.image_urls = joinMediaUrlsWire(images)
+    if (videos.length > 0) body.video_urls = joinMediaUrlsWire(videos)
   }
   // Migration 070 — per-task cwd override. Forward verbatim
   // (the backend's `validated_cwd` block validates it — absolute
@@ -1084,8 +1085,8 @@ export async function createKanbanTask(
   }
   {
     const { images, videos } = splitMediaUrls(payload.imageUrls, payload.videoUrls)
-    if (images.length > 0) body.image_urls = images.join('||')
-    if (videos.length > 0) body.video_urls = videos.join('||')
+    if (images.length > 0) body.image_urls = joinMediaUrlsWire(images)
+    if (videos.length > 0) body.video_urls = joinMediaUrlsWire(videos)
   }
   if (payload.cwd !== undefined) {
     body.cwd = payload.cwd
@@ -1176,8 +1177,8 @@ export async function updateTaskSimple(
   // → SQL '' literal → DB clears the column.
   if (data.imageUrls !== undefined || data.videoUrls !== undefined) {
     const { images, videos } = splitMediaUrls(data.imageUrls, data.videoUrls)
-    body.image_urls = images.join('||')
-    body.video_urls = videos.join('||')
+    body.image_urls = joinMediaUrlsWire(images)
+    body.video_urls = joinMediaUrlsWire(videos)
   }
   return await apiFetch<{ success: boolean }>(`/workspaces/tasks/${taskId}`, {
     method: 'PUT',
@@ -1659,8 +1660,8 @@ export async function sendChatMessage(
   // Migration 090 — split data:video/... out to video_urls so a pasted
   // clip never hits the image-only validator (400).
   const { images, videos } = splitMediaUrls(imageUrls, videoUrls)
-  const imageUrlsStr = images.join('|') || ''
-  const videoUrlsStr = videos.join('|') || ''
+  const imageUrlsStr = joinMediaUrlsWire(images)
+  const videoUrlsStr = joinMediaUrlsWire(videos)
 
   try {
     // silent: true — ChatView already surfaces these failures inline

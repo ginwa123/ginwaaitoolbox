@@ -35,6 +35,7 @@ import {
 import FileInput from '../file/FileInput.vue'
 import { installSseBus, useSseBus } from '../../helpers/sseBus'
 import { readGitStatusCache } from '../../helpers/gitStatusCache'
+import { splitMediaUrlsWire } from '../../helpers/mediaUrls'
 import { Effect } from 'effect'
 import { runEffectExit } from '../../helpers/effectRuntime'
 import {
@@ -117,6 +118,7 @@ import CompactionCard from '../preview/CompactionCard.vue'
 // 2026-08-25 agent-error-card (task_1787663566535_2): dedicated renderer
 // for agentic-loop error/retry diagnostics (is_error=true SSE events).
 import AgentErrorCard from '../chat/AgentErrorCard.vue'
+import ChatAttachments from '../chat/ChatAttachments.vue'
 import UserPillRail, { type UserPill } from '../chat/UserPillRail.vue'
 import ChatScrollSlider from '../chat/ChatScrollSlider.vue'
 import { pickActivePillIndex, isPillGroup, estimateViewportEnd } from '../chat/activePill'
@@ -1507,6 +1509,9 @@ const agentError = computed<AgentErrorEntry | null>(() => agentErrorStore.errorF
 const previewImageUrl = ref<string | null>(null)
 
 const openImagePreview = (url: string) => {
+  // A blank URL must never open the lightbox — the overlay would then render
+  // its own broken `<img>` on top of a full-screen backdrop.
+  if (!url || url.trim().length === 0) return
   previewImageUrl.value = url
 }
 
@@ -2153,8 +2158,8 @@ const toChatMessages = (
     tool_name: msg.tool_name,
     diffview_before: msg.diffview_before,
     diffview_after: msg.diffview_after,
-    image_urls: msg.image_url ? msg.image_url.split('|') : undefined,
-    video_urls: msg.video_url ? msg.video_url.split('|') : undefined,
+    image_urls: splitMediaUrlsWire(msg.image_url),
+    video_urls: splitMediaUrlsWire(msg.video_url),
     finish_reason: msg.finish_reason,
     tool_calls_json: msg.tool_calls_json,
     tool_call_id: msg.tool_call_id,
@@ -3801,8 +3806,8 @@ const connectSse = () => {
           existingById.reasoning_content = event.reasoning_content || undefined
           existingById.diffview_before = event.diffview_before
           existingById.diffview_after = event.diffview_after
-          existingById.image_urls = event.image_url ? event.image_url.split('|') : undefined
-          existingById.video_urls = event.video_url ? event.video_url.split('|') : undefined
+          existingById.image_urls = splitMediaUrlsWire(event.image_url)
+          existingById.video_urls = splitMediaUrlsWire(event.video_url)
           existingById.is_input = event.is_input
           existingById.is_output = event.is_output
           rememberLiveMessage(sid, event.id, role)
@@ -3885,12 +3890,13 @@ const connectSse = () => {
         tool_name: event.tool_name,
         diffview_before: event.diffview_before,
         diffview_after: event.diffview_after,
-        // Match the loadChatHistory REST path (line 824): split the
-        // pipe-separated image_url string the backend sends. Undefined
-        // for messages without images keeps the v-if="image_urls?.length"
-        // check in the template clean.
-        image_urls: event.image_url ? event.image_url.split('|') : undefined,
-        video_urls: event.video_url ? event.video_url.split('|') : undefined,
+        // Decode the `||`-joined wire string the backend sends. A plain
+        // `split('|')` would turn `A||B` into `["A", "", "B"]`, and the
+        // empty entry renders as `<img src="">` — a broken-image icon in
+        // the transcript. `splitMediaUrlsWire` drops empty segments, so
+        // `A|B`, `A||B` and `A||B||C` all decode to N real URLs.
+        image_urls: splitMediaUrlsWire(event.image_url),
+        video_urls: splitMediaUrlsWire(event.video_url),
         finish_reason: event.finish_reason,
         tool_call_id: event.tool_call_id,
         // 2026-08-24 (task_1787545088500_6, bug A) — carry the wire
@@ -4816,43 +4822,15 @@ const compactSession = async () => {
                           v-for="(userMsg, userMsgIdx) in group.messages"
                           :key="userMsg.id || `u-${userMsgIdx}`"
                         >
-                          <div
+                          <ChatAttachments
                             v-if="
                               (userMsg.image_urls && userMsg.image_urls.length > 0) ||
                               (userMsg.video_urls && userMsg.video_urls.length > 0)
                             "
-                            class="mb-2"
-                          >
-                            <div class="flex flex-wrap gap-2">
-                              <div
-                                v-for="(imgUrl, imgIdx) in userMsg.image_urls"
-                                :key="`img-${imgIdx}`"
-                                class="chat-attached-image-thumb"
-                                @click="openImagePreview(imgUrl)"
-                              >
-                                <img
-                                  :src="imgUrl"
-                                  alt="Attached image"
-                                  width="80"
-                                  height="80"
-                                  class="chat-attached-image-img"
-                                />
-                              </div>
-                              <div
-                                v-for="(vidUrl, vidIdx) in userMsg.video_urls"
-                                :key="`vid-${vidIdx}`"
-                                class="chat-attached-image-thumb"
-                              >
-                                <video
-                                  :src="vidUrl"
-                                  width="160"
-                                  class="chat-attached-image-img"
-                                  controls
-                                  preload="metadata"
-                                />
-                              </div>
-                            </div>
-                          </div>
+                            :image-urls="userMsg.image_urls"
+                            :video-urls="userMsg.video_urls"
+                            @open-image="openImagePreview"
+                          />
                           <template v-if="isBgUserMsg(userMsg)"
                             ><ShellTool
                               tool-name="command"

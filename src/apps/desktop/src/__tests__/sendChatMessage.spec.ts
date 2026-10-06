@@ -56,3 +56,74 @@ describe('sendChatMessage', () => {
     expect(store.notifications).toHaveLength(0)
   })
 })
+
+/**
+ * The attachment wire format.
+ *
+ * `image_urls` / `video_urls` ride as ONE string. The backend joins them with
+ * `||` (`insert_llm_histories.zig`, `image_urls_validation.zig`, and the wire
+ * docs on `http_response.zig`), and the three kanban task endpoints in this
+ * same module already sent `||`.
+ *
+ * `sendChatMessage` was the one that sent a single `|`. Both spellings decode
+ * identically once the reader drops empty segments, so the mismatch was
+ * invisible in isolation — but `queue_queued` echoes this exact string
+ * verbatim into an SSE frame, so the queued row held a differently-shaped value
+ * than every other endpoint produced.
+ */
+describe('sendChatMessage — attachment wire format', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.restoreAllMocks()
+  })
+
+  const PNG_A = 'data:image/png;base64,AAA'
+  const PNG_B = 'data:image/png;base64,BBB'
+
+  const postedBody = async (
+    ...args: Parameters<typeof sendChatMessage>
+  ): Promise<Record<string, unknown>> => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{"status":"queued"}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    await sendChatMessage(...args)
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0] as unknown as [string, RequestInit]
+    return JSON.parse(String(init.body)) as Record<string, unknown>
+  }
+
+  it('joins multiple images with || so the queued row matches every other endpoint', async () => {
+    const body = await postedBody('s1', 'hi', '/cwd', [PNG_A, PNG_B])
+    expect(body.image_urls).toBe(`${PNG_A}||${PNG_B}`)
+  })
+
+  it('sends a lone image unchanged (no delimiter to add)', async () => {
+    const body = await postedBody('s1', 'hi', '/cwd', [PNG_A])
+    expect(body.image_urls).toBe(PNG_A)
+  })
+
+  it('sends the empty string sentinel when there are no attachments', async () => {
+    const body = await postedBody('s1', 'hi', '/cwd')
+    expect(body.image_urls).toBe('')
+    expect(body.video_urls).toBe('')
+  })
+
+  it('routes data:video entries to video_urls, joined with ||', async () => {
+    const body = await postedBody(
+      's1',
+      'hi',
+      '/cwd',
+      [PNG_A, 'data:video/mp4;base64,AAA'],
+      undefined,
+      undefined,
+      ['data:video/webm;base64,BBB'],
+    )
+    expect(body.image_urls).toBe(PNG_A)
+    // Order is `splitMediaUrls`'s, not this test's: the explicit `videoUrls`
+    // argument seeds the list before the inline `data:video/` entries are
+    // appended. Pre-existing, and irrelevant to the delimiter.
+    expect(body.video_urls).toBe('data:video/webm;base64,BBB||data:video/mp4;base64,AAA')
+  })
+})
