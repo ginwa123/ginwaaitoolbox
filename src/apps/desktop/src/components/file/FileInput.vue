@@ -605,15 +605,22 @@ function scheduleDetectAtTrigger(): void {
 
 // ── /skill picker (mirrors the @ picker above) ─────────────────────────
 // Trigger: a `/` at message start or after whitespace, followed by a raw
-// token of word chars, dots and dashes. A raw token of `skill`,
-// `skill-<query>`, or any leading prefix of `skill` (`s`, `sk`, `ski`,
-// `skil`) is the namespace form — the user is still typing the namespace
-// itself, so the filter query is empty and the full list shows. Anything
-// else is the bare form (the whole token filters).
+// token of word chars, dots and dashes, with single spaces or `/` as
+// separators — so `/skill foo`, `/team/name` and `/skill-a-b` all keep the
+// picker open. A raw token of `skill`, `skill-…`, `skill …`, `skill/…`,
+// or any leading prefix of `skill` (`s`, `sk`, `ski`, `skil`) is the
+// namespace form (insert keeps `/skill-<name>`); anything else is the
+// bare form (insert keeps `/<name>` — the backend expands both).
 // The regex guarantees the position rule, so `http://` and `a/b` never
 // match — the char before `/` must be start-of-line or whitespace.
+// Stored skill names are `[A-Za-z0-9._-]` (see `isValidSkillName` — `/`
+// and space are rejected as a directory-escape guard), so a `/` segment
+// or space in the TYPED token is only ever a separator: filtering uses
+// the last `/`-segment, split into AND-words on spaces.
+const SLASH_TOKEN_RE = /(^|\s)\/([\w.-]*(?:[ /][\w.-]+)*)$/
 const showSkillPicker = ref(false)
-const skillQuery = ref('')
+// Lower-cased filter words derived from the token (empty = show all).
+const skillQueryWords = ref<string[]>([])
 const skillList = ref<api.Skill[]>([])
 const isLoadingSkills = ref(false)
 const selectedSkillIndex = ref(0)
@@ -634,7 +641,7 @@ const activeSkillWorkspaceId = (): string | null => {
 
 const closeSkillPicker = () => {
   showSkillPicker.value = false
-  skillQuery.value = ''
+  skillQueryWords.value = []
   selectedSkillIndex.value = 0
   skillError.value = null
 }
@@ -668,7 +675,7 @@ const detectSlashTrigger = () => {
   const text = inputText.value
   const pos = cursorPos.value
   const textBeforeCursor = text.slice(0, pos)
-  const slashMatch = textBeforeCursor.match(/(^|\s)\/([\w.-]*)$/)
+  const slashMatch = textBeforeCursor.match(SLASH_TOKEN_RE)
   if (slashMatch) {
     const workspaceId = activeSkillWorkspaceId()
     if (!workspaceId) {
@@ -676,14 +683,33 @@ const detectSlashTrigger = () => {
       return
     }
     const raw = slashMatch[2] ?? ''
-    const isSkillPrefix = raw.length > 0 && 'skill'.startsWith(raw)
-    const isNamespace = raw === '' || raw === 'skill' || raw.startsWith('skill-') || isSkillPrefix
+    // Case-insensitive: `/SKILL-DEPLOY` is the same namespace as
+    // `/skill-deploy` (stored names are lowercase by convention).
+    const lower = raw.toLowerCase()
+    const isSkillPrefix = lower.length > 0 && 'skill'.startsWith(lower)
+    const isNamespace =
+      raw === '' ||
+      lower === 'skill' ||
+      isSkillPrefix ||
+      lower.startsWith('skill-') ||
+      lower.startsWith('skill ') ||
+      lower.startsWith('skill/')
     skillForm.value = isNamespace ? 'namespace' : 'bare'
-    skillQuery.value = isNamespace
-      ? raw === 'skill' || isSkillPrefix
-        ? ''
-        : raw.slice('skill-'.length)
-      : raw
+    // Strip one leading `skill`, `skill-`, `skill ` or `skill/` marker
+    // (all six chars), then filter on the last `/`-segment split into
+    // AND-words on spaces — so `/skill a b`, `/team/name` and
+    // `/skill-a-b` all narrow the same cached list.
+    let rest: string
+    if (isNamespace) {
+      rest = raw === '' || raw === 'skill' || isSkillPrefix ? '' : raw.slice('skill-'.length)
+    } else {
+      rest = raw
+    }
+    const lastSegment = rest.split('/').pop() ?? ''
+    skillQueryWords.value = lastSegment
+      .toLowerCase()
+      .split(/ +/)
+      .filter((w) => w.length > 0)
     if (!showSkillPicker.value) {
       showSkillPicker.value = true
       selectedSkillIndex.value = 0
@@ -697,20 +723,16 @@ const detectSlashTrigger = () => {
   }
 }
 
-// Client-side substring filter over the cached workspace list. Matches
-// against the bare name, the full `skill-<name>` token shown in the row,
-// and the description — so a bare `sk` still hits every `skill-*` row
-// even if the namespace-prefix rule above ever regresses.
+// Client-side AND-word filter over the cached workspace list. Every word
+// must hit the bare name, the full `skill-<name>` token shown in the row,
+// or the description — so `/skill before shots`, `/team/deploy` and
+// `/SKILL-DEPLOY` all narrow correctly (matching is case-insensitive).
 const filteredSkills = computed(() => {
-  const q = skillQuery.value.toLowerCase()
-  if (!q) return skillList.value
+  const words = skillQueryWords.value
+  if (words.length === 0) return skillList.value
   return skillList.value.filter((s) => {
-    const name = s.name.toLowerCase()
-    if (name.includes(q)) return true
-    if (`skill-${name}`.includes(q)) return true
-    const desc = (s.description ?? '').toLowerCase()
-    if (desc.includes(q)) return true
-    return false
+    const hay = `${s.name.toLowerCase()} skill-${s.name.toLowerCase()} ${s.description.toLowerCase()}`
+    return words.every((w) => hay.includes(w))
   })
 })
 
@@ -719,7 +741,7 @@ const selectSkill = (skill: api.Skill) => {
   const pos = cursorPos.value
   const textBeforeCursor = text.slice(0, pos)
   const textAfterCursor = text.slice(pos)
-  const slashMatch = textBeforeCursor.match(/(^|\s)\/([\w.-]*)$/)
+  const slashMatch = textBeforeCursor.match(SLASH_TOKEN_RE)
   if (slashMatch && slashMatch.index !== undefined) {
     const slashPos = slashMatch.index + (slashMatch[1] ?? '').length
     const insert = skillForm.value === 'namespace' ? `/skill-${skill.name}` : `/${skill.name}`
