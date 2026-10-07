@@ -3315,6 +3315,69 @@ export async function getGitChanges(cwd: string): Promise<GitChangesResponse> {
   }
 }
 
+// Git blame — per-line author + commit time for one file, backing the
+// CodeEditor's inline blame annotation.
+export interface GitBlameLine {
+  line: number
+  commit: string
+  author: string
+  author_time: number
+  summary: string
+}
+
+export interface GitBlameResponse {
+  is_git_repo: boolean
+  lines: GitBlameLine[]
+}
+
+/**
+ * The blame fetch failed — transport or non-2xx. Deliberately coarse:
+ * blame is annotation, not content, so the viewer acts on "no chips",
+ * and the only thing the tag must guarantee is that the failure is
+ * distinguishable from an empty-but-successful blame (same contract as
+ * `ChatHistoryError` above).
+ */
+export class GitBlameError extends Data.TaggedError('GitBlameError')<{
+  readonly cwd: string
+  readonly file: string
+  readonly reason: string
+}> {}
+
+/**
+ * The blame endpoint, WITH the failure in the type — no `try`/`catch`
+ * (AGENTS.md, "Frontend — No `try`/`catch` in the desktop app").
+ */
+export function fetchGitBlameEffect(
+  cwd: string,
+  filePath: string,
+): Effect.Effect<GitBlameResponse, GitBlameError> {
+  return Effect.tryPromise({
+    try: () =>
+      apiFetch<GitBlameResponse>(
+        `/git/blame?path=${encodeURIComponent(cwd)}&file=${encodeURIComponent(filePath)}`,
+        { silent: true },
+      ),
+    catch: (cause) =>
+      new GitBlameError({ cwd, file: filePath, reason: describeCause(Cause.fail(cause)) }),
+  })
+}
+
+/**
+ * Best-effort blame: a failure yields null (the file paints without
+ * chips) on the Effect seam, so no `try`/`catch` sits between the
+ * failure and the value. The reason is logged, not discarded.
+ */
+export function getGitBlame(cwd: string, filePath: string): Promise<GitBlameResponse | null> {
+  return Effect.runPromise(
+    fetchGitBlameEffect(cwd, filePath).pipe(
+      Effect.catchAll((error) => {
+        console.log(error)
+        return Effect.succeed(null)
+      }),
+    ),
+  )
+}
+
 // Git worktree info — used by the "Create a PR" dialog to pre-fill
 // the form. The optional `base` parameter is forwarded as
 // `?base=<branch>` to the backend (Chunk 2 design decision #12): when

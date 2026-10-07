@@ -308,6 +308,7 @@ pub const localMemoryDeleteHandler = @import("local_memories_delete.zig").localM
 // Git API handlers
 pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;
 pub const gitChangesHandler = @import("git_changes.zig").gitChangesHandler;
+pub const gitBlameHandler = @import("git_blame.zig").gitBlameHandler;
 pub const gitFileReadHandler = @import("git_file_diff.zig").gitFileReadHandler;
 pub const gitFileDiffsHandler = @import("git_file_diffs.zig").gitFileDiffsHandler;
 pub const gitStageHandler = @import("git_file_stage.zig").gitStageHandler;
