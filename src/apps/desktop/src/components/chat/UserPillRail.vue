@@ -46,7 +46,15 @@ const emit = defineEmits<{
 .user-pill-rail {
   position: absolute;
   right: 6px;
-  top: 50%;
+  /* Center on the VISIBLE transcript, not the full wrapper. The wrapper
+     is the full column height (the composer floats over its bottom part),
+     so plain `top: 50%` sits half a composer-height too low. The dock's
+     ResizeObserver publishes its height as `--chat-composer-inset` on the
+     chat column (inherited here); subtracting half of it restores the
+     visible center. Same contract ChatScrollSlider's track already reads.
+     Falls back to plain 50% where the inset is unset (bare-host unit
+     mounts, read-only peek panel with no dock). */
+  top: calc(50% - var(--chat-composer-inset, 0px) / 2);
   transform: translateY(-50%);
   display: flex;
   flex-direction: column;
