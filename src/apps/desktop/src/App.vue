@@ -89,14 +89,10 @@ onMounted(() => {
   // chat tabs kept the generic "Chat" label after a rename).
   useTabsStore().initTitleFeed()
 
-  // Wire the frontendLogClient's route/session context callbacks
-  // AFTER Vue router is alive and the navigation store is ready.
-  // `main.ts` installed the client with no-op stubs
-  // (getRoutePath/getSessionId both return null); we replace them
-  // here with live getters. The logCtx object lives on
-  // `window.__pabrikLogCtx` (set by main.ts) so it survives the
-  // remount — only the callback functions need to point at the
-  // current component scope's reactive refs.
+  // Frontend log client (POST /api/logs) is DISABLED — the block below
+  // is now a harmless no-op: `window.__pabrikLogCtx` is never set by
+  // `main.ts`, so `logCtx` is undefined and the `if` is skipped. Kept
+  // so re-enabling is a one-line change in `main.ts`.
   const route = useRoute()
   const navigationStore = useNavigationStore()
   const logCtx = (
