@@ -257,18 +257,54 @@ test "static_serve: tlsDataDir honors XDG_DATA_HOME" {
     const allocator = std.testing.allocator;
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
-    try env.put("XDG_DATA_HOME", "/tmp/xdg-test");
-    const dir = try tlsDataDir(allocator, &env);
-    defer allocator.free(dir);
-    try std.testing.expectEqualStrings("/tmp/xdg-test/pabrik/tls", dir);
+    // Windows never consults XDG_DATA_HOME (see tlsDataDir): the scope
+    // is %LOCALAPPDATA%, joined with native separators. Assert that
+    // precedence explicitly so a POSIX-only expectation can never go
+    // red on Windows again.
+    if (comptime @import("builtin").os.tag == .windows) {
+        try env.put("XDG_DATA_HOME", "C:\\xdg-test");
+        try env.put("LOCALAPPDATA", "C:\\Users\\testuser\\AppData\\Local");
+        const dir = try tlsDataDir(allocator, &env);
+        defer allocator.free(dir);
+        try std.testing.expectEqualStrings("C:\\Users\\testuser\\AppData\\Local\\pabrik\\tls", dir);
+    } else {
+        try env.put("XDG_DATA_HOME", "/tmp/xdg-test");
+        const dir = try tlsDataDir(allocator, &env);
+        defer allocator.free(dir);
+        try std.testing.expectEqualStrings("/tmp/xdg-test/pabrik/tls", dir);
+    }
 }
 
 test "static_serve: tlsDataDir falls back to HOME/.local/share" {
     const allocator = std.testing.allocator;
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
-    try env.put("HOME", "/home/testuser");
-    const dir = try tlsDataDir(allocator, &env);
-    defer allocator.free(dir);
-    try std.testing.expectEqualStrings("/home/testuser/.local/share/pabrik/tls", dir);
+    // Same platform split as above: HOME is POSIX-only scope, Windows
+    // stays on %LOCALAPPDATA% even when HOME is set.
+    if (comptime @import("builtin").os.tag == .windows) {
+        try env.put("HOME", "C:\\home\\testuser");
+        try env.put("LOCALAPPDATA", "C:\\Users\\testuser\\AppData\\Local");
+        const dir = try tlsDataDir(allocator, &env);
+        defer allocator.free(dir);
+        try std.testing.expectEqualStrings("C:\\Users\\testuser\\AppData\\Local\\pabrik\\tls", dir);
+    } else {
+        try env.put("HOME", "/home/testuser");
+        const dir = try tlsDataDir(allocator, &env);
+        defer allocator.free(dir);
+        try std.testing.expectEqualStrings("/home/testuser/.local/share/pabrik/tls", dir);
+    }
+}
+
+test "static_serve: tlsDataDir errors when the platform scope is absent" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    // Empty scope on either platform: POSIX has neither XDG_DATA_HOME
+    // nor HOME, Windows has no LOCALAPPDATA (XDG/HOME must not rescue
+    // it — that precedence is pinned by the two tests above).
+    if (comptime @import("builtin").os.tag == .windows) {
+        try env.put("XDG_DATA_HOME", "C:\\xdg-test");
+        try env.put("HOME", "C:\\home\\testuser");
+    }
+    try std.testing.expectError(error.NoDataDir, tlsDataDir(allocator, &env));
 }
