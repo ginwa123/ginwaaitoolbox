@@ -137,6 +137,7 @@ const onRowClick = (event: MouseEvent, row: SplitRow) => {
   table-layout: fixed;
   font-size: var(--text-dense);
   line-height: 20px;
+  color: var(--semantic-text);
 }
 .split-heads {
   display: flex;
@@ -177,6 +178,7 @@ const onRowClick = (event: MouseEvent, row: SplitRow) => {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--semantic-text);
 }
 .split-sep {
   padding: 0;
