@@ -234,7 +234,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Failed to register cleanup_stale_background_process cron: {s}\n", .{@errorName(err)});
     };
 
-    try gs.listenEventLoop(.{ .dispatch_mode = .worker_pool });
+    try gs.listenEventLoop(.{ .dispatch_mode = .worker_pool, .worker_threads = 2 });
 
     // Post-listen shutdown. The signal path only sets the flag (handlers
     // can't log), so logging happens here.
