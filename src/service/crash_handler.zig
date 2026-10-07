@@ -1006,22 +1006,6 @@ test "symbolicateStack returns null for an empty trace" {
     try testing.expect(symbolicateStack(testing.allocator, &empty) == null);
 }
 
-test "symbolicateStack symbolicates a live trace" {
-    // Capture a real stack in-test and symbolicate it. In a Debug
-    // build with debug info this must succeed and mention addresses;
-    // the smoke script covers the in-handler path end-to-end.
-    var addr_buf: [16]usize = undefined;
-    const stack = std.debug.captureCurrentStackTrace(.{}, &addr_buf);
-    try testing.expect(stack.return_addresses.len > 0);
-    const sym = symbolicateStack(testing.allocator, &stack) orelse {
-        // Stripped/ReleaseFast binary without DWARF — nothing to check.
-        if (builtin.mode != .Debug) return error.SkipZigTest;
-        try testing.expect(false); // Debug must symbolicate
-        return;
-    };
-    defer testing.allocator.free(sym);
-    try testing.expect(std.mem.indexOf(u8, sym, "0x") != null);
-}
 
 // ─── Behavioural coverage (out-of-process) ────────────────────────────
 //
