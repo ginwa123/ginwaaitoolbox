@@ -828,16 +828,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         break :blk di.di.getMcpToolsCached(parent_allocator);
     };
 
-    // Per-turn arena: every loop turn's history loads, prompt builds and
-    // message lists allocate from here. Backed by the process GPA — a nested
-    // arena (init from parent_allocator) would pin each turn's memory in the
-    // run arena until the workflow ends, since arena free is a no-op.
-    // Reclaimed per turn by `reset` as the first statement of the loop body:
-    // a `defer` inside the loop would only run at function exit (that was the
-    // leak — turns accumulated until run end). Resetting at loop top rather
-    // than before each `continue` keeps inner-scope defers running before
-    // reclamation. Anything that must outlive its turn (copies, config,
-    // the retry detail below) lives in parent_allocator.
+    // Per-turn arena: every allocation inside the while loop below uses
+    // `allocator` from this arena — no `parent_allocator` inside the loop.
+    // Backed by the process GPA so each turn's memory is reclaimed by
+    // `reset` as the first statement of the loop body: a `defer` inside
+    // the loop would only run at function exit (that was the leak — turns
+    // accumulated until run end). Resetting at loop top rather than before
+    // each `continue` keeps inner-scope defers running before reclamation.
+    // Anything that must outlive its turn (copies) lives in
+    // parent_allocator outside the loop.
     var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(di.allocator);
     defer arenaAllocatorWhileLoop.deinit();
     const allocator = arenaAllocatorWhileLoop.allocator();
@@ -878,10 +877,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // Auth mode re-resolves the owner's stored config (same fallback
         // as the entry resolution), so a Settings save applies on the next
         // iteration without waiting for the run to end. Allocated in the
-        // run arena, like every other per-iteration allocation, so the
-        // previous iteration's `eff` slices stay valid to the end of the
-        // run.
-        config = session_llm_config.forSession(parent_allocator, db, copy_session_id) orelse
+        // per-turn arena, like every other per-iteration allocation, so a
+        // Settings save applies on the next iteration without growing the
+        // run arena.
+        config = session_llm_config.forSession(allocator, db, copy_session_id) orelse
             pabrikcore.getLlmConfig(di.di);
 
         // ─── Live MCP tools refresh on config invalidation ───
@@ -898,13 +897,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // On error publishes mark_init=false so the next iteration
         // retries (same fail-soft contract as the pre-loop fetch).
         if (!di.di.isMcpToolsInit()) {
-            const fresh = fetchMcpToolsFresh(parent_allocator, db, copy_session_id, config, logger);
+            const fresh = fetchMcpToolsFresh(allocator, db, copy_session_id, config, logger);
             if (fresh) |f| {
                 di.di.storeMcpToolsCache(f, true);
             } else {
                 di.di.storeMcpToolsCache(null, false);
             }
-            mcp_tools = di.di.getMcpToolsCached(parent_allocator);
+            mcp_tools = di.di.getMcpToolsCached(allocator);
         }
 
         // ─── Live per-session profile re-read (plan 2026-08-06-workflow-re-read-profile) ───
@@ -1450,11 +1449,12 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // reflects — not the first failure of this session.
             last_retry_error = err;
             last_retry_source = "callDynamicAgentNew";
-            // Cross-turn carry: the per-turn arena is reset every turn, so
-            // dupe into the run arena. Bounded (retries are capped and the
-            // message is clamped to 500 chars at use) — negligible until run end.
+            // Cross-turn carry: duped into the per-turn arena so every
+            // allocation inside the loop uses the same `allocator`.
+            // Bounded (retries are capped and the message is clamped to
+            // 500 chars at use) — reclaimed by the next turn's reset.
             last_retry_server_detail = if (last_dynamic_agent_error_message) |msg|
-                parent_allocator.dupe(u8, msg) catch null
+                allocator.dupe(u8, msg) catch null
             else
                 null;
             // The agent populated `last_dynamic_agent_error_message` with
