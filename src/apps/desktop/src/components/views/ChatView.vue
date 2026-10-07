@@ -5217,7 +5217,10 @@ const compactSession = async () => {
                             renderer, pdf/video/audio native) plus a
                             download action. Cookie-based auth, so plain
                             `<a href>` / `<img src>` / `<iframe src>`
-                            carry credentials.
+                            carry credentials. Expanded by default: the
+                            files ARE the answer, so the set tracks
+                            user-collapsed rows (inverted vs the other
+                            cards that track user-expanded rows).
                           -->
                           <PresentFiles
                             v-else-if="msg.tool_name === 'present_files'"
@@ -5225,7 +5228,7 @@ const compactSession = async () => {
                             :session-id="sessionId || chatId"
                             :cwd="sessionCwd"
                             :parameters="getParametersForMessage(msg)"
-                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :expanded="!expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <!--
                             `generate_image` is expandable. The card shows

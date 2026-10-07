@@ -130,6 +130,37 @@ describe('PresentFiles', () => {
     expect(wrapper.find('[data-testid="present-files-row-0"]').exists()).toBe(false)
   })
 
+  it('expanded by default: rows render with no expanded prop', () => {
+    const wrapper = mount(PresentFiles, {
+      props: { content: makeSuccessContent(), sessionId: 'sess_123' } as never,
+    })
+    expect(wrapper.find('[data-testid="present-files-row-0"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="present-files-row-1"]').exists()).toBe(true)
+  })
+
+  it('html/pdf preview chrome uses the dark card bg, not bg-white', async () => {
+    const html = mountCard({
+      status: 'presented',
+      count: 1,
+      files: [
+        { path: '/tmp/a.html', bytes: 10, mime: 'text/html; charset=utf-8', label: 'a.html' },
+      ],
+    })
+    await flushPromises()
+    const htmlBox = html.find('[data-testid="present-files-inline-html-0"]')
+    expect(htmlBox.exists()).toBe(true)
+    expect(htmlBox.classes().join(' ')).not.toContain('bg-white')
+    const pdf = mountCard({
+      status: 'presented',
+      count: 1,
+      files: [{ path: '/tmp/d.pdf', bytes: 10, mime: 'application/pdf', label: 'd.pdf' }],
+    })
+    await flushPromises()
+    const pdfBox = pdf.find('[data-testid="present-files-inline-pdf-0"]')
+    expect(pdfBox.exists()).toBe(true)
+    expect(pdfBox.classes().join(' ')).not.toContain('bg-white')
+  })
+
   it('image files render a full-width inline preview (click → fullscreen)', () => {
     const wrapper = mountCard(makeSuccessContent())
     const inline = wrapper.find('[data-testid="present-files-inline-image-1"]')
