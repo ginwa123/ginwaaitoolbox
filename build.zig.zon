@@ -29,8 +29,8 @@
             // prints. Then `rm -rf zig-pkg && zig build` and confirm the
             // new symbol you rely on actually exists in the extracted
             // package.
-            .url = "https://github.com/ginwa123/ruangsql/archive/46d96ddffef48a5f17d1a335c12f96ec67cb8630.tar.gz",
-            .hash = "databases-0.0.0-vy-BCKm_BADbzxlYbgaV7ca6TLcxIY0RWbCXcpsC9LcW",
+            .url = "https://github.com/ginwa123/ruangsql/archive/34277a49cf52d5ab0f32e8bf91d9b493212565e0.tar.gz",
+            .hash = "databases-0.0.0-vy-BCKm_BACpq2owAc7vFGF22K9adaubKpZsU6ORghw2",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Exposes a single `kabelweb` module
@@ -49,8 +49,8 @@
         //   .hash = "kabelweb-0.0.0-<hash>",
         // after pushing the kabelweb commit you want to pin.
         .kabelweb = .{
-            .url = "git+https://github.com/ginwa123/kabelweb.git#7e97a09ea9e01cec0fe1d46e54aedce76852f7b1",
-            .hash = "kabelweb-0.0.0-vhZamwtCGwBXhC83xJYgLDg8ZfAclFjoLZ-wMAnEHsWI",
+            .url = "git+https://github.com/ginwa123/kabelweb.git#bb21b2344841494ea2ec52f668ddcf9ed81a754e",
+            .hash = "kabelweb-0.0.0-vhZam0jzHADrWo3sAN3dUEnO2xvF0xNZXpAFGT-mcFdH",
         },
         // Cross-platform portable helpers (sleep, fileExists,
         // unixTimestampNanos, etc.) used by every module. Promoted

@@ -62,7 +62,7 @@ fn readFileContents(
     file_path: []const u8,
 ) !?[]u8 {
     if (file_path.len == 0 or !std.fs.path.isAbsolute(file_path)) {
-        std.log.warn("makeAgentKanbanKnowledge: skipping knowledge entry with a non-absolute file_path: {s}", .{file_path});
+        std.log.info("makeAgentKanbanKnowledge: skipping knowledge entry with a non-absolute file_path: {s}", .{file_path});
         return null;
     }
 
@@ -72,7 +72,7 @@ fn readFileContents(
         allocator,
         std.Io.Limit.limited(MAX_FILE_BYTES_OOM_SAFETY),
     ) catch |err| {
-        std.log.warn("makeAgentKanbanKnowledge: failed to read {s}: {}", .{ file_path, err });
+        std.log.info("makeAgentKanbanKnowledge: failed to read {s}: {}", .{ file_path, err });
         return null;
     };
     return contents;

@@ -354,7 +354,7 @@ pub fn parse(
             if (tok.text.len > 0 and tok.text[0] != '-' and
                 std.mem.indexOf(u8, tok.text, "://") == null)
             {
-                std.log.warn("web_search_curl: refusing non-curl command '{s}'", .{tok.text});
+                std.log.info("web_search_curl: refusing non-curl command '{s}'", .{tok.text});
                 return error.UnsupportedCommand;
             }
         }

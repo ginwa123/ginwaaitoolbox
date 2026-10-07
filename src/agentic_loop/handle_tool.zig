@@ -18,6 +18,7 @@ const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 const agentic_loop_mod = @import("workflow.zig");
 const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
 const xmlUnescape = @import("helpers").xmlUnescape;
+const helpers = @import("helpers");
 const on_event_sent = @import("on_event_sent.zig");
 const parsing = @import("parsing.zig");
 const hooks = @import("hooks.zig");
@@ -1274,11 +1275,11 @@ fn updateAndSendToolResult(
 /// completion except the newest.
 fn sendSSEForMessageById(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8, cwd: []const u8, agent_name: []const u8, parent_session_id: []const u8, temperature: f32, is_thinking: bool, is_input: bool, is_output: bool, id: []const u8) !void {
     const msgOpt = llm_history.getMessageById(allocator, db, session_id, id) catch |err| {
-        std.debug.print("SSE_DEBUG: getMessageById failed for session {s} id {s}: {s}\n", .{ session_id, id, @errorName(err) });
+        logger_mod.debugPrint("SSE_DEBUG: getMessageById failed for session {s} id {s}: {s}\n", .{ session_id, id, @errorName(err) });
         return;
     };
     const msg = msgOpt orelse {
-        std.debug.print("SSE_DEBUG: no message found for session {s} id {s}\n", .{ session_id, id });
+        logger_mod.debugPrint("SSE_DEBUG: no message found for session {s} id {s}\n", .{ session_id, id });
         return;
     };
     defer {
@@ -1304,7 +1305,7 @@ fn sendSSEForMessageById(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend
         if (msg.tool_call_id) |t| allocator.free(t);
     }
 
-    std.debug.print("SSE_DEBUG: sending SSE by id for session {s}, id={s}, content='{s}'\n", .{ session_id, msg.id, if (msg.response_content.len > 50) msg.response_content[0..50] else msg.response_content });
+    logger_mod.debugPrint("SSE_DEBUG: sending SSE by id for session {s}, id={s}, content='{s}'\n", .{ session_id, msg.id, if (msg.response_content.len > 50) msg.response_content[0..50] else msg.response_content });
 
     const session_skills_tool = llm_history.getSessionSkills(allocator, db, session_id) catch null;
     defer if (session_skills_tool) |s| for (s) |*skill| {
@@ -1355,7 +1356,7 @@ fn sendSSEForMessageById(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend
         .image_url = null,
         .session_skills = session_skills_tool,
     }) catch |err| {
-        std.debug.print("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
+        logger_mod.debugPrint("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
     };
 }
 
@@ -1366,11 +1367,11 @@ fn sendSSEForLatestMessage(allocator: std.mem.Allocator, db: *sqlite.SqliteBacke
     // serialization point, all callers fixed at once).
 
     const latestMessage = getLatestMessage(allocator, db, session_id) catch |err| {
-        std.debug.print("SSE_DEBUG: getLatestMessage failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
+        logger_mod.debugPrint("SSE_DEBUG: getLatestMessage failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
         return;
     };
     if (latestMessage) |msg| {
-        std.debug.print("SSE_DEBUG: sending SSE for session {s}, content='{s}'\n", .{ session_id, if (msg.response_content.len > 50) msg.response_content[0..50] else msg.response_content });
+        logger_mod.debugPrint("SSE_DEBUG: sending SSE for session {s}, content='{s}'\n", .{ session_id, if (msg.response_content.len > 50) msg.response_content[0..50] else msg.response_content });
 
         const session_skills_tool = llm_history.getSessionSkills(allocator, db, session_id) catch null;
         defer if (session_skills_tool) |s| for (s) |*skill| {
@@ -1410,10 +1411,10 @@ fn sendSSEForLatestMessage(allocator: std.mem.Allocator, db: *sqlite.SqliteBacke
             .image_url = null,
             .session_skills = session_skills_tool,
         }) catch |err| {
-            std.debug.print("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
+            logger_mod.debugPrint("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
         };
     } else {
-        std.debug.print("SSE_DEBUG: no latest message found for session {s}\n", .{session_id});
+        logger_mod.debugPrint("SSE_DEBUG: no latest message found for session {s}\n", .{session_id});
     }
 }
 

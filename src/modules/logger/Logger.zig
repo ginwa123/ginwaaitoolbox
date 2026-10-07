@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const timing = @import("Timing.zig");
 const request_id = @import("RequestId.zig");
 const formatter = @import("Formatter.zig");
@@ -54,6 +55,23 @@ pub const LoggerConfig = struct {
     /// Output mode: stdout, file, or both
     output_mode: OutputMode = .stdout,
 };
+
+/// Timber-style console debug print without per-site `if`s.
+///
+/// `zig build test` prints a `failed command:` block for ANY step (even a
+/// passing one) whose stderr is non-empty, so stray `std.debug.print` lines
+/// in test-reachable code show up as scary-looking noise on green runs.
+/// Call sites use this instead of `std.debug.print` directly; the silence
+/// decision lives HERE, once (the Android Timber pattern: call sites log
+/// unconditionally, the planted tree decides).
+///
+/// Production binaries print unconditionally — there is no runtime flag to
+/// forget (a flag defaulting to "loud" would leak noise into CI the first
+/// time someone forgets to set it; `builtin.is_test` cannot leak).
+pub fn debugPrint(comptime fmt: []const u8, args: anytype) void {
+    if (builtin.is_test) return;
+    std.debug.print(fmt, args);
+}
 
 /// Thread-safe logger with pluggable formatters
 pub const Logger = struct {
@@ -327,8 +345,12 @@ pub const Logger = struct {
             }
         }
 
-        // Handle stdout output if configured
-        if (self.config.output_mode == .stdout or self.config.output_mode == .both) {
+        // Handle stdout output if configured. Under `zig build test` the
+        // console branch stays silent: the build runner prints a
+        // `failed command:` block for ANY step (even passing) with
+        // non-empty stderr. File output is unaffected, so the tests that
+        // assert on log files keep exercising the real path.
+        if (!builtin.is_test and (self.config.output_mode == .stdout or self.config.output_mode == .both)) {
             try std.Io.File.writeStreamingAll(std.Io.File.stderr(), self.io, output);
         }
     }

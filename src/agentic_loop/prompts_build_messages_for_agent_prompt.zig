@@ -485,7 +485,7 @@ pub fn buildMCPToolsRun(
             // one syscall of the cancel.
             const deadline_ns: u64 = 30 * std.time.ns_per_s;
             const stdio_tools = fetchToolsFromServerStdio(allocator, server_name, server_obj, deadline_ns, cancel_fn) catch |err| {
-                std.log.warn("Failed to fetch MCP tools from stdio server '{s}': {s}", .{ server_name, @errorName(err) });
+                std.log.info("Failed to fetch MCP tools from stdio server '{s}': {s}", .{ server_name, @errorName(err) });
                 continue;
             };
             // `appendSlice` copies the structs (the name/description strings
@@ -895,7 +895,7 @@ fn fetchToolsFromServer(
         header_slice,
         .{ .timeout_ms = 30_000 },
     ) catch |err| {
-        std.log.warn("Failed to fetch MCP tools from {s}: {s}", .{ server_name, @errorName(err) });
+        std.log.info("Failed to fetch MCP tools from {s}: {s}", .{ server_name, @errorName(err) });
         return error.HttpRequestError;
     };
     defer result.deinit(allocator);

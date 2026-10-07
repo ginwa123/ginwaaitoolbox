@@ -97,7 +97,7 @@ pub fn formatHistory(
     if (mode == .none) return try allocator.dupe(u8, "");
 
     const messages = fetchUserAssistantMessages(allocator, db, parent_session_id, mode) catch |err| {
-        std.log.warn("inherited_context: failed to fetch parent history: {s}", .{@errorName(err)});
+        std.log.info("inherited_context: failed to fetch parent history: {s}", .{@errorName(err)});
         return try allocator.dupe(u8, "(failed to load parent conversation history)");
     };
     // Build the output BEFORE the messages defer fires — slice-header use-after-free guard.
