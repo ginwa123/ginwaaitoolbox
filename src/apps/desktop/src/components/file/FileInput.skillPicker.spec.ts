@@ -127,6 +127,35 @@ describe('FileInput — /skill picker', () => {
     expect(wrapper.find('[data-testid="skill-picker-list"]').exists()).toBe(false)
   })
 
+  it("typing '/sk' (namespace prefix) shows the full skill list", async () => {
+    seedWorkspace()
+    const wrapper = await mountInput()
+    const textarea = wrapper.find('textarea')
+    await typeInTextarea(textarea, '/sk')
+
+    expect(getSkillsMock).toHaveBeenCalledTimes(1)
+    const list = wrapper.find('[data-testid="skill-picker-list"]')
+    expect(list.exists()).toBe(true)
+    expect(list.text()).toContain('review')
+    expect(list.text()).toContain('deploy')
+  })
+
+  it("typing '/' shows the full list and Enter inserts canonical '/skill-<name>'", async () => {
+    seedWorkspace()
+    const wrapper = await mountInput()
+    const textarea = wrapper.find('textarea')
+    await typeInTextarea(textarea, '/')
+
+    const list = wrapper.find('[data-testid="skill-picker-list"]')
+    expect(list.exists()).toBe(true)
+    expect(list.text()).toContain('review')
+
+    await textarea.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    const element = textarea.element as HTMLTextAreaElement
+    expect(element.value).toBe('/skill-review')
+  })
+
   it('Esc closes the picker without inserting', async () => {
     seedWorkspace()
     const wrapper = await mountInput()
@@ -177,5 +206,125 @@ describe('FileInput — /skill picker', () => {
     await typeInTextarea(textarea, 'see a/b')
     expect(wrapper.find('[data-testid="skill-picker-list"]').exists()).toBe(false)
     expect(getSkillsMock).not.toHaveBeenCalled()
+  })
+
+  describe('complex skill names (dashes, dots, spaces, slashes)', () => {
+    function complexSkillsPayload() {
+      return {
+        skills: [
+          {
+            name: 'before-after-screenshots-from-two-checkouts',
+            description: 'before/after screenshots for PR review',
+          },
+          { name: 'zig-0.16-trap', description: 'zig version trap' },
+          { name: 'deploy-prod', description: 'deploys the app to production' },
+        ],
+      }
+    }
+
+    it('dash-heavy query narrows: /skill-before-after', async () => {
+      seedWorkspace()
+      getSkillsMock.mockResolvedValue(complexSkillsPayload())
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/skill-before-after')
+
+      const list = wrapper.find('[data-testid="skill-picker-list"]')
+      expect(list.exists()).toBe(true)
+      expect(list.text()).toContain('before-after-screenshots-from-two-checkouts')
+      expect(list.text()).not.toContain('zig-0.16-trap')
+      expect(list.text()).not.toContain('deploy-prod')
+    })
+
+    it('dots in the query work: /skill-0.16', async () => {
+      seedWorkspace()
+      getSkillsMock.mockResolvedValue(complexSkillsPayload())
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/skill-0.16')
+
+      const list = wrapper.find('[data-testid="skill-picker-list"]')
+      expect(list.exists()).toBe(true)
+      expect(list.text()).toContain('zig-0.16-trap')
+      expect(list.text()).not.toContain('deploy-prod')
+    })
+
+    it('space-separated words AND-filter: /skill screenshots checkouts', async () => {
+      seedWorkspace()
+      getSkillsMock.mockResolvedValue(complexSkillsPayload())
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/skill screenshots checkouts')
+
+      const list = wrapper.find('[data-testid="skill-picker-list"]')
+      expect(list.exists()).toBe(true)
+      expect(list.text()).toContain('before-after-screenshots-from-two-checkouts')
+      expect(list.text()).not.toContain('deploy-prod')
+    })
+
+    it('failing AND-words keep the picker open with No skills found', async () => {
+      seedWorkspace()
+      getSkillsMock.mockResolvedValue(complexSkillsPayload())
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/skill screenshots prod')
+
+      const list = wrapper.find('[data-testid="skill-picker-list"]')
+      expect(list.exists()).toBe(true)
+      expect(list.text()).toContain('No skills found')
+    })
+
+    it('slash namespace filters on the last segment: /infra/deploy', async () => {
+      seedWorkspace()
+      getSkillsMock.mockResolvedValue(complexSkillsPayload())
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/infra/deploy')
+
+      const list = wrapper.find('[data-testid="skill-picker-list"]')
+      expect(list.exists()).toBe(true)
+      expect(list.text()).toContain('deploy-prod')
+      expect(list.text()).not.toContain('zig-0.16-trap')
+
+      // Bare form: Enter replaces the whole `/infra/deploy` span.
+      await textarea.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+      const element = textarea.element as HTMLTextAreaElement
+      expect(element.value).toBe('/deploy-prod')
+    })
+
+    it('space form inserts canonical token: /skill screen', async () => {
+      seedWorkspace()
+      getSkillsMock.mockResolvedValue(complexSkillsPayload())
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/skill screen')
+
+      const list = wrapper.find('[data-testid="skill-picker-list"]')
+      expect(list.exists()).toBe(true)
+      expect(list.text()).toContain('before-after-screenshots-from-two-checkouts')
+
+      await textarea.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+      const element = textarea.element as HTMLTextAreaElement
+      expect(element.value).toBe('/skill-before-after-screenshots-from-two-checkouts')
+    })
+
+    it('matching is case-insensitive: /SKILL-DEPLOY', async () => {
+      seedWorkspace()
+      getSkillsMock.mockResolvedValue(complexSkillsPayload())
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/SKILL-DEPLOY')
+
+      const list = wrapper.find('[data-testid="skill-picker-list"]')
+      expect(list.exists()).toBe(true)
+      expect(list.text()).toContain('deploy-prod')
+
+      await textarea.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+      const element = textarea.element as HTMLTextAreaElement
+      expect(element.value).toBe('/skill-deploy-prod')
+    })
   })
 })
