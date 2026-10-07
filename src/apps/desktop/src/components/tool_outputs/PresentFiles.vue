@@ -77,35 +77,44 @@ import {
 } from './_shared/toolOutputParser'
 import { fileDownloadUrl } from '../../api'
 
-const props = defineProps<{
-  /**
-   * The inner `<data>` XML from the present_files tool's `<tool>`
-   * envelope (already unwrapped by the parent's
-   * `tryUnwrapToolOutput` pipeline). Always XML — never JSON.
-   */
-  content: unknown
-  /**
-   * The session id — threaded into the download/preview URLs as
-   * `?session_id=` so the backend can sandbox paths to the session
-   * working directory. Falls back to `chatId` at the call site.
-   */
-  sessionId: string
-  /**
-   * Whether the row is already expanded in the parent chat.
-   */
-  expanded?: boolean
-  /**
-   * Session working directory (for the header's open-in-editor hint).
-   */
-  cwd?: string
-  /**
-   * The JSON-stringified tool-call arguments. Rendered collapsed via
-   * ToolParameters for parity with the other cards.
-   */
-  parameters?: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    /**
+     * The inner `<data>` XML from the present_files tool's `<tool>`
+     * envelope (already unwrapped by the parent's
+     * `tryUnwrapToolOutput` pipeline). Always XML — never JSON.
+     */
+    content: unknown
+    /**
+     * The session id — threaded into the download/preview URLs as
+     * `?session_id=` so the backend can sandbox paths to the session
+     * working directory. Falls back to `chatId` at the call site.
+     */
+    sessionId: string
+    /**
+     * Whether the row is already expanded in the parent chat.
+     * Defaults to expanded — presented files are the payload, not metadata.
+     * Uses withDefaults (not `?? true`): Vue coerces an absent Boolean
+     * prop to false, so `??` would never fire.
+     */
+    expanded?: boolean
+    /**
+     * Session working directory (for the header's open-in-editor hint).
+     */
+    cwd?: string
+    /**
+     * The JSON-stringified tool-call arguments. Rendered collapsed via
+     * ToolParameters for parity with the other cards.
+     */
+    parameters?: string
+  }>(),
+  { expanded: true },
+)
 
-const isExpanded = ref(props.expanded ?? false)
+// Expanded by default: the files ARE the answer (unlike metadata cards
+// such as web_search that default collapsed). The parent may still pass
+// an explicit false to start collapsed.
+const isExpanded = ref(props.expanded)
 const normalized = computed(() => normalizeToolContent(props.content))
 const parsed = computed(() => {
   const p = parsePresentFiles(normalized.value.data)
@@ -528,7 +537,7 @@ const openInNewTab = (f: ParsedPresentFile) => {
           -->
           <div
             v-else-if="isHtml(f)"
-            class="max-w-full overflow-hidden rounded border border-[var(--color-border)] bg-white"
+            class="max-w-full overflow-hidden rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
             :data-testid="`present-files-inline-html-${idx}`"
           >
             <iframe
@@ -582,7 +591,7 @@ const openInNewTab = (f: ParsedPresentFile) => {
           -->
           <div
             v-else-if="isPdf(f)"
-            class="max-w-full overflow-hidden rounded border border-[var(--color-border)] bg-white"
+            class="max-w-full overflow-hidden rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
             :data-testid="`present-files-inline-pdf-${idx}`"
           >
             <iframe
