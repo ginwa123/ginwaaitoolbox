@@ -8,6 +8,7 @@ const std = @import("std");
 const helpers = @import("helpers");
 const database = @import("databases").database;
 const migration = @import("../migrations/mod.zig").migration;
+const db_config = @import("db_config.zig");
 const service_mod = @import("../service/mod.zig");
 
 const state_file = service_mod.state_file;
@@ -199,7 +200,7 @@ pub fn dispatchCreateAdmin(
     defer allocator.free(db_path);
     var dbSqlite: database.Db = .{};
     defer dbSqlite.deinit();
-    try database.openWithConfig(&dbSqlite, io, .{ .sqlite_path = db_path }, .{ .synchronous = .normal });
+    try database.openWithConfig(&dbSqlite, io, .{ .sqlite_path = db_path }, db_config.best);
     var mm = migration.MigrationManager.init(allocator, &dbSqlite);
     defer mm.deinit();
     try migration.registerAllMigrations(&mm);
