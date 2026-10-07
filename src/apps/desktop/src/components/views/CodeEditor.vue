@@ -2,6 +2,10 @@
 import { computed, nextTick, onMounted, onUpdated, ref } from 'vue'
 import { detectLanguage, highlightLine } from '@/helpers/codeHighlight'
 import { displayPathFor } from '@/composables/useCodeEditorSession'
+import { getGitBlame, getGitWholeFileDiff } from '@/api'
+import { formatRelativeTime } from '@/helpers/relativeTime'
+import { parseUnifiedDiff } from './chat_right_sidebar/parseUnifiedDiff'
+import { buildLineGutter, type GutterKind } from '@/helpers/lineGutter'
 import UiIcon from '../ui/UiIcon.vue'
 import type { UiIconName } from '../ui/icons'
 
@@ -28,9 +32,23 @@ import type { UiIconName } from '../ui/icons'
  * resolution entirely, so there is nothing left to resolve at runtime,
  * and the viewer matches the diff review the user already reads.
  *
+ * Git annotations (gutter change bars, Code/Diff toggle, change navigator,
+ * blame chips) ride on two optional props. When a prop is absent and a cwd
+ * is bound, the viewer self-fetches it: the whole-file diff via
+ * `getGitWholeFileDiff` (same cached reader the diff review uses) and
+ * blame via `GET /api/git/blame`. Both are best-effort — a failure leaves
+ * the plain code view, never an error state.
+ *
  * The component is presentational: `AppLayout` owns the open-file session
  * (file / content / loading / error) and passes the text down.
  */
+
+/** One inline blame annotation: author + pre-formatted age. */
+export interface LineBlame {
+  line: number
+  author: string
+  age: string
+}
 
 const props = defineProps<{
   filePath: string
@@ -46,6 +64,13 @@ const props = defineProps<{
    * The target row is marked and scrolled to the middle of the viewport.
    */
   line?: number
+  /**
+   * Whole-file unified diff (`git diff -U<all>`). Drives the gutter bars,
+   * the Diff view, and the change navigator. Self-fetched when absent.
+   */
+  diffText?: string
+  /** Inline blame annotations. Self-fetched when absent. */
+  blame?: LineBlame[]
 }>()
 
 const emit = defineEmits<{
@@ -72,17 +97,104 @@ const targetLine = computed(() =>
   typeof props.line === 'number' && props.line > 0 ? props.line : null,
 )
 
-const isTarget = (lineNumber: number) => targetLine.value === lineNumber
+// Repo-relative path for the git endpoints: the explorer hands down an
+// absolute filePath, the endpoints want it relative to the cwd.
+const relativeFilePath = computed(() =>
+  props.cwd && props.filePath.startsWith(props.cwd + '/')
+    ? props.filePath.slice(props.cwd.length + 1)
+    : props.filePath,
+)
+
+// Self-fetched annotations (used only when the matching prop is absent).
+const fetchedDiff = ref<string | null>(null)
+const fetchedBlame = ref<LineBlame[] | null>(null)
+
+const effectiveDiffText = computed(() => props.diffText ?? fetchedDiff.value ?? undefined)
+const effectiveBlame = computed(() => props.blame ?? fetchedBlame.value ?? undefined)
+
+async function loadDiff(): Promise<void> {
+  if (props.diffText !== undefined || !props.cwd) return
+  try {
+    const res = await getGitWholeFileDiff(props.cwd, relativeFilePath.value, false)
+    if (res.whole_file_refused) {
+      fetchedDiff.value = null
+      return
+    }
+    fetchedDiff.value = res.diffs.find((d) => d.path === relativeFilePath.value)?.diff_content ?? null
+  } catch (err) {
+    console.error('Failed to load whole-file diff:', err)
+    fetchedDiff.value = null
+  }
+}
+
+async function loadBlame(): Promise<void> {
+  if (props.blame !== undefined || !props.cwd) return
+  // getGitBlame never throws — it resolves null on transport error.
+  const res = await getGitBlame(props.cwd, relativeFilePath.value)
+  if (!res || !res.is_git_repo) {
+    fetchedBlame.value = null
+    return
+  }
+  fetchedBlame.value = res.lines.map((entry) => ({
+    line: entry.line,
+    author: entry.author || 'Unknown',
+    age: entry.author_time > 0 ? formatRelativeTime(String(entry.author_time * 1000)) : '',
+  }))
+}
+
+function loadAnnotations(): void {
+  void loadDiff()
+  void loadBlame()
+}
+
+// Gutter marks + change blocks, keyed by new-file line number.
+const parsedDiff = computed(() =>
+  effectiveDiffText.value ? parseUnifiedDiff(effectiveDiffText.value) : null,
+)
+const gutter = computed(() => (parsedDiff.value ? buildLineGutter(parsedDiff.value.lines) : null))
+const changeBlocks = computed(() => gutter.value?.blocks ?? [])
+
+const gutterKindFor = (lineNumber: number): GutterKind | null =>
+  gutter.value?.gutters.get(lineNumber) ?? null
+
+const blameTextFor = (lineNumber: number): string | null => {
+  const found = effectiveBlame.value?.find((b) => b.line === lineNumber)
+  return found ? `${found.author}, ${found.age}` : null
+}
+
+// Code/Diff toggle + change navigator state.
+const showDiff = ref(false)
+const navIndex = ref(0)
+const navTarget = ref<number | null>(null)
+const navLabel = computed(() =>
+  changeBlocks.value.length === 0 ? '0 / 0' : `${navIndex.value + 1} / ${changeBlocks.value.length}`,
+)
+
+const isTarget = (lineNumber: number) =>
+  targetLine.value === lineNumber || navTarget.value === lineNumber
 
 /** Split one line into colored token spans (plaintext ⇒ one plain span). */
 const tokensFor = (line: string) => highlightLine(line, detectedLanguage.value)
 
+const signFor = (type: string): string => {
+  if (type === 'add') return '+'
+  if (type === 'remove') return '-'
+  if (type === 'context' || type === 'empty') return ' '
+  return ''
+}
+
+const diffRowClass = (type: string): string => {
+  if (type === 'add') return 'diff-row-add'
+  if (type === 'remove') return 'diff-row-remove'
+  if (type === 'hunk') return 'diff-row-hunk'
+  return ''
+}
+
 /**
- * Bring the requested line into view. Best-effort: jsdom has no
+ * Bring a line into view. Best-effort: jsdom has no
  * `scrollIntoView`, and a `?line=` beyond EOF is simply ignored.
  */
-async function scrollToTarget(): Promise<void> {
-  const line = targetLine.value
+async function scrollToLine(line: number | null): Promise<void> {
   if (line === null) return
   await nextTick()
   const row = bodyEl.value?.querySelector<HTMLElement>(`[data-line="${line}"]`)
@@ -91,19 +203,55 @@ async function scrollToTarget(): Promise<void> {
   }
 }
 
+function scrollToTarget(): void {
+  void scrollToLine(targetLine.value)
+}
+
+function goToBlock(direction: 1 | -1): void {
+  if (changeBlocks.value.length === 0) return
+  // The navigator addresses code rows — leave the Diff view first.
+  showDiff.value = false
+  navIndex.value =
+    (navIndex.value + direction + changeBlocks.value.length) % changeBlocks.value.length
+  const block = changeBlocks.value[navIndex.value]
+  if (!block) return
+  navTarget.value = block.startLine
+  void scrollToLine(block.startLine)
+}
+
+// Annotation identity: file + cwd + content length + explicit props.
+// A change resets fetched state and re-fetches (prev-value guard on
+// update — same pattern the line/content scroll uses; mount covers the
+// initial load).
+const annoKey = () =>
+  `${props.filePath}|${props.cwd ?? ''}|${props.content?.length ?? 0}|${props.diffText ?? ''}|${props.blame ? 'b' : ''}`
+
 onMounted(() => {
-  void scrollToTarget()
+  prevAnnoKey = annoKey()
+  loadAnnotations()
+  scrollToTarget()
 })
 
 // Re-scroll when the target line or the content changes (prev-value guard
 // on update — same call the watcher made; mount is covered above).
 let prevEditorLine = props.line
 let prevEditorContent = props.content
+let prevAnnoKey = ''
 onUpdated(() => {
+  const key = annoKey()
+  if (key !== prevAnnoKey) {
+    prevAnnoKey = key
+    fetchedDiff.value = null
+    fetchedBlame.value = null
+    navIndex.value = 0
+    navTarget.value = null
+    showDiff.value = false
+    loadAnnotations()
+  }
   if (props.line === prevEditorLine && props.content === prevEditorContent) return
   prevEditorLine = props.line
   prevEditorContent = props.content
-  void scrollToTarget()
+  scrollToTarget()
 })
 
 // Footer shows the full path. filePath from the sidebar explorer is
@@ -204,6 +352,48 @@ const handleClose = () => {
       </div>
 
       <div class="flex items-center gap-2 shrink-0">
+        <!-- Change navigator -->
+        <div
+          v-if="changeBlocks.length > 0"
+          data-testid="change-nav"
+          class="flex items-center gap-1 text-dense"
+          style="color: var(--semantic-text-dim)"
+        >
+          <button
+            type="button"
+            data-testid="change-prev"
+            aria-label="Previous change"
+            title="Previous change"
+            class="px-1.5 py-0.5 rounded hover:opacity-70"
+            style="border: 1px solid var(--color-border)"
+            @click="goToBlock(-1)"
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            data-testid="change-next"
+            aria-label="Next change"
+            title="Next change"
+            class="px-1.5 py-0.5 rounded hover:opacity-70"
+            style="border: 1px solid var(--color-border)"
+            @click="goToBlock(1)"
+          >
+            ↓
+          </button>
+          <span>{{ navLabel }}</span>
+        </div>
+        <!-- Code / Diff toggle -->
+        <div
+          v-if="effectiveDiffText"
+          data-testid="code-diff-toggle"
+          class="seg-toggle"
+          role="tablist"
+          @click="showDiff = !showDiff"
+        >
+          <span :class="{ on: !showDiff }">Code</span>
+          <span :class="{ on: showDiff }">Diff</span>
+        </div>
         <!-- Language indicator -->
         <span
           class="text-dense px-2 py-1 rounded"
@@ -235,6 +425,25 @@ const handleClose = () => {
         This file is empty
       </div>
 
+      <!-- Unified diff view (changed hunks only) -->
+      <div
+        v-else-if="showDiff && parsedDiff"
+        data-testid="code-diff-view"
+        class="diff-view"
+        style="font-size: var(--text-dense); line-height: 20px"
+      >
+        <div
+          v-for="(dl, dlIdx) in parsedDiff.lines"
+          :key="dlIdx"
+          class="diff-row"
+          :class="diffRowClass(dl.type)"
+        >
+          <span class="diff-old">{{ dl.oldLineNum ?? '' }}</span>
+          <span class="diff-new">{{ dl.newLineNum ?? '' }}</span>
+          <span class="diff-text">{{ signFor(dl.type) }}{{ dl.content }}</span>
+        </div>
+      </div>
+
       <table
         v-else
         class="w-full border-collapse"
@@ -257,12 +466,26 @@ const handleClose = () => {
             >
               {{ idx + 1 }}
             </td>
+            <td v-if="effectiveDiffText" class="code-diff-gutter-cell align-top">
+              <span
+                v-if="gutterKindFor(idx + 1)"
+                data-testid="code-gutter"
+                :data-kind="gutterKindFor(idx + 1)"
+                :data-line="idx + 1"
+                :class="`gutter-bar gutter-${gutterKindFor(idx + 1)}`"
+              />
+            </td>
             <td class="code-content px-2 align-top" style="color: var(--semantic-text)">
               <span
                 v-for="(token, tokenIdx) in tokensFor(line)"
                 :key="tokenIdx"
                 :class="`tok-${token.type}`"
                 >{{ token.text || '\u00a0' }}</span
+              ><span
+                v-if="blameTextFor(idx + 1)"
+                data-testid="line-blame"
+                class="blame-chip"
+                >{{ blameTextFor(idx + 1) }}</span
               >
             </td>
           </tr>
@@ -306,6 +529,88 @@ const handleClose = () => {
   background-color: var(--semantic-content-bg);
   border-right: 1px solid var(--color-border);
   z-index: 1;
+}
+
+/* Change-bar column: a 3px bar per changed line (VS Code convention —
+   green added, orange modified, red deleted tick). Unmarked rows keep an
+   empty cell so the code column stays aligned. */
+.code-diff-gutter-cell {
+  width: 7px;
+  min-width: 7px;
+  padding: 0 2px 0 0;
+}
+.gutter-bar {
+  display: inline-block;
+  width: 3px;
+  height: 1.2em;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+.gutter-added {
+  background-color: var(--color-green);
+}
+.gutter-modified {
+  background-color: var(--color-orange);
+}
+.gutter-deleted {
+  background-color: var(--color-red);
+}
+
+/* Inline blame chip (`author, age`) on annotated rows. */
+.blame-chip {
+  margin-left: 12px;
+  font-size: 11px;
+  color: var(--semantic-text-dim);
+  white-space: nowrap;
+}
+
+/* Code / Diff segmented toggle. */
+.seg-toggle {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  font-size: 11px;
+}
+.seg-toggle span {
+  padding: 3px 10px;
+  color: var(--semantic-text-dim);
+}
+.seg-toggle span.on {
+  background-color: var(--semantic-active-bg);
+  color: var(--semantic-text);
+  font-weight: 600;
+}
+
+/* Unified diff rows. */
+.diff-view {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diff-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 0 0;
+}
+.diff-old,
+.diff-new {
+  width: 3rem;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--semantic-text-dim);
+  opacity: 0.55;
+  user-select: none;
+}
+.diff-row-add {
+  background-color: rgba(135, 169, 135, 0.1);
+}
+.diff-row-remove {
+  background-color: rgba(196, 116, 110, 0.1);
+}
+.diff-row-hunk {
+  color: var(--color-blue);
+  background-color: rgba(139, 164, 176, 0.08);
 }
 
 .code-row:hover {
