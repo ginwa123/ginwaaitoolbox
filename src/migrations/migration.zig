@@ -1,1790 +1,226 @@
 const std = @import("std");
-const mod = @import("mod.zig");
-const pabrikcore = mod.pabrikcore;
-const sqlite_mod = pabrikcore.sqlite;
+const pabrikcore = @import("pabrikcore");
 const helpers = @import("helpers");
-
-pub const SqliteBackend = sqlite_mod.SqliteBackend;
-
-pub const Migration = struct {
-    version: u32,
-    name: []const u8,
-    up: *const fn (db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void,
-};
-
-pub const Migration001CreateLLMHistory = struct {
-    pub const version: u32 = 1;
-    pub const name = "create_llm_history";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS llm_history (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL,
-            \\    model TEXT NOT NULL,
-            \\    response_content TEXT,
-            \\    tool_calls_json TEXT,
-            \\    tool_results_json TEXT,
-            \\    finish_reason TEXT,
-            \\    usage_json TEXT,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
-
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_llm_history_session ON llm_history(session_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration002AddRoleToLLMHistory = struct {
-    pub const version: u32 = 2;
-    pub const name = "add_role_to_llm_history";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN role TEXT DEFAULT 'assistant'", &[_][]const u8{});
-    }
-};
-
-pub const Migration003AddReasoningContent = struct {
-    pub const version: u32 = 3;
-    pub const name = "add_reasoning_content";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN reasoning_content TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration004AddSessionDir = struct {
-    pub const version: u32 = 4;
-    pub const name = "add_session_dir";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN session_dir TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration005AddIsFeedToLLM = struct {
-    pub const version: u32 = 5;
-    pub const name = "add_is_feed_to_llm";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN is_feed_to_llm INTEGER DEFAULT 1", &[_][]const u8{});
-    }
-};
-
-pub const Migration006AddAgent = struct {
-    pub const version: u32 = 6;
-    pub const name = "add_agent";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN agent TEXT DEFAULT 'Agent'", &[_][]const u8{});
-    }
-};
-pub const Migration007AddSessionTracking = struct {
-    pub const version: u32 = 7;
-    pub const name = "add_session_tracking";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN session_name TEXT", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN loop_index INTEGER DEFAULT 0", &[_][]const u8{});
-    }
-};
-pub const Migration008AddSessionSkills = struct {
-    pub const version: u32 = 8;
-    pub const name = "add_session_skills";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "CREATE TABLE IF NOT EXISTS session_skills (session_id TEXT NOT NULL, skill_name TEXT NOT NULL, content TEXT NOT NULL, loaded_at INTEGER DEFAULT (strftime('%s', 'now')), PRIMARY KEY (session_id, skill_name))", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_session_skills_session ON session_skills(session_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration009RemoveCreatedColumn = struct {
-    pub const version: u32 = 9;
-    pub const name = "remove_created_column";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Rename old table
-        try db.exec(allocator, "ALTER TABLE llm_history RENAME TO llm_history_old", &[_][]const u8{});
-
-        // Create new table with `created_at` (the column this migration
-        // was supposed to consolidate). Columns added by later migrations
-        // (e.g. `temperature` / `is_thinking` from migration 011) MUST
-        // NOT be inlined here — that forward-projects the schema and
-        // causes a "duplicate column name" error when those migrations
-        // later try to `ALTER TABLE ... ADD COLUMN` on a fresh DB.
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS llm_history (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL,
-            \\    model TEXT NOT NULL,
-            \\    response_content TEXT,
-            \\    tool_calls_json TEXT,
-            \\    tool_results_json TEXT,
-            \\    finish_reason TEXT,
-            \\    usage_json TEXT,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    role TEXT DEFAULT 'assistant',
-            \\    reasoning_content TEXT,
-            \\    session_dir TEXT,
-            \\    is_feed_to_llm INTEGER DEFAULT 1,
-            \\    agent TEXT DEFAULT 'Agent',
-            \\    session_name TEXT,
-            \\    loop_index INTEGER DEFAULT 0
-            \\)
-        , &[_][]const u8{});
-
-        // Copy data from old table.
-        //
-        // NOTE on `created_at`: this migration's rename-and-copy dance
-        // assumes the old table had a `created` column to convert into
-        // `created_at`, but Migration 001 has always created
-        // `llm_history` with `created_at` directly (no historical
-        // `created` column ever existed in this codebase). Reading
-        // `created` from `llm_history_old` therefore crashes the
-        // migration on a fresh DB:
-        //
-        //   sqlite3_prepare_v2 error: no such column: created
-        //
-        // We use `COALESCE(created_at, CURRENT_TIMESTAMP)` instead. On
-        // the (only) schema that actually exists, `created_at` is the
-        // column on `llm_history_old`; the COALESCE fallback guards
-        // against the (hypothetical) empty-table case where every
-        // column is NULL — there are no rows to copy, but the function
-        // still needs a well-typed projection.
-        //
-        // Columns added by later migrations (`temperature`,
-        // `is_thinking` from migration 011; etc.) MUST NOT appear in
-        // the INSERT column list or the SELECT projection — they're
-        // not on `llm_history_old` (only added by their own migrations)
-        // and the new `llm_history` no longer declares them either.
-        try db.exec(allocator,
-            \\INSERT INTO llm_history (id, session_id, model, response_content, tool_calls_json,
-            \\    tool_results_json, finish_reason, usage_json, created_at, role,
-            \\    reasoning_content, session_dir, is_feed_to_llm, agent, session_name, loop_index)
-            \\SELECT id, session_id, model, response_content, tool_calls_json,
-            \\    tool_results_json, finish_reason, usage_json,
-            \\    COALESCE(created_at, CURRENT_TIMESTAMP),
-            \\    COALESCE(role, 'assistant'), reasoning_content, session_dir,
-            \\    COALESCE(is_feed_to_llm, 1), COALESCE(agent, 'Agent'),
-            \\    session_name, COALESCE(loop_index, 0)
-            \\FROM llm_history_old
-        , &[_][]const u8{});
-
-        // Recreate index
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_llm_history_session ON llm_history(session_id)", &[_][]const u8{});
-
-        // Drop old table
-        try db.exec(allocator, "DROP TABLE llm_history_old", &[_][]const u8{});
-    }
-};
-
-pub const Migration011AddTemperatureAndThinking = struct {
-    pub const version: u32 = 11;
-    pub const name = "add_temperature_and_thinking";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN temperature REAL DEFAULT 0.2", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN is_thinking INTEGER DEFAULT 0", &[_][]const u8{});
-    }
-};
-
-pub const Migration012AddParentTracking = struct {
-    pub const version: u32 = 12;
-    pub const name = "add_parent_tracking";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN parent_session_id TEXT", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN parent_id TEXT", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_llm_history_parent_session ON llm_history(parent_session_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration013AddTokenUsageColumns = struct {
-    pub const version: u32 = 13;
-    pub const name = "add_token_usage_columns";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN prompt_tokens INTEGER DEFAULT 0", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN completion_tokens INTEGER DEFAULT 0", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN total_tokens INTEGER DEFAULT 0", &[_][]const u8{});
-    }
-};
-
-pub const Migration014AddBackgroundProcess = struct {
-    pub const version: u32 = 14;
-    pub const name = "add_background_process";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS session_background_process (
-            \\    session_id TEXT NOT NULL,
-            \\    pid INTEGER NOT NULL,
-            \\    command TEXT NOT NULL,
-            \\    log_path TEXT NOT NULL,
-            \\    started_at INTEGER NOT NULL,
-            \\    status TEXT NOT NULL DEFAULT 'running',
-            \\    PRIMARY KEY (session_id, pid)
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_bg_process_session ON session_background_process(session_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration015AddSessionAgents = struct {
-    pub const version: u32 = 15;
-    pub const name = "add_session_agents";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS session_agents (
-            \\    session_id TEXT PRIMARY KEY,
-            \\    agent_name TEXT NOT NULL,
-            \\    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_session_agents_session ON session_agents(session_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration016AddInputOutputColumns = struct {
-    pub const version: u32 = 16;
-    pub const name = "add_input_output_columns";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN is_input INTEGER DEFAULT 0", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN is_output INTEGER DEFAULT 0", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN tool_name TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration017CreateSessionsTable = struct {
-    pub const version: u32 = 17;
-    pub const name = "create_sessions_table";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS sessions (
-            \\    id TEXT PRIMARY KEY,
-            \\    name TEXT NOT NULL,
-            \\    status TEXT NOT NULL DEFAULT 'active'
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)", &[_][]const u8{});
-    }
-};
-
-pub const Migration018CreateSessionQueueMessages = struct {
-    pub const version: u32 = 18;
-    pub const name = "create_session_queue_messages";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS session_queue_messages (
-            \\    id TEXT NOT NULL,
-            \\    session_id TEXT NOT NULL,
-            \\    message TEXT NOT NULL,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
-
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_session_queue_messages_session ON session_queue_messages(session_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration019CreateWorkerTable = struct {
-    pub const version: u32 = 19;
-    pub const name = "create_worker_table";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS worker (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL,
-            \\    working_directory TEXT,
-            \\    last_activity INTEGER DEFAULT (strftime('%s', 'now')),
-            \\    last_activity_description TEXT,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
-
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_worker_session ON worker(session_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration020AddWorkerExtraFields = struct {
-    pub const version: u32 = 20;
-    pub const name = "add_worker_extra_fields";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // These columns are already part of migration 019's CREATE TABLE
-        // (the canonical `worker` schema), so fresh-DB users would
-        // crash with "duplicate column name" if we ran the ADD COLUMN
-        // unconditionally. SQLite also doesn't support
-        // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (the syntax errors
-        // out at prepare time — see sqlite3_prepare_v2: "near
-        // 'EXISTS': syntax error"), so we wrap each ADD COLUMN in a
-        // pragma_table_info check.
-        try addColumnIfMissing(.{ .db = db }, allocator, "worker", "working_directory", "working_directory TEXT");
-        try addColumnIfMissing(.{ .db = db }, allocator, "worker", "last_activity", "last_activity INTEGER DEFAULT (strftime('%s', 'now'))");
-        try addColumnIfMissing(.{ .db = db }, allocator, "worker", "last_activity_description", "last_activity_description TEXT");
-    }
-};
-
-pub const Migration021RemoveSessionNameFromLlmHistory = struct {
-    pub const version: u32 = 21;
-    pub const name = "remove_session_name_from_llm_history";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history DROP COLUMN session_name", &[_][]const u8{});
-    }
-};
-
-pub const Migration022AddCwdToSessions = struct {
-    pub const version: u32 = 22;
-    pub const name = "add_cwd_to_sessions";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE sessions ADD COLUMN cwd TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration023DropSessionDirFromLlmHistory = struct {
-    pub const version: u32 = 23;
-    pub const name = "drop_session_dir_from_llm_history";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // SQLite doesn't support DROP COLUMN directly, so we need to recreate the table
-        // Step 1: Rename old table
-        try db.exec(allocator, "ALTER TABLE llm_history RENAME TO llm_history_old", &[_][]const u8{});
-
-        // Step 2: Create new table without session_dir column
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS llm_history (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL,
-            \\    model TEXT NOT NULL,
-            \\    response_content TEXT,
-            \\    tool_calls_json TEXT,
-            \\    tool_results_json TEXT,
-            \\    finish_reason TEXT,
-            \\    usage_json TEXT,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    role TEXT DEFAULT 'assistant',
-            \\    reasoning_content TEXT,
-            \\    is_feed_to_llm INTEGER DEFAULT 1,
-            \\    agent TEXT DEFAULT 'Agent',
-            \\    loop_index INTEGER DEFAULT 0,
-            \\    temperature REAL DEFAULT 0.2,
-            \\    is_thinking INTEGER DEFAULT 0,
-            \\    parent_session_id TEXT,
-            \\    parent_id TEXT,
-            \\    prompt_tokens INTEGER DEFAULT 0,
-            \\    completion_tokens INTEGER DEFAULT 0,
-            \\    total_tokens INTEGER DEFAULT 0,
-            \\    is_input INTEGER DEFAULT 0,
-            \\    is_output INTEGER DEFAULT 0,
-            \\    tool_name TEXT
-            \\)
-        , &[_][]const u8{});
-
-        // Step 3: Copy data from old table (excluding session_dir column)
-        try db.exec(allocator,
-            \\INSERT INTO llm_history (id, session_id, model, response_content, tool_calls_json,
-            \\    tool_results_json, finish_reason, usage_json, created_at, role,
-            \\    reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking,
-            \\    parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens,
-            \\    is_input, is_output, tool_name)
-            \\SELECT id, session_id, model, response_content, tool_calls_json,
-            \\    tool_results_json, finish_reason, usage_json, created_at, role,
-            \\    reasoning_content, is_feed_to_llm, agent, loop_index, COALESCE(temperature, 0.2), COALESCE(is_thinking, 0),
-            \\    parent_session_id, parent_id, COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0),
-            \\    COALESCE(is_input, 0), COALESCE(is_output, 0), tool_name
-            \\FROM llm_history_old
-        , &[_][]const u8{});
-
-        // Step 4: Recreate index
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_llm_history_session ON llm_history(session_id)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_llm_history_parent_session ON llm_history(parent_session_id)", &[_][]const u8{});
-
-        // Step 5: Drop old table
-        try db.exec(allocator, "DROP TABLE llm_history_old", &[_][]const u8{});
-    }
-};
-
-pub const Migration024CreateWorkspaces = struct {
-    pub const version: u32 = 24;
-    pub const name = "create_workspaces";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS workspaces (
-            \\    id TEXT PRIMARY KEY
-            \\)
-        , &[_][]const u8{});
-    }
-};
-
-pub const Migration025AddWorkspaceIdToSessions = struct {
-    pub const version: u32 = 25;
-    pub const name = "add_workspace_id_to_sessions";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Add workspace_id column to sessions table
-        try db.exec(allocator, "ALTER TABLE sessions ADD COLUMN workspace_id TEXT", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration026DropSessionIdFromWorkspaces = struct {
-    pub const version: u32 = 26;
-    pub const name = "drop_session_id_from_workspaces";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // SQLite doesn't support DROP COLUMN directly, recreate table
-        // Step 1: Create new table without session_id
-        try db.exec(allocator, "CREATE TABLE IF NOT EXISTS workspaces_new (id TEXT PRIMARY KEY)", &[_][]const u8{});
-        // Step 2: Copy data from old table
-        try db.exec(allocator, "INSERT INTO workspaces_new SELECT id FROM workspaces", &[_][]const u8{});
-        // Step 3: Drop old table
-        try db.exec(allocator, "DROP TABLE workspaces", &[_][]const u8{});
-        // Step 4: Rename new table
-        try db.exec(allocator, "ALTER TABLE workspaces_new RENAME TO workspaces", &[_][]const u8{});
-    }
-};
-
-pub const Migration027AddNameToWorkspaces = struct {
-    pub const version: u32 = 27;
-    pub const name = "add_name_to_workspaces";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE workspaces ADD COLUMN name TEXT NOT NULL DEFAULT ''", &[_][]const u8{});
-    }
-};
-
-pub const Migration028CreateWorkspaceItems = struct {
-    pub const version: u32 = 28;
-    pub const name = "create_workspace_items";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS workspace_items (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_id TEXT NOT NULL,
-            \\    item_type TEXT NOT NULL
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_items_workspace ON workspace_items(workspace_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration029AddTimestampsToSessions = struct {
-    pub const version: u32 = 29;
-    pub const name = "add_timestamps_to_sessions";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Use NULL default — CURRENT_TIMESTAMP is non-constant in older SQLite
-        try db.exec(allocator, "ALTER TABLE sessions ADD COLUMN created_at DATETIME DEFAULT NULL", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE sessions ADD COLUMN updated_at DATETIME DEFAULT NULL", &[_][]const u8{});
-
-        // Backfill existing rows with the current time
-        try db.exec(allocator, "UPDATE sessions SET created_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE created_at IS NULL", &[_][]const u8{});
-    }
-};
-
-pub const Migration030AddTimestampsToWorkspaces = struct {
-    pub const version: u32 = 30;
-    pub const name = "add_timestamps_to_workspaces";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE workspaces ADD COLUMN created_at DATETIME DEFAULT NULL", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE workspaces ADD COLUMN updated_at DATETIME DEFAULT NULL", &[_][]const u8{});
-        try db.exec(allocator, "UPDATE workspaces SET created_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE created_at IS NULL", &[_][]const u8{});
-    }
-};
-
-pub const Migration031AddTimestampsToWorkspaceItems = struct {
-    pub const version: u32 = 31;
-    pub const name = "add_timestamps_to_workspace_items";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE workspace_items ADD COLUMN created_at DATETIME DEFAULT NULL", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE workspace_items ADD COLUMN updated_at DATETIME DEFAULT NULL", &[_][]const u8{});
-        try db.exec(allocator, "UPDATE workspace_items SET created_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE created_at IS NULL", &[_][]const u8{});
-    }
-};
-
-pub const Migration032AddNamePathToWorkspaceItems = struct {
-    pub const version: u32 = 32;
-    pub const name = "add_name_path_to_workspace_items";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE workspace_items ADD COLUMN name TEXT", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE workspace_items ADD COLUMN path TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration033AddCancelledToWorker = struct {
-    pub const version: u32 = 33;
-    pub const name = "add_cancelled_to_worker";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE worker ADD COLUMN cancelled INTEGER DEFAULT 0", &[_][]const u8{});
-    }
-};
-
-pub const Migration034CreateWorkspaceItemTasks = struct {
-    pub const version: u32 = 34;
-    pub const name = "create_workspace_item_tasks";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Note: this migration historically included a `session_id`
-        // column. Migration 052 drops it (the column was redundant —
-        // `workspace_item_tasks.id` IS the session_id for kanban /
-        // routine tasks). New fresh databases that walk the full
-        // migration list skip the redundant column entirely.
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS workspace_item_tasks (
-            \\    id TEXT PRIMARY KEY,
-            \\    name TEXT NOT NULL,
-            \\    workspace_item_id TEXT NOT NULL,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_item_tasks_item ON workspace_item_tasks(workspace_item_id)", &[_][]const u8{});
-    }
-};
-
-pub const Migration035AddDiffViewColumns = struct {
-    pub const version: u32 = 35;
-    pub const name = "add_diffview_columns";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN diffview_before TEXT", &[_][]const u8{});
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN diffview_after TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration036AddImageUrlToLlmHistory = struct {
-    pub const version: u32 = 36;
-    pub const name = "add_image_url_column";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN image_url TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration037AddImageUrlToSessionQueueMessages = struct {
-    pub const version: u32 = 37;
-    pub const name = "add_image_url_to_session_queue_messages";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE session_queue_messages ADD COLUMN image_url TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration038DropToolResultsJson = struct {
-    pub const version: u32 = 38;
-    pub const name = "drop_tool_results_json";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // SQLite doesn't support DROP COLUMN directly, recreate table
-        // Step 1: Rename old table
-        try db.exec(allocator, "ALTER TABLE llm_history RENAME TO llm_history_old", &[_][]const u8{});
-
-        // Step 2: Create new table without tool_results_json column
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS llm_history (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL,
-            \\    model TEXT NOT NULL,
-            \\    response_content TEXT,
-            \\    tool_calls_json TEXT,
-            \\    finish_reason TEXT,
-            \\    usage_json TEXT,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    role TEXT DEFAULT 'assistant',
-            \\    reasoning_content TEXT,
-            \\    is_feed_to_llm INTEGER DEFAULT 1,
-            \\    agent TEXT DEFAULT 'Agent',
-            \\    loop_index INTEGER DEFAULT 0,
-            \\    temperature REAL DEFAULT 0.2,
-            \\    is_thinking INTEGER DEFAULT 0,
-            \\    parent_session_id TEXT,
-            \\    parent_id TEXT,
-            \\    prompt_tokens INTEGER DEFAULT 0,
-            \\    completion_tokens INTEGER DEFAULT 0,
-            \\    total_tokens INTEGER DEFAULT 0,
-            \\    is_input INTEGER DEFAULT 0,
-            \\    is_output INTEGER DEFAULT 0,
-            \\    tool_name TEXT,
-            \\    diffview_before TEXT,
-            \\    diffview_after TEXT,
-            \\    image_url TEXT
-            \\)
-        , &[_][]const u8{});
-
-        // Step 3: Copy data from old table (excluding tool_results_json column)
-        try db.exec(allocator,
-            \\INSERT INTO llm_history (id, session_id, model, response_content, tool_calls_json,
-            \\    finish_reason, usage_json, created_at, role,
-            \\    reasoning_content, is_feed_to_llm, agent, loop_index, temperature, is_thinking,
-            \\    parent_session_id, parent_id, prompt_tokens, completion_tokens, total_tokens,
-            \\    is_input, is_output, tool_name, diffview_before, diffview_after, image_url)
-            \\SELECT id, session_id, model, response_content, tool_calls_json,
-            \\    finish_reason, usage_json, created_at, role,
-            \\    reasoning_content, is_feed_to_llm, agent, loop_index, COALESCE(temperature, 0.2), COALESCE(is_thinking, 0),
-            \\    parent_session_id, parent_id, COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(total_tokens, 0),
-            \\    COALESCE(is_input, 0), COALESCE(is_output, 0), tool_name, diffview_before, diffview_after, image_url
-            \\FROM llm_history_old
-        , &[_][]const u8{});
-
-        // Step 4: Recreate indexes
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_llm_history_session ON llm_history(session_id)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_llm_history_parent_session ON llm_history(parent_session_id)", &[_][]const u8{});
-
-        // Step 5: Drop old table
-        try db.exec(allocator, "DROP TABLE llm_history_old", &[_][]const u8{});
-    }
-};
-
-pub const Migration039AddToolCallIdToLlmHistory = struct {
-    pub const version: u32 = 39;
-    pub const name = "add_tool_call_id";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE llm_history ADD COLUMN tool_call_id TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration040AddSelectedProfileModelToSessions = struct {
-    pub const version: u32 = 40;
-    pub const name = "add_selected_profile_model_to_sessions";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator, "ALTER TABLE sessions ADD COLUMN selected_profile_model TEXT", &[_][]const u8{});
-    }
-};
-
-pub const Migration041AddPerformanceIndexes = struct {
-    pub const version: u32 = 41;
-    pub const name = "add_performance_indexes";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Hot read paths in llm_history.zig + http_handlers/queue_messages_get.zig +
-        // http_handlers/worker_list.zig + http_handlers/workspaces_list.zig.
-        // Compound indexes with explicit DESC match the query's ORDER BY direction
-        // so SQLite does a forward index scan with no sort step.
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_llm_history_session_created ON llm_history(session_id, created_at DESC)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_sessions_cwd_created ON sessions(cwd, created_at DESC)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_session_queue_messages_session_created ON session_queue_messages(session_id, created_at ASC)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_worker_last_activity ON worker(last_activity DESC)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_items_workspace_created ON workspace_items(workspace_id, created_at DESC)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_items_created_at ON workspace_items(created_at DESC)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_item_tasks_item_created ON workspace_item_tasks(workspace_item_id, created_at DESC)", &[_][]const u8{});
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspaces_created_at ON workspaces(created_at DESC)", &[_][]const u8{});
-
-        // ANALYZE updates sqlite_stat1 so the query planner knows the new indexes
-        // exist and how selective they are. Without this, the planner may still pick
-        // a full scan on existing databases that pre-date the new indexes.
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration042AddWorkspaceItemTasksUpdatedAtIndex = struct {
-    pub const version: u32 = 42;
-    pub const name = "add_workspace_item_tasks_updated_at_index";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Hot read path for the workspace-item tasks endpoint when
-        // sort_by=updated_at (the new default). Mirrors
-        // idx_workspace_item_tasks_item_created (Migration 041).
-        // Compound (workspace_item_id, updated_at DESC) matches the
-        // query's WHERE + ORDER BY so SQLite does a forward index scan.
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_item_tasks_item_updated ON workspace_item_tasks(workspace_item_id, updated_at DESC)", &[_][]const u8{});
-
-        // ANALYZE so the query planner sees the new index on existing
-        // databases (without this, the planner may still pick a full
-        // scan on pre-existing data).
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration043AddPositionToWorkspaces = struct {
-    pub const version: u32 = 43;
-    pub const name = "add_position_to_workspaces";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Adds the `position` column to the workspaces table. The
-        // column is the sort key for the sidebar's workspace list
-        // — see docs/plans/2026-06-12-workspace-drag-and-drop.md.
-        // New workspaces get position = MAX(position) + 1 (top of
-        // the list, since workspaces_list.zig orders by position
-        // DESC). The drag-and-drop reorder endpoint reassigns these
-        // values to reflect the user's chosen order.
-        try db.exec(allocator, "ALTER TABLE workspaces ADD COLUMN position INTEGER NOT NULL DEFAULT 0", &[_][]const u8{});
-
-        // Backfill. Assign position N-1 to the newest workspace, 0 to
-        // the oldest. With ORDER BY position DESC, the newest
-        // workspace appears at the top of the list — same UX as the
-        // previous ORDER BY created_at DESC. Uses a single UPDATE with
-        // a correlated subquery; SQLite handles this efficiently on
-        // the small workspaces table (handful of rows in practice).
-        //
-        // The formula: position = (number of workspaces OLDER than
-        // this one). For the newest, all N-1 others are older, so
-        // position = N-1 (top of the list). For the oldest, none are
-        // older, so position = 0 (bottom of the list). The id
-        // tiebreaker handles the rare case where two workspaces share
-        // the same created_at second — without it, the COUNT
-        // subquery would assign the same position to both rows.
-        try db.exec(allocator,
-            \\UPDATE workspaces
-            \\SET position = (
-            \\    SELECT COUNT(*)
-            \\    FROM workspaces w2
-            \\    WHERE w2.created_at < workspaces.created_at
-            \\        OR (w2.created_at = workspaces.created_at AND w2.id > workspaces.id)
-            \\)
-        , &[_][]const u8{});
-
-        // Index on position for the list endpoint's ORDER BY.
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspaces_position ON workspaces(position DESC)", &[_][]const u8{});
-
-        // ANALYZE so the query planner picks up the new index on
-        // existing databases (without this, the planner may still
-        // pick a full scan on pre-existing data).
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration044AddRoutines = struct {
-    pub const version: u32 = 44;
-    pub const name = "add_routines";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Adds the `task_type` column to the existing
-        // workspace_item_tasks table (defaulting to 'standard' for
-        // backwards compatibility — every pre-existing task row is
-        // a standard chat) and the new `routines` table for
-        // cron-scheduled task execution. Plan:
-        // docs/superpowers/plans/2026-06-13-add-task-routines.md.
-        try db.exec(allocator,
-            "ALTER TABLE workspace_item_tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'standard'",
-            &[_][]const u8{},
-        );
-
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS routines (
-            \\    id TEXT PRIMARY KEY,
-            \\    task_id TEXT NOT NULL UNIQUE,
-            \\    schedule TEXT NOT NULL,
-            \\    initial_prompt TEXT NOT NULL,
-            \\    enabled INTEGER NOT NULL DEFAULT 1,
-            \\    last_run_at DATETIME,
-            \\    next_run_at DATETIME NOT NULL,
-            \\    last_status TEXT,
-            \\    last_error TEXT,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (task_id) REFERENCES workspace_item_tasks(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-
-        // Polling index for the Scheduler's hot read path
-        // (SELECT id FROM routines WHERE enabled=1 AND next_run_at<=now).
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_routines_enabled_next_run ON routines(enabled, next_run_at)",
-            &[_][]const u8{},
-        );
-        // Refresh query-planner stats so the new index is picked on
-        // pre-existing databases (mirrors the ANALYZE-after-CREATE-INDEX
-        // pattern used by Migrations 041/042/043). Without this, the
-        // Scheduler's per-second poll may not use the index until the
-        // table has been written to many times.
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration045AddPositionToWorkspaceItems = struct {
-    pub const version: u32 = 45;
-    pub const name = "add_position_to_workspace_items";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Mirror of Migration043AddPositionToWorkspaces but scoped to
-        // a single workspace's items. The new `position` column is
-        // the sort key for the per-workspace item list (workspaces_list
-        // returns items via workspace_items_get.zig which currently
-        // does `ORDER BY created_at DESC`; we switch it to
-        // `ORDER BY position DESC`). New items get
-        // position = MAX(position) + 1 (top of the expanded workspace
-        // list, since items are rendered top-to-bottom in DESC order).
-        // The drag-and-drop reorder endpoint reassigns these values to
-        // reflect the user's chosen order.
-        try db.exec(allocator, "ALTER TABLE workspace_items ADD COLUMN position INTEGER NOT NULL DEFAULT 0", &[_][]const u8{});
-
-        // Backfill. Per-workspace: the newest item gets the highest
-        // position (so it appears at the TOP of the expanded list with
-        // ORDER BY position DESC), the oldest gets position 0 (bottom).
-        // This preserves the pre-existing visual order on upgrade.
-        // The id tiebreaker (newer id > older id when timestamps tie) is
-        // important so the backfill is deterministic when two items
-        // share a created_at second.
-        try db.exec(allocator,
-            \\UPDATE workspace_items
-            \\SET position = (
-            \\    SELECT COUNT(*)
-            \\    FROM workspace_items wi
-            \\    WHERE wi.workspace_id = workspace_items.workspace_id
-            \\        AND (wi.created_at > workspace_items.created_at
-            \\            OR (wi.created_at = workspace_items.created_at AND wi.id > workspace_items.id))
-            \\)
-        , &[_][]const u8{});
-
-        // Index on (workspace_id, position DESC) so the per-workspace
-        // item list query uses an index even with hundreds of items
-        // per workspace.
-        try db.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_items_workspace_position ON workspace_items(workspace_id, position DESC)", &[_][]const u8{});
-
-        // Refresh query-planner stats (mirrors Migration043/044
-        // pattern) so the new index is picked on pre-existing DBs.
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration046AddGitWorktreeCwdToSessions = struct {
-    pub const version: u32 = 46;
-    pub const name = "add_git_worktree_cwd_to_sessions";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Nullable: NULL means "no worktree bound". The application code
-        // maps NULL → "" via COALESCE for the API surface, matching the
-        // convention used for `cwd`, `created_at`, `updated_at`, and
-        // `selected_profile_model` (see llm_history.zig:1802).
-        try db.exec(allocator,
-            "ALTER TABLE sessions ADD COLUMN git_worktree_cwd TEXT",
-            &[_][]const u8{});
-    }
-};
-
-pub const Migration048AddChatListIndex = struct {
-    pub const version: u32 = 48;
-    pub const name = "add_chat_list_index";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Hot read path: getSessionList (llm_history.zig:115) does
-        // GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT/OFFSET
-        // with no WHERE. Today the planner does a full table scan +
-        // sort. With this covering index, the inner subquery becomes
-        // a forward index scan: walk the index in created_at DESC
-        // order, read session_id from the leaf, group, stop at LIMIT.
-        //
-        // NOT a duplicate of idx_llm_history_session_created — that
-        // one is (session_id, created_at DESC) for filtering BY
-        // session; this one is the reverse for the no-WHERE scan.
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_llm_history_created_session " ++
-            "ON llm_history(created_at DESC, session_id)",
-            &[_][]const u8{});
-
-        // ANALYZE so the query planner sees the new index on
-        // pre-existing databases.
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration049AddDefensiveIndexes = struct {
-    pub const version: u32 = 49;
-    pub const name = "add_defensive_indexes";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Defensive: covers listAllWorkspaceItems (llm_history.zig:2317)
-        // which today has no callers. The query is
-        // ORDER BY wi.position DESC, wi.id ASC with no WHERE. The
-        // compound (position DESC, id ASC) makes it a single covering
-        // index scan if a future "all items across all workspaces" view
-        // invokes it. The id tiebreaker is the same one
-        // Migration045AddPositionToWorkspaceItems uses on its backfill
-        // UPDATE so index-backed ORDER BYs match that ordering.
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_workspace_items_position_id " ++
-            "ON workspace_items(position DESC, id ASC)",
-            &[_][]const u8{});
-
-        // Defensive: covers resetStuckRunning (routines/Scheduler.zig:51)
-        // which runs once at startup. The WHERE on last_status='running'
-        // has no index today. Acceptable while routines < 10 000 rows;
-        // this index makes the future cost independent of table size.
-        // Cardinality is tiny (a handful of distinct values: 'pending',
-        // 'running', 'success', 'failed') but the index is still O(log N)
-        // for the WHERE filter — meaningful once 'failed' rows accumulate
-        // over months of operation.
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_routines_last_status " ++
-            "ON routines(last_status)",
-            &[_][]const u8{});
-
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration050AddPinnedToWorkspaceItemTasks = struct {
-    pub const version: u32 = 50;
-    pub const name = "add_pinned_to_workspace_item_tasks";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            "ALTER TABLE workspace_item_tasks ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "ALTER TABLE workspace_item_tasks ADD COLUMN pinned_position INTEGER NOT NULL DEFAULT 0",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_workspace_item_tasks_pinned " ++
-            "ON workspace_item_tasks(workspace_item_id, is_pinned DESC, pinned_position DESC)",
-            &[_][]const u8{});
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration051AddKanban = struct {
-    pub const version: u32 = 51;
-    pub const name = "add_kanban";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Workspace Item Kanban feature — Chunk 1 (Migration 051).
-        // Adds the kanban_columns table and the two column-reference
-        // columns on workspace_item_tasks. Each kanban (item_type='kanban')
-        // owns its own set of columns; tasks inside a kanban point at one
-        // column via kanban_column_id and have a per-column ordering via
-        // kanban_position. Plan:
-        // docs/superpowers/plans/2026-06-21-workspace-item-kanban.md.
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS kanban_columns (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_item_id TEXT NOT NULL,
-            \\    name TEXT NOT NULL,
-            \\    position INTEGER NOT NULL,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_kanban_columns_item_position " ++
-            "ON kanban_columns(workspace_item_id, position)",
-            &[_][]const u8{},
-        );
-        // Nullable: NULL for tasks in non-kanban items
-        // (folder / chat / memory) — they have no flow.
-        try db.exec(allocator,
-            "ALTER TABLE workspace_item_tasks ADD COLUMN kanban_column_id TEXT",
-            &[_][]const u8{},
-        );
-        // Per-column ordering (independent of the global workspace_item_tasks.position
-        // which the folder list view's drag-and-drop uses). DEFAULT 0 so existing
-        // tasks (including non-kanban ones where kanban_column_id IS NULL) get a
-        // valid value without backfill.
-        try db.exec(allocator,
-            "ALTER TABLE workspace_item_tasks ADD COLUMN kanban_position INTEGER NOT NULL DEFAULT 0",
-            &[_][]const u8{},
-        );
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_tasks_column_position " ++
-            "ON workspace_item_tasks(kanban_column_id, kanban_position)",
-            &[_][]const u8{},
-        );
-        // ANALYZE so the query planner sees the new indexes on
-        // pre-existing databases (mirrors the ANALYZE-after-CREATE-INDEX
-        // pattern used by Migrations 041/042/043/048/049/050).
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration052DropSessionIdFromWorkspaceItemTasks = struct {
-    pub const version: u32 = 52;
-    pub const name = "drop_session_id_from_workspace_item_tasks";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Drop the redundant `session_id` column on `workspace_item_tasks`.
-        //
-        // The project's established convention is that for kanban /
-        // routine tasks, `workspace_item_tasks.id` IS the session_id:
-        // the frontend's AppLayout.vue binds `:chat-id="activeTask.id"`,
-        // ChatView sets `sessionId.value = props.chatId.replace(/^chat-/, '')`,
-        // the LLM call uses that as the session_id, and
-        // `routines_run.zig` returns `{"session_id": "<task_id>"}` on
-        // a routine fire. The `workspace_item_tasks.session_id` column
-        // was therefore always the same value as `id` (when populated)
-        // or NULL (when the task chat had not yet been started).
-        //
-        // The column was being read by exactly one query —
-        // `getWorkspaceContext`'s anchor (`WHERE t.session_id = ?`).
-        // For tasks where the column was NULL (the common case for
-        // freshly-created kanban tasks, because the frontend's
-        // `api.createTask` does NOT send a session_id in the request
-        // body), the lookup returned zero rows and the system prompt's
-        // `## Workspace Context` section was silently omitted. The
-        // LLM then had to ask the user for the workspace_id / item_id
-        // every time, which broke the `kanban_*` tools and any other
-        // workspace-scoped tool that relies on context.
-        //
-        // After this migration, the anchor query uses `t.id = ?`
-        // directly (the canonical session id), and the column is
-        // dropped. The frontend's `Task.session_id` field is
-        // also removed — clients should use `task.id` for the same
-        // purpose. SQLite supports `ALTER TABLE ... DROP COLUMN`
-        // since 3.35; the project's bundled sqlite is recent enough.
-        //
-        // Schema before: workspace_item_tasks (..., session_id TEXT, ...)
-        // Schema after:  workspace_item_tasks (...,                  ...)
-        //
-        // `dropColumnIfExists` (not raw `DROP COLUMN`) because the
-        // canonical migration 034 schema no longer declares
-        // `session_id` (it was a redundant column — `task.id` IS the
-        // session id). For fresh-DB users the column never exists, so
-        // the raw `DROP COLUMN` would crash with "no such column:
-        // session_id".
-        try dropColumnIfExists(.{ .db = db }, allocator, "workspace_item_tasks", "session_id");
-        // The session_id index (created in Migration 034) is now
-        // unused and would just slow writes down. Drop it.
-        try db.exec(allocator,
-            "DROP INDEX IF EXISTS idx_workspace_item_tasks_session_id",
-            &[_][]const u8{},
-        );
-        // ANALYZE so the query planner drops the dropped index from
-        // its stats. Mirrors the ANALYZE-after-DDL pattern used by
-        // Migrations 041/042/043/048/049/050/051.
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-pub const Migration053AddKanbanColumnDescription = struct {
-    pub const version: u32 = 53;
-    pub const name = "add_kanban_column_description";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Kanban column description — Chunk 1 of the
-        // kanban-column-description-settings plan. Each kanban
-        // column gains a free-text "meaning" field that the
-        // Settings UI displays and edits. NOT NULL with DEFAULT ''
-        // so existing rows (which have no description) survive the
-        // ALTER TABLE without backfill. The frontend uses the
-        // empty string as the "no description" sentinel — the
-        // Settings UI shows "Add a description…" placeholder for
-        // empty descriptions.
-        //
-        // Why NOT NULL (vs nullable):
-        //   1. The application always reads description as
-        //      []const u8 (never ?[]const u8) — a nullable column
-        //      would force every SELECT to COALESCE and every
-        //      INSERT to handle NULL explicitly.
-        //   2. The DB-level NOT NULL is a defensive check; the
-        //      application layer never writes NULL.
-        //   3. Mirrors the project's convention for short text
-        //      fields with a sentinel "absent" value.
-        try db.exec(allocator,
-            "ALTER TABLE kanban_columns ADD COLUMN description TEXT NOT NULL DEFAULT ''",
-            &[_][]const u8{},
-        );
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────────
-// Migration 054 — drop NOT NULL on session_queue_messages.message
-// ────────────────────────────────────────────────────────────────────────
-//
-// Why this migration exists
-// ─────────────────────────
-// Migration 018 (`Migration018CreateSessionQueueMessages`, line 247) declared
-// `message TEXT NOT NULL`, which forces the application to always pass a
-// non-empty message body. But the SqliteBackend.bind layer
-// (src/modules/databases/sqlite/Sqlite.zig:73-74) treats any empty `[]const u8`
-// as SQL NULL — see project memory `sqlite-backend-empty-slice-binds-as-null.md`.
-// So an image-only queued message (params.message = "" with params.image_urls
-// non-empty) triggers `NOT NULL constraint failed:
-// session_queue_messages.message` at INSERT time in `queueMessage`
-// (src/agentic_loop/llm_history.zig:1861).
-//
-// Fix: drop the NOT NULL on `message` so image-only queued messages can be
-// inserted. Image-only queue messages are valid — they represent an attachment
-// that will be sent before any text reply. The frontend renders them correctly
-// (we already pipe-separator split on `|` in the SSE handler).
-//
-// Why the table-recreate pattern (vs `ALTER TABLE ... ALTER COLUMN ... DROP
-// NOT NULL`)
-// ─────────────────────────
-// SQLite's `DROP NOT NULL` via ALTER COLUMN is only available on non-Windows
-// builds and requires SQLite >= 3.35.0. The recreate-table pattern works on
-// every SQLite version with no platform caveats, and matches the convention
-// already used in Migration 023 (drop session_dir from llm_history) and
-// Migration 038 (drop tool_results_json). `session_queue_messages` has no
-// foreign keys into it (verified via `rg REFERENCES session_queue_messages`),
-// so the rename + recreate + copy + drop sequence is safe.
-//
-// How the up() works
-// ──────────────────
-// 1. Detect whether `image_url` column exists. Production DBs always have it
-//    (added by Migration 037). Fresh test DBs that only ran Migration 018
-//    do not. The data-copy branch picks the right column list.
-// 2. Rename the existing table out of the way.
-// 3. Recreate with `message` nullable (no NOT NULL).
-// 4. Copy all existing rows into the new table (preserving message content;
-//    image_url either maps 1:1 or defaults to NULL on DBs that pre-date M037).
-// 5. Drop the renamed table.
-// 6. Recreate the `idx_session_queue_messages_session` index.
-pub const Migration054MakeSessionQueueMessageNullable = struct {
-    pub const version: u32 = 54;
-    pub const name = "make_session_queue_messages_message_nullable";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // 1. Detect whether image_url column exists (added in Migration 037).
-        const has_image_url = blk: {
-            var q = try db.query(allocator,
-                "SELECT 1 FROM pragma_table_info('session_queue_messages') " ++
-                "WHERE name = 'image_url' LIMIT 1",
-                &[_][]const u8{},
-            );
-            defer q.deinit();
-            if (try q.next()) |row| {
-                defer row.deinit(allocator);
-                break :blk true;
-            }
-            break :blk false;
-        };
-
-        // 2. Rename existing table out of the way.
-        try db.exec(allocator,
-            "ALTER TABLE session_queue_messages " ++
-            "RENAME TO _session_queue_messages_old",
-            &[_][]const u8{},
-        );
-
-        // 3. Recreate with `message` nullable (the actual fix).
-        try db.exec(allocator,
-            \\CREATE TABLE session_queue_messages (
-            \\    id TEXT NOT NULL,
-            \\    session_id TEXT NOT NULL,
-            \\    message TEXT,
-            \\    image_url TEXT,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
-
-        // 4. Copy all existing rows. The image_url column defaults to NULL
-        //    on DBs that pre-date Migration 037 (which is harmless — the
-        //    application treats NULL and "" identically on read).
-        if (has_image_url) {
-            try db.exec(allocator,
-                \\INSERT INTO session_queue_messages
-                \\  (id, session_id, message, image_url, created_at)
-                \\SELECT id, session_id, message, image_url, created_at
-                \\  FROM _session_queue_messages_old
-            , &[_][]const u8{});
-        } else {
-            try db.exec(allocator,
-                \\INSERT INTO session_queue_messages
-                \\  (id, session_id, message, created_at)
-                \\SELECT id, session_id, message, created_at
-                \\  FROM _session_queue_messages_old
-            , &[_][]const u8{});
-        }
-
-        // 5. Drop the renamed table.
-        try db.exec(allocator,
-            "DROP TABLE _session_queue_messages_old",
-            &[_][]const u8{},
-        );
-
-        // 6. Recreate the index Migration 018 added.
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_session_queue_messages_session " ++
-            "ON session_queue_messages(session_id)",
-            &[_][]const u8{},
-        );
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────────
-// Migration 055 — design_pages table (v1 of design-mode feature)
-// ────────────────────────────────────────────────────────────────────────
-//
-// Why this migration exists
-// ──────────────────────────
-// First migration of the design-mode feature. Creates the
-// `design_pages` table where each row represents one page of a design
-// (e.g. "Login", "Dashboard") within a `workspace_items` row of
-// `item_type = 'design'`.
-//
-// The original v1 stored page HTML inline as a `html TEXT` column.
-// The file-backed upgrade is shipped in Migration 056. This split
-// matches the eventual deployment: 055 ships first (initial feature),
-// 056 ships later (the file-backed fix).
-//
-// Why the indexes
-// ───────────────
-// - UNIQUE design_pages(workspace_item_id, name) — enables INSERT
-//   ... ON CONFLICT for the idempotent `setDesignPage` use case.
-// - design_pages(workspace_item_id, position) — keeps `listPages`
-//   fast as a page count grows.
-//
-// Why ANALYZE at the end
-// ───────────────────────
-// New indexes need fresh sqlite_stat1 entries for the query planner
-// to recognize them — without ANALYZE, the planner's statistics are
-// stale and the new indexes may be ignored. Mirrors the
-// ANALYZE-after-DDL pattern used by Migrations 041/042/043/048/049/
-// 050/051/052/053/054.
-//
-// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
-pub const Migration055AddDesignPages = struct {
-    pub const version: u32 = 55;
-    pub const name = "add_design_pages";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS design_pages (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_item_id TEXT NOT NULL,
-            \\    name TEXT NOT NULL DEFAULT '',
-            \\    html TEXT NOT NULL DEFAULT '',
-            \\    position INTEGER NOT NULL DEFAULT 0,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_pages_item_name " ++
-            "ON design_pages(workspace_item_id, name)",
-            &[_][]const u8{},
-        );
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_design_pages_item_position " ++
-            "ON design_pages(workspace_item_id, position)",
-            &[_][]const u8{},
-        );
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────────
-// Migration 056 — upgrade design_pages to file-backed model
-// ────────────────────────────────────────────────────────────────────────
-//
-// Why this migration exists
-// ──────────────────────────
-// Migration 055's design_pages stored HTML inline as a `html TEXT`
-// column. The v5/v6 model moves to a hybrid DB-metadata + on-disk HTML
-// file layout:
-//   - Pages become metadata-only (width/height/x/y/position) with NO
-//     html column. The per-page folder at
-//     `<workspace_item.path>/.pabrik/design/<page_name>/` holds the
-//     element files.
-//   - Each element is a positioned HTML snippet in the new
-//     `design_page_elements` table; the html body lives at the
-//     element's `file_path` (absolute path under workspace_item.path).
-//
-// Why version 56 (not 55)
-// ──────────────────────
-// Existing DBs that already ran Migration055 have it recorded at
-// version 55 in `schema_migrations`. If we kept the upgrade at
-// version 55, the tracker would skip it for existing users
-// (symptom: `set_design_page` fails with `PrepareFailed: no such
-// column: width`). Bumping to 56 guarantees the upgrade body runs
-// once for every existing user. Fresh-DB installs run it as part of
-// the bootstrap sequence — the CREATE TABLE IF NOT EXISTS +
-// addColumnIfMissing calls are all idempotent.
-//
-// Migration body handles both upgrade-from-055 and fresh-DB:
-//   - `CREATE TABLE IF NOT EXISTS design_pages` — fresh-DB; no-op on
-//     upgrade (table already exists)
-//   - `dropColumnIfExists("design_pages", "html")` — upgrade only;
-//     fresh-DB has no html to drop
-//   - `addColumnIfMissing(...)` for width/height/x/y — upgrade only;
-//     fresh-DB's CREATE TABLE above already declares them
-//   - `CREATE TABLE IF NOT EXISTS design_page_elements` — always new
-//
-// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
-pub const Migration056UpgradeDesignPagesToFileModel = struct {
-    pub const version: u32 = 56;
-    pub const name = "upgrade_design_pages_to_file_model";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // CREATE design_pages (fresh-DB path). On a legacy DB that
-        // already has the v1 table, this is a no-op (CREATE TABLE IF
-        // NOT EXISTS).
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS design_pages (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_item_id TEXT NOT NULL,
-            \\    name TEXT NOT NULL DEFAULT '',
-            \\    width INTEGER NOT NULL DEFAULT 1440,
-            \\    height INTEGER NOT NULL DEFAULT 1024,
-            \\    x INTEGER NOT NULL DEFAULT 0,
-            \\    y INTEGER NOT NULL DEFAULT 0,
-            \\    position INTEGER NOT NULL DEFAULT 0,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-
-        // Upgrade path: drop legacy `html` column from Migration 055
-        // if present. SQLite 3.35+ supports DROP COLUMN. No-op on
-        // fresh DBs.
-        try dropColumnIfExists(.{ .db = db }, allocator, "design_pages", "html");
-
-        // Ensure the 4 new position columns exist. On fresh DBs the
-        // CREATE TABLE above already declares them with the same
-        // defaults, so these are no-ops; on legacy DBs they're new
-        // columns being backfilled with sensible defaults.
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_pages", "width", "width INTEGER NOT NULL DEFAULT 1440");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_pages", "height", "height INTEGER NOT NULL DEFAULT 1024");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_pages", "x", "x INTEGER NOT NULL DEFAULT 0");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_pages", "y", "y INTEGER NOT NULL DEFAULT 0");
-
-        // CREATE design_page_elements (new in v5/v6). Always new —
-        // no upgrade path needed.
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS design_page_elements (
-            \\    id TEXT PRIMARY KEY,
-            \\    page_id TEXT NOT NULL,
-            \\    name TEXT NOT NULL DEFAULT '',
-            \\    file_path TEXT NOT NULL DEFAULT '',
-            \\    x INTEGER NOT NULL DEFAULT 0,
-            \\    y INTEGER NOT NULL DEFAULT 0,
-            \\    width INTEGER NOT NULL DEFAULT 375,
-            \\    height INTEGER NOT NULL DEFAULT 667,
-            \\    z_index INTEGER NOT NULL DEFAULT 0,
-            \\    position INTEGER NOT NULL DEFAULT 0,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-
-        // Indexes. CREATE [UNIQUE] INDEX IF NOT EXISTS — all safe
-        // to re-run.
-        try db.exec(allocator,
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_pages_item_name " ++
-            "ON design_pages(workspace_item_id, name)",
-            &[_][]const u8{},
-        );
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_design_pages_item_position " ++
-            "ON design_pages(workspace_item_id, position)",
-            &[_][]const u8{},
-        );
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_design_page_elements_page_z_pos " ++
-            "ON design_page_elements(page_id, z_index, position)",
-            &[_][]const u8{},
-        );
-
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────────
-// Migration 057 — add v6 element properties to design_page_elements
-// ────────────────────────────────────────────────────────────────────────
-//
-// Why this migration exists
-// ──────────────────────────
-// Adds 11 new columns to `design_page_elements` for the Figma-lite
-// design-mode redesign (see design doc §5.1). The columns are purely
-// additive — existing v5 columns (id, page_id, name, file_path, x, y,
-// width, height, z_index, position, created_at, updated_at) are
-// untouched. All new columns have sensible defaults so existing rows
-// survive without a backfill.
-//
-// The properties unlocked by each column:
-//   - `type`        → rectangle | ellipse | text | image | frame | group
-//   - `rotation`    → degrees for the element transform
-//   - `fill`        → CSS background-color (e.g. "#22c55e")
-//   - `stroke`      → CSS border-color (e.g. "#000000")
-//   - `stroke_width`→ CSS border-width (integer px)
-//   - `corner_radius` → CSS border-radius (integer px)
-//   - `opacity`     → 0.0..1.0 (REAL for sub-pixel precision)
-//   - `text_content`→ populated for type='text' elements
-//   - `text_style`  → JSON: font, size, weight, color, align (type='text')
-//   - `image_url`   → populated for type='image' elements
-//   - `parent_id`   → FK to design_page_elements(id) for frame/group nesting;
-//                     ON DELETE SET NULL so deleting a parent doesn't
-//                     cascade-delete the children.
-//
-// Why NOT NULL with DEFAULT '' for text columns
-// ─────────────────────────────────────────────
-// `SqliteBackend.exec` binds `arg.len == 0` as SQL NULL (see
-// `src/modules/databases/sqlite/Sqlite.zig:73-74`). The application
-// reads these fields as `[]const u8` (never `?[]const u8`), so a
-// nullable column would force every SELECT to COALESCE and every
-// INSERT to handle NULL explicitly. Mirrors the convention used by
-// Migration 053 for `kanban_columns.description`.
-//
-// Why `addColumnIfMissing` instead of plain ALTER TABLE
-// ────────────────────────────────────────────────────
-// SQLite's `ALTER TABLE ... ADD COLUMN` does NOT support `IF NOT
-// EXISTS` (errors at prepare with "near 'EXISTS': syntax error"). The
-// helper checks `pragma_table_info` before issuing ALTER. Fresh DBs
-// get all 11 columns from the Migration 056 CREATE TABLE above; this
-// migration's adds are no-ops on fresh DBs and real adds on legacy
-// DBs that already have Migration 056 in place but predate v6.
-//
-// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
-pub const Migration057AddDesignElementProperties = struct {
-    pub const version: u32 = 57;
-    pub const name = "add_design_element_properties";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Visual property columns. All 11 additions are purely
-        // additive — Migration 056's CREATE TABLE did NOT declare
-        // them, so for fresh-DB installs we add them here via
-        // addColumnIfMissing (which is a no-op on a DB that already
-        // has them, e.g. after a partial migration).
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "type",
-            "type TEXT NOT NULL DEFAULT 'rectangle'");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "rotation",
-            "rotation REAL NOT NULL DEFAULT 0");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "fill",
-            "fill TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "stroke",
-            "stroke TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "stroke_width",
-            "stroke_width INTEGER NOT NULL DEFAULT 0");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "corner_radius",
-            "corner_radius INTEGER NOT NULL DEFAULT 0");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "opacity",
-            "opacity REAL NOT NULL DEFAULT 1.0");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "text_content",
-            "text_content TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "text_style",
-            "text_style TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "image_url",
-            "image_url TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "parent_id",
-            "parent_id TEXT");
-
-        // Analyze so the query planner sees the new columns on
-        // legacy DBs.
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
-
-// ────────────────────────────────────────────────────────────────────────
-// Migration 058 — FTS5 virtual table on llm_history (workspace history search)
-// ────────────────────────────────────────────────────────────────────────
-//
-// Why this migration exists
-// ──────────────────────────
-// The workspace history search replaces the LIKE-prefix-scan with an
-// FTS5 MATCH query. This
-// migration creates the `messages_fts` external-content FTS5 virtual table
-// over `llm_history.response_content`, plus the 3 sync triggers that keep
-// it in lockstep with the source rows.
-//
-// Why external-content (content='llm_history')
-// ────────────────────────────────────────────
-// `content='llm_history'` makes the FTS table a *view* over the source —
-// no row text is duplicated in `messages_fts`. Storage cost is just the
-// FTS5 inverted index (a few MB at 10K messages). This is the SQLite
-// docs' recommended approach for "full-text search over an existing table".
-//
-// Why porter+unicode61
-// ─────────────────────
-// `porter` does English-language stemming ("running" → "run"), reducing
-// index size by ~20% on English corpora and improving recall for
-// plural/tense variants. `unicode61` handles tokenization of Unicode
-// characters (utf-8-aware splitting on word boundaries). `remove_diacritics
-// 2` strips accents so "café" matches "cafe" — useful for non-ASCII
-// chats.
-//
-// Why version 58 (not 55)
-// ──────────────────────
-// Migration numbers 55, 56, 57 are already taken (AddDesignPages,
-// UpgradeDesignPagesToFileModel, AddDesignElementProperties).
-// 58 is the next free slot in the migration sequence.
-//
-// Plan: workspace history FTS (Chunk 1)
-pub const Migration058AddLlmHistoryFts = struct {
-    pub const version: u32 = 58;
-    pub const name = "add_llm_history_fts";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // FTS5 virtual table.
-        //
-        // IMPORTANT: we do NOT use external-content (`content='llm_history'`)
-        // because the `snippet()` and `highlight()` FTS5 helper functions
-        // return NULL for external-content and contentless tables — they
-        // can only retrieve highlighted text from the FTS5 table itself.
-        // The `searchMessagesFts` query returns a 10-token snippet with
-        // `[match]` markers around matches, so we need the content
-        // duplicated in messages_fts.
-        //
-        // Storage trade-off: ~2x storage for `response_content` (one copy
-        // in llm_history, one copy in messages_fts). For a 1MB average
-        // message and ~10K messages, that's ~10MB extra. Acceptable.
-        try db.exec(allocator,
-            \\CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-            \\    content,
-            \\    tokenize='porter unicode61 remove_diacritics 2'
-            \\)
-        , &[_][]const u8{});
-
-        // Sync triggers: keep `messages_fts` in sync with `llm_history` rows.
-        // The rowid linkage allows searchMessagesFts to JOIN back to
-        // llm_history for id/session_id/role/timestamps.
-        //
-        // Note: we use plain DELETE FROM messages_fts WHERE rowid=... and
-        // plain INSERT INTO messages_fts(rowid, content) for sync — NOT
-        // the special `INSERT INTO messages_fts(messages_fts, rowid, content)
-        // VALUES('delete', ...)` form, which is only valid for external-content
-        // tables.
-        try db.exec(allocator,
-            \\CREATE TRIGGER IF NOT EXISTS llm_history_ai AFTER INSERT ON llm_history BEGIN
-            \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
-            \\END
-        , &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TRIGGER IF NOT EXISTS llm_history_ad AFTER DELETE ON llm_history BEGIN
-            \\  DELETE FROM messages_fts WHERE rowid = old.rowid;
-            \\END
-        , &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TRIGGER IF NOT EXISTS llm_history_au AFTER UPDATE ON llm_history BEGIN
-            \\  DELETE FROM messages_fts WHERE rowid = old.rowid;
-            \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
-            \\END
-        , &[_][]const u8{});
-
-        // Backfill: walk existing llm_history rows and INSERT into the
-        // FTS table. For zero rows this is a no-op; for ~10K rows it's
-        // ~10ms.
-        try db.exec(allocator,
-            \\INSERT INTO messages_fts(rowid, content)
-            \\SELECT rowid, COALESCE(response_content, '')
-            \\FROM llm_history
-        , &[_][]const u8{});
-    }
-};
-
-pub const MigrationManager = struct {
-    allocator: std.mem.Allocator,
-    db: *SqliteBackend,
-    migrations: std.ArrayList(Migration),
-
-    pub fn init(allocator: std.mem.Allocator, db: *SqliteBackend) MigrationManager {
-        return .{
-            .allocator = allocator,
-            .db = db,
-            .migrations = .empty,
-        };
-    }
-
-    pub fn registerMigration(self: *MigrationManager, migration: Migration) !void {
-        try self.migrations.append(self.allocator, migration);
-    }
-
-    pub fn runMigrations(self: *MigrationManager) !void {
-        try self.db.exec(self.allocator, "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL)", &[_][]const u8{});
-
-        const currentVersion = self.getCurrentVersion();
-
-        for (self.migrations.items) |migration| {
-            if (migration.version > currentVersion) {
-                try migration.up(self.db, self.allocator);
-                const versionStr = try std.fmt.allocPrint(self.allocator, "{}", .{migration.version});
-                defer self.allocator.free(versionStr);
-                try self.db.exec(self.allocator, "INSERT INTO schema_migrations (version, name) VALUES (?, ?)", &.{ versionStr, migration.name });
-            }
-        }
-    }
-
-    fn getCurrentVersion(self: *MigrationManager) u32 {
-        var rows = self.db.query(self.allocator, "SELECT MAX(version) FROM schema_migrations", &[_][]const u8{}) catch return 0;
-        defer rows.deinit();
-        if (rows.next() catch return 0) |row| {
-            defer row.deinit(self.allocator);
-            if (row.values[0].len > 0) {
-                return std.fmt.parseInt(u32, row.values[0], 10) catch 0;
-            }
-        }
-        return 0;
-    }
-
-    pub fn deinit(self: *MigrationManager) void {
-        self.migrations.deinit(self.allocator);
-    }
-};
-
-/// Add a column to a table if it doesn't already exist.
-///
-/// SQLite's `ALTER TABLE ... ADD COLUMN` does NOT support
-/// `IF NOT EXISTS` (it errors at prepare time with
-/// "near 'EXISTS': syntax error"). This helper works around that by
-/// checking `pragma_table_info('<table>')` first.
-///
-/// Used by migrations that need to add a column to a table which may
-/// have been created by a newer migration (e.g. migration 020 adds
-/// columns that migration 019's CREATE TABLE already declares — for
-/// fresh-DB users, those columns are already there, and the helper
-/// makes the ADD COLUMN a no-op).
-///
-/// `definition` is the full `ADD COLUMN` clause AFTER the
-/// `ALTER TABLE <table>` prefix, e.g.
-/// `"working_directory TEXT"`. (Keeping the column name in the
-/// definition is intentional — the SQLite parser requires it, and
-/// `definition` is provided by the caller who already knows the
-/// full DDL line.)
-pub fn addColumnIfMissing(
-    db: pabrikcore.database.DbOrTx,
-    allocator: std.mem.Allocator,
-    table: []const u8,
-    column: []const u8,
-    definition: []const u8,
-) !void {
-    // Stack-buffer the two SQL strings. Both are tiny — a few dozen
-    // bytes each. Avoiding the heap keeps the helper zero-alloc and
-    // safe to call from any migration.
-    var check_buf: [256]u8 = undefined;
-    const check_sql = std.fmt.bufPrint(
-        &check_buf,
-        "SELECT 1 FROM pragma_table_info('{s}') WHERE name = '{s}'",
-        .{ table, column },
-    ) catch return error.BufferTooSmall;
-    var q = try db.query(allocator, check_sql, &.{});
-    defer q.deinit();
-    if ((try q.next())) |row| {
-        // Row returned (column exists) — free the row's values
-        // (allocated via `allocator` per Sqlite.zig:267) before
-        // returning. Without this `defer`, the helper would
-        // leak the row's `[]u8` value slice on every call.
-        row.deinit(allocator);
-        return;
-    }
-    // column does not exist — fall through to ALTER below.
-
-    var ddl_buf: [256]u8 = undefined;
-    const ddl = std.fmt.bufPrint(
-        &ddl_buf,
-        "ALTER TABLE {s} ADD COLUMN {s}",
-        .{ table, definition },
-    ) catch return error.BufferTooSmall;
-    try db.exec(allocator, ddl, &.{});
-}
-
-/// Drop a column from a table if it exists. SQLite's
-/// `ALTER TABLE ... DROP COLUMN` errors with "no such column: X" if
-/// the column was never there (which is the case for fresh-DB users
-/// when an earlier migration had been edited to remove a redundant
-/// column from its CREATE TABLE). This helper makes the DROP a
-/// no-op for fresh-DB users while still removing the column for
-/// legacy users who do have it.
-pub fn dropColumnIfExists(
-    db: pabrikcore.database.DbOrTx,
-    allocator: std.mem.Allocator,
-    table: []const u8,
-    column: []const u8,
-) !void {
-    var check_buf: [256]u8 = undefined;
-    const check_sql = std.fmt.bufPrint(
-        &check_buf,
-        "SELECT 1 FROM pragma_table_info('{s}') WHERE name = '{s}'",
-        .{ table, column },
-    ) catch return error.BufferTooSmall;
-    var q = try db.query(allocator, check_sql, &.{});
-    defer q.deinit();
-    const row = (try q.next()) orelse {
-        // Column doesn't exist — no-op.
-        return;
-    };
-    // Column exists — free the row's values before issuing the
-    // DROP statement (see addColumnIfMissing for the rationale).
-    row.deinit(allocator);
-
-    var ddl_buf: [256]u8 = undefined;
-    const ddl = std.fmt.bufPrint(
-        &ddl_buf,
-        "ALTER TABLE {s} DROP COLUMN {s}",
-        .{ table, column },
-    ) catch return error.BufferTooSmall;
-    try db.exec(allocator, ddl, &.{});
-}
-
-/// Rename a column on a table if the old column exists and the new
-/// column does NOT exist. SQLite's `ALTER TABLE … RENAME COLUMN`
-/// requires SQLite >= 3.25; this project ships 3.53.3 so it's always
-/// available.
-///
-/// Probe pattern (same as `addColumnIfMissing` / `dropColumnIfExists`):
-///   1. If the OLD column doesn't exist → no-op (fresh-DB install
-///      that already declares the NEW column name, or a re-run after
-///      the rename succeeded).
-///   2. If the NEW column already exists → no-op (defensive against
-///      a partial-failure recovery scenario where someone manually
-///      renamed the column outside this migration).
-///   3. Otherwise issue the RENAME.
-///
-/// SQLite's RENAME automatically updates:
-///   - All references to the column in views, triggers, and FK
-///     constraints on OTHER tables pointing AT this table (verified
-///     via `pragma_table_info` on the referencing table before/after
-///     the RENAME — see `migration_075_test.zig` Test 4 + Test 9).
-///   - The internal index columns that reference this column. The
-///     index's NAME does NOT auto-update; the caller must handle
-///     index renames separately via `DROP INDEX IF EXISTS old_name;
-///     CREATE INDEX IF NOT EXISTS new_name ON table(new_name);`.
-pub fn renameColumnIfExists(
-    db: pabrikcore.database.DbOrTx,
-    allocator: std.mem.Allocator,
-    table: []const u8,
-    old_column: []const u8,
-    new_column: []const u8,
-) !void {
-    // Probe: does the OLD column exist?
-    var old_buf: [256]u8 = undefined;
-    const old_check = std.fmt.bufPrint(
-        &old_buf,
-        "SELECT 1 FROM pragma_table_info('{s}') WHERE name = '{s}'",
-        .{ table, old_column },
-    ) catch return error.BufferTooSmall;
-    var q_old = try db.query(allocator, old_check, &.{});
-    defer q_old.deinit();
-    const old_row = (try q_old.next()) orelse {
-        // OLD column doesn't exist — no-op (fresh-DB already has
-        // the new name, or a re-run after the rename succeeded).
-        return;
-    };
-    // OLD column exists — free the row's values before the next probe.
-    old_row.deinit(allocator);
-
-    // Probe: does the NEW column already exist?
-    var new_buf: [256]u8 = undefined;
-    const new_check = std.fmt.bufPrint(
-        &new_buf,
-        "SELECT 1 FROM pragma_table_info('{s}') WHERE name = '{s}'",
-        .{ table, new_column },
-    ) catch return error.BufferTooSmall;
-    var q_new = try db.query(allocator, new_check, &.{});
-    defer q_new.deinit();
-    const new_row = (try q_new.next()) orelse {
-        // NEW column does NOT exist — proceed with the RENAME below.
-        // Fall through.
-        var ddl_buf: [256]u8 = undefined;
-        const ddl = std.fmt.bufPrint(
-            &ddl_buf,
-            "ALTER TABLE {s} RENAME COLUMN {s} TO {s}",
-            .{ table, old_column, new_column },
-        ) catch return error.BufferTooSmall;
-        try db.exec(allocator, ddl, &.{});
-        return;
-    };
-    // NEW column already exists — defensive no-op.
-    new_row.deinit(allocator);
-}
+const common = @import("common.zig");
+
+pub const Migration = common.Migration;
+pub const MigrationManager = common.MigrationManager;
+pub const SqliteBackend = common.SqliteBackend;
+pub const addColumnIfMissing = common.addColumnIfMissing;
+pub const dropColumnIfExists = common.dropColumnIfExists;
+pub const renameColumnIfExists = common.renameColumnIfExists;
+
+// Per-version migration modules. File name matches the
+// `version: u32` inside (migration_78.zig holds version 78,
+// even though its struct keeps the historical
+// `Migration076…` prefix). No files exist for versions 10
+// and 47 — those versions were never assigned.
+const migration_1 = @import("migration_1.zig");
+const migration_2 = @import("migration_2.zig");
+const migration_3 = @import("migration_3.zig");
+const migration_4 = @import("migration_4.zig");
+const migration_5 = @import("migration_5.zig");
+const migration_6 = @import("migration_6.zig");
+const migration_7 = @import("migration_7.zig");
+const migration_8 = @import("migration_8.zig");
+const migration_9 = @import("migration_9.zig");
+const migration_11 = @import("migration_11.zig");
+const migration_12 = @import("migration_12.zig");
+const migration_13 = @import("migration_13.zig");
+const migration_14 = @import("migration_14.zig");
+const migration_15 = @import("migration_15.zig");
+const migration_16 = @import("migration_16.zig");
+const migration_17 = @import("migration_17.zig");
+const migration_18 = @import("migration_18.zig");
+const migration_19 = @import("migration_19.zig");
+const migration_20 = @import("migration_20.zig");
+const migration_21 = @import("migration_21.zig");
+const migration_22 = @import("migration_22.zig");
+const migration_23 = @import("migration_23.zig");
+const migration_24 = @import("migration_24.zig");
+const migration_25 = @import("migration_25.zig");
+const migration_26 = @import("migration_26.zig");
+const migration_27 = @import("migration_27.zig");
+const migration_28 = @import("migration_28.zig");
+const migration_29 = @import("migration_29.zig");
+const migration_30 = @import("migration_30.zig");
+const migration_31 = @import("migration_31.zig");
+const migration_32 = @import("migration_32.zig");
+const migration_33 = @import("migration_33.zig");
+const migration_34 = @import("migration_34.zig");
+const migration_35 = @import("migration_35.zig");
+const migration_36 = @import("migration_36.zig");
+const migration_37 = @import("migration_37.zig");
+const migration_38 = @import("migration_38.zig");
+const migration_39 = @import("migration_39.zig");
+const migration_40 = @import("migration_40.zig");
+const migration_41 = @import("migration_41.zig");
+const migration_42 = @import("migration_42.zig");
+const migration_43 = @import("migration_43.zig");
+const migration_44 = @import("migration_44.zig");
+const migration_45 = @import("migration_45.zig");
+const migration_46 = @import("migration_46.zig");
+const migration_48 = @import("migration_48.zig");
+const migration_49 = @import("migration_49.zig");
+const migration_50 = @import("migration_50.zig");
+const migration_51 = @import("migration_51.zig");
+const migration_52 = @import("migration_52.zig");
+const migration_53 = @import("migration_53.zig");
+const migration_54 = @import("migration_54.zig");
+const migration_55 = @import("migration_55.zig");
+const migration_56 = @import("migration_56.zig");
+const migration_57 = @import("migration_57.zig");
+const migration_58 = @import("migration_58.zig");
+const migration_59 = @import("migration_59.zig");
+const migration_60 = @import("migration_60.zig");
+const migration_61 = @import("migration_61.zig");
+const migration_62 = @import("migration_62.zig");
+const migration_63 = @import("migration_63.zig");
+const migration_64 = @import("migration_64.zig");
+const migration_65 = @import("migration_65.zig");
+const migration_66 = @import("migration_66.zig");
+const migration_67 = @import("migration_67.zig");
+const migration_68 = @import("migration_68.zig");
+const migration_69 = @import("migration_69.zig");
+const migration_70 = @import("migration_70.zig");
+const migration_71 = @import("migration_71.zig");
+const migration_72 = @import("migration_72.zig");
+const migration_73 = @import("migration_73.zig");
+const migration_74 = @import("migration_74.zig");
+const migration_75 = @import("migration_75.zig");
+const migration_76 = @import("migration_76.zig");
+const migration_77 = @import("migration_77.zig");
+const migration_78 = @import("migration_78.zig");
+const migration_79 = @import("migration_79.zig");
+const migration_80 = @import("migration_80.zig");
+const migration_81 = @import("migration_81.zig");
+const migration_82 = @import("migration_82.zig");
+const migration_83 = @import("migration_83.zig");
+const migration_84 = @import("migration_84.zig");
+const migration_85 = @import("migration_85.zig");
+const migration_86 = @import("migration_86.zig");
+const migration_87 = @import("migration_87.zig");
+const migration_88 = @import("migration_88.zig");
+const migration_89 = @import("migration_89.zig");
+const migration_90 = @import("migration_90.zig");
+const migration_91 = @import("migration_91.zig");
+const migration_92 = @import("migration_92.zig");
+const migration_93 = @import("migration_93.zig");
+const migration_94 = @import("migration_94.zig");
+const migration_95 = @import("migration_95.zig");
+const migration_96 = @import("migration_96.zig");
+const migration_97 = @import("migration_97.zig");
+const migration_98 = @import("migration_98.zig");
+const migration_99 = @import("migration_99.zig");
+const migration_100 = @import("migration_100.zig");
+const migration_101 = @import("migration_101.zig");
+const migration_102 = @import("migration_102.zig");
+const migration_103 = @import("migration_103.zig");
+
+// Re-exports so existing
+// `@import("../migrations/migration.zig").Migration076…` call sites
+// keep compiling unchanged.
+pub const Migration001CreateLLMHistory = migration_1.Migration001CreateLLMHistory;
+pub const Migration002AddRoleToLLMHistory = migration_2.Migration002AddRoleToLLMHistory;
+pub const Migration003AddReasoningContent = migration_3.Migration003AddReasoningContent;
+pub const Migration004AddSessionDir = migration_4.Migration004AddSessionDir;
+pub const Migration005AddIsFeedToLLM = migration_5.Migration005AddIsFeedToLLM;
+pub const Migration006AddAgent = migration_6.Migration006AddAgent;
+pub const Migration007AddSessionTracking = migration_7.Migration007AddSessionTracking;
+pub const Migration008AddSessionSkills = migration_8.Migration008AddSessionSkills;
+pub const Migration009RemoveCreatedColumn = migration_9.Migration009RemoveCreatedColumn;
+pub const Migration011AddTemperatureAndThinking = migration_11.Migration011AddTemperatureAndThinking;
+pub const Migration012AddParentTracking = migration_12.Migration012AddParentTracking;
+pub const Migration013AddTokenUsageColumns = migration_13.Migration013AddTokenUsageColumns;
+pub const Migration014AddBackgroundProcess = migration_14.Migration014AddBackgroundProcess;
+pub const Migration015AddSessionAgents = migration_15.Migration015AddSessionAgents;
+pub const Migration016AddInputOutputColumns = migration_16.Migration016AddInputOutputColumns;
+pub const Migration017CreateSessionsTable = migration_17.Migration017CreateSessionsTable;
+pub const Migration018CreateSessionQueueMessages = migration_18.Migration018CreateSessionQueueMessages;
+pub const Migration019CreateWorkerTable = migration_19.Migration019CreateWorkerTable;
+pub const Migration020AddWorkerExtraFields = migration_20.Migration020AddWorkerExtraFields;
+pub const Migration021RemoveSessionNameFromLlmHistory = migration_21.Migration021RemoveSessionNameFromLlmHistory;
+pub const Migration022AddCwdToSessions = migration_22.Migration022AddCwdToSessions;
+pub const Migration023DropSessionDirFromLlmHistory = migration_23.Migration023DropSessionDirFromLlmHistory;
+pub const Migration024CreateWorkspaces = migration_24.Migration024CreateWorkspaces;
+pub const Migration025AddWorkspaceIdToSessions = migration_25.Migration025AddWorkspaceIdToSessions;
+pub const Migration026DropSessionIdFromWorkspaces = migration_26.Migration026DropSessionIdFromWorkspaces;
+pub const Migration027AddNameToWorkspaces = migration_27.Migration027AddNameToWorkspaces;
+pub const Migration028CreateWorkspaceItems = migration_28.Migration028CreateWorkspaceItems;
+pub const Migration029AddTimestampsToSessions = migration_29.Migration029AddTimestampsToSessions;
+pub const Migration030AddTimestampsToWorkspaces = migration_30.Migration030AddTimestampsToWorkspaces;
+pub const Migration031AddTimestampsToWorkspaceItems = migration_31.Migration031AddTimestampsToWorkspaceItems;
+pub const Migration032AddNamePathToWorkspaceItems = migration_32.Migration032AddNamePathToWorkspaceItems;
+pub const Migration033AddCancelledToWorker = migration_33.Migration033AddCancelledToWorker;
+pub const Migration034CreateWorkspaceItemTasks = migration_34.Migration034CreateWorkspaceItemTasks;
+pub const Migration035AddDiffViewColumns = migration_35.Migration035AddDiffViewColumns;
+pub const Migration036AddImageUrlToLlmHistory = migration_36.Migration036AddImageUrlToLlmHistory;
+pub const Migration037AddImageUrlToSessionQueueMessages = migration_37.Migration037AddImageUrlToSessionQueueMessages;
+pub const Migration038DropToolResultsJson = migration_38.Migration038DropToolResultsJson;
+pub const Migration039AddToolCallIdToLlmHistory = migration_39.Migration039AddToolCallIdToLlmHistory;
+pub const Migration040AddSelectedProfileModelToSessions = migration_40.Migration040AddSelectedProfileModelToSessions;
+pub const Migration041AddPerformanceIndexes = migration_41.Migration041AddPerformanceIndexes;
+pub const Migration042AddWorkspaceItemTasksUpdatedAtIndex = migration_42.Migration042AddWorkspaceItemTasksUpdatedAtIndex;
+pub const Migration043AddPositionToWorkspaces = migration_43.Migration043AddPositionToWorkspaces;
+pub const Migration044AddRoutines = migration_44.Migration044AddRoutines;
+pub const Migration045AddPositionToWorkspaceItems = migration_45.Migration045AddPositionToWorkspaceItems;
+pub const Migration046AddGitWorktreeCwdToSessions = migration_46.Migration046AddGitWorktreeCwdToSessions;
+pub const Migration048AddChatListIndex = migration_48.Migration048AddChatListIndex;
+pub const Migration049AddDefensiveIndexes = migration_49.Migration049AddDefensiveIndexes;
+pub const Migration050AddPinnedToWorkspaceItemTasks = migration_50.Migration050AddPinnedToWorkspaceItemTasks;
+pub const Migration051AddKanban = migration_51.Migration051AddKanban;
+pub const Migration052DropSessionIdFromWorkspaceItemTasks = migration_52.Migration052DropSessionIdFromWorkspaceItemTasks;
+pub const Migration053AddKanbanColumnDescription = migration_53.Migration053AddKanbanColumnDescription;
+pub const Migration054MakeSessionQueueMessageNullable = migration_54.Migration054MakeSessionQueueMessageNullable;
+pub const Migration055AddDesignPages = migration_55.Migration055AddDesignPages;
+pub const Migration056UpgradeDesignPagesToFileModel = migration_56.Migration056UpgradeDesignPagesToFileModel;
+pub const Migration057AddDesignElementProperties = migration_57.Migration057AddDesignElementProperties;
+pub const Migration058AddLlmHistoryFts = migration_58.Migration058AddLlmHistoryFts;
+pub const Migration059AddCreatedIso = migration_59.Migration059AddCreatedIso;
+pub const Migration060RebackfillCreatedIso = migration_60.Migration060RebackfillCreatedIso;
+pub const Migration061FixCreatedIsoYear = migration_61.Migration061FixCreatedIsoYear;
+pub const Migration062AddTaskDescription = migration_62.Migration062AddTaskDescription;
+pub const Migration063AddSessionAutoRetry = migration_63.Migration063AddSessionAutoRetry;
+pub const Migration064AddFrontendLogs = migration_64.Migration064AddFrontendLogs;
+pub const Migration065AddTaskHumanTouchedAt = migration_65.Migration065AddTaskHumanTouchedAt;
+pub const Migration066AddDesignPageTaskFk = migration_66.Migration066AddDesignPageTaskFk;
+pub const Migration067AddTaskTags = migration_67.Migration067AddTaskTags;
+pub const Migration068AddToolCallLoading = migration_68.Migration068AddToolCallLoading;
+pub const Migration069AddTaskImageUrls = migration_69.Migration069AddTaskImageUrls;
+pub const Migration070AddAgentMemories = migration_70.Migration070AddAgentMemories;
+pub const Migration071AddTaskCwd = migration_71.Migration071AddTaskCwd;
+pub const Migration072ExtractKanbanTable = migration_72.Migration072ExtractKanbanTable;
+pub const Migration073AddSessionActivity = migration_73.Migration073AddSessionActivity;
+pub const Migration074AddLlmHistoryCacheTokenColumns = migration_74.Migration074AddLlmHistoryCacheTokenColumns;
+pub const Migration075RenameTimestampColumnsToNanoSuffix = migration_75.Migration075RenameTimestampColumnsToNanoSuffix;
+pub const Migration076CreateSessionPlan = migration_76.Migration076CreateSessionPlan;
+pub const Migration077AddUsersAndRbacSchema = migration_77.Migration077AddUsersAndRbacSchema;
+pub const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = migration_78.Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
+pub const Migration079AddContentToAgentKnowledge = migration_79.Migration079AddContentToAgentKnowledge;
+pub const Migration080AddAgentSystemPrompt = migration_80.Migration080AddAgentSystemPrompt;
+pub const Migration081CreateAgentKanbans = migration_81.Migration081CreateAgentKanbans;
+pub const Migration082AddSessionHumanTouchedAt = migration_82.Migration082AddSessionHumanTouchedAt;
+pub const Migration083AddReasoningIdAndEncryptedContent = migration_83.Migration083AddReasoningIdAndEncryptedContent;
+pub const Migration084ReplaceRoutinesWithWorkspaceRoutines = migration_84.Migration084ReplaceRoutinesWithWorkspaceRoutines;
+pub const Migration085AddSessionProgressiveTool = migration_85.Migration085AddSessionProgressiveTool;
+pub const Migration086AddSessionPrUrl = migration_86.Migration086AddSessionPrUrl;
+pub const Migration087CreateAgentRoutines = migration_87.Migration087CreateAgentRoutines;
+pub const Migration088AddSessionPendingQuestion = migration_88.Migration088AddSessionPendingQuestion;
+pub const Migration089AuthSessions = migration_89.Migration089AuthSessions;
+pub const Migration090AddVideoUrls = migration_90.Migration090AddVideoUrls;
+pub const Migration091AddSubAgentNameToSessions = migration_91.Migration091AddSubAgentNameToSessions;
+pub const Migration092AddUserConfigJson = migration_92.Migration092AddUserConfigJson;
+pub const Migration093AddOwnerColumns = migration_93.Migration093AddOwnerColumns;
+pub const Migration094AddDefaultProjectToWorkspaceItems = migration_94.Migration094AddDefaultProjectToWorkspaceItems;
+pub const Migration095AddWorkspaceIdToAgentMemories = migration_95.Migration095AddWorkspaceIdToAgentMemories;
+pub const Migration096CreateSessionSkillEvents = migration_96.Migration096CreateSessionSkillEvents;
+pub const Migration097CreateSkillEvalTables = migration_97.Migration097CreateSkillEvalTables;
+pub const Migration098CreateDocuments = migration_98.Migration098CreateDocuments;
+pub const Migration099RenameListSkillsTool = migration_99.Migration099RenameListSkillsTool;
+pub const Migration100AddWorkspaceMembers = migration_100.Migration100AddWorkspaceMembers;
+pub const Migration101GuardLlmHistoryModel = migration_101.Migration101GuardLlmHistoryModel;
+pub const Migration102CreateSkills = migration_102.Migration102CreateSkills;
+pub const Migration103CreateWorkspaceSecrets = migration_103.Migration103CreateWorkspaceSecrets;
 
 /// All available migrations - add new migrations to this slice
 pub const allMigrations: []const Migration = &.{
@@ -2066,821 +502,6 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration103CreateWorkspaceSecrets.version, .name = Migration103CreateWorkspaceSecrets.name, .up = Migration103CreateWorkspaceSecrets.up },
 };
 
-/// Migration 060 — Re-run the `created_iso` backfill for rows that
-/// were NULL when Migration 059 first ran.
-///
-/// ## Why this migration exists
-///
-/// V1 of Migration 059 (now reverted) used SQLite INSERT/UPDATE triggers
-/// to populate `created_iso` from `created_at`. The trigger's
-/// `datetime(CAST(<microseconds> AS REAL) / 1000000, 'unixepoch', 'localtime')`
-/// expression overflowed SQLite's `datetime()` range (cap: year 9999) for
-/// modern (post-year-2000) microsecond timestamps, silently returning
-/// NULL for every row inserted after the trigger was installed. The
-/// migration's backfill UPDATE had the same overflow bug, so legacy
-/// rows also got NULL `created_iso`.
-///
-/// As a result, production databases that ran V1 of Migration 059 had
-/// many rows with `created_iso = NULL`, which silently broke the
-/// `since`/`until` filter on workspace history reads and
-/// `getCompactedMessages`
-/// (since `'NULL' < '2026-07-15 ...'` in lex comparison filtered those
-/// rows back out, but the filter logic actually excluded them).
-///
-/// ## What this does
-///
-/// Re-runs the backfill UPDATE with the corrected UTC-based expression
-/// from Migration 059 v2:
-///   - Application code (Zig stdlib `std.time.epoch`) produces UTC.
-///   - This UPDATE matches UTC to keep both paths consistent.
-///   - It's idempotent (WHERE guards on NULL/empty).
-///   - It only touches rows that STILL need populating — rows where
-///     the v1 trigger or v1 backfill left a stale value will also
-///     be updated (since they were never updated correctly anyway).
-pub const Migration060RebackfillCreatedIso = struct {
-    pub const version: u32 = 60;
-    pub const name = "rebackfill_llm_history_created_iso";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Re-run the backfill from Migration 059 (v2). The WHERE
-        // clause makes this idempotent — already-populated rows
-        // (including any rows where the application code has since
-        // written a correct `created_iso`) are untouched. Only rows
-        // with NULL or empty `created_iso` get populated.
-        //
-        // NOTE: this does NOT touch rows where v1's broken trigger
-        // may have written a non-NULL but garbage value. We can't
-        // detect that syntactically — a string that's well-formed
-        // 'YYYY-MM-DD HH:MM:SS' but contains a totally wrong date is
-        // indistinguishable from a correct one. The migration is
-        // conservative: it only touches rows we KNOW are missing,
-        // and trusts the corrected saveMessage going forward to
-        // produce correct values for new rows.
-        try db.exec(
-            allocator,
-            \\UPDATE llm_history
-            \\SET created_iso = CASE
-            \\    WHEN created_at IS NULL OR created_at = ''
-            \\        THEN datetime('now')
-            \\    ELSE datetime(
-            \\        CAST(substr(created_at, 1, 10) AS INTEGER),
-            \\        'unixepoch'
-            \\    )
-            \\END
-            \\WHERE created_iso IS NULL
-            \\   OR created_iso = ''
-        , &[_][]const u8{});
-    }
-};
-
-/// Migration 059 — Add a `created_iso` column to `llm_history` (populated
-/// by application code — NOT SQLite triggers).
-///
-/// ## Why this exists
-///
-/// `llm_history.created_at` is a TEXT column storing **Unix microseconds**
-/// since the epoch as a string (e.g. `"1784119389936251112"`). The
-/// previous history `since`/`until`
-/// filters did a lex-comparison on this column against user input like
-/// `"2026-07-15 00:00:00"` — which silently returned 0 rows because
-/// `'1' < '2'` (so `'1784…' < '2026-…'` is always true, excluding every
-/// row).
-///
-/// ## What this does
-///
-/// Adds a regular TEXT column `created_iso` that holds the
-/// `YYYY-MM-DD HH:MM:SS` (localtime) form of the microsecond timestamp.
-/// The column is populated by **application code** in `saveMessage`
-/// (see `llm_history.zig`) using libc's `localtime_r` + `strftime`.
-/// This is intentionally NOT done via SQLite triggers — see the
-/// "Why not triggers?" section below.
-///
-/// ## Why not triggers / generated columns?
-///
-/// SQLite silently DROPS `GENERATED ALWAYS AS ... STORED` columns whose
-/// expression uses a non-deterministic function (such as
-/// `datetime(..., 'localtime')`, which depends on the system timezone) —
-/// verified empirically against SQLite 3.53.3. The column is omitted
-/// from `pragma_table_info` with no error.
-///
-/// Triggers can populate a regular column with `datetime()`, but they
-/// have two practical failures:
-///
-///   1. Triggers are invisible to the application layer. The
-///      production DBs ended up with many `created_iso = NULL` rows
-///      because the trigger's `datetime(CAST(<microseconds> AS REAL) /
-///      1000000, ...)` overflows SQLite's `datetime()` range (which
-///      caps at year 9999) and silently returns NULL.
-///
-///   2. The trigger-based approach is invisible — hard to debug when
-///      the conversion silently returns NULL.
-///
-/// Application-level computation in `saveMessage` (using libc
-/// `localtime_r` + `strftime`) sidesteps both issues: the conversion
-/// is explicit in the application's INSERT path, and libc handles
-/// arbitrary Unix timestamps in the i64 range without overflow.
-///
-/// ## Idempotency notes
-///
-/// Re-running this migration is safe:
-///   - `addColumnIfMissing` skips the ALTER if the column exists.
-///   - The backfill UPDATE has `WHERE created_iso IS NULL OR created_iso = ''`,
-///     so it only touches rows that still need populating.
-///   - The CREATE INDEX uses IF NOT EXISTS.
-///
-/// The backfill runs every time the migration runs, so production
-/// users with stale NULL rows (from earlier broken trigger-based
-/// attempts) get them fixed on the next pabrik restart.
-pub const Migration059AddCreatedIso = struct {
-    pub const version: u32 = 59;
-    pub const name = "add_llm_history_created_iso";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // 1. Add the column (regular TEXT, nullable).
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "llm_history",
-            "created_iso",
-            "created_iso TEXT",
-        );
-
-        // 2. Backfill existing rows. The application code in
-        //    `saveMessage` populates `created_iso` at INSERT time, but
-        //    legacy rows (and rows created before the application
-        //    update is deployed) still have NULL. We update them
-        //    using the INTEGER part of the microsecond string (the
-        //    first 10 digits = seconds since epoch, which fits in
-        //    SQLite's `datetime()` range).
-        //
-        //    Note: this loses the sub-second precision of the
-        //    microsecond timestamp, but `since`/`until` filters
-        //    operate at second/minute granularity anyway, so the
-        //    loss is acceptable.
-        //
-        //    We use UTC (no `'localtime'` modifier) for consistency
-        //    with the application-level `currentTimeIsoLocal`
-        //    helper, which also produces UTC strings. The two paths
-        //    (application INSERTs and this backfill) produce identical
-        //    strings for the same input.
-        try db.exec(
-            allocator,
-            \\UPDATE llm_history
-            \\SET created_iso = CASE
-            \\    WHEN created_at IS NULL OR created_at = ''
-            \\        THEN datetime('now')
-            \\    ELSE datetime(
-            \\        CAST(substr(created_at, 1, 10) AS INTEGER),
-            \\        'unixepoch'
-            \\    )
-            \\END
-            \\WHERE created_iso IS NULL
-            \\   OR created_iso = ''
-        , &[_][]const u8{});
-
-        // 3. Index for queries filtering by created_iso.
-        try db.exec(
-            allocator,
-            "CREATE INDEX IF NOT EXISTS idx_llm_history_created_iso ON llm_history(created_iso)",
-            &[_][]const u8{},
-        );
-    }
-};
-
-/// Migration 061 — Re-backfill `created_iso` for rows that are NULL,
-/// empty, OR have the wrong year (e.g. year 58,507 from the
-/// nanosecond/microsecond mismatch).
-///
-/// ## Why this migration exists
-///
-/// Migration 060's backfill only handled rows where `created_iso` was
-/// NULL or empty. It did NOT detect the **wrong-year** rows (e.g.
-/// `58507-07-26 ...`) that were silently produced by `saveMessage`
-/// passing nanosecond values (length 19) to a helper expecting
-/// microseconds. The helper divided by `us_per_s` (1,000,000)
-/// instead of `ns_per_s` (1,000,000,000), producing sec ≈ 1.78e12
-/// instead of 1.78e9 — which decodes as year 58,507 in stdlib
-/// epoch math. The wrong value passed SQLite's `IS NULL OR = ''`
-/// guard and was never overwritten.
-///
-/// This migration fixes both shapes (NULL/empty AND wrong-year) with
-/// a single UPDATE that recomputes from `created_at` directly. We use
-/// `substr(created_at, 1, 10)` because the first 10 decimal digits of
-/// either a microsecond or a nanosecond Unix timestamp are the same
-/// seconds-since-epoch value (microseconds = "sNNNNNN…", nanoseconds
-/// = "sNNNNNNNNNN…", the `s` seconds prefix is identical). `CAST(...,
-/// INTEGER)` then gives SQLite a clean integer for `datetime(..., 'unixepoch')`.
-///
-/// ## Wrong-year detection
-///
-/// `created_iso LIKE '19__-%' OR LIKE '20__-%'` matches valid years
-/// from 1970–2099 (the plausible Unix‑epoch range for any
-/// production data). Rows starting with `5850[7-9]-`, `5860-`, or
-/// any other "year > 9999" are caught by the negation and
-/// overwritten with the recompute. Pre‑2000 rows (e.g. `1999-12-31
-/// ...`) are preserved because they're legitimate old data, not a
-/// bug. `IS NULL` and `= ''` are kept for safety (matches the same
-/// rows Migration 060 already fixed).
-///
-/// We use LIKE (not GLOB) for consistency with the rest of the
-/// codebase. SQLite's LIKE treats `[0-9]` as literal chars (the
-/// bracket is not a wildcard), so we use the `_` wildcard to mean
-/// "any single character" — `'20__-%'` matches anything starting
-/// with `20`, any 2 chars, `-`.
-///
-/// ## Idempotency
-///
-/// Re-running is safe: rows with already-correct `created_iso` are
-/// untouched. Only rows that still need fixing get updated.
-pub const Migration061FixCreatedIsoYear = struct {
-    pub const version: u32 = 61;
-    pub const name = "fix_llm_history_created_iso_year";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // UPDATE WHERE clause matches three categories:
-        //   1. created_iso IS NULL
-        //   2. created_iso = ''
-        //   3. created_iso has a year that doesn't match any plausible
-        //      Unix‑timestamp year — i.e. NOT in 19xx and NOT in 20xx
-        //      (which catches '58507-07-26 ...' and other clearly
-        //      wrong‑year rows).
-        //
-        // We use LIKE (not GLOB) for portability with the rest of
-        // the codebase. LIKE wildcards are `%` (any sequence) and
-        // `_` (any single char). SQLite's LIKE does NOT support
-        // character classes like `[0-9]` — the bracket chars are
-        // treated as literals, so the pattern would never match.
-        // We accept 19xx AND 20xx to cover any plausible Unix‑epoch
-        // year (1970–2099). Verified:
-        //   '2026-07-15' LIKE '19__-%' OR LIKE '20__-%' → 1
-        //   '1999-12-31' LIKE '19__-%' OR LIKE '20__-%' → 1
-        //   '58507-07-26' LIKE '19__-%' OR LIKE '20__-%' → 0
-        //
-        // The recompute uses substr(created_at, 1, 10) to extract
-        // the seconds prefix of the timestamp, which works for both
-        // microsecond AND nanosecond stored values (the first 10
-        // digits are seconds-since-epoch in either case).
-        try db.exec(
-            allocator,
-            \\UPDATE llm_history
-            \\SET created_iso = CASE
-            \\    WHEN created_at IS NULL OR created_at = ''
-            \\        THEN datetime('now')
-            \\    ELSE datetime(
-            \\        CAST(substr(created_at, 1, 10) AS INTEGER),
-            \\        'unixepoch'
-            \\    )
-            \\END
-            \\WHERE created_iso IS NULL
-            \\   OR created_iso = ''
-            \\   OR (created_iso NOT LIKE '19__-%'
-            \\       AND created_iso NOT LIKE '20__-%')
-        , &[_][]const u8{});
-    }
-};
-
-/// Migration 062 — Add a `description` column to
-/// `workspace_item_tasks` so every task (chat / routine / kanban)
-/// can carry a free-form text note alongside its display name.
-///
-/// Why this migration exists
-/// ──────────────────────────
-/// Until now, the backend's `TaskCreateRequest.description` field
-/// was parsed and accepted but **not persisted** — the comment at
-/// `http_response.zig:103` literally said "the frontend holds the
-/// authoritative copy", which is the wrong invariant (descriptions
-/// vanished on page reload). The Kanban Task Detail Dialog
-/// feature (frontend, Chunk 2) reads and writes the description;
-/// this migration makes it durable.
-///
-/// Schema choice: `NOT NULL DEFAULT ''` so existing rows survive
-/// the migration without a backfill and the empty string becomes
-/// the canonical "no description" sentinel (the UI renders it as
-/// an "Add a description…" placeholder, matching the
-/// `kanban_columns.description` precedent from Migration 053).
-///
-/// Idempotency / fresh-DB safety: we use `addColumnIfMissing`
-/// instead of raw `ALTER TABLE` so fresh-DB installs that re-play
-/// the canonical schema (already declaring `description` in their
-/// CREATE TABLE) don't crash on "duplicate column". See project
-/// memory `pabrik-fresh-db-migration-cascade`.
-///
-/// Note: this migration is at version 62 because PR #99
-/// (`Migration061FixCreatedIsoYear`) shipped on main before this
-/// PR landed and reserved version 61. See the original
-/// `Migration061AddTaskDescription` (now `Migration062`) commit
-/// history for the previous v61 numbering.
-///
-/// Plan: docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md
-///   (Chunk 1, Task 1.1)
-pub const Migration062AddTaskDescription = struct {
-    pub const version: u32 = 62;
-    pub const name = "add_task_description";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "workspace_item_tasks",
-            "description",
-            "description TEXT NOT NULL DEFAULT ''",
-        );
-    }
-};
-
-/// Migration 063 — per-session opt-in for unattended long-running mode.
-///
-/// ## Why this migration exists
-///
-/// Today, when `workflow.zig`'s LLM call fails 10 times in a row, the
-/// workflow returns `error.TooManyRetries` (see workflow.zig:425-465)
-/// and the session goes idle. For overnight / unattended sessions where
-/// the user wants the workflow to keep retrying through transient
-/// upstream errors (network blips, rate limits, timeouts), this bail
-/// is the wrong default — the user expects the session to keep running
-/// until the LLM finally returns, or until the user manually stops it.
-///
-/// This migration adds two columns to `sessions`:
-///   - `is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0` — the opt-in
-///     flag. 0 = today's behavior (10-attempt bail). 1 = unattended mode
-///     (no bail; keep retrying forever, respecting `config.retry_delay_ms`).
-///   - `last_finish_reason TEXT` — the most recent `finish_reason` the
-///     workflow observed for the session. Nullable so application code can
-///     distinguish "never had a successful turn" from "had a turn that
-///     returned 'stop'".
-///
-/// ## What this does
-///
-/// Both columns go through `addColumnIfMissing` so:
-///   - Fresh-DB installs that already declare the columns in their
-///     canonical CREATE TABLE for `sessions` short-circuit cleanly
-///     (no `duplicate column name` error).
-///   - Upgrade-from-v1 installs get the ALTER applied.
-///
-/// Plan: docs/superpowers/plans/2026-07-16-session-auto-retry-until-stop.md
-///   (Chunk 1, Task 1.1)
-pub const Migration063AddSessionAutoRetry = struct {
-    pub const version: u32 = 63;
-    pub const name = "add_session_auto_retry_until_stop";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Boolean opt-in flag, default off. INTEGER NOT NULL DEFAULT 0
-        // matches the convention used by Migration 062 for booleans
-        // and avoids NULL handling at the API edge (NULL → COALESCE
-        // default would still work, but NOT NULL is more honest).
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "sessions",
-            "is_auto_retry_until_stop",
-            "is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0",
-        );
-        // Cache column — nullable; stays NULL until workflow.zig writes
-        // the first value (see workflow.zig's new
-        // `updateSessionLastFinishReason` call site, Chunk 2 Task 2.1).
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "sessions",
-            "last_finish_reason",
-            "last_finish_reason TEXT",
-        );
-    }
-};
-
-/// Migration 064 — Add the `logs` table for the frontend_log_post
-/// endpoint (POST /api/log). The frontend batches browser-side
-/// `console.error` / unhandled rejections / Vue runtime warnings and
-/// ships them to the backend over a single POST; the backend dedups
-/// by (kind, message, source, line, route_path) within a 1s window
-/// and increments `count` instead of inserting a new row.
-///
-/// The schema mirrors the dedup key (kind, message, source, line,
-/// route_path) plus a per-row `count` that the dedup UPDATE bumps.
-/// Indexes on `created_at DESC` (latest-first reads) and `level`
-/// (filter for warnings/errors in /api/log GET) support the
-/// /api/log GET endpoint that lists recent logs.
-///
-/// Note: this migration was originally numbered 063 on this branch,
-/// but main had already taken `063` for `add_session_auto_retry_until_stop`.
-/// Renamed to 064 to avoid the collision.
-pub const Migration064AddFrontendLogs = struct {
-    pub const version: u32 = 64;
-    pub const name = "add_frontend_logs";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(
-            allocator,
-            \\CREATE TABLE IF NOT EXISTS logs (
-            \\  id TEXT PRIMARY KEY,
-            \\  created_at INTEGER NOT NULL,
-            \\  level TEXT NOT NULL,
-            \\  kind TEXT NOT NULL,
-            \\  message TEXT NOT NULL,
-            \\  stack TEXT,
-            \\  source TEXT,
-            \\  line INTEGER,
-            \\  route_path TEXT,
-            \\  session_id TEXT,
-            \\  count INTEGER NOT NULL DEFAULT 1
-            \\)
-        , &[_][]const u8{});
-        try db.exec(
-            allocator,
-            "CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at DESC)",
-            &[_][]const u8{},
-        );
-        try db.exec(
-            allocator,
-            "CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level)",
-            &[_][]const u8{},
-        );
-    }
-};
-
-/// Migration 065 — Add `workspace_item_tasks.last_human_touched_at`.
-///
-/// Used by the kanban card UI to decide whether to show the "AI
-/// finished — awaiting your review" orange dot or the green "reviewed"
-/// checkmark. Stamped by every HTTP handler that mutates a task on
-/// behalf of a human user (drag, rename, edit description, pin,
-/// send chat message, open chat) — see docs/plans/2026-07-26-kanban-task-notification-icon.md.
-///
-/// Schema (nullable INTEGER, no DEFAULT): NULL is the canonical
-/// "never touched" state. The `addColumnIfMissing` helper handles both
-/// upgrade-from-v1 and fresh-DB-already-declares-it paths gracefully
-/// (see memory `pabrik-data-and-routines.md` §"Migration #009-#052
-/// fresh-DB cascade is fragile" for the failure mode this avoids).
-///
-/// Comparison happens against `sessions.updated_at` in the kanban
-/// SELECT (not against `last_finish_reason` directly) so the
-/// comparison denominator carries timezone-uniform seconds. The
-/// frontend treats `last_human_touched_at == NULL` as "human has
-/// never touched", which gives the "awaiting review" semantics for
-/// every pre-migration task on a legacy DB.
-pub const Migration065AddTaskHumanTouchedAt = struct {
-    pub const version: u32 = 65;
-    pub const name = "add_task_human_touched_at";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "workspace_item_tasks",
-            "last_human_touched_at",
-            // name + type — `addColumnIfMissing` uses this verbatim as
-            // `ALTER TABLE {table} ADD COLUMN {definition}`, so omitting
-            // the column name would create a column literally named
-            // "INTEGER". See memory `addColumnIfMissing-requires-name-type`.
-            "last_human_touched_at INTEGER",
-        );
-    }
-};
-
-/// Migration 066 — Add `design_pages.workspace_item_task_id` foreign
-/// key to bind each design page 1:1 to its `workspace_item_tasks`
-/// chat-session row.
-///
-/// ## Why this migration exists
-///
-/// Today, the per-page chat lookup in `AppLayout.handleDesignOpenChat`
-/// keys off a string pattern (`"Design Chat: <page_name>"`). That
-/// approach has three failure modes (renames break the binding, name
-/// uniqueness is not enforced, deleting a page leaves an orphan
-/// chat task with no cascade). Replacing the name-based lookup with
-/// a direct FK makes the binding row-level, lets the DB enforce the
-/// 1:1 invariant via a UNIQUE index, and lets ON DELETE CASCADE on
-/// `workspace_item_tasks(id)` clean up the chat task automatically
-/// when the page is deleted (Tasks 2 + 7 in the plan will wire the
-/// cascade at the model layer).
-///
-/// ## What this does
-///
-/// 1. Add `workspace_item_task_id TEXT` to `design_pages` (nullable —
-///    we backfill existing rows in step 3, and fresh INSERTs from
-///    `design_model.setDesignPage` populate it at create time).
-/// 2. Create a UNIQUE index on the column to enforce the 1:1 invariant
-///    (one task → at most one page; SQLite uses this index for the
-///    UNIQUE check AND for the FK lookup, no second index needed).
-/// 3. **Backfill** every existing `design_pages` row whose
-///    `workspace_item_task_id IS NULL` with a fresh
-///    `workspace_item_tasks` row. The new task is named
-///    `"Design Chat: <page_name>"` — matching the canonical name so
-///    any legacy name-pattern code (or future migrations) still
-///    resolves correctly. The new task id is `task_<unix_nanoseconds>`
-///    using the same `helpers.unixTimestampNanos()` scheme as
-///    `design_items_create.zig:100`.
-///
-/// ## FK constraint intentionally omitted (decision)
-///
-/// SQLite does NOT support `ALTER TABLE … ADD CONSTRAINT FK …`. The
-/// canonical alternatives — triggers (`BEFORE INSERT` + `ON DELETE
-/// CASCADE`) or recreate-table — both add complexity that's
-/// out of scope for v1. The UNIQUE index + application-level
-/// validation in `design_model.setDesignPage` is the second line of
-/// defense; revisit if migration friction appears. See plan Task 1
-/// decision bullet "Decision: skip the FK for now."
-///
-/// Plan: docs/superpowers/plans/2026-07-28-design-page-workspace-item-task-fk.md
-pub const Migration066AddDesignPageTaskFk = struct {
-    pub const version: u32 = 66;
-    pub const name = "add_design_page_task_fk";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // 1. Add the column. Nullable — backfilled below; new
-        //    INSERTs from `design_model.setDesignPage` populate it
-        //    at create time.
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "design_pages",
-            "workspace_item_task_id",
-            // name + type — `addColumnIfMissing` uses this verbatim as
-            // `ALTER TABLE {table} ADD COLUMN {definition}`, so omitting
-            // the column name would create a column literally named
-            // "TEXT". See memory `addColumnIfMissing-requires-name-type`.
-            "workspace_item_task_id TEXT",
-        );
-
-        // 2. UNIQUE index for the 1:1 invariant. `IF NOT EXISTS`
-        //    keeps the migration idempotent on re-run.
-        try db.exec(
-            allocator,
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_pages_workspace_item_task_id " ++
-                "ON design_pages(workspace_item_task_id)",
-            &[_][]const u8{},
-        );
-
-        // 3. Backfill existing pages. For each row whose
-        //    `workspace_item_task_id IS NULL`, INSERT a fresh
-        //    `workspace_item_tasks` row named
-        //    `"Design Chat: <page_name>"` and UPDATE the page with
-        //    the new task id.
-        //
-        //    We iterate in Zig (not a single SQL CTE) because the
-        //    task id is `task_<unix_nanoseconds>` and SQLite has no
-        //    native nanosecond-timestamp primitive. Computing the
-        //    id in Zig + dynamic SQL with `std.fmt.bufPrint` is the
-        //    cleanest path. Only pages with NULL task_id are
-        //    touched (re-run safety: after the first run, every row
-        //    is populated; the WHERE clause is a no-op on re-runs).
-        var q = try db.query(
-            allocator,
-            \\SELECT dp.id, dp.workspace_item_id,
-            \\       COALESCE(dp.name, '') AS name
-            \\FROM design_pages dp
-            \\WHERE dp.workspace_item_task_id IS NULL
-        , &[_][]const u8{});
-        defer q.deinit();
-
-        // Last task id's nanosecond value — used to guarantee strictly
-        // increasing ids across the batch (Windows FILETIME granularity
-        // can repeat back-to-back ticks). Declared OUTSIDE the loop so
-        // it persists across iterations.
-        var last_task_ns: i128 = 0;
-
-        while (try q.next()) |row| {
-            defer row.deinit(allocator);
-            const page_id = row.values[0];
-            const item_id = row.values[1];
-            // Defensive normalization: empty page name → "untitled"
-            // (we never want a literal "Design Chat: " with trailing
-            // space). COALESCEd above means empty here == the row had
-            // no name. Real page names get `"Design Chat: <name>"`.
-            const page_name_raw = row.values[2];
-            const full_task_name = if (std.mem.eql(u8, page_name_raw, ""))
-                "Design Chat: untitled"
-            else
-                try std.fmt.allocPrint(
-                    allocator,
-                    "Design Chat: {s}",
-                    .{page_name_raw},
-                );
-            defer if (!std.mem.eql(u8, page_name_raw, "")) allocator.free(full_task_name);
-
-            // Generate a unique `task_<unix_nanoseconds>` id. The
-            // nanosecond scheme matches design_items_create.zig:100 —
-            // collisions on a multi-page backfill are essentially
-            // impossible (each call is a separate `std.c.clock_gettime`
-            // syscall yielding a fresh value).
-            //
-            // Windows caveat: `GetSystemTimeAsFileTime` has a coarse
-            // effective granularity (0.5–15.6 ms depending on the
-            // timer coalescing), so back-to-back calls in this loop
-            // CAN return the same tick → duplicate PRIMARY KEY.
-            // Guard: if the fresh timestamp is <= the previous one,
-            // use prev + 1 so every id in the batch strictly
-            // increases and stays unique.
-            var task_id_buf: [64]u8 = undefined;
-            const now_ns = helpers.unixTimestampNanos();
-            const unique_ns: i128 = if (now_ns <= last_task_ns) last_task_ns + 1 else now_ns;
-            last_task_ns = unique_ns;
-            const task_id = std.fmt.bufPrint(
-                task_id_buf[0..],
-                "task_{d}",
-                .{unique_ns},
-            ) catch return error.BufferTooSmall;
-
-            // Dynamic INSERT + UPDATE per page. We split into TWO exec calls
-            // because `db.exec` (via `sqlite3_prepare_v2`) only
-            // compiles the FIRST statement in a multi-statement
-            // string — it stops at the first `;`. Single exec per
-            // statement keeps both commits atomic on the connection
-            // (each runs in autocommit, but the migration is a one-shot
-            // so partial-commit risk is acceptable). Empty-string
-            // description is a SQL '' literal so it doesn't trip
-            // `SqliteBackend.exec` empty-slice-binds-as-NULL — see
-            // memory `sqlite-backend-empty-slice-binds-as-null`.
-            const insert_sql = try std.fmt.allocPrint(
-                allocator,
-                "INSERT INTO workspace_item_tasks " ++
-                    "(id, name, workspace_item_id, task_type, description) " ++
-                    "VALUES ('{s}', '{s}', '{s}', 'standard', '')",
-                .{ task_id, full_task_name, item_id },
-            );
-            defer allocator.free(insert_sql);
-            try db.exec(allocator, insert_sql, &[_][]const u8{});
-
-            const update_sql = try std.fmt.allocPrint(
-                allocator,
-                "UPDATE design_pages SET workspace_item_task_id = '{s}' " ++
-                    "WHERE id = '{s}'",
-                .{ task_id, page_id },
-            );
-            defer allocator.free(update_sql);
-            try db.exec(allocator, update_sql, &[_][]const u8{});
-        }
-    }
-};
-
-/// Migration 067 — Add `workspace_item_tasks.tags` column to support the
-/// kanban task tags feature (free-form string list).
-///
-/// ## Why this migration exists
-///
-/// The kanban task tags feature adds user-defined labels per task
-/// (e.g. "bug", "urgent", "frontend"). Tags are stored as a JSON-encode
-/// array string (e.g. `'["bug","urgent","frontend"]'`); empty string
-/// is the canonical "no tags" sentinel, matching the `description`
-/// column (Migration 062) convention.
-///
-/// ## What this does
-///
-/// 1. Add `tags TEXT NOT NULL DEFAULT ''` to `workspace_item_tasks`
-///    via `addColumnIfMissing` — safe for both upgrade-from-v1 DBs
-///    (no column) AND fresh-DB installs where the canonical CREATE
-///    TABLE in Migration 034 / 044 / 062 / 065 already declares the
-///    column. The `addColumnIfMissing` helper checks
-///    `pragma_table_info` before issuing the ALTER, so duplicate-
-///    column errors are impossible.
-/// 2. Leave existing rows at '' (the canonical "no tags" sentinel) —
-///    we cannot retroactively know what tags the user wanted, and
-///    any non-empty default would silently fabricate tags for
-///    every legacy task.
-///
-/// ## Why a TEXT column (JSON-encode array string), not a `tags` table
-///
-/// No SQL-level filtering by tag is needed in v1 (the kanban board
-/// has no filter UI yet). A managed `tags` table would add
-/// vocabulary, color, and rename machinery without a current
-/// consumer. Forward-compatible: a future migration can read the
-/// JSON array via `json_each` and create proper tag rows + a join
-/// table — the existing JSON column is the natural source of truth.
-///
-/// ## Why no index
-///
-/// The column stores JSON, which SQLite cannot index by JSON path
-/// without the JSON1 extension (not used here). A LIKE index across
-/// the JSON string would be expensive and useless until the column
-/// is restructured. Defer until tag filtering is in scope.
-///
-/// Plan: docs/superpowers/plans/2026-07-28-kanban-task-tags.md (Task 1)
-pub const Migration067AddTaskTags = struct {
-    pub const version: u32 = 67;
-    pub const name = "add_task_tags";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "workspace_item_tasks",
-            "tags",
-            // `addColumnIfMissing` builds `ALTER TABLE {table} ADD COLUMN
-            // {definition}`, so the definition must include BOTH the
-            // column name AND the type. Omitting the type would create
-            // a column literally named "TEXT" — see project memory
-            // `addColumnIfMissing-requires-name-type`.
-            "tags TEXT NOT NULL DEFAULT ''",
-        );
-    }
-};
-
-/// Migration 068 — Add `llm_history.is_loading` column + partial
-/// UNIQUE INDEX on `tool_call_id` (tool-call-loading-placeholder plan).
-///
-/// ## Why this migration exists
-///
-/// The OpenAI tool-call API contract requires every `tool_call_id`
-/// declared in an assistant message's `tool_calls` array to have a
-/// matching `role=tool` message in the next conversation payload, or
-/// the API rejects with "Invalid function ID". If the agent crashes
-/// mid-execution (long bash command, spawn_sub_agent dies, pabrik
-/// process SIGKILL'd, network hang), the assistant message is
-/// already in the DB but the per-tool result rows aren't — every
-/// subsequent LLM call fails.
-///
-/// Fix: pre-create the placeholder `role=tool` rows BEFORE the
-/// long-running tools execute (so the API contract is satisfied by
-/// id), mark them `is_loading=1`, then UPDATE them in place after
-/// the tool completes. A startup hook
-/// (`resolveStaleLoadingToolResults`) replaces stranded placeholders
-/// with a synthetic "interrupted" message.
-///
-/// ## What this does
-///
-/// 1. Add `is_loading INTEGER NOT NULL DEFAULT 0` to `llm_history`
-///    via `addColumnIfMissing` — safe for both upgrade-from-v1 DBs
-///    and fresh-DB installs (where the canonical CREATE TABLE in the
-///    earlier migrations doesn't include the column yet).
-///
-/// 2. Backfill `is_loading = 0` for every existing row (the
-///    canonical "not loading" sentinel — the migration runs before
-///    any placeholder code path can land in the DB).
-///
-/// 3. Add a partial UNIQUE INDEX on `tool_call_id` so duplicate
-///    placeholders for the same id are rejected at the DB level.
-///    The partial WHERE clause excludes empty-string tool_call_ids
-///    (the assistant message rows) so the assistant message's
-///    `tool_call_id = ''` doesn't conflict with the placeholders'
-///    `tool_call_id = 'tcA'` etc. Without this index, a dispatcher
-///    race could create two placeholders for the same id.
-///
-/// ## Why `IF NOT EXISTS` on both
-///
-/// Both the column ADD and the INDEX CREATE use idempotent forms so
-/// the migration is safe on re-run (per the project-wide
-/// `migration-is-idempotent` invariant; see migration 020, 052, 054,
-/// 065, 066 for prior art).
-///
-/// Plan: docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md
-/// Bug: task_1785784899843 ("invalid function ID tool call error")
-pub const Migration068AddToolCallLoading = struct {
-    pub const version: u32 = 68;
-    pub const name = "add_tool_call_loading";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // 1. Add the `is_loading` column. Idempotent via
-        //    `addColumnIfMissing` — safe for fresh-DB installs where
-        //    the canonical CREATE TABLE in earlier migrations doesn't
-        //    include it yet.
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "llm_history",
-            "is_loading",
-            // name + type — `addColumnIfMissing` builds
-            // `ALTER TABLE {table} ADD COLUMN {definition}`, so the
-            // definition must include BOTH the column name AND the
-            // type. Omitting the type would create a column literally
-            // named "INTEGER NOT NULL DEFAULT 0" — see project memory
-            // `addColumnIfMissing-requires-name-type`.
-            "is_loading INTEGER NOT NULL DEFAULT 0",
-        );
-
-        // 2. Backfill every existing row to `is_loading = 0`. SQLite's
-        //    ADD COLUMN with NOT NULL DEFAULT 0 *already* backfills
-        //    legacy rows to 0 at the storage layer (DEFAULT applies to
-        //    INSERT and backfill is part of ALTER TABLE ADD COLUMN),
-        //    but we issue an explicit UPDATE here to make the sentinel
-        //    intent obvious in the schema history. UPDATE is a no-op
-        //    after the first run (every row already has 0).
-        try db.exec(
-            allocator,
-            "UPDATE llm_history SET is_loading = 0 WHERE is_loading IS NULL OR is_loading != 0",
-            &[_][]const u8{},
-        );
-
-        // 3. Partial UNIQUE INDEX on `tool_call_id`. The partial
-        //    WHERE clause excludes empty-string tool_call_ids (the
-        //    assistant message's `tool_call_id = ''`) so the assistant
-        //    row doesn't conflict with the placeholder rows.
-        //
-        //    Name: `idx_llm_history_tool_call_id_loading` — the
-        //    `_loading` suffix is intentional: future migrations may
-        //    add a different UNIQUE INDEX for non-loading contexts
-        //    (e.g. "current session feed" which needs the latest
-        //    tool result per tool_call_id), and the name makes them
-        //    easy to keep distinct.
-        try db.exec(
-            allocator,
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_history_tool_call_id_loading " ++
-                "ON llm_history(tool_call_id) " ++
-                "WHERE tool_call_id IS NOT NULL AND tool_call_id != ''",
-            &[_][]const u8{},
-        );
-    }
-};
-
 /// Register all migrations with a MigrationManager
 pub fn registerAllMigrations(manager: *MigrationManager) !void {
     for (allMigrations) |migration| {
@@ -2888,290 +509,272 @@ pub fn registerAllMigrations(manager: *MigrationManager) !void {
     }
 }
 
-/// Migration 069 — Add `workspace_item_tasks.image_urls` column
-/// (kanban-image-urls-column plan, 2026-08-06).
-///
-/// ## Why this migration exists
-///
-/// Until now, the only way to attach an image to a kanban task was the
-/// filesystem-backed attachment endpoint (`POST /api/workspaces/tasks/:id/attachments`),
-/// which writes the file to `<workspace_item.path>/.pabrik/attachments/<task_id>/<n>.<ext>`
-/// and serves it back via a broken `GET /...attachments/*` wildcard route
-/// (the custom router doesn't actually handle `*` — see
-/// `src/modules/custom_http_server/src/router.zig::matchPathWithParams`).
-/// Net effect: images uploaded that way were 404'd on every read.
-///
-/// The user feedback (task_id tracking) was unambiguous: stop using the
-/// attachment endpoint, add a new column on `workspace_item_tasks` that
-/// stores the raw base64 data URL inline. Self-contained, no filesystem,
-/// no separate GET endpoint, no broken route. The image renders directly
-/// via `<img :src="task.imageUrls[0]">`.
-///
-/// ## Storage format
-///
-/// `image_urls TEXT NOT NULL DEFAULT ''` — `||`-delimited base64 data
-/// URLs. Some images carry kilobytes of payload (post-downscale), so we
-/// put the column in TEXT (not VARCHAR) and avoid any CLOB boundaries.
-/// The `||` delimiter is the same convention used by the
-/// `llm_history.image_url` `||`-delimited string (Migration 036 + the
-/// `saveMessage` join at `llm_history.zig:1207-1221`).
-///
-/// On read: split on `|` into `[]u8` slices; each non-empty slice is a
-/// data URL. On write: `ArrayList(u8).appendSlice(url)` + `"||"` between
-/// non-empty entries; an empty input list yields `""` (the column's
-/// DEFAULT). The wire format is identical to `llm_history.image_url` so
-/// any helper that handles `||`-delimited URL strings can be reused.
-///
-/// ## Why `||` and not `JSON` (per the user's "like llm_history" hint)
-///
-/// The `llm_history.image_url` column already uses `||` for the same
-/// shape. Following the same convention here means:
-///
-///   - One code path for the join / split helpers (a single `||` is
-///     easy to grep; JSON would diverge from the precedent).
-///   - No `json_valid` / `json_type` defensive checks needed (the
-///     `tags` column has those for malformed-data reasons; a `||`
-///     delimiter is unambiguous).
-///   - SQLite `LIKE` filtering on image URLs is straightforward if
-///     we ever need to search by URL.
-///
-/// ## Idempotency / fresh-DB safety
-///
-/// `addColumnIfMissing` is the canonical helper that wraps `ALTER TABLE`
-/// in a column-existence check. Both fresh-DB replay (the canonical
-/// `CREATE TABLE workspace_item_tasks` body in Migration 026 doesn't
-/// declare `image_urls`) and upgrade-from-v1 paths land on the same
-/// end state.
-///
-/// ## User-visible wire format
-///
-/// The handler reads `image_urls` as the raw `||`-delimited string and
-/// returns it in the JSON response as-is. The frontend parses with
-/// `s.split('|').filter(Boolean)` (no JSON wrap, no double-encoding).
-/// This keeps the round-trip trivial to debug — the value you see in
-/// the DB is the value you see in the network tab.
-///
-/// Plan: docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md
-/// Bug: task_1785795051796 ("kanban task not saving the images or
-/// base 64 in kanban description, after create a task or run aent")
-pub const Migration069AddTaskImageUrls = struct {
-    pub const version: u32 = 69;
-    pub const name = "add_task_image_urls";
 
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // `image_urls TEXT NOT NULL DEFAULT ''` — the empty string is the
-        // canonical "no images" sentinel (matches `description` / `tags`
-        // patterns from Migrations 062 / 067). `addColumnIfMissing`
-        // constructs `ALTER TABLE {table} ADD COLUMN {definition}`, so
-        // the definition MUST include the column name AND the type —
-        // omitting the type would create a column literally named
-        // "TEXT NOT NULL DEFAULT ''". See project memory
-        // `addColumnIfMissing-requires-name-type`.
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "workspace_item_tasks",
-            "image_urls",
-            "image_urls TEXT NOT NULL DEFAULT ''",
-        );
-    }
-};
 
-/// Migration 071 — `workspace_item_tasks.cwd` (per-task cwd_session).
-///
-/// Adds a `cwd TEXT NOT NULL DEFAULT ''` column so each kanban task
-/// can carry its own cwd override. The legacy `cwd_session` HTTP
-/// field on `RequestSession` is unaffected — that one is the explicit
-/// per-call cwd override the frontend sends with each chat message.
-/// The new `cwd` column is the per-task default that the frontend
-/// reads from the task list and threads into the runAgentOnNewTask
-/// flow.
-///
-/// The name `cwd` (not `cwd_session`) was chosen to avoid confusion
-/// with the legacy HTTP `cwd_session` field — the column belongs to
-/// the task, the HTTP field belongs to the session create call.
-/// Frontend wire field is `cwd` (matching the column).
-///
-/// Resolution priority (in `session_create.zig::useCase`):
-///   1. RequestSession.cwd_session (explicit per-call, NEW behaviour
-///      BEFORE this migration stays the same)
-///   2. workspace_item_tasks.cwd     (this column — NEW)
-///   3. workspace_items.path         (existing kanban-level fallback)
-///   4. createSandbox(...)            (per-session TMPDIR fallback)
-///
-/// Empty string is the canonical "no per-task cwd" sentinel (NOT
-/// NULL DEFAULT '' matches the `description` / `tags` / `image_urls`
-/// pattern from Migrations 062 / 067 / 069). Existing rows backfill
-/// to `''` (cwd-less legacy tasks) when the migration runs on an
-/// existing DB.
-///
-/// Plan: docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
-/// Task: task_1785959915548 (kanban: sprint bulan juni →
-///   "when user want to create a kanban, make cwd session as optional")
-///
-/// Renamed from Migration 070 during PR #200 merge (main already
-/// used 070 for the agent_memories migration).
-pub const Migration071AddTaskCwd = struct {
-    pub const version: u32 = 71;
-    pub const name = "add_task_cwd";
 
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // `cwd TEXT NOT NULL DEFAULT ''` — the empty string is the
-        // canonical "no per-task cwd" sentinel (matches the
-        // description / tags / image_urls patterns from Migrations
-        // 062 / 067 / 069). `addColumnIfMissing` constructs
-        // `ALTER TABLE {table} ADD COLUMN {definition}`, so the
-        // definition MUST include the column name AND the type —
-        // omitting the type would create a column literally named
-        // "TEXT NOT NULL DEFAULT ''". See project memory
-        // `addColumnIfMissing-requires-name-type`.
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "workspace_item_tasks",
-            "cwd",
-            "cwd TEXT NOT NULL DEFAULT ''",
-        );
-    }
-};
 
-/// Migration 072 — Extract `kanban_column_id` + `kanban_position` from
-/// `workspace_item_tasks` into a dedicated `kanban` join table.
-///
-/// Before: the two placement columns live on the universal
-/// `workspace_item_tasks` table (alongside chat/routine/kanban task
-/// attributes like `description`, `tags`, `image_urls`, `cwd`, etc.).
-/// After: a new `kanban(workspace_item_task_id, kanban_column_id, kanban_position)`
-/// table holds the 1:1 task-to-board placement; non-kanban tasks
-/// simply have no row.
-///
-/// Wire format UNCHANGED — `Task.kanban_column_id` and
-/// `Task.kanban_position` continue to appear on every Task JSON via
-/// a `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` in list queries. The
-/// frontend stores/components/SSE handlers stay byte-for-byte the
-/// same.
-///
-/// Plan: docs/superpowers/plans/2026-08-15-extract-kanban-columns-to-kanban-table.md
-/// Task: task_1786527996378 (kanban: sprint bulan juni → "move column
-///   workspace_item_tasks table").
-///
-/// Steps (inside a single tx for atomicity — a crash mid-
-/// migration would otherwise leave the DB with both new and old
-/// columns populated, which the model layer's `LEFT JOIN` would
-/// silently drop data from):
-///   1. CREATE TABLE IF NOT EXISTS kanban (...) — fresh-DB-safe
-///   2. CREATE INDEX IF NOT EXISTS idx_kanban_column_position ...
-///   3. DROP INDEX IF EXISTS idx_tasks_column_position — must run
-///      BEFORE the INSERT, otherwise SQLite's "database table is
-///      locked" (SQLITE_LOCKED) fires because the INSERT writes to
-///      a table with FKs referencing workspace_item_tasks.
-///   4. INSERT OR IGNORE INTO kanban (...) SELECT … FROM
-///      workspace_item_tasks WHERE kanban_column_id IS NOT NULL AND
-///      kanban_column_id IN (SELECT id FROM kanban_columns) — skip
-///      orphans (R8). Wrapped in a check: if the source columns are
-///      already gone (re-run), skip the INSERT entirely.
-///   5. DROP COLUMN kanban_column_id (dropColumnIfExists for fresh-DB
-///      safety)
-///   6. DROP COLUMN kanban_position
-pub const Migration072ExtractKanbanTable = struct {
-    pub const version: u32 = 72;
-    pub const name = "extract_kanban_table";
 
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Wrap in a tx (db.begin/tx.exec/tx.commit) so the CREATE+INSERT+DROP sequence is
-        // atomic. Without the wrapper, SQLite auto-commits each step
-        // and a crash between step 3 (backfill) and step 5 (DROP
-        // COLUMN) would leave the DB with both new and old columns
-        // populated.
-        var tx = try db.begin();
-        defer tx.commitOrRollback() catch {};
-        errdefer tx.rollback() catch {};
 
-        // Step 1: CREATE kanban (idempotent via IF NOT EXISTS)
-        try tx.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS kanban (
-            \\    workspace_item_task_id TEXT PRIMARY KEY,
-            \\    kanban_column_id       TEXT NOT NULL,
-            \\    kanban_position        INTEGER NOT NULL DEFAULT 0,
-            \\    FOREIGN KEY (workspace_item_task_id)
-            \\        REFERENCES workspace_item_tasks(id) ON DELETE CASCADE,
-            \\    FOREIGN KEY (kanban_column_id)
-            \\        REFERENCES kanban_columns(id)       ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
 
-        // Step 2: per-column ordering index
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_kanban_column_position " ++
-            "ON kanban(kanban_column_id, kanban_position)",
-            &[_][]const u8{},
-        );
 
-        // Step 4: drop the per-column index on workspace_item_tasks
-        // BEFORE the INSERT (which would otherwise create a pending
-        // read lock on the same table via the kanban FK validation,
-        // blocking the DROP). SQLite's "database table is locked"
-        // (SQLITE_LOCKED) error fires when an unfinished WRITE
-        // transaction is touching a table that another statement
-        // (here, DROP INDEX) needs an exclusive lock on.
-        try tx.exec(allocator,
-            "DROP INDEX IF EXISTS idx_tasks_column_position",
-            &[_][]const u8{},
-        );
 
-        // Step 3: backfill from existing data. Two filters:
-        //   - `kanban_column_id IS NOT NULL` skips chat/routine/design
-        //     tasks (they shouldn't be on a kanban anyway, but be
-        //     defensive).
-        //   - `kanban_column_id IN (SELECT id FROM kanban_columns)`
-        //     skips orphan references (R8 — a task's column could
-        //     have been hard-deleted before the FK existed; we don't
-        //     surface unassigned rows retroactively).
-        // INSERT OR IGNORE makes a re-run safe (won't crash on the
-        // PRIMARY KEY collision).
-        //
-        // We only run the INSERT if the source columns still exist —
-        // on a re-run they were already dropped by step 5/6 of the
-        // first run, so the SELECT would fail with "no such column".
-        // A first-run DB has the columns; a re-run DB does not.
-        var check_buf: [256]u8 = undefined;
-        const check_sql = std.fmt.bufPrint(
-            &check_buf,
-            "SELECT 1 FROM pragma_table_info('workspace_item_tasks') " ++
-                "WHERE name = 'kanban_column_id'",
-            .{},
-        ) catch return error.BufferTooSmall;
-        var q = try tx.query(allocator, check_sql, &.{});
-        defer q.deinit();
-        if (try q.next()) |row| {
-            // Source columns still exist — first run, do the backfill.
-            row.deinit(allocator);
-            try tx.exec(allocator,
-                \\INSERT OR IGNORE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position)
-                \\SELECT t.id, t.kanban_column_id, COALESCE(t.kanban_position, 0)
-                \\FROM workspace_item_tasks t
-                \\WHERE t.kanban_column_id IS NOT NULL
-                \\  AND t.kanban_column_id IN (SELECT id FROM kanban_columns)
-            , &[_][]const u8{});
-        }
-        // else: re-run — backfill already happened on the first run.
 
-        // Step 5 + 6: drop the two columns. dropColumnIfExists is the
-        // safe pattern (used in Migration 052) — fresh-DB users who
-        // walked the canonical schema may not have these columns if
-        // we eventually move them out of the canonical CREATE TABLE.
-        try dropColumnIfExists(.{ .tx = &tx }, allocator, "workspace_item_tasks", "kanban_column_id");
-        try dropColumnIfExists(.{ .tx = &tx }, allocator, "workspace_item_tasks", "kanban_position");
 
-        // Commit the transaction. After this, Migration 072 is "done"
-        // and the new schema is durable.
-        try tx.commit();
 
-        // ANALYZE so the query planner sees the new index (mirrors
-        // Migration 051 / 041 / 042 / 043 / 048 / 049 / 050).
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Migration 054 — drop NOT NULL on session_queue_messages.message
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ─────────────────────────
+// Migration 018 (`Migration018CreateSessionQueueMessages`, line 247) declared
+// `message TEXT NOT NULL`, which forces the application to always pass a
+// non-empty message body. But the SqliteBackend.bind layer
+// (src/modules/databases/sqlite/Sqlite.zig:73-74) treats any empty `[]const u8`
+// as SQL NULL — see project memory `sqlite-backend-empty-slice-binds-as-null.md`.
+// So an image-only queued message (params.message = "" with params.image_urls
+// non-empty) triggers `NOT NULL constraint failed:
+// session_queue_messages.message` at INSERT time in `queueMessage`
+// (src/agentic_loop/llm_history.zig:1861).
+//
+// Fix: drop the NOT NULL on `message` so image-only queued messages can be
+// inserted. Image-only queue messages are valid — they represent an attachment
+// that will be sent before any text reply. The frontend renders them correctly
+// (we already pipe-separator split on `|` in the SSE handler).
+//
+// Why the table-recreate pattern (vs `ALTER TABLE ... ALTER COLUMN ... DROP
+// NOT NULL`)
+// ─────────────────────────
+// SQLite's `DROP NOT NULL` via ALTER COLUMN is only available on non-Windows
+// builds and requires SQLite >= 3.35.0. The recreate-table pattern works on
+// every SQLite version with no platform caveats, and matches the convention
+// already used in Migration 023 (drop session_dir from llm_history) and
+// Migration 038 (drop tool_results_json). `session_queue_messages` has no
+// foreign keys into it (verified via `rg REFERENCES session_queue_messages`),
+// so the rename + recreate + copy + drop sequence is safe.
+//
+// How the up() works
+// ──────────────────
+// 1. Detect whether `image_url` column exists. Production DBs always have it
+//    (added by Migration 037). Fresh test DBs that only ran Migration 018
+//    do not. The data-copy branch picks the right column list.
+// 2. Rename the existing table out of the way.
+// 3. Recreate with `message` nullable (no NOT NULL).
+// 4. Copy all existing rows into the new table (preserving message content;
+//    image_url either maps 1:1 or defaults to NULL on DBs that pre-date M037).
+// 5. Drop the renamed table.
+// 6. Recreate the `idx_session_queue_messages_session` index.
+
+// ────────────────────────────────────────────────────────────────────────
+// Migration 055 — design_pages table (v1 of design-mode feature)
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// First migration of the design-mode feature. Creates the
+// `design_pages` table where each row represents one page of a design
+// (e.g. "Login", "Dashboard") within a `workspace_items` row of
+// `item_type = 'design'`.
+//
+// The original v1 stored page HTML inline as a `html TEXT` column.
+// The file-backed upgrade is shipped in Migration 056. This split
+// matches the eventual deployment: 055 ships first (initial feature),
+// 056 ships later (the file-backed fix).
+//
+// Why the indexes
+// ───────────────
+// - UNIQUE design_pages(workspace_item_id, name) — enables INSERT
+//   ... ON CONFLICT for the idempotent `setDesignPage` use case.
+// - design_pages(workspace_item_id, position) — keeps `listPages`
+//   fast as a page count grows.
+//
+// Why ANALYZE at the end
+// ───────────────────────
+// New indexes need fresh sqlite_stat1 entries for the query planner
+// to recognize them — without ANALYZE, the planner's statistics are
+// stale and the new indexes may be ignored. Mirrors the
+// ANALYZE-after-DDL pattern used by Migrations 041/042/043/048/049/
+// 050/051/052/053/054.
+//
+// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+
+// ────────────────────────────────────────────────────────────────────────
+// Migration 056 — upgrade design_pages to file-backed model
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// Migration 055's design_pages stored HTML inline as a `html TEXT`
+// column. The v5/v6 model moves to a hybrid DB-metadata + on-disk HTML
+// file layout:
+//   - Pages become metadata-only (width/height/x/y/position) with NO
+//     html column. The per-page folder at
+//     `<workspace_item.path>/.pabrik/design/<page_name>/` holds the
+//     element files.
+//   - Each element is a positioned HTML snippet in the new
+//     `design_page_elements` table; the html body lives at the
+//     element's `file_path` (absolute path under workspace_item.path).
+//
+// Why version 56 (not 55)
+// ──────────────────────
+// Existing DBs that already ran Migration055 have it recorded at
+// version 55 in `schema_migrations`. If we kept the upgrade at
+// version 55, the tracker would skip it for existing users
+// (symptom: `set_design_page` fails with `PrepareFailed: no such
+// column: width`). Bumping to 56 guarantees the upgrade body runs
+// once for every existing user. Fresh-DB installs run it as part of
+// the bootstrap sequence — the CREATE TABLE IF NOT EXISTS +
+// addColumnIfMissing calls are all idempotent.
+//
+// Migration body handles both upgrade-from-055 and fresh-DB:
+//   - `CREATE TABLE IF NOT EXISTS design_pages` — fresh-DB; no-op on
+//     upgrade (table already exists)
+//   - `dropColumnIfExists("design_pages", "html")` — upgrade only;
+//     fresh-DB has no html to drop
+//   - `addColumnIfMissing(...)` for width/height/x/y — upgrade only;
+//     fresh-DB's CREATE TABLE above already declares them
+//   - `CREATE TABLE IF NOT EXISTS design_page_elements` — always new
+//
+// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+
+// ────────────────────────────────────────────────────────────────────────
+// Migration 057 — add v6 element properties to design_page_elements
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// Adds 11 new columns to `design_page_elements` for the Figma-lite
+// design-mode redesign (see design doc §5.1). The columns are purely
+// additive — existing v5 columns (id, page_id, name, file_path, x, y,
+// width, height, z_index, position, created_at, updated_at) are
+// untouched. All new columns have sensible defaults so existing rows
+// survive without a backfill.
+//
+// The properties unlocked by each column:
+//   - `type`        → rectangle | ellipse | text | image | frame | group
+//   - `rotation`    → degrees for the element transform
+//   - `fill`        → CSS background-color (e.g. "#22c55e")
+//   - `stroke`      → CSS border-color (e.g. "#000000")
+//   - `stroke_width`→ CSS border-width (integer px)
+//   - `corner_radius` → CSS border-radius (integer px)
+//   - `opacity`     → 0.0..1.0 (REAL for sub-pixel precision)
+//   - `text_content`→ populated for type='text' elements
+//   - `text_style`  → JSON: font, size, weight, color, align (type='text')
+//   - `image_url`   → populated for type='image' elements
+//   - `parent_id`   → FK to design_page_elements(id) for frame/group nesting;
+//                     ON DELETE SET NULL so deleting a parent doesn't
+//                     cascade-delete the children.
+//
+// Why NOT NULL with DEFAULT '' for text columns
+// ─────────────────────────────────────────────
+// `SqliteBackend.exec` binds `arg.len == 0` as SQL NULL (see
+// `src/modules/databases/sqlite/Sqlite.zig:73-74`). The application
+// reads these fields as `[]const u8` (never `?[]const u8`), so a
+// nullable column would force every SELECT to COALESCE and every
+// INSERT to handle NULL explicitly. Mirrors the convention used by
+// Migration 053 for `kanban_columns.description`.
+//
+// Why `addColumnIfMissing` instead of plain ALTER TABLE
+// ────────────────────────────────────────────────────
+// SQLite's `ALTER TABLE ... ADD COLUMN` does NOT support `IF NOT
+// EXISTS` (errors at prepare with "near 'EXISTS': syntax error"). The
+// helper checks `pragma_table_info` before issuing ALTER. Fresh DBs
+// get all 11 columns from the Migration 056 CREATE TABLE above; this
+// migration's adds are no-ops on fresh DBs and real adds on legacy
+// DBs that already have Migration 056 in place but predate v6.
+//
+// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md
+
+// ────────────────────────────────────────────────────────────────────────
+// Migration 058 — FTS5 virtual table on llm_history (workspace history search)
+// ────────────────────────────────────────────────────────────────────────
+//
+// Why this migration exists
+// ──────────────────────────
+// The workspace history search replaces the LIKE-prefix-scan with an
+// FTS5 MATCH query. This
+// migration creates the `messages_fts` external-content FTS5 virtual table
+// over `llm_history.response_content`, plus the 3 sync triggers that keep
+// it in lockstep with the source rows.
+//
+// Why external-content (content='llm_history')
+// ────────────────────────────────────────────
+// `content='llm_history'` makes the FTS table a *view* over the source —
+// no row text is duplicated in `messages_fts`. Storage cost is just the
+// FTS5 inverted index (a few MB at 10K messages). This is the SQLite
+// docs' recommended approach for "full-text search over an existing table".
+//
+// Why porter+unicode61
+// ─────────────────────
+// `porter` does English-language stemming ("running" → "run"), reducing
+// index size by ~20% on English corpora and improving recall for
+// plural/tense variants. `unicode61` handles tokenization of Unicode
+// characters (utf-8-aware splitting on word boundaries). `remove_diacritics
+// 2` strips accents so "café" matches "cafe" — useful for non-ASCII
+// chats.
+//
+// Why version 58 (not 55)
+// ──────────────────────
+// Migration numbers 55, 56, 57 are already taken (AddDesignPages,
+// UpgradeDesignPagesToFileModel, AddDesignElementProperties).
+// 58 is the next free slot in the migration sequence.
+//
+// Plan: workspace history FTS (Chunk 1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ============================================================================
 // Migration 073 — `session_activity` append-only log.
@@ -3209,173 +812,8 @@ pub const Migration072ExtractKanbanTable = struct {
 //
 // Plan: docs/superpowers/plans/2026-08-13-session-activity-table.md
 // Task: task_1786629034327 ("new table session_activity")
-pub const Migration073AddSessionActivity = struct {
-    pub const version: u32 = 73;
-    pub const name = "add_session_activity";
 
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // 1. Source table — append-only log, no UNIQUE constraint.
-        //    `description` is NOT NULL (callers must supply) but has
-        //    no DEFAULT — an empty description would defeat the
-        //    purpose of the log.
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS session_activity (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL,
-            \\    description TEXT NOT NULL,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
 
-        // 2. Per-session newest-first index. Matches the index name
-        //    pattern used elsewhere (`idx_llm_history_session`,
-        //    `idx_session_skills_session`, `idx_agent_memories_updated`).
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_session_activity_session_created " ++
-                "ON session_activity(session_id, created_at DESC)",
-            &[_][]const u8{},
-        );
-    }
-};
-
-/// Migration 074 — Add `cache_creation_input_tokens` + `cache_read_input_tokens` columns to `llm_history` so the Anthropic profile's cache breakdown survives from the SSE parser to the persistent row. OpenAI rows always carry 0. Idempotent via `addColumnIfMissing` (probes `pragma_table_info` first; matches the Migration 013/020 pattern). Plan: docs/superpowers/plans/2026-08-13-fix-anthropic-total-tokens.md. Task: task_1786640688092.
-pub const Migration074AddLlmHistoryCacheTokenColumns = struct {
-    pub const version: u32 = 74;
-    pub const name = "add_llm_history_cache_token_columns";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Anthropic cache WRITE breakdown (billed at ~1.25x input rate). Default 0 for legacy rows + non-Anthropic profiles.
-        try addColumnIfMissing(.{ .db = db }, allocator, "llm_history", "cache_creation_input_tokens", "cache_creation_input_tokens INTEGER DEFAULT 0");
-
-        // Anthropic cache READ breakdown (billed at ~0.1x input rate, but still tokens the model processed -- folded into `prompt_tokens` + `total_tokens` by Agent.parse_anthropic_stream_chunk). Default 0 for legacy rows + non-Anthropic profiles.
-        try addColumnIfMissing(.{ .db = db }, allocator, "llm_history", "cache_read_input_tokens", "cache_read_input_tokens INTEGER DEFAULT 0");
-    }
-};
-
-/// Migration 075 — Rename 5 timestamp columns to use the `_nano` suffix,
-/// making the column name self-document the stored unit (integer since
-/// Unix epoch). This is a pure renaming pass — the stored values, column
-/// types, and wire-format JSON field names are ALL preserved. SQLite's
-/// `ALTER TABLE … RENAME COLUMN` (>= 3.25) handles the rename atomically
-/// and auto-updates FK references; the only manual work is renaming the
-/// two indexes whose name explicitly contains the old column name
-/// (`idx_logs_created_at`, `idx_worker_last_activity`).
-///
-/// ## Why this migration exists
-///
-/// Today, the five columns have ambiguous names that don't document
-/// their precision:
-///
-/// | Table | Column | Actual precision |
-/// |---|---|---|
-/// | `logs` | `created_at` | unix **ms** (i64) |
-/// | `llm_history` | `created_at` | unix **ns** as TEXT (19 digits) |
-/// | `session_skills` | `loaded_at` | unix **s** (i64) |
-/// | `worker` | `last_activity` | unix **s** (i64) |
-/// | `workspace_item_tasks` | `last_human_touched_at` | unix **ms** (i64) |
-///
-/// Migration 059 v1 (commit b6177842) used
-/// `datetime(CAST(<microseconds> AS REAL) / 1000000, 'unixepoch', 'localtime')`
-/// to populate `created_iso` from `created_at` — but the column
-/// actually stored **nanoseconds**, so the trigger divided by 1e6
-/// (microseconds→seconds) instead of 1e9 (nanoseconds→seconds). The
-/// 1000× error produced rows that decoded to year 58,507. It took
-/// two migration fixes (Migrations 060 + 061) to repair the damage.
-///
-/// Renaming the columns so each carries the `_nano` suffix makes this
-/// kind of unit confusion impossible to repeat.
-///
-/// ## Naming choice — uniform `_nano` vs. mixed suffixes
-///
-/// The user requested `_nano` uniformly across all 5 columns. The
-/// suffix here means "integer stored since Unix epoch" — a uniform
-/// project convention, not a strict precision assertion. The actual
-/// precision (ms / s / ns) per column is documented in each
-/// column's doc-comment and the corresponding Zig model file
-/// (`models/log.zig`, `models/llm_history.zig`, `models/session_skill.zig`,
-/// `models/worker.zig`, `models/workspace_item_task.zig`).
-///
-/// ## Wire format preservation
-///
-/// The JSON field name on HTTP responses stays exactly the same:
-/// `created_at`, `loaded_at`, `last_activity`, `last_human_touched_at`.
-/// The Zig SELECT statements read from the new SQL column name and
-/// alias it back to the old wire name (e.g.
-/// `SELECT w.last_activity_nano AS last_activity FROM worker w`).
-///
-/// The Zig struct fields also keep the old name (`SessionInfo.created_at`,
-/// `WorkerInfo.last_activity`, `SkillInfo.loaded_at`,
-/// `WorkspaceItemTaskInfo.last_human_touched_at`,
-/// `LogInfo.created_at`) so the JSON serializers / SSE payload structs
-/// don't change.
-///
-/// ## Idempotency
-///
-/// `renameColumnIfExists` probes `pragma_table_info` first — if the
-/// OLD column doesn't exist (fresh-DB install that already declares
-/// the NEW column, or a re-run after the rename succeeded), the
-/// helper returns silently. This matches the Migration 052 + 054
-/// + 072 `dropColumnIfExists` pattern.
-///
-/// ## Index renaming
-///
-/// `idx_logs_created_at` and `idx_worker_last_activity` have the OLD
-/// column name in their index name — rename them via
-/// `DROP INDEX IF EXISTS old; CREATE INDEX IF NOT EXISTS new`. The
-/// other two indexes that reference the renamed columns
-/// (`idx_llm_history_session_created`, `idx_llm_history_created_session`)
-/// use a generic `_created` suffix and are left as-is — SQLite
-/// updates the index's INTERNAL column reference during the RENAME,
-/// but the index's NAME stays unchanged.
-///
-/// Plan: docs/superpowers/plans/2026-08-16-rename-timestamp-columns-nano-suffix.md
-/// Task: task_1786891244388_1.
-pub const Migration075RenameTimestampColumnsToNanoSuffix = struct {
-    pub const version: u32 = 75;
-    pub const name = "rename_timestamp_columns_to_nano_suffix";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Wrap in a tx (db.begin/tx.exec/tx.commit) so the 5 renames + 2 index swaps are
-        // atomic. A crash mid-migration would otherwise leave the DB
-        // with some columns renamed and others not, breaking every
-        // SQL site that targets the old names. SQLite auto-commits
-        // each statement otherwise.
-        var tx = try db.begin();
-        defer tx.commitOrRollback() catch {};
-        errdefer tx.rollback() catch {};
-
-        // 5 column renames — order doesn't matter logically, but
-        // keep the order alphabetical by table for diff readability.
-        try renameColumnIfExists(.{ .tx = &tx }, allocator, "llm_history", "created_at", "created_at_nano");
-        try renameColumnIfExists(.{ .tx = &tx }, allocator, "logs", "created_at", "created_at_nano");
-        try renameColumnIfExists(.{ .tx = &tx }, allocator, "session_skills", "loaded_at", "loaded_at_nano");
-        try renameColumnIfExists(.{ .tx = &tx }, allocator, "worker", "last_activity", "last_activity_nano");
-        try renameColumnIfExists(.{ .tx = &tx }, allocator, "workspace_item_tasks", "last_human_touched_at", "last_human_touched_at_nano");
-
-        // 2 index renames — SQLite doesn't have `ALTER INDEX … RENAME
-        // TO …`, and the index's auto-generated name doesn't auto-
-        // update on the column rename. DROP + CREATE under the new
-        // name. The `IF NOT EXISTS` on the CREATE is defensive
-        // (after a re-run, the new index already exists).
-        try tx.exec(allocator, "DROP INDEX IF EXISTS idx_logs_created_at", &.{});
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_logs_created_at_nano ON logs(created_at_nano DESC)",
-            &.{});
-
-        try tx.exec(allocator, "DROP INDEX IF EXISTS idx_worker_last_activity", &.{});
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_worker_last_activity_nano ON worker(last_activity_nano DESC)",
-            &.{});
-
-        // Commit the transaction. After this, Migration 075 is
-        // "done" and the new schema is durable.
-        try tx.commit();
-
-        // ANALYZE so the query planner sees the renamed indexes
-        // (mirrors Migration 041/042/043/051 pattern).
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 076 — Agent Mode: `agents` + `agent_knowledge` + `agent_tools`
@@ -3448,80 +886,6 @@ pub const Migration075RenameTimestampColumnsToNanoSuffix = struct {
 // Plan: docs/superpowers/plans/2026-08-15-agent-mode.md
 // Spec: docs/superpowers/specs/2026-08-15-agent-mode-design.md
 // Task: task_1786962724740_0
-pub const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = struct {
-    pub const version: u32 = 78;
-    pub const name = "add_agents_and_agent_knowledge_and_agent_tools";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // 1. `agents` — 1-1 with `workspace_items` (UNIQUE workspace_item_id).
-        //    `id` == `workspace_item_id` (per spec D3); both rows share the
-        //    same string id. `description` defaults to '' (canonical "no
-        //    description" sentinel, matching `workspace_item_tasks.description`
-        //    from Migration 062).
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agents (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_item_id TEXT NOT NULL UNIQUE,
-            \\    description TEXT NOT NULL DEFAULT '',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agents_workspace_item_id ON agents(workspace_item_id)",
-            &[_][]const u8{});
-
-        // 2. `agent_knowledge` — N-1 with `agents`. Position-ordered for
-        //    drag-reorder UI. `file_path` is NOT NULL (handlers validate
-        //    it's absolute on insert). `label` defaults to '' (canonical
-        //    "no label" sentinel).
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_knowledge (
-            \\    id TEXT PRIMARY KEY,
-            \\    agent_id TEXT NOT NULL,
-            \\    file_path TEXT NOT NULL,
-            \\    label TEXT NOT NULL DEFAULT '',
-            \\    position INTEGER NOT NULL DEFAULT 0,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_knowledge_agent_id ON agent_knowledge(agent_id)",
-            &[_][]const u8{});
-        // Composite index for the position DESC ordering used by the
-        // `agentKnowledgeListHandler` SELECT.
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_knowledge_agent_id_position ON agent_knowledge(agent_id, position DESC)",
-            &[_][]const u8{});
-
-        // 3. `agent_tools` — N-1 with `agents`. UNIQUE (agent_id,
-        //    tool_name) so the same tool can't be added twice for the
-        //    same agent. `enabled` defaults to 1 (v1 never offers a
-        //    "disabled" toggle, but the column exists so future UX
-        //    doesn't need a migration — per spec D10).
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_tools (
-            \\    id TEXT PRIMARY KEY,
-            \\    agent_id TEXT NOT NULL,
-            \\    tool_name TEXT NOT NULL,
-            \\    enabled INTEGER NOT NULL DEFAULT 1,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_tools_agent_id ON agent_tools(agent_id)",
-            &[_][]const u8{});
-        // Named UNIQUE index — checked by name in the migration test,
-        // and the handler maps UNIQUE violations to HTTP 409.
-        try db.exec(allocator,
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_tools_agent_tool ON agent_tools(agent_id, tool_name)",
-            &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 070 — `agent_memories` + `agent_memories_fts` for save_memory /
@@ -3575,79 +939,6 @@ pub const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = struct {
 //
 // Plan: docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md
 // Task: task_1785958319567
-pub const Migration070AddAgentMemories = struct {
-    pub const version: u32 = 70;
-    pub const name = "add_agent_memories";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // 1. Source table. `tags` is the canonical "no tags" sentinel
-        //    ('') — matches `description` / `tags` / `image_urls`
-        //    conventions from Migrations 062 / 067 / 069.
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_memories (
-            \\    id TEXT PRIMARY KEY,
-            \\    content TEXT NOT NULL,
-            \\    tags TEXT NOT NULL DEFAULT '',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
-
-        // 2. updated_at index for future "recent memories" surfaces. The
-        //    v1 `load_memory` tool orders by FTS5 rank (not by
-        //    updated_at), but the index is cheap and unblocks future
-        //    listing UIs without another migration.
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_memories_updated " ++
-                "ON agent_memories(updated_at DESC)",
-            &[_][]const u8{});
-
-        // 3. FTS5 virtual table. NON-external-content so `snippet()`
-        //    works. Same porter+unicode61+remove_diacritics tokenizer
-        //    as `messages_fts` (Migration 058) so the two FTS5 indices
-        //    behave identically for the LLM.
-        try db.exec(allocator,
-            \\CREATE VIRTUAL TABLE IF NOT EXISTS agent_memories_fts USING fts5(
-            \\    content,
-            \\    tags,
-            \\    tokenize='porter unicode61 remove_diacritics 2'
-            \\)
-        , &[_][]const u8{});
-
-        // 4. Sync triggers — same pattern as Migration 058. Plain
-        //    DELETE FROM / INSERT INTO (NOT the special
-        //    `INSERT INTO <fts>(<fts>, rowid, ...) VALUES('delete', ...)`
-        //    form, which is reserved for external-content tables).
-        try db.exec(allocator,
-            \\CREATE TRIGGER IF NOT EXISTS agent_memories_ai AFTER INSERT ON agent_memories BEGIN
-            \\  INSERT INTO agent_memories_fts(rowid, content, tags)
-            \\  VALUES (new.rowid, new.content, new.tags);
-            \\END
-        , &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TRIGGER IF NOT EXISTS agent_memories_ad AFTER DELETE ON agent_memories BEGIN
-            \\  DELETE FROM agent_memories_fts WHERE rowid = old.rowid;
-            \\END
-        , &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TRIGGER IF NOT EXISTS agent_memories_au AFTER UPDATE ON agent_memories BEGIN
-            \\  DELETE FROM agent_memories_fts WHERE rowid = old.rowid;
-            \\  INSERT INTO agent_memories_fts(rowid, content, tags)
-            \\  VALUES (new.rowid, new.content, new.tags);
-            \\END
-        , &[_][]const u8{});
-
-        // 5. Backfill. On a fresh DB this is a no-op (zero rows). On an
-        //    existing DB that somehow has rows without FTS5 coverage
-        //    (shouldn't happen, but defensive), this catches them up.
-        try db.exec(allocator,
-            \\INSERT INTO agent_memories_fts(rowid, content, tags)
-            \\SELECT rowid, content, tags FROM agent_memories
-        , &[_][]const u8{});
-    }
-};
 
 // ─── Tests for Migration 078 (Agent Mode) ──────────────────────────────
 // impl + tests in one file (project convention).
@@ -3743,40 +1034,6 @@ fn expectColumnsEqual(list: []const []const u8, comptime expected: anytype) !voi
 //
 // Idempotency: CREATE TABLE/INDEX IF NOT EXISTS. One statement per
 // db.exec (sqlite3_prepare_v2 compiles only the first).
-pub const Migration098CreateDocuments = struct {
-    pub const version: u32 = 98;
-    pub const name = "create_documents";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS documents (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_id TEXT NOT NULL,
-            \\    title TEXT NOT NULL DEFAULT '',
-            \\    content TEXT NOT NULL DEFAULT '',
-            \\    format TEXT NOT NULL DEFAULT 'markdown',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-
-        // Every read is `WHERE workspace_id = ?` — the sidebar section, the
-        // cross-workspace guard on every single-document read, and the
-        // agent tools' own scope check. This index is the isolation
-        // boundary's hot path, not just a list read.
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_documents_workspace_id ON documents(workspace_id)",
-            &[_][]const u8{});
-
-        // Sidebar ordering: newest-updated first within a workspace, which
-        // is what the DocumentsList component renders.
-        try db.exec(allocator,
-            \\CREATE INDEX IF NOT EXISTS idx_documents_workspace_updated
-            \\ON documents(workspace_id, updated_at DESC)
-        , &[_][]const u8{});
-    }
-};
 
 // Migration 099 — rename the `list_skills` agent tool to `search_skills`.
 //
@@ -3799,77 +1056,6 @@ pub const Migration098CreateDocuments = struct {
 // `DEFAULT_AGENT_TOOLS`, so it was never offered by `search_tool` and there is
 // no row to rename. The whole migration is idempotent — the second run
 // matches nothing.
-pub const Migration099RenameListSkillsTool = struct {
-    pub const version: u32 = 99;
-    pub const name = "rename_list_skills_tool";
-
-    /// True when `name` is a table in this database. Used so the rename is a
-    /// no-op on a database that does not have every one of the three
-    /// allowlist tables, instead of aborting the whole migration on
-    /// "no such table".
-    fn tableExists(allocator: std.mem.Allocator, db: *SqliteBackend, table: []const u8) !bool {
-        var q = try db.query(
-            allocator,
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
-            &[_][]const u8{table},
-        );
-        defer q.deinit();
-        const row = (try q.next()) orelse return false;
-        defer row.deinit(allocator);
-        return std.mem.eql(u8, row.values[0], "1");
-    }
-
-    fn renameIn(allocator: std.mem.Allocator, db: *SqliteBackend, table: []const u8, owner_col: []const u8) !void {
-        if (!try tableExists(allocator, db, table)) return;
-
-        // A plain `UPDATE ... SET tool_name = 'search_skills'` trips
-        // UNIQUE(owner, tool_name) for an owner that ALREADY has the new name
-        // (easy to hit: config.json and the seed defaults are edited by hand),
-        // and `UPDATE OR IGNORE` would then silently SKIP that row — leaving
-        // `list_skills` behind. So: insert a new row under a fresh id, then
-        // delete the stale one. `INSERT OR IGNORE` covers the one case where
-        // the owner already has `search_skills` — the pre-existing row wins
-        // and the checklist still ends with exactly one entry.
-        //
-        // The id is suffixed rather than reused: `id` is the PRIMARY KEY, so
-        // re-inserting the same value would make OR IGNORE swallow the insert
-        // and the follow-up DELETE would then delete the only row.
-        const sql = try std.fmt.allocPrint(
-            allocator,
-            \\INSERT OR IGNORE INTO {s} (id, {s}, tool_name, enabled, created_at)
-            \\SELECT id || '_m099', {s}, 'search_skills', enabled, created_at
-            \\FROM {s} WHERE tool_name = 'list_skills'
-        , .{ table, owner_col, owner_col, table });
-        defer allocator.free(sql);
-        try db.exec(allocator, sql, &[_][]const u8{});
-
-        const del = try std.fmt.allocPrint(
-            allocator,
-            "DELETE FROM {s} WHERE tool_name = 'list_skills'",
-            .{table},
-        );
-        defer allocator.free(del);
-        try db.exec(allocator, del, &[_][]const u8{});
-    }
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Three allowlist tables, one per item type — agents and routines are
-        // separate tables even though both are read the same way.
-        try renameIn(allocator, db, "agent_tools", "agent_id");
-        try renameIn(allocator, db, "agent_kanban_tools", "kanban_id");
-        try renameIn(allocator, db, "agent_routine_tools", "routine_id");
-
-        if (!try tableExists(allocator, db, "users")) return;
-
-        // Quoted JSON token only — `"list_skills"` → `"search_skills"`.
-        // `LIKE '%"list_skills"%'` keeps the WHERE off rows that do not
-        // mention the tool at all.
-        try db.exec(allocator,
-            \\UPDATE users SET config_json = REPLACE(config_json, '"list_skills"', '"search_skills"')
-            \\WHERE config_json LIKE '%"list_skills"%'
-        , &[_][]const u8{});
-    }
-};
 
 // ───────────────────────── tests: Migration 099 ─────────────────────────
 
@@ -4444,20 +1630,6 @@ test "Migration079 is registered in allMigrations" {
 //
 // Plan: docs/superpowers/plans/2026-08-21-agent-knowledge-manual-text.md
 // Task: task_1787315943769_9
-pub const Migration079AddContentToAgentKnowledge = struct {
-    pub const version: u32 = 79;
-    pub const name = "add_content_to_agent_knowledge";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "agent_knowledge",
-            "content",
-            "content TEXT NOT NULL DEFAULT ''",
-        );
-    }
-};
 
 // ============================================================================
 // Migration 076 — `session_plan` 1:1 table with `sessions` for the agent's
@@ -4482,22 +1654,6 @@ pub const Migration079AddContentToAgentKnowledge = struct {
 //
 // Plan: docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md
 // Task: task_1787073929852_8
-pub const Migration076CreateSessionPlan = struct {
-    pub const version: u32 = 76;
-    pub const name = "create_session_plan";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS session_plan (
-            \\    session_id TEXT PRIMARY KEY,
-            \\    plan_md TEXT NOT NULL DEFAULT '',
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
-        // No FK on session_id (matches session_activity Migration 073 precedent).
-        // No index — session_id IS the PK, lookups are O(log n) by definition.
-    }
-};
 
 // ============================================================================
 // Migration 077 — users + user_companies + user_company_members +
@@ -4555,135 +1711,6 @@ pub const Migration076CreateSessionPlan = struct {
     // Plan: docs/superpowers/plans/2026-08-21-users-rbac-foundation.md
     // Spec: docs/superpowers/specs/2026-08-21-users-rbac-foundation-design.md
     // Task: task_1787199963946_1 (kanban: sprint bulan juni → "table users and rbac")
-pub const Migration077AddUsersAndRbacSchema = struct {
-    pub const version: u32 = 77;
-    pub const name = "add_users_and_rbac_schema";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // tx (db.begin/tx.exec/tx.commit) — atomic; see "Why the tx" in the
-        // docstring above.
-        var tx = try db.begin();
-        defer tx.commitOrRollback() catch {};
-        errdefer tx.rollback() catch {};
-
-        // 1. users — identity table.
-        try tx.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS users (
-            \\    id TEXT PRIMARY KEY,
-            \\    email TEXT NOT NULL UNIQUE,
-            \\    name TEXT NOT NULL DEFAULT '',
-            \\    password_hash TEXT NOT NULL,
-            \\    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user', 'bot')),
-            \\    is_active INTEGER NOT NULL DEFAULT 1,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    last_login_at DATETIME DEFAULT NULL
-            \\)
-        , &[_][]const u8{});
-
-        // 2. user_companies — org / tenant entity.
-        try tx.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS user_companies (
-            \\    id TEXT PRIMARY KEY,
-            \\    name TEXT NOT NULL,
-            \\    slug TEXT NOT NULL UNIQUE,
-            \\    description TEXT NOT NULL DEFAULT '',
-            \\    is_active INTEGER NOT NULL DEFAULT 1,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    created_by TEXT
-            \\)
-        , &[_][]const u8{});
-
-        // 3. user_company_members — many-to-many user ↔ company.
-        try tx.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS user_company_members (
-            \\    user_id TEXT NOT NULL,
-            \\    user_company_id TEXT NOT NULL,
-            \\    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member', 'guest')),
-            \\    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    invited_by TEXT,
-            \\    PRIMARY KEY (user_id, user_company_id)
-            \\)
-        , &[_][]const u8{});
-
-        // 4. workspaces.user_id — additive, nullable, no FK.
-        //    `addColumnIfMissing` probes pragma_table_info before ALTER,
-        //    so re-running is a no-op (the canonical pattern from
-        //    Migrations 020 / 052 / 065 / 066 / 067 / 074).
-        try addColumnIfMissing(
-            .{ .tx = &tx },
-            allocator,
-            "workspaces",
-            "user_id",
-            "user_id TEXT",
-        );
-
-        // 5. sessions.user_id — same shape as workspaces.user_id.
-        try addColumnIfMissing(
-            .{ .tx = &tx },
-            allocator,
-            "sessions",
-            "user_id",
-            "user_id TEXT",
-        );
-
-        // 6. Indexes — 6 total. CREATE INDEX IF NOT EXISTS is idempotent.
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
-            &[_][]const u8{});
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active)",
-            &[_][]const u8{});
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_user_companies_slug ON user_companies(slug)",
-            &[_][]const u8{});
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_user_companies_active ON user_companies(is_active)",
-            &[_][]const u8{});
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_user_company_members_user ON user_company_members(user_id)",
-            &[_][]const u8{});
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_user_company_members_company ON user_company_members(user_company_id)",
-            &[_][]const u8{});
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_workspaces_user_id ON workspaces(user_id)",
-            &[_][]const u8{});
-        try tx.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)",
-            &[_][]const u8{});
-
-        // 7. Default user_system — INSERT OR IGNORE makes it idempotent.
-        //    See the spec §3.6 for the full reasoning (password_hash
-        //    sentinel, is_active=0, system@local reserved per RFC 6762).
-        try tx.exec(allocator,
-            "INSERT OR IGNORE INTO users (id, email, name, password_hash, role, is_active) " ++
-                "VALUES ('user_system', 'system@local', 'System', '!disabled', 'admin', 0)",
-            &[_][]const u8{});
-
-        // 8. Backfill — convert every legacy row (workspaces,
-        //    sessions) WHERE user_id IS NULL to user_id='user_system'.
-        //    WHERE user_id IS NULL makes the UPDATE idempotent on
-        //    re-run: rows that already have user_id set are not
-        //    touched. On a fresh DB with zero legacy rows, both UPDATEs
-        //    are no-ops.
-        try tx.exec(allocator,
-            "UPDATE workspaces SET user_id = 'user_system' WHERE user_id IS NULL",
-            &[_][]const u8{});
-        try tx.exec(allocator,
-            "UPDATE sessions SET user_id = 'user_system' WHERE user_id IS NULL",
-            &[_][]const u8{});
-
-        // Commit the transaction. After this, the new schema is durable.
-        try tx.commit();
-
-        // Refresh query-planner stats so the new indexes are picked on
-        // pre-existing databases (mirrors the ANALYZE-after-CREATE-INDEX
-        // pattern used by Migrations 041/042/043/048/049/050/051/052/070/072).
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 080 — `agent_system_prompt` (N-1 with agents)
@@ -4713,31 +1740,6 @@ pub const Migration077AddUsersAndRbacSchema = struct {
 //
 // Plan: docs/superpowers/plans/2026-08-21-agent-system-prompt.md
 // Task: task_1787408958280_1
-pub const Migration080AddAgentSystemPrompt = struct {
-    pub const version: u32 = 80;
-    pub const name = "add_agent_system_prompt";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_system_prompt (
-            \\    id TEXT PRIMARY KEY,
-            \\    agent_id TEXT NOT NULL,
-            \\    title TEXT NOT NULL DEFAULT '',
-            \\    content TEXT NOT NULL DEFAULT '',
-            \\    position INTEGER NOT NULL DEFAULT 0,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_system_prompt_agent_id ON agent_system_prompt(agent_id)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_system_prompt_agent_id_position ON agent_system_prompt(agent_id, position DESC)",
-            &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 080 — agent_system_prompt (N-1 with agents) — inline tests
@@ -4842,349 +1844,17 @@ test "Migration080 ON DELETE CASCADE removes prompts when agent row deleted" {
 //
 // Plan: docs/superpowers/plans/2026-08-25-agent-kanbans-mirror.md
 // Task: task_1787597624259_2
-pub const Migration081CreateAgentKanbans = struct {
-    pub const version: u32 = 81;
-    pub const name = "create_agent_kanbans_mirror";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_kanbans (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_item_id TEXT NOT NULL UNIQUE,
-            \\    description TEXT NOT NULL DEFAULT '',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_kanbans_workspace_item_id ON agent_kanbans(workspace_item_id)",
-            &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_kanban_knowledges (
-            \\    id TEXT PRIMARY KEY,
-            \\    kanban_id TEXT NOT NULL,
-            \\    file_path TEXT NOT NULL DEFAULT '',
-            \\    label TEXT NOT NULL DEFAULT '',
-            \\    content TEXT NOT NULL DEFAULT '',
-            \\    position INTEGER NOT NULL DEFAULT 0,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (kanban_id) REFERENCES agent_kanbans(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_knowledges_kanban_id ON agent_kanban_knowledges(kanban_id)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_knowledges_kanban_position ON agent_kanban_knowledges(kanban_id, position DESC)",
-            &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_kanban_system_prompt (
-            \\    id TEXT PRIMARY KEY,
-            \\    kanban_id TEXT NOT NULL,
-            \\    title TEXT NOT NULL DEFAULT '',
-            \\    content TEXT NOT NULL DEFAULT '',
-            \\    position INTEGER NOT NULL DEFAULT 0,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (kanban_id) REFERENCES agent_kanbans(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_system_prompt_kanban_id ON agent_kanban_system_prompt(kanban_id)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_system_prompt_kanban_position ON agent_kanban_system_prompt(kanban_id, position DESC)",
-            &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_kanban_tools (
-            \\    id TEXT PRIMARY KEY,
-            \\    kanban_id TEXT NOT NULL,
-            \\    tool_name TEXT NOT NULL,
-            \\    enabled INTEGER NOT NULL DEFAULT 1,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (kanban_id) REFERENCES agent_kanbans(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_tools_kanban_id ON agent_kanban_tools(kanban_id)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_kanban_tools_kanban_tool ON agent_kanban_tools(kanban_id, tool_name)",
-            &[_][]const u8{});
-    }
-};
 
 
-/// Migration 082 - Add `sessions.last_human_touched_at_nano`.
-///
-/// Sibling of Migration 065 (which added the same column shape to
-/// `workspace_item_tasks`). Used by the chat sidebar to render the
-/// "last human touched" time pill instead of the AI-tainted
-/// `updated_at`. Stamped by:
-///   - `app.zig::emit_run_agent` - every user-sends-a-message path
-///     (chat send, kanban "create & run", kanban "Start agent", `+ Chat`)
-///   - `session_update.zig::useCase` - user renames / changes profile /
-///     toggles unattended mode
-///   - `workflow.zig::saveRetryAttemptMessage` - "also when error too":
-///     agent retry-catch / unexpected finish_reason / TooManyRetries bail
-///
-/// Schema (nullable INTEGER, no DEFAULT): NULL is the canonical
-/// "never touched by a human" state - the frontend falls back to
-/// `updated_at` for these rows so pre-migration sessions keep
-/// displaying their existing time without a regression.
-///
-/// Column name uses the `_nano` suffix per the project-wide
-/// convention from Migration 075 (uniform across 5 timestamp
-/// columns; actual stored unit is unix-ms - see Migration 075
-/// docstring). The wire / struct / JSON field
-/// is the bare `last_human_touched_at` (no `_nano`) - the SELECT
-/// aliases back via `... AS last_human_touched_at`.
-///
-/// The `addColumnIfMissing` helper handles both upgrade-from-v1
-/// and fresh-DB-already-declares-it paths gracefully (see memory
-/// `pabrik-data-and-routines.md` "Migration #009-#052 fresh-DB
-/// cascade is fragile" for the failure mode this avoids).
-///
-/// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
-/// Task: task_1788004921757_1.
-pub const Migration082AddSessionHumanTouchedAt = struct {
-    pub const version: u32 = 82;
-    pub const name = "add_session_human_touched_at";
 
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "sessions",
-            // The SQL column name and the `column` probe arg must match
-            // exactly - `addColumnIfMissing` issues
-            // `SELECT 1 FROM pragma_table_info('sessions') WHERE name = '<column>'`
-            // first to decide whether to skip. The wire / struct / JSON
-            // field is the bare `last_human_touched_at` (no `_nano`
-            // suffix) - the SELECT in buildSessionListJson aliases the
-            // SQL column back via `... AS last_human_touched_at`.
-            "last_human_touched_at_nano",
-            // name + type - `addColumnIfMissing` uses this verbatim as
-            // `ALTER TABLE {table} ADD COLUMN {definition}`, so omitting
-            // the column name would create a column literally named
-            // "INTEGER". See memory `addColumnIfMissing-requires-name-type`.
-            "last_human_touched_at_nano INTEGER",
-        );
-    }
-};
 
-pub const Migration083AddReasoningIdAndEncryptedContent = struct {
-    pub const version: u32 = 83;
-    pub const name = "add_reasoning_id_and_encrypted_content";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "llm_history",
-            "reasoning_id",
-            "reasoning_id TEXT",
-        );
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "llm_history",
-            "reasoning_encrypted_content",
-            "reasoning_encrypted_content TEXT",
-        );
-    }
-};
-
-/// Migration 084 — drop per-task routines, replace with workspace-level
-/// routines (`workspace_routines`, 1:1 with routine `workspace_items`).
-///
-/// ## Why this migration exists
-///
-/// Per-task routines (`routines` table from Migration 044, keyed
-/// `task_id UNIQUE FK → workspace_item_tasks`) are deleted by design
-/// decision: routines are a first-class workspace-item mode beside
-/// `agent` (`item_type='routine'`), not a flag on a chat task. There is
-/// no data carry-over — old per-task schedules are dropped (breaking
-/// change, announced in the plan + release notes).
-///
-/// ## What this does (order matters — FK)
-///
-/// 1. Normalizes leftover `task_type='routine'` rows to `'standard'`
-///    (the `task_type` column itself stays — `standard`/`memory` still
-///    use it).
-/// 2. Drops the old `routines` table + its indexes.
-/// 3. Creates `workspace_routines` (`id == workspace_item_id`, D3 copy
-///    from the `agents` table) holding `instruction` + `schedule` +
-///    `enabled` + fire state.
-///
-/// Plan: docs/superpowers/plans/2026-09-10-workspace-items-routines.md
-/// Task: task_1789032258828_0.
-pub const Migration084ReplaceRoutinesWithWorkspaceRoutines = struct {
-    pub const version: u32 = 84;
-    pub const name = "replace_routines_with_workspace_routines";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // 1. Normalize leftovers so no task claims a deleted mode.
-        try db.exec(allocator,
-            "UPDATE workspace_item_tasks SET task_type = 'standard' WHERE task_type = 'routine'",
-            &[_][]const u8{},
-        );
-
-        // 2. Drop the old per-task table + its indexes.
-        try db.exec(allocator, "DROP TABLE IF EXISTS routines", &[_][]const u8{});
-        try db.exec(allocator, "DROP INDEX IF EXISTS idx_routines_enabled_next_run", &[_][]const u8{});
-        try db.exec(allocator, "DROP INDEX IF EXISTS idx_routines_last_status", &[_][]const u8{});
-
-        // 3. Create the workspace-level replacement.
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS workspace_routines (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_item_id TEXT NOT NULL UNIQUE,
-            \\    description TEXT NOT NULL DEFAULT '',
-            \\    instruction TEXT NOT NULL DEFAULT '',
-            \\    schedule TEXT NOT NULL DEFAULT '',
-            \\    enabled INTEGER NOT NULL DEFAULT 1,
-            \\    last_run_at DATETIME,
-            \\    next_run_at DATETIME,
-            \\    last_status TEXT NOT NULL DEFAULT 'idle',
-            \\    last_error TEXT NOT NULL DEFAULT '',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_workspace_routines_workspace_item_id ON workspace_routines(workspace_item_id)",
-            &[_][]const u8{},
-        );
-        // Hot-path index for the Scheduler's due-scan
-        // (SELECT id FROM workspace_routines WHERE enabled=1 AND next_run_at<=now).
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_workspace_routines_enabled_next_run ON workspace_routines(enabled, next_run_at)",
-            &[_][]const u8{},
-        );
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 085 — session_progressive_tool (progressive tool search)
 // ============================================================================
 
-/// Per-session record of tools the agent enabled for itself through
-/// `use_tool`. Session-scoped on purpose: enabling a tool here must never
-/// touch the user's persistent `agent_tools` / `agent_kanban_tools`
-/// configuration, and it reverts by starting a new session.
-///
-/// Shape mirrors `session_skills` (Migration 008). No `content` column —
-/// tool definitions are code, so a definition change must take effect on
-/// the next turn instead of being shadowed by a stale stored copy.
-///
-/// `PRIMARY KEY(session_id, tool_name)` is the DB-level half of the
-/// "if it is already equipped, do not insert" rule; callers use
-/// `INSERT OR IGNORE` and treat `false` as "already present".
-///
-/// Plan: docs/superpowers/plans/2026-09-12-progressive-tool-search.md
-pub const Migration085AddSessionProgressiveTool = struct {
-    pub const version: u32 = 85;
-    pub const name = "add_session_progressive_tool";
 
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS session_progressive_tool (
-            \\    session_id TEXT NOT NULL,
-            \\    tool_name TEXT NOT NULL,
-            \\    server_name TEXT NOT NULL DEFAULT '',
-            \\    loaded_at_nano INTEGER NOT NULL DEFAULT 0,
-            \\    PRIMARY KEY (session_id, tool_name)
-            \\)
-        , &[_][]const u8{});
 
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_session_progressive_tool_session ON session_progressive_tool(session_id)",
-            &[_][]const u8{},
-        );
-    }
-};
-
-pub const Migration086AddSessionPrUrl = struct {
-    pub const version: u32 = 86;
-    pub const name = "add_session_pr_url";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Attached-PR binding for the ChatView right panel (set_pull_request
-        // agent tool). pr_url holds the normalized PR/MR URL ("" = unset);
-        // pr_provider holds the effective provider resolved at write time
-        // ("github" | "gitlab" | "generic") so reads stay deterministic on
-        // self-hosted forges where host-based detection would misroute.
-        try addColumnIfMissing(.{ .db = db }, allocator, "sessions", "pr_url", "pr_url TEXT");
-        try addColumnIfMissing(.{ .db = db }, allocator, "sessions", "pr_provider", "pr_provider TEXT");
-    }
-};
-
-pub const Migration088AddSessionPendingQuestion = struct {
-    pub const version: u32 = 88;
-    pub const name = "add_session_pending_question";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // One row per `ask_user` tool call. The `ask_user` tool returns
-        // immediately and the agentic loop BREAKS, so this table — not a
-        // parked thread — is what keeps the question alive until the human
-        // answers. There is deliberately no `expires_at`: nothing is held
-        // open, so a question may wait indefinitely at no cost.
-        //
-        // `answer` is NULL-able rather than `NOT NULL DEFAULT ''` because
-        // `SqliteBackend.exec` binds an empty slice as SQL NULL (Migration
-        // 079's `content` column broke exactly this way). Reads COALESCE it.
-        //
-        // `llm_history_id` is the tool-result row this question's answer
-        // must be written back into (in place), which is what makes the
-        // resume run see the answer as a normal tool result.
-        //
-        // `multi_select` is the ONE question-shape flag the answer endpoint
-        // cannot recover from anywhere else: it is what lets the endpoint
-        // reject a scalar answer to a multi-select question at the wire
-        // boundary. Everything else about the question (text, options,
-        // recommendation, free-text policy) stays in the tool-call arguments,
-        // which the frontend already has — no duplicated columns.
-        //
-        // Plan: docs/superpowers/plans/2026-09-16-agent-tool-ask-user.md
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS session_pending_question (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL,
-            \\    tool_call_id TEXT NOT NULL,
-            \\    llm_history_id TEXT NOT NULL,
-            \\    question TEXT NOT NULL,
-            \\    multi_select INTEGER NOT NULL DEFAULT 0,
-            \\    status TEXT NOT NULL DEFAULT 'pending',
-            \\    answer TEXT,
-            \\    created_at INTEGER NOT NULL,
-            \\    resolved_at INTEGER
-            \\)
-        , &[_][]const u8{});
-
-        // One question per tool call — makes a re-exec (retry after a
-        // transient failure) idempotent instead of inserting a second row.
-        try db.exec(allocator,
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_spq_tool_call ON session_pending_question(tool_call_id)",
-            &[_][]const u8{},
-        );
-
-        // The hot path: hasPendingQuestion() on every loop iteration and on
-        // every user-sent message.
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_spq_session_status ON session_pending_question(session_id, status)",
-            &[_][]const u8{},
-        );
-    }
-};
 
 // ============================================================================
 // Migration 089 — auth_sessions for opt-in `--auth` login sessions.
@@ -5200,72 +1870,7 @@ pub const Migration088AddSessionPendingQuestion = struct {
 // the hash means a DB leak does not equal session hijack.
 //
 // Idempotency: CREATE TABLE/INDEX IF NOT EXISTS. One statement per exec.
-pub const Migration089AuthSessions = struct {
-    pub const version: u32 = 89;
-    pub const name = "auth_sessions";
 
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS auth_sessions (
-            \\    token_hash TEXT PRIMARY KEY,
-            \\    user_id TEXT NOT NULL,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    expires_at DATETIME NOT NULL,
-            \\    last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)",
-            &[_][]const u8{},
-        );
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)",
-            &[_][]const u8{},
-        );
-    }
-};
-
-/// Migration 090 — `workspace_item_tasks.video_urls` + `llm_history.video_url`
-/// + `session_queue_messages.video_url` for full video upload to LLM.
-///
-/// `workspace_item_tasks.video_urls` mirrors Migration 069 (image_urls):
-/// `TEXT NOT NULL DEFAULT ''` with '' as the canonical "no videos"
-/// sentinel (task_update/task_create bind '' as a SQL literal, never as
-/// a `?` arg, since SqliteBackend.exec binds "" as NULL).
-///
-/// `llm_history.video_url` + `session_queue_messages.video_url` mirror
-/// the nullable `image_url TEXT` precedent (M037): saveMessage and
-/// insertQueueMessage bind "" for empty, which lands as NULL and reads
-/// back via COALESCE(col,'').
-pub const Migration090AddVideoUrls = struct {
-    pub const version: u32 = 90;
-    pub const name = "add_video_urls";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "workspace_item_tasks",
-            "video_urls",
-            "video_urls TEXT NOT NULL DEFAULT ''",
-        );
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "llm_history",
-            "video_url",
-            "video_url TEXT",
-        );
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "session_queue_messages",
-            "video_url",
-            "video_url TEXT",
-        );
-    }
-};
 
 // Migration 091 — sessions.sub_agent_name + sessions.parent_session_id.
 // A sub-agent session keeps its parent's selected_profile_model (Migration
@@ -5274,27 +1879,6 @@ pub const Migration090AddVideoUrls = struct {
 // (e.g. "implementator") and the parent session id. Both nullable TEXT,
 // read back via COALESCE(col,''). Lets DB inspection and the UI show
 // which sub-agent actually ran instead of only the parent profile.
-pub const Migration091AddSubAgentNameToSessions = struct {
-    pub const version: u32 = 91;
-    pub const name = "add_sub_agent_name_to_sessions";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "sessions",
-            "sub_agent_name",
-            "sub_agent_name TEXT",
-        );
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "sessions",
-            "parent_session_id",
-            "parent_session_id TEXT",
-        );
-    }
-};
 
 // Migration 092 — users.config_json for opt-in `--auth` mode.
 // When `--auth` is on, per-user LLM config (profiles, MCP servers,
@@ -5303,20 +1887,6 @@ pub const Migration091AddSubAgentNameToSessions = struct {
 // is ignored. NULL or empty = defaults (same as a missing file).
 // Nullable TEXT (not NOT NULL) so empty-string binds (which
 // SqliteBackend collapses to NULL) never violate the schema.
-pub const Migration092AddUserConfigJson = struct {
-    pub const version: u32 = 92;
-    pub const name = "add_user_config_json";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(
-            .{ .db = db },
-            allocator,
-            "users",
-            "config_json",
-            "config_json TEXT",
-        );
-    }
-};
 
 // Migration 093 — owner columns for per-user row isolation.
 //
@@ -5341,24 +1911,6 @@ pub const Migration092AddUserConfigJson = struct {
 // `config_json` broke exactly this way), and no FK because the project
 // deliberately leaves `PRAGMA foreign_keys` off (see Migration 072 tests),
 // which would make a declared FK documentation only.
-pub const Migration093AddOwnerColumns = struct {
-    pub const version: u32 = 93;
-    pub const name = "add_owner_columns";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(.{ .db = db }, allocator, "worker", "user_id", "user_id TEXT");
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_worker_user_id ON worker(user_id)",
-            &[_][]const u8{},
-        );
-
-        // Idempotent: only rows that still have no owner are touched, so a
-        // re-run is a no-op and post-isolation rows keep their real owner.
-        try db.exec(allocator, "UPDATE workspaces SET user_id = 'user_system' WHERE user_id IS NULL", &[_][]const u8{});
-        try db.exec(allocator, "UPDATE sessions SET user_id = 'user_system' WHERE user_id IS NULL", &[_][]const u8{});
-        try db.exec(allocator, "UPDATE worker SET user_id = 'user_system' WHERE user_id IS NULL", &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 094 — mark one workspace item as the workspace's default project.
@@ -5380,47 +1932,6 @@ pub const Migration093AddOwnerColumns = struct {
 // path covers every legacy workspace on its next read anyway.
 //
 // Plan: docs/plans/2026-09-27-sidebar-new-chat-default-project.md
-pub const Migration094AddDefaultProjectToWorkspaceItems = struct {
-    pub const version: u32 = 94;
-    pub const name = "add_default_project_to_workspace_items";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // NOT NULL DEFAULT 0 is the only shape SQLite accepts when adding a
-        // column to an existing table, and it has the property we want for
-        // free: every pre-existing row reads back as 0 (an ordinary
-        // project) without a table rewrite or a backfill UPDATE. This is an
-        // O(1) metadata change — no lock on existing rows.
-        try addColumnIfMissing(.{ .db = db }, allocator, "workspace_items", "is_default", "is_default INTEGER NOT NULL DEFAULT 0");
-
-        // At most one default per workspace, enforced by the DATABASE
-        // rather than by a convention. The WHERE clause is what makes this
-        // a *partial* index: ordinary rows (is_default = 0) are never
-        // compared against each other, so a workspace can still hold any
-        // number of non-default projects. A plain column could only be
-        // enforced by application code, which every concurrent caller would
-        // have to get right — and the lookup that creates the default runs
-        // from a list read, a workspace create and a New Chat tap, so they
-        // genuinely do race.
-        //
-        // Scoped to `workspace_id` alone, NOT (workspace_id, user_id):
-        // `workspace_items` has no user_id column. Items inherit their
-        // owner through `workspaces.user_id` (Migration 093), and two owners
-        // can never share a single `workspaces` row — so there is no
-        // cross-owner default to collide, and per-workspace is the right
-        // grain.
-        try db.exec(allocator,
-            \\CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_items_default_per_workspace
-            \\ON workspace_items(workspace_id) WHERE is_default = 1
-        , &[_][]const u8{});
-
-        // Lookup index: ensureDefaultProject's fast path filters on both
-        // columns, and this list runs on every sidebar load.
-        try db.exec(allocator,
-            \\CREATE INDEX IF NOT EXISTS idx_workspace_items_default_lookup
-            \\ON workspace_items(workspace_id, is_default)
-        , &[_][]const u8{});
-    }
-};
 
 // Migration 096 — `session_skill_events`, the skill usage ledger.
 // ============================================================================
@@ -5441,40 +1952,6 @@ pub const Migration094AddDefaultProjectToWorkspaceItems = struct {
 // disk now, instead of diffing two full bodies.
 //
 // Plan: docs/plans/2026-09-27-skill-evals.md (W1)
-pub const Migration096CreateSessionSkillEvents = struct {
-    pub const version: u32 = 96;
-    pub const name = "create_session_skill_events";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // `event` is 'loaded' | 'listed' | 'created' | 'edited' | 'removed';
-        // `source` is the tool name that produced the row. Both are free text,
-        // so every write site wraps them in COALESCE(?, '') — a bare empty
-        // bind lands as SQL NULL and would violate NOT NULL (the Migration 079
-        // `content` failure mode).
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS session_skill_events (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL,
-            \\    skill_name TEXT NOT NULL,
-            \\    event TEXT NOT NULL DEFAULT 'loaded',
-            \\    source TEXT NOT NULL DEFAULT '',
-            \\    content_hash TEXT NOT NULL DEFAULT '',
-            \\    loop_index INTEGER NOT NULL DEFAULT 0,
-            \\    llm_history_id TEXT NOT NULL DEFAULT '',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
-
-        // The eval reads one session's events; the per-skill timeline reads by
-        // name across sessions.
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_session_skill_events_session ON session_skill_events(session_id, created_at)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_session_skill_events_skill ON session_skill_events(skill_name, created_at)",
-            &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 097 — the skill-eval tables: shared facts, runs, results.
@@ -5519,121 +1996,6 @@ pub const Migration096CreateSessionSkillEvents = struct {
 //
 // Idempotency: CREATE TABLE/INDEX IF NOT EXISTS.
 // One statement per db.exec (sqlite3_prepare_v2 compiles only the first).
-pub const Migration097CreateSkillEvalTables = struct {
-    pub const version: u32 = 97;
-    pub const name = "create_skill_eval_tables";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // ── the shared intrinsic-facts cache ──────────────────────────────
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS skill_eval_facts (
-            \\    id TEXT PRIMARY KEY,
-            \\    skill_key TEXT NOT NULL,
-            \\    content_hash TEXT NOT NULL,
-            \\    context_key TEXT NOT NULL,
-            \\    verdict_intrinsic TEXT NOT NULL DEFAULT 'computing',
-            \\    freshness INTEGER NOT NULL DEFAULT 0,
-            \\    accuracy INTEGER NOT NULL DEFAULT 0,
-            \\    duplication INTEGER NOT NULL DEFAULT 0,
-            \\    findings_json TEXT NOT NULL DEFAULT '',
-            \\    evidence_json TEXT NOT NULL DEFAULT '',
-            \\    proposed_content TEXT NOT NULL DEFAULT '',
-            \\    missing_paths_json TEXT NOT NULL DEFAULT '',
-            \\    drift_commits_json TEXT NOT NULL DEFAULT '',
-            \\    computed_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\)
-        , &[_][]const u8{});
-
-        // The unique key IS the claim mechanism: a second writer for the same
-        // (skill, content, context) cannot insert, so it reuses instead.
-        try db.exec(allocator,
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_skill_eval_facts ON skill_eval_facts(skill_key, content_hash, context_key)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_skill_eval_facts_skill ON skill_eval_facts(skill_key, computed_at DESC)",
-            &[_][]const u8{});
-
-        // ── one row per eval invocation ───────────────────────────────────
-        // `sub_session_ids_json` exists so the run's token cost can be summed
-        // exactly over the sub-agent session ids the spawn envelope returns,
-        // rather than approximated.
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS skill_eval_runs (
-            \\    id TEXT PRIMARY KEY,
-            \\    session_id TEXT NOT NULL DEFAULT '',
-            \\    skill_name TEXT NOT NULL DEFAULT '',
-            \\    scope TEXT NOT NULL DEFAULT 'session',
-            \\    trigger TEXT NOT NULL DEFAULT 'self_prompt',
-            \\    status TEXT NOT NULL DEFAULT 'running',
-            \\    profile TEXT NOT NULL DEFAULT '',
-            \\    model TEXT NOT NULL DEFAULT '',
-            \\    cwd TEXT NOT NULL DEFAULT '',
-            \\    context_key TEXT NOT NULL DEFAULT '',
-            \\    evidence_json TEXT NOT NULL DEFAULT '',
-            \\    sub_session_ids_json TEXT NOT NULL DEFAULT '',
-            \\    report_json TEXT NOT NULL DEFAULT '',
-            \\    total_tokens INTEGER NOT NULL DEFAULT 0,
-            \\    error TEXT NOT NULL DEFAULT '',
-            \\    started_at DATETIME,
-            \\    finished_at DATETIME,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    user_id TEXT
-            \\)
-        , &[_][]const u8{});
-
-        // "At most one self-prompted run per session" is enforced by the
-        // DATABASE, not by a convention, because the agent can emit two
-        // `run_skill_eval` tool calls in a single turn and both would
-        // otherwise see "no run yet".
-        try db.exec(allocator,
-            \\CREATE UNIQUE INDEX IF NOT EXISTS uq_skill_eval_runs_self_prompt
-            \\ON skill_eval_runs(session_id, trigger) WHERE trigger = 'self_prompt'
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_skill_eval_runs_session ON skill_eval_runs(session_id, created_at DESC)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_skill_eval_runs_status ON skill_eval_runs(status, created_at DESC)",
-            &[_][]const u8{});
-
-        // ── per-(run, skill) session-relative half ────────────────────────
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS skill_eval_results (
-            \\    id TEXT PRIMARY KEY,
-            \\    run_id TEXT NOT NULL,
-            \\    skill_key TEXT NOT NULL,
-            \\    skill_name TEXT NOT NULL,
-            \\    session_id TEXT NOT NULL DEFAULT '',
-            \\    status TEXT NOT NULL DEFAULT 'pending',
-            \\    verdict TEXT NOT NULL DEFAULT 'needs_human',
-            \\    relevance INTEGER NOT NULL DEFAULT 0,
-            \\    used INTEGER NOT NULL DEFAULT 0,
-            \\    helpfulness INTEGER NOT NULL DEFAULT 0,
-            \\    confidence REAL NOT NULL DEFAULT 0,
-            \\    intrinsic_fact_id TEXT NOT NULL DEFAULT '',
-            \\    base_content_hash TEXT NOT NULL DEFAULT '',
-            \\    content_at_use TEXT NOT NULL DEFAULT '',
-            \\    proposed_diff TEXT NOT NULL DEFAULT '',
-            \\    rationale TEXT NOT NULL DEFAULT '',
-            \\    sub_session_id TEXT NOT NULL DEFAULT '',
-            \\    applied_at DATETIME,
-            \\    apply_action TEXT NOT NULL DEFAULT '',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    user_id TEXT
-            \\)
-        , &[_][]const u8{});
-
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_skill_eval_results_run ON skill_eval_results(run_id)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_skill_eval_results_skill ON skill_eval_results(skill_key, created_at DESC)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_skill_eval_results_session ON skill_eval_results(session_id, created_at DESC)",
-            &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 095 — per-workspace isolation for `agent_memories`.
@@ -5686,25 +2048,6 @@ pub const Migration097CreateSkillEvalTables = struct {
 // rebuild, no trigger change and no re-tokenization is required. A
 // partitioned virtual table would force a full reindex of every note on
 // a schema-only concern.
-pub const Migration095AddWorkspaceIdToAgentMemories = struct {
-    pub const version: u32 = 95;
-    pub const name = "add_workspace_id_to_agent_memories";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try addColumnIfMissing(.{ .db = db }, allocator, "agent_memories", "workspace_id", "workspace_id TEXT NOT NULL DEFAULT ''");
-
-        // Every read path filters `workspace_id = ?` and the FTS path
-        // orders by the join's own rank, so a leading `workspace_id`
-        // column lets SQLite seek straight to the calling workspace's
-        // rows instead of probing every FTS hit. `updated_at DESC` rides
-        // along for the (still unused, but already indexed) "most recent
-        // memories in this workspace" surface.
-        try db.exec(allocator,
-            \\CREATE INDEX IF NOT EXISTS idx_agent_memories_workspace
-            \\ON agent_memories(workspace_id, updated_at DESC)
-        , &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 087 — agent config tables for routine workspace items.
@@ -5730,100 +2073,6 @@ pub const Migration095AddWorkspaceIdToAgentMemories = struct {
 // One statement per db.exec (sqlite3_prepare_v2 compiles only the first).
 //
 // Plan: Routine mode task_1789505553300_1 (option A, mirror agent_kanban_*).
-pub const Migration087CreateAgentRoutines = struct {
-    pub const version: u32 = 87;
-    pub const name = "create_agent_routines_mirror";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_routines (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_item_id TEXT NOT NULL UNIQUE,
-            \\    description TEXT NOT NULL DEFAULT '',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_routines_workspace_item_id ON agent_routines(workspace_item_id)",
-            &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_routine_knowledges (
-            \\    id TEXT PRIMARY KEY,
-            \\    routine_id TEXT NOT NULL,
-            \\    file_path TEXT NOT NULL DEFAULT '',
-            \\    label TEXT NOT NULL DEFAULT '',
-            \\    content TEXT NOT NULL DEFAULT '',
-            \\    position INTEGER NOT NULL DEFAULT 0,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (routine_id) REFERENCES agent_routines(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_routine_knowledges_routine_id ON agent_routine_knowledges(routine_id)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_routine_knowledges_routine_position ON agent_routine_knowledges(routine_id, position DESC)",
-            &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_routine_system_prompt (
-            \\    id TEXT PRIMARY KEY,
-            \\    routine_id TEXT NOT NULL,
-            \\    title TEXT NOT NULL DEFAULT '',
-            \\    content TEXT NOT NULL DEFAULT '',
-            \\    position INTEGER NOT NULL DEFAULT 0,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (routine_id) REFERENCES agent_routines(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_routine_system_prompt_routine_id ON agent_routine_system_prompt(routine_id)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_routine_system_prompt_routine_position ON agent_routine_system_prompt(routine_id, position DESC)",
-            &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS agent_routine_tools (
-            \\    id TEXT PRIMARY KEY,
-            \\    routine_id TEXT NOT NULL,
-            \\    tool_name TEXT NOT NULL,
-            \\    enabled INTEGER NOT NULL DEFAULT 1,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (routine_id) REFERENCES agent_routines(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE INDEX IF NOT EXISTS idx_agent_routine_tools_routine_id ON agent_routine_tools(routine_id)",
-            &[_][]const u8{});
-        try db.exec(allocator,
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_routine_tools_routine_tool ON agent_routine_tools(routine_id, tool_name)",
-            &[_][]const u8{});
-
-        // Backfill parent rows for routines predating this migration.
-        // Guarded by a sqlite_master check so the migration also runs on
-        // databases where workspace_items does not exist yet (unit-test
-        // :memory: DBs that only exercise the new tables).
-        {
-            var q = try db.query(allocator,
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace_items'",
-                &[_][]const u8{});
-            defer q.deinit();
-            const has_items_table = try q.next();
-            if (has_items_table) |r| r.deinit(allocator);
-            if (has_items_table != null) {
-                try db.exec(allocator,
-                    "INSERT OR IGNORE INTO agent_routines (id, workspace_item_id) SELECT id, id FROM workspace_items WHERE item_type = 'routine'",
-                    &[_][]const u8{});
-            }
-        }
-    }
-};
 
 // ============================================================================
 // Migration 083 — llm_history reasoning metadata — inline tests
@@ -14835,59 +11084,6 @@ test "Migration098 is registered in allMigrations" {
 // sharing can neither duplicate rows nor reset a role that was deliberately
 // changed. Both properties are asserted in the inline tests below.
 
-pub const Migration100AddWorkspaceMembers = struct {
-    pub const version: u32 = 100;
-    pub const name = "add_workspace_members";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // One tx: the table, its index and the backfill must land together.
-        // Same shape as Migration 077.
-        var tx = try db.begin();
-        defer tx.commitOrRollback() catch {};
-        errdefer tx.rollback() catch {};
-
-        try tx.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS workspace_members (
-            \\    workspace_id TEXT NOT NULL,
-            \\    user_id TEXT NOT NULL,
-            \\    role TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('owner', 'admin', 'editor', 'viewer')),
-            \\    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    invited_by TEXT,
-            \\    PRIMARY KEY (workspace_id, user_id)
-            \\)
-        , &[_][]const u8{});
-
-        // The PK already covers workspace_id -> members (the direction the
-        // visibility EXISTS subquery walks). This covers the other direction:
-        // "which workspaces is this user in".
-        try tx.exec(allocator, "CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_id, workspace_id)", &[_][]const u8{});
-
-        // Backfill. `user_id` is deliberately NOT NULL because
-        // `SqliteBackend.exec` collapses an empty slice to SQL NULL: an empty
-        // owner must hit the sentinel, not blow up the NOT NULL constraint.
-        // The create path gets the same guarantee from
-        // `auth_common.normaliseOwnerId`.
-        //
-        // Every legacy bucket lands on exactly one member row:
-        //   'user_a'    -> ('ws', 'user_a',     'owner')  private to Alice
-        //   'user_system' -> ('ws','user_system','owner')  shared
-        //   NULL / ''   -> ('ws', 'user_system', 'owner')  shared
-        //
-        // Literals, not binds — so the empty-slice-as-NULL rule does not
-        // apply here, and NULL and '' can be told apart.
-        try tx.exec(allocator,
-            \\INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role, joined_at)
-            \\SELECT id, COALESCE(NULLIF(user_id, ''), 'user_system'), 'owner', datetime('now')
-            \\FROM workspaces
-        , &[_][]const u8{});
-
-        try tx.commit();
-
-        // Refresh planner stats so the new index is picked up on pre-existing
-        // databases (mirrors Migrations 041-052 / 070 / 072 / 077).
-        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
-    }
-};
 
 // Migration 100 — `workspace_members` (shared workspaces) — inline tests
 // ============================================================================
@@ -15158,53 +11354,6 @@ test "Migration100 is registered in allMigrations" {
 // `model IS NULL OR TRIM(model) = ''`, so re-running is a no-op and can never
 // touch a row that already holds a real model.
 
-pub const Migration101GuardLlmHistoryModel = struct {
-    pub const version: u32 = 101;
-    pub const name = "guard_llm_history_model";
-
-    /// The sentinel written when no model could be resolved. Mirrors
-    /// `agentic_loop/llm_history_model_guard.zig::UNKNOWN_MODEL` — kept as a
-    /// literal because a SQL trigger cannot call into Zig, and asserted equal
-    /// to the Zig constant in the inline tests below so the two cannot drift.
-    pub const sentinel: []const u8 = "unknown";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        var tx = try db.begin();
-        defer tx.commitOrRollback() catch {};
-        errdefer tx.rollback() catch {};
-
-        // Backfill first so the trigger (which only fires on INSERT) does not
-        // have to reason about rows that already exist. TRIM catches both the
-        // empty string and whitespace-only values, and the WHERE clause keeps
-        // this from touching any real model id.
-        //
-        // Literals, not binds — so the empty-slice-as-NULL rule does not apply
-        // here and NULL and '' remain distinguishable.
-        try tx.exec(allocator,
-            \\UPDATE llm_history SET model = 'unknown'
-            \\WHERE model IS NULL OR TRIM(model) = ''
-        , &[_][]const u8{});
-
-        // The backstop. Catches raw SQL (which the Zig guard cannot see) and
-        // any future write site that forgets the guard.
-        //
-        // `WHEN` guards the UPDATE so a healthy insert costs nothing: the
-        // trigger body simply does not run. That matters because the FTS sync
-        // trigger `llm_history_au` fires on this UPDATE — restricting the
-        // rewrite to bad rows keeps the search index untouched in the normal
-        // case.
-        try tx.exec(allocator,
-            \\CREATE TRIGGER IF NOT EXISTS llm_history_ai_model_not_empty
-            \\AFTER INSERT ON llm_history
-            \\FOR EACH ROW WHEN NEW.model IS NULL OR TRIM(NEW.model) = ''
-            \\BEGIN
-            \\  UPDATE llm_history SET model = 'unknown' WHERE id = NEW.id;
-            \\END
-        , &[_][]const u8{});
-
-        try tx.commit();
-    }
-};
 
 // ============================================================================
 // Migration 101 — the `skills` table: workspace-scoped skill bodies.
@@ -15259,38 +11408,6 @@ pub const Migration101GuardLlmHistoryModel = struct {
 // and `UNIQUE (skill_id, rel_path)` already indexes every `WHERE skill_id =
 // ?` read, so a second bare index would only give the planner a duplicate to
 // choose between.
-pub const Migration102CreateSkills = struct {
-    pub const version: u32 = 102;
-    pub const name = "create_skills";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS skills (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_id TEXT NOT NULL,
-            \\    name TEXT NOT NULL,
-            \\    description TEXT NOT NULL DEFAULT '',
-            \\    content TEXT NOT NULL DEFAULT '',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    UNIQUE (workspace_id, name),
-            \\    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS skill_assets (
-            \\    id TEXT PRIMARY KEY,
-            \\    skill_id TEXT NOT NULL,
-            \\    rel_path TEXT NOT NULL,
-            \\    content TEXT NOT NULL DEFAULT '',
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    UNIQUE (skill_id, rel_path),
-            \\    FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-    }
-};
 
 // ============================================================================
 // Migration 103 — `workspace_secrets`
@@ -15332,42 +11449,6 @@ pub const Migration102CreateSkills = struct {
 // Idempotency: CREATE TABLE/INDEX IF NOT EXISTS, and one statement per
 // `db.exec` (`sqlite3_prepare_v2` compiles only the first).
 
-pub const Migration103CreateWorkspaceSecrets = struct {
-    pub const version: u32 = 103;
-    pub const name = "create_workspace_secrets";
-
-    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        try db.exec(allocator,
-            \\CREATE TABLE IF NOT EXISTS workspace_secrets (
-            \\    id TEXT PRIMARY KEY,
-            \\    workspace_id TEXT NOT NULL,
-            \\    name TEXT NOT NULL,
-            \\    value TEXT NOT NULL,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-            \\)
-        , &[_][]const u8{});
-
-        // Only ONE index, on purpose. `uq_workspace_secrets_name` is a
-        // UNIQUE index on `(workspace_id, name)`, and a unique index is an
-        // ordinary b-tree that SQLite will use for `WHERE workspace_id = ?`
-        // and for the `ORDER BY name` the list path carries. A second index
-        // on the same column pair would cost an extra write per INSERT and
-        // UPDATE for no additional lookup the first one cannot serve.
-        //
-        // One name per workspace, enforced in the database rather than only
-        // by the store's pre-check: two secrets called `GITHUB_TOKEN` in one
-        // workspace is a user mistake that deserves a clean 409, not a
-        // substitution that silently picks whichever row the planner finds
-        // first. Scoped to `workspace_id`, so a second workspace is free to
-        // reuse the same name.
-        try db.exec(allocator,
-            \\CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_secrets_name
-            \\ON workspace_secrets(workspace_id, name)
-        , &[_][]const u8{});
-    }
-};
 
 // Migration 101 — inline tests
 // ============================================================================
