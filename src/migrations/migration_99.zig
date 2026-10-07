@@ -1,0 +1,80 @@
+const std = @import("std");
+const common = @import("common.zig");
+
+const SqliteBackend = common.SqliteBackend;
+const addColumnIfMissing = common.addColumnIfMissing;
+const dropColumnIfExists = common.dropColumnIfExists;
+const renameColumnIfExists = common.renameColumnIfExists;
+const helpers = @import("helpers");
+
+pub const Migration099RenameListSkillsTool = struct {
+    pub const version: u32 = 99;
+    pub const name = "rename_list_skills_tool";
+
+    /// True when `name` is a table in this database. Used so the rename is a
+    /// no-op on a database that does not have every one of the three
+    /// allowlist tables, instead of aborting the whole migration on
+    /// "no such table".
+    fn tableExists(allocator: std.mem.Allocator, db: *SqliteBackend, table: []const u8) !bool {
+        var q = try db.query(
+            allocator,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+            &[_][]const u8{table},
+        );
+        defer q.deinit();
+        const row = (try q.next()) orelse return false;
+        defer row.deinit(allocator);
+        return std.mem.eql(u8, row.values[0], "1");
+    }
+
+    fn renameIn(allocator: std.mem.Allocator, db: *SqliteBackend, table: []const u8, owner_col: []const u8) !void {
+        if (!try tableExists(allocator, db, table)) return;
+
+        // A plain `UPDATE ... SET tool_name = 'search_skills'` trips
+        // UNIQUE(owner, tool_name) for an owner that ALREADY has the new name
+        // (easy to hit: config.json and the seed defaults are edited by hand),
+        // and `UPDATE OR IGNORE` would then silently SKIP that row — leaving
+        // `list_skills` behind. So: insert a new row under a fresh id, then
+        // delete the stale one. `INSERT OR IGNORE` covers the one case where
+        // the owner already has `search_skills` — the pre-existing row wins
+        // and the checklist still ends with exactly one entry.
+        //
+        // The id is suffixed rather than reused: `id` is the PRIMARY KEY, so
+        // re-inserting the same value would make OR IGNORE swallow the insert
+        // and the follow-up DELETE would then delete the only row.
+        const sql = try std.fmt.allocPrint(
+            allocator,
+            \\INSERT OR IGNORE INTO {s} (id, {s}, tool_name, enabled, created_at)
+            \\SELECT id || '_m099', {s}, 'search_skills', enabled, created_at
+            \\FROM {s} WHERE tool_name = 'list_skills'
+        , .{ table, owner_col, owner_col, table });
+        defer allocator.free(sql);
+        try db.exec(allocator, sql, &[_][]const u8{});
+
+        const del = try std.fmt.allocPrint(
+            allocator,
+            "DELETE FROM {s} WHERE tool_name = 'list_skills'",
+            .{table},
+        );
+        defer allocator.free(del);
+        try db.exec(allocator, del, &[_][]const u8{});
+    }
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Three allowlist tables, one per item type — agents and routines are
+        // separate tables even though both are read the same way.
+        try renameIn(allocator, db, "agent_tools", "agent_id");
+        try renameIn(allocator, db, "agent_kanban_tools", "kanban_id");
+        try renameIn(allocator, db, "agent_routine_tools", "routine_id");
+
+        if (!try tableExists(allocator, db, "users")) return;
+
+        // Quoted JSON token only — `"list_skills"` → `"search_skills"`.
+        // `LIKE '%"list_skills"%'` keeps the WHERE off rows that do not
+        // mention the tool at all.
+        try db.exec(allocator,
+            \\UPDATE users SET config_json = REPLACE(config_json, '"list_skills"', '"search_skills"')
+            \\WHERE config_json LIKE '%"list_skills"%'
+        , &[_][]const u8{});
+    }
+};
