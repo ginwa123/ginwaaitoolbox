@@ -786,7 +786,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // the name request would add one extra LLM call (with a 5-minute
     // read timeout) to every tool-call iteration of every turn.
 
-
     // Same source as `config` above: the session owner's stored config in
     // auth mode, the process-global singleton otherwise. Named apart
     // because this is the ENTRY config the MCP fetch below reads, while
@@ -829,11 +828,22 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         break :blk di.di.getMcpToolsCached(parent_allocator);
     };
 
+    // Per-turn arena: every loop turn's history loads, prompt builds and
+    // message lists allocate from here. Backed by the process GPA — a nested
+    // arena (init from parent_allocator) would pin each turn's memory in the
+    // run arena until the workflow ends, since arena free is a no-op.
+    // Reclaimed per turn by `reset` as the first statement of the loop body:
+    // a `defer` inside the loop would only run at function exit (that was the
+    // leak — turns accumulated until run end). Resetting at loop top rather
+    // than before each `continue` keeps inner-scope defers running before
+    // reclamation. Anything that must outlive its turn (copies, config,
+    // the retry detail below) lives in parent_allocator.
+    var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(di.allocator);
+    defer arenaAllocatorWhileLoop.deinit();
+    const allocator = arenaAllocatorWhileLoop.allocator();
     while (true) {
+        _ = arenaAllocatorWhileLoop.reset(.free_all);
         _ = active_loops.tryInsert(io, copy_session_id);
-        var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parent_allocator);
-        defer arenaAllocatorWhileLoop.deinit();
-        const allocator = arenaAllocatorWhileLoop.allocator();
 
         touchCheckpointWorkers(.{
             .allocator = allocator,
@@ -1440,9 +1450,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // reflects — not the first failure of this session.
             last_retry_error = err;
             last_retry_source = "callDynamicAgentNew";
-            // Capture the server-side reason for the eventual bail
-            // diagnostics. Arena-owned (see decl comment) — no free.
-            last_retry_server_detail = last_dynamic_agent_error_message;
+            // Cross-turn carry: the per-turn arena is reset every turn, so
+            // dupe into the run arena. Bounded (retries are capped and the
+            // message is clamped to 500 chars at use) — negligible until run end.
+            last_retry_server_detail = if (last_dynamic_agent_error_message) |msg|
+                parent_allocator.dupe(u8, msg) catch null
+            else
+                null;
             // The agent populated `last_dynamic_agent_error_message` with
             // the actual server / transport reason (e.g. "HTTP 429: rate
             // limit exceeded", "scanner.next failed after 12 chunk(s):
@@ -1488,8 +1502,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // `content`, `reasoning_content`, each
         // `tool_calls[i].{id, function.name, function.arguments}`, the
         // `tool_calls` slice itself) is allocated from THIS iteration’s
-        // arena (`arenaAllocatorWhileLoop` declared at the top of the
-        // loop, deferred `deinit` runs at end-of-iteration in LIFO
+        // arena (`arenaAllocatorWhileLoop` declared above the loop; the
+        // per-turn `reset` at loop top reclaims it at end-of-turn in LIFO
         // order). `CallResponse.deinit` is a documented no-op (see
         // `Agent.zig` CallResponse doc), so the explicit `defer` here
         // is purely cosmetic — it’s kept as `res_dynamic_agent.deinit()`
