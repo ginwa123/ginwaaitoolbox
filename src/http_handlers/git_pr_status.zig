@@ -320,7 +320,9 @@ fn useCaseWithPrograms(
     // `spawn` also hands the child the `Io.Threaded` CACHED environ, so
     // the process cannot fix this for itself after startup. The fix is
     // to pass an explicit `environ_map` to this probe; tracked as
-    // follow-up work.
+    // follow-up work. Test-side mitigations: the hook unsets GIT_*
+    // (.husky/pre-push) and fixtures refuse a dirty env
+    // (helpers/git_env_guard.zig).
     {
         const check = std.process.run(allocator, io, .{ .argv = &.{ "git", "-C", path, "rev-parse", "--git-dir" } }) catch return error.NotARepository;
         defer {
@@ -825,6 +827,8 @@ fn haveGit() bool {
 /// A real (empty) git repo inside the fixture, so the
 /// `git rev-parse --git-dir` gate in `useCaseWith` passes.
 fn makeGitRepo(fx: *Fixture) ![]u8 {
+    // Fixture git must not run under hook-exported GIT_DIR/GIT_WORK_TREE.
+    try @import("helpers").git_env_guard.requireCleanGitEnv();
     const a = fx.allocator;
     const repo = try fx.subDir("repo");
     var r = run_captured.run(a, std.testing.io, &.{ "git", "init", "-q", repo }, .{
