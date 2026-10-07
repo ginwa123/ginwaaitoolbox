@@ -3036,12 +3036,12 @@ const runHistoryLoadAttempt = async () => {
   }
 
   // 2026-08-07-profile-persist-read — load the persisted profile
-  // selection from the messages endpoint response. The watch on
-  // sessionId.value (below) ALSO reads it from getSession() (which
-  // calls the same endpoint), but the watch is `immediate: false`
+  // selection from the messages endpoint response. onSessionChanged
+  // (below) ALSO reads it from getSession() (which
+  // calls the same endpoint), but it runs on mount/switch
   // and races with loadChatHistory on initial mount. Reading it here
   // is the authoritative source: whichever finishes first, the value
-  // is the same. The watch's later update will agree and not clobber.
+  // is the same. The handler's later update will agree and not clobber.
   if (data.selected_profile_model !== undefined) {
     selectedProfile.value = data.selected_profile_model || null
   }
@@ -5796,10 +5796,8 @@ const compactSession = async () => {
             style="color: var(--semantic-text-dim)"
             data-testid="chat-center-diff-count"
           >
-            {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : '' }}<template
-              v-if="collapsedCount > 0"
-              > · {{ collapsedCount }} collapsed</template
-            >
+            {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : ''
+            }}<template v-if="collapsedCount > 0"> · {{ collapsedCount }} collapsed</template>
           </span>
           <!-- LAYOUT axis (global): how the lines are laid out. -->
           <span

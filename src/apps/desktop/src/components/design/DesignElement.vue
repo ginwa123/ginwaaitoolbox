@@ -803,8 +803,9 @@ onUpdated(() => {
 //
 // We don't bind window keydown here (the parent DesignView owns
 // keyboard events); the parent emits `delete` on the active element.
-// Expose a method for the parent to call: see the watcher below that
-// listens for the `Delete` key globally when this element is selected.
+// A global keydown listener attached at mount below handles the
+// `Delete` key when this element is selected (gated on selection
+// inside handleKeydown).
 //
 // Actually — we DO bind a window listener when selected so the user
 // can hit Delete without the canvas having to know. Cleaner UX than

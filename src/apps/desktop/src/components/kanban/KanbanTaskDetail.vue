@@ -434,12 +434,12 @@ const selectColumn = (id: string) => {
 // sandbox). The picker writes the absolute path; the picker dialog's
 // "cancel" / backdrop-close leaves it empty.
 //
-// Starts empty — populated lazily by the broader
-// `props.show, props.task?.id, props.mode` watcher below on dialog
-// open (with `immediate: true`). Initializing from the ref literal
+// Starts empty — populated lazily by openDialog() via the mount/update
+// open guard below (openKey covers show, task id, and mode).
+// Initializing from the ref literal
 // (`ref<string>(props.cwd ?? '')`) used to work, but broke when the
 // parent re-mounted the dialog with a different cwd (the ref would
-// keep its first-mount value). The watcher handles BOTH initial
+// keep its first-mount value). The open guard handles BOTH initial
 // mount AND re-mount correctly. Plan:
 // docs/superpowers/plans/2026-08-14-kanban-task-detail-edit-cwd.md
 const cwdSession = ref<string>('')
@@ -457,9 +457,9 @@ const cwdPickerRef = ref<HTMLElement | null>(null)
 // fallback so the picker reflects "where does THIS task run"
 // rather than the kanban's project root.
 //
-// Initialized from the prop (NOT via the watcher below) so the picker
+// Initialized from the prop (NOT via the open guard below) so the picker
 // has the right value on the very first render — without the
-// initial-value read, the watcher needed `show` to flip false→true to
+// initial-value read, the guard would need `show` to flip false→true to
 // fire, which leaves the picker empty if the parent mounts the dialog
 // with `show=true` on the first tick (same pattern as
 // `selectedColumnId` above, which also initializes from its prop).
@@ -474,8 +474,7 @@ const cwdPickerRef = ref<HTMLElement | null>(null)
 // "where does this task run?" an unanswerable question until the user
 // clicked the picker.
 //
-// Implementation note: the broader watcher below
-// (`props.show, props.task?.id, props.mode` with `immediate: true`)
+// Implementation note: openDialog() via the openKey guard below
 // handles the initial sync AND the rare "user clicks task A then
 // task B with the dialog already open" re-sync — cwd re-syncs
 // whenever show flips true OR the target task swaps.
@@ -610,9 +609,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleImagePopupKe
 // form-state reset rule, and which emit fires on submit.
 const isCreateMode = computed<boolean>(() => props.mode === 'create')
 
-// Which commit the user actually pressed. Declared ahead of the open
-// watcher below so the open handler can clear it (no TDZ: the
-// immediate watcher runs during setup, before later declarations).
+// Which commit the user actually pressed. Declared ahead of openDialog
+// below so the open handler can clear it.
 // `creating` is one host flag covering both create paths, so on its own
 // the footer cannot tell "Create task" from "Create task & run agent".
 // The `null` branch is deliberate: the host can raise `creating`
@@ -625,108 +623,108 @@ const pendingAction = ref<'create' | 'create_and_run' | null>(null)
 // edit mode we prefill from `task` (today's behavior). Runs from the
 // mount/update open guard below instead of a watcher.
 const openDialog = async (): Promise<void> => {
-    // The commit split button narrates the in-flight action via
-    // pendingAction; clear any stale attribution from the previous
-    // session here, in the open handler, instead of watching isCreating.
-    // (pendingCommitLabel already returns null when !isCreating, so this
-    // is hygiene for the next open, not a render dependency.)
-    pendingAction.value = null
-    if (isCreateMode.value) {
-      name.value = ''
-      description.value = ''
-      unattended.value = '1'
-      useGitWorktree.value = false
-      worktreePath.value = ''
-      worktreeBaseBranch.value = ''
-      tags.value = [] // NEW: start with empty tags in create mode
-      selectedProfile.value = '' // NEW: profile selector defaults to backend default
-      // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). Sync
-      // cwdSession from the parent kanban's path on dialog open so
-      // the picker shows the kanban-level fallback by default.
-      // The legacy code initialized from the ref literal (`ref<string>(props.cwd ?? '')`)
-      // which silently broke when the parent passed a different
-      // cwd on a subsequent open with the same dialog instance.
-      cwdSession.value = props.cwd ?? ''
-    } else if (props.task) {
-      name.value = props.task.name
-      description.value = props.task.description ?? ''
-      unattended.value = props.task.is_auto_retry_until_stop === '1' ? '1' : '0'
-      // Migration 067 — prefill tags from the loaded task. tags?
-      // is optional (legacy tasks may lack it); fallback to [].
-      tags.value = props.task.tags ?? []
-      // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd).
-      // Sync the per-task cwd picker with the task's persisted cwd
-      // in edit mode. Equivalent to the create-mode
-      // `cwdSession.value = props.cwd ?? ''` for create, but reads
-      // the task row. `task?.cwd ?? ''` coerces legacy
-      // pre-Migration-070 tasks (whose `cwd` is undefined) to the
-      // empty-state placeholder — same UX as the read-only strip
-      // that lived in the metadata strip pre-fix. This branch
-      // also covers the rare "user clicks task A then task B with
-      // the dialog already open" case via the watcher source's
-      // `props.task?.id` dependency.
-      cwdSession.value = props.task.cwd ?? ''
-      // Media-flags change — list/get carry only `is_have_image` /
-      // `is_have_video` flags; the gallery lazy-loads via the
-      // store's fetchTaskMedia (GET .../tasks/:id/media) when a flag
-      // is true and the arrays are still empty. imageUrls is a
-      // computed tracking `props.task.imageUrls` so optimistic
-      // `updateTaskDetails({ imageUrls })` writes still re-render
-      // without a re-open.
-      if (props.task?.id) {
-        const t = props.task
-        const needMedia =
-          (t.is_have_image === true && (!t.imageUrls || t.imageUrls.length === 0)) ||
-          (t.is_have_video === true && (!t.videoUrls || t.videoUrls.length === 0))
-        if (needMedia && props.workspaceId && props.column?.workspace_item_id) {
-          void useWorkspacesStore().fetchTaskMedia(
-            props.workspaceId,
-            props.column.workspace_item_id,
-            t.id,
-          )
-        }
+  // The commit split button narrates the in-flight action via
+  // pendingAction; clear any stale attribution from the previous
+  // session here, in the open handler, instead of watching isCreating.
+  // (pendingCommitLabel already returns null when !isCreating, so this
+  // is hygiene for the next open, not a render dependency.)
+  pendingAction.value = null
+  if (isCreateMode.value) {
+    name.value = ''
+    description.value = ''
+    unattended.value = '1'
+    useGitWorktree.value = false
+    worktreePath.value = ''
+    worktreeBaseBranch.value = ''
+    tags.value = [] // NEW: start with empty tags in create mode
+    selectedProfile.value = '' // NEW: profile selector defaults to backend default
+    // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). Sync
+    // cwdSession from the parent kanban's path on dialog open so
+    // the picker shows the kanban-level fallback by default.
+    // The legacy code initialized from the ref literal (`ref<string>(props.cwd ?? '')`)
+    // which silently broke when the parent passed a different
+    // cwd on a subsequent open with the same dialog instance.
+    cwdSession.value = props.cwd ?? ''
+  } else if (props.task) {
+    name.value = props.task.name
+    description.value = props.task.description ?? ''
+    unattended.value = props.task.is_auto_retry_until_stop === '1' ? '1' : '0'
+    // Migration 067 — prefill tags from the loaded task. tags?
+    // is optional (legacy tasks may lack it); fallback to [].
+    tags.value = props.task.tags ?? []
+    // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd).
+    // Sync the per-task cwd picker with the task's persisted cwd
+    // in edit mode. Equivalent to the create-mode
+    // `cwdSession.value = props.cwd ?? ''` for create, but reads
+    // the task row. `task?.cwd ?? ''` coerces legacy
+    // pre-Migration-070 tasks (whose `cwd` is undefined) to the
+    // empty-state placeholder — same UX as the read-only strip
+    // that lived in the metadata strip pre-fix. This branch
+    // also covers the rare "user clicks task A then task B with
+    // the dialog already open" case via the openKey guard's
+    // `props.task?.id` segment.
+    cwdSession.value = props.task.cwd ?? ''
+    // Media-flags change — list/get carry only `is_have_image` /
+    // `is_have_video` flags; the gallery lazy-loads via the
+    // store's fetchTaskMedia (GET .../tasks/:id/media) when a flag
+    // is true and the arrays are still empty. imageUrls is a
+    // computed tracking `props.task.imageUrls` so optimistic
+    // `updateTaskDetails({ imageUrls })` writes still re-render
+    // without a re-open.
+    if (props.task?.id) {
+      const t = props.task
+      const needMedia =
+        (t.is_have_image === true && (!t.imageUrls || t.imageUrls.length === 0)) ||
+        (t.is_have_video === true && (!t.videoUrls || t.videoUrls.length === 0))
+      if (needMedia && props.workspaceId && props.column?.workspace_item_id) {
+        void useWorkspacesStore().fetchTaskMedia(
+          props.workspaceId,
+          props.column.workspace_item_id,
+          t.id,
+        )
       }
     }
-    await nextTick()
-    nameInput.value?.focus()
-    // Selecting the text is only useful in edit mode (so a rename
-    // is a single keystroke). In create mode the input is empty —
-    // `select()` is a no-op but skipping it removes a code-smell.
-    if (!isCreateMode.value) nameInput.value?.select()
-    // NEW (Task 2.7): reset the suggestions composable + start a
-    // lazy load. Reset clears any state from the previous dialog
-    // session so a different kanban (or a fresh open of the same one)
-    // doesn't see stale suggestions from the previous task.
-    tagSuggestions.reset()
-    // Don't await — let the fetch happen in the background. The
-    // dropdown only opens when the user focuses the input, which is
-    // itself a separate trigger; awaiting here would block the
-    // focus call on a network round-trip for no benefit.
-    // NEW (plan: 2026-08-06-kanban-tags-autocomplete-in-create-mode):
-    // Removed `props.task` from the guard. The fetch needs only the
-    // kanban's workspace_item_id (from column.workspace_item_id),
-    // which is available in BOTH edit and create modes via the host
-    // bindings. The composable's fetchPage already short-circuits on
-    // empty item_id (useKanbanTagSuggestions.ts:73-76), so the gate
-    // was redundant AND was the reason the existing-tag dropdown never
-    // appeared in the "+ Add task" dialog.
-    if (props.workspaceId) {
-      void tagSuggestions.ensureLoaded()
-    }
-    // NEW (plan: 2026-08-06-kanban-task-profile-selector). Fetch
-    // profiles for the picker in create mode. Same fire-and-forget
-    // pattern as tagSuggestions — the dropdown only opens when the
-    // user clicks it.
-    if (isCreateMode.value) {
-      void loadProfiles()
-      void loadHomeDir()
-    }
-    // Sync selectedColumnId from the parent's `column` prop on open
-    // (create mode only). Re-assigning the same id is a no-op, so the
-    // host round-trip in scenario (b) stays loop-free.
-    if (isCreateMode.value) {
-      selectedColumnId.value = props.column?.id ?? null
-    }
+  }
+  await nextTick()
+  nameInput.value?.focus()
+  // Selecting the text is only useful in edit mode (so a rename
+  // is a single keystroke). In create mode the input is empty —
+  // `select()` is a no-op but skipping it removes a code-smell.
+  if (!isCreateMode.value) nameInput.value?.select()
+  // NEW (Task 2.7): reset the suggestions composable + start a
+  // lazy load. Reset clears any state from the previous dialog
+  // session so a different kanban (or a fresh open of the same one)
+  // doesn't see stale suggestions from the previous task.
+  tagSuggestions.reset()
+  // Don't await — let the fetch happen in the background. The
+  // dropdown only opens when the user focuses the input, which is
+  // itself a separate trigger; awaiting here would block the
+  // focus call on a network round-trip for no benefit.
+  // NEW (plan: 2026-08-06-kanban-tags-autocomplete-in-create-mode):
+  // Removed `props.task` from the guard. The fetch needs only the
+  // kanban's workspace_item_id (from column.workspace_item_id),
+  // which is available in BOTH edit and create modes via the host
+  // bindings. The composable's fetchPage already short-circuits on
+  // empty item_id (useKanbanTagSuggestions.ts:73-76), so the gate
+  // was redundant AND was the reason the existing-tag dropdown never
+  // appeared in the "+ Add task" dialog.
+  if (props.workspaceId) {
+    void tagSuggestions.ensureLoaded()
+  }
+  // NEW (plan: 2026-08-06-kanban-task-profile-selector). Fetch
+  // profiles for the picker in create mode. Same fire-and-forget
+  // pattern as tagSuggestions — the dropdown only opens when the
+  // user clicks it.
+  if (isCreateMode.value) {
+    void loadProfiles()
+    void loadHomeDir()
+  }
+  // Sync selectedColumnId from the parent's `column` prop on open
+  // (create mode only). Re-assigning the same id is a no-op, so the
+  // host round-trip in scenario (b) stays loop-free.
+  if (isCreateMode.value) {
+    selectedColumnId.value = props.column?.id ?? null
+  }
 }
 
 // selectedColumnId sync lives at the end of the open handler above.
@@ -1172,7 +1170,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
 // Media-flags change — async lazy media: flags true but arrays still empty
 // means the background fetchTaskMedia hasn't resolved yet. Shows a
 // lightweight loading hint instead of a blank gap. Non-blocking: the
-// fetch runs fire-and-forget via `void` (see the dialog-open watcher).
+// fetch runs fire-and-forget via `void` (see openDialog above).
 const isMediaLoading = computed<boolean>(() => {
   const t = props.task
   if (!t || isCreateMode.value) return false
@@ -1279,7 +1277,7 @@ const isMediaLoading = computed<boolean>(() => {
                on a save/create/start-agent handler failure so the
                user can retry without losing their typed content
                (the form is NOT reset on error — only on a successful
-               submit, via the broader watch's `show` change). -->
+               submit, via the open guard's `show` change). -->
     <div
       v-if="errorMessage"
       class="shrink-0 px-5 py-3 text-body"
@@ -1566,7 +1564,9 @@ const isMediaLoading = computed<boolean>(() => {
         style="border-top: 1px solid var(--color-border)"
         data-testid="kanban-task-detail-settings-section"
       >
-        <h4 class="text-dense font-semibold mb-3" style="color: var(--semantic-text-dim)">Settings</h4>
+        <h4 class="text-dense font-semibold mb-3" style="color: var(--semantic-text-dim)">
+          Settings
+        </h4>
 
         <!-- Row 1: per-task cwd picker (always shown) +
                 profile picker (create mode only). Both use the same

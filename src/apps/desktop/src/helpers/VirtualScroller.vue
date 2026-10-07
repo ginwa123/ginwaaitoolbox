@@ -364,7 +364,7 @@ const consumeProgrammaticScroll = (): boolean => {
 // wrong spacers → fewer compensation shifts → smoother scroll.
 //
 // Reset when the items array is swapped for a different list (length → 0 or
-// identity change via the items-length watcher below) so one chat's height
+// identity change via the onUpdated prev-length guard below) so one chat's height
 // profile doesn't bleed into another's.
 const heightEstimator = new AdaptiveItemHeightEstimator({
   seed: props.defaultItemHeight,

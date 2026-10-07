@@ -193,9 +193,7 @@ const loadColumnsAndTasks = async () => {
     void nextTick(() => {
       for (const entry of urlEntries) {
         const col = columnRefs.value[entry.columnId] as
-          | { setSortMode?: (s: string, d: string) => void }
-          | null
-          | undefined
+          { setSortMode?: (s: string, d: string) => void } | null | undefined
         if (col && typeof col.setSortMode === 'function') {
           col.setSortMode(entry.sortBy, entry.direction)
         }
@@ -577,7 +575,7 @@ onUnmounted(clearSearchDebounce)
 //      preserved — see compareBySortMode in KanbanColumn.vue).
 //
 // The fetch is debounced (300ms) so rapid column-sort changes don't
-// fire N requests. Same pattern as the search-input watcher above.
+// fire N requests. Same pattern as the search-input handler above.
 //
 // URL format: `?sorts=col_1:name:asc,col_2:created_at:desc,...`
 // Comma-separated; each entry is `col_<id>:<sortBy>:<direction>`.
@@ -866,7 +864,7 @@ const handleViewTaskDetail = (taskId: string) => {
   // Deep-link the inline panel so "Open details in new tab" +
   // refresh/share round-trip. PUSH (not replace) preserves the
   // board URL in history so browser Back drops the param and the
-  // watcher below closes the panel back to the plain board.
+  // route guard closes the panel back to the plain board.
   // Preserves existing query (sorts etc).
   try {
     void router.push({ query: { ...route.query, detail: taskId } })
@@ -1724,7 +1722,7 @@ const handleCreateTaskSave = async (payload: {
     area like the task chat does — the board stays mounted
     underneath but is fully hidden. Opening appends
     ?detail=<taskId> via router.push, so browser Back drops the
-    param and the watcher below returns to the plain board. Close
+    param and the route guard returns to the plain board. Close
     via the panel's X / Cancel / Esc, Save, or Back. Edit + create
     are mutually exclusive.
   -->
