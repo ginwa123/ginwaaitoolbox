@@ -662,14 +662,14 @@ pub const LlmConfig = struct {
         const url_raw = switch (obj.get("url") orelse json.Value{ .null = {} }) {
             .string => |s| s,
             else => {
-                std.log.warn("web_search provider '{s}' has no string `url`; skipping", .{name});
+                std.log.info("web_search provider '{s}' has no string `url`; skipping", .{name});
                 return null;
             },
         };
         const curl_raw = switch (obj.get("curl") orelse json.Value{ .null = {} }) {
             .string => |s| s,
             else => {
-                std.log.warn("web_search provider '{s}' has no string `curl`; skipping", .{name});
+                std.log.info("web_search provider '{s}' has no string `curl`; skipping", .{name});
                 return null;
             },
         };
@@ -693,19 +693,19 @@ pub const LlmConfig = struct {
             .string => |s| if (s.len > 0) {
                 entry.key = try allocator.dupe(u8, s);
             },
-            else => std.log.warn("web_search provider '{s}' has a non-string `key`; treating as absent", .{name}),
+            else => std.log.info("web_search provider '{s}' has a non-string `key`; treating as absent", .{name}),
         };
 
         if (obj.get("description")) |dv| switch (dv) {
             .string => |s| if (s.len > 0) {
                 entry.description = try allocator.dupe(u8, s);
             },
-            else => std.log.warn("web_search provider '{s}' has a non-string `description`; ignoring", .{name}),
+            else => std.log.info("web_search provider '{s}' has a non-string `description`; ignoring", .{name}),
         };
 
         if (obj.get("enabled")) |ev| switch (ev) {
             .bool => |b| entry.enabled = b,
-            else => std.log.warn("web_search provider '{s}' has a non-bool `enabled`; treating as true", .{name}),
+            else => std.log.info("web_search provider '{s}' has a non-bool `enabled`; treating as true", .{name}),
         };
 
         return entry;
@@ -729,7 +729,7 @@ pub const LlmConfig = struct {
         errdefer freeWebSearchProvidersMap(&providers, allocator);
 
         if (raw != .object) {
-            std.log.warn("`web_search` is not an object; ignoring", .{});
+            std.log.info("`web_search` is not an object; ignoring", .{});
             return providers;
         }
 
@@ -805,7 +805,7 @@ pub const LlmConfig = struct {
                 // path that doesn't exist is treated as a user error (they
                 // asked us to read a specific file and it's missing).
                 if (path != null) {
-                    std.log.warn("Config file not found at explicit path {s}", .{config_path});
+                    std.log.info("Config file not found at explicit path {s}", .{config_path});
                     return error.ConfigFileNotFound;
                 }
                 std.log.info(
@@ -862,7 +862,7 @@ pub const LlmConfig = struct {
         const parsed = json.parseFromSlice(LlmConfigJson, allocator, content, .{
             .ignore_unknown_fields = true,
         }) catch |err| {
-            std.log.warn("Failed to parse JSON config: {s}", .{@errorName(err)});
+            std.log.info("Failed to parse JSON config: {s}", .{@errorName(err)});
             return error.InvalidJson;
         };
         defer parsed.deinit();
@@ -1442,7 +1442,7 @@ pub const LlmConfig = struct {
             const header_value: []const u8 = switch (entry.value_ptr.*) {
                 .string => |s| s,
                 else => {
-                    std.log.warn("MCP header '{s}' is not a string; skipping", .{entry.key_ptr.*});
+                    std.log.info("MCP header '{s}' is not a string; skipping", .{entry.key_ptr.*});
                     continue;
                 },
             };
@@ -1485,12 +1485,12 @@ pub const LlmConfig = struct {
             const url_str = switch (url_field) {
                 .string => |s| s,
                 else => {
-                    std.log.warn("MCP server 'url' is not a string; skipping", .{});
+                    std.log.info("MCP server 'url' is not a string; skipping", .{});
                     return null;
                 },
             };
             if (url_str.len == 0) {
-                std.log.warn("MCP server 'url' is empty; skipping", .{});
+                std.log.info("MCP server 'url' is empty; skipping", .{});
                 return null;
             }
             config.url = try allocator.dupe(u8, url_str);
@@ -1509,12 +1509,12 @@ pub const LlmConfig = struct {
             const cmd_str = switch (cmd_field) {
                 .string => |s| s,
                 else => {
-                    std.log.warn("MCP server 'command' is not a string; skipping", .{});
+                    std.log.info("MCP server 'command' is not a string; skipping", .{});
                     return null;
                 },
             };
             if (cmd_str.len == 0) {
-                std.log.warn("MCP server 'command' is empty; skipping", .{});
+                std.log.info("MCP server 'command' is empty; skipping", .{});
                 return null;
             }
             config.command = try allocator.dupe(u8, cmd_str);
@@ -1560,7 +1560,7 @@ pub const LlmConfig = struct {
         const has_url = if (config.url) |u| u.len > 0 else false;
         const has_cmd = if (config.command) |c| c.len > 0 else false;
         if (has_url == has_cmd) {
-            std.log.warn("MCP server config needs exactly one of 'url' or 'command'; skipping", .{});
+            std.log.info("MCP server config needs exactly one of 'url' or 'command'; skipping", .{});
             return null;
         }
 

@@ -210,7 +210,7 @@ pub fn importFromTargets(
 
     for (targets) |target| {
         if (target.workspace_ids.len == 0) {
-            std.log.warn(
+            std.log.info(
                 "skills_import: {s} has no destination workspace; not reading it",
                 .{target.dir},
             );
@@ -291,7 +291,7 @@ fn recordSkip(
     // fact, and the log is what reaches them the one time they are looking
     // at the console. Neither alone is enough — a report nobody reads and a
     // line nobody scrolls back to are the same silence.
-    std.log.warn(
+    std.log.info(
         "skills_import: skipped '{s}': {s}{s}{s}",
         .{
             dir_name,
@@ -444,7 +444,7 @@ fn loadSkill(
             }
             row_name = try allocator.dupe(u8, parsed.name);
         } else {
-            std.log.warn(
+            std.log.info(
                 "skills_import: '{s}' declares unusable name '{s}'; using the directory name",
                 .{ dir_name, parsed.name },
             );
@@ -452,7 +452,7 @@ fn loadSkill(
         }
         row_description = try allocator.dupe(u8, parsed.description);
     } else {
-        std.log.warn(
+        std.log.info(
             "skills_import: '{s}' has no parseable frontmatter; importing with an empty description",
             .{dir_name},
         );

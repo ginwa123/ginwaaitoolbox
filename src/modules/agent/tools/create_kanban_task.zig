@@ -783,7 +783,7 @@ pub fn executeKanbanTaskToJSON(
             .is_auto_retry_until_stop = normalized,
             .last_finish_reason = "",
         }) catch |err| {
-            std.log.warn("create_kanban_task: session_created SSE emit failed (non-fatal): {s}", .{@errorName(err)});
+            std.log.info("create_kanban_task: session_created SSE emit failed (non-fatal): {s}", .{@errorName(err)});
         };
     }
     pabrikcore.ai_mod.on_event_sent_kanban.onEventSendKanbanTask(allocator, .{

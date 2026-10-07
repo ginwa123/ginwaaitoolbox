@@ -20,6 +20,7 @@
 // `service/main_service.zig:parseServiceSubcommand`, not here.
 
 const std = @import("std");
+const logger_mod = @import("modules/logger/Logger.zig");
 
 pub const CliArgs = struct {
     /// `--port`. Stays null unless the user passed it explicitly, so the
@@ -173,12 +174,12 @@ pub fn reportFailure(f: Failure) void {
 }
 
 pub fn printUsage() void {
-    std.debug.print("Usage: pabrik [--port PORT] [--static-dir DIR] [--http2 h2c|off] [--tls CERT KEY | --tls-selfsigned] [--auth]\n", .{});
-    std.debug.print("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
-    std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
-    std.debug.print("  --no-static-dir      API only: serve no static files at / (overrides --static-dir)\n", .{});
-    std.debug.print("  --http2 h2c|off      Also accept HTTP/2 cleartext (h2c) clients on the same port (default: off)\n", .{});
-    std.debug.print("  --auth               Require login (session cookie + middleware). When off, all endpoints are open.\n", .{});
+    logger_mod.debugPrint("Usage: pabrik [--port PORT] [--static-dir DIR] [--http2 h2c|off] [--tls CERT KEY | --tls-selfsigned] [--auth]\n", .{});
+    logger_mod.debugPrint("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
+    logger_mod.debugPrint("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
+    logger_mod.debugPrint("  --no-static-dir      API only: serve no static files at / (overrides --static-dir)\n", .{});
+    logger_mod.debugPrint("  --http2 h2c|off      Also accept HTTP/2 cleartext (h2c) clients on the same port (default: off)\n", .{});
+    logger_mod.debugPrint("  --auth               Require login (session cookie + middleware). When off, all endpoints are open.\n", .{});
 }
 
 const testing = std.testing;

@@ -16,6 +16,7 @@ const custom_http_client = @import("kabelweb").client;
 // Leaf module (std-only) shared with the agentic loop — same cross-directory
 // import `prompts.zig` already uses.
 const args_repair = @import("../../agentic_loop/tools_args_repair.zig");
+const logger_mod = @import("../logger/Logger.zig");
 
 /// Log level for agent logging
 const LogLevel = enum { err, warn, info, debug };
@@ -1419,7 +1420,7 @@ pub const Agent = struct {
     }
 
     pub fn log_msg(_: Agent, level: LogLevel, message: []const u8) void {
-        std.debug.print("[{s}] {s}\n", .{ @tagName(level), message });
+        logger_mod.debugPrint("[{s}] {s}\n", .{ @tagName(level), message });
     }
 
     pub fn log_fmt(self: Agent, comptime level: LogLevel, comptime fmt: []const u8, args: anytype) void {
