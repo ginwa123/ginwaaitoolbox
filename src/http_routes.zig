@@ -285,11 +285,11 @@ fn registerConfigRoutes(authed: *Group) !void {
     // no matchRoute shadowing risk (router.zig walks registration order).
     try authed.post("/api/llm/test", ai_mod.http_handlers.llmTestHandler);
 
-    // Frontend error log endpoints — capture unhandled JS exceptions,
-    // unhandled promise rejections, and existing console.error / console.warn
-    // calls from the pabrik-desktop webapp. See
-    // docs/plans/2026-07-17-frontend-error-logs-design.md.
-    try authed.post("/api/logs", ai_mod.http_handlers.frontendLogPostHandler);
+    // Frontend error log endpoints — POST /api/logs is DISABLED (noisy:
+    // the desktop log client spammed it on every console.error/warn).
+    // GET /api/logs stays as a read-only debug endpoint for `curl`.
+    // See docs/plans/2026-07-17-frontend-error-logs-design.md.
+    // try authed.post("/api/logs", ai_mod.http_handlers.frontendLogPostHandler);
     try authed.get("/api/logs", ai_mod.http_handlers.frontendLogGetHandler);
 }
 

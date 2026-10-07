@@ -6,8 +6,11 @@ import App from './App.vue'
 import router from './router'
 import './style.css'
 
-import { installFrontendLogClient, type FrontendLogContext } from './helpers/frontendLogClient'
-import { API_BASE } from './api'
+// Frontend error-log client (POST /api/logs) is DISABLED — it spammed
+// the backend on every console.error/warn. Keep the helper module +
+// its spec for now; just don't install it. App.vue's context re-wiring
+// is now a harmless no-op (null-guarded).
+// See docs/plans/2026-07-17-frontend-error-logs-design.md.
 
 const app = createApp(App)
 
@@ -16,20 +19,5 @@ pinia.use(piniaPluginPersistedstate)
 
 app.use(pinia)
 app.use(router)
-
-// Install the frontend error-log client BEFORE app.mount so the global
-// `window.error` / `unhandledrejection` / console.error / console.warn
-// listeners are wired up before any component can throw. App.vue
-// re-wires the context callbacks (route + session) once Vue router is
-// alive. See docs/plans/2026-07-17-frontend-error-logs-design.md.
-const logCtx: FrontendLogContext = {
-  getRoutePath: () => null,
-  getSessionId: () => null,
-}
-;(window as unknown as { __pabrikLogCtx: FrontendLogContext }).__pabrikLogCtx = logCtx
-installFrontendLogClient({
-  endpoint: `${API_BASE}/logs`,
-  getContext: () => logCtx,
-})
 
 app.mount('#app')
