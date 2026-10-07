@@ -605,9 +605,11 @@ function scheduleDetectAtTrigger(): void {
 
 // ── /skill picker (mirrors the @ picker above) ─────────────────────────
 // Trigger: a `/` at message start or after whitespace, followed by a raw
-// token of word chars, dots and dashes. A raw token of `skill` or
-// `skill-<query>` is the namespace form (filter query is the part after
-// `skill-`); anything else is the bare form (the whole token filters).
+// token of word chars, dots and dashes. A raw token of `skill`,
+// `skill-<query>`, or any leading prefix of `skill` (`s`, `sk`, `ski`,
+// `skil`) is the namespace form — the user is still typing the namespace
+// itself, so the filter query is empty and the full list shows. Anything
+// else is the bare form (the whole token filters).
 // The regex guarantees the position rule, so `http://` and `a/b` never
 // match — the char before `/` must be start-of-line or whitespace.
 const showSkillPicker = ref(false)
@@ -674,9 +676,14 @@ const detectSlashTrigger = () => {
       return
     }
     const raw = slashMatch[2] ?? ''
-    const isNamespace = raw === 'skill' || raw.startsWith('skill-')
+    const isSkillPrefix = raw.length > 0 && 'skill'.startsWith(raw)
+    const isNamespace = raw === '' || raw === 'skill' || raw.startsWith('skill-') || isSkillPrefix
     skillForm.value = isNamespace ? 'namespace' : 'bare'
-    skillQuery.value = isNamespace ? (raw === 'skill' ? '' : raw.slice('skill-'.length)) : raw
+    skillQuery.value = isNamespace
+      ? raw === 'skill' || isSkillPrefix
+        ? ''
+        : raw.slice('skill-'.length)
+      : raw
     if (!showSkillPicker.value) {
       showSkillPicker.value = true
       selectedSkillIndex.value = 0
@@ -690,11 +697,21 @@ const detectSlashTrigger = () => {
   }
 }
 
-// Client-side substring filter over the cached workspace list.
+// Client-side substring filter over the cached workspace list. Matches
+// against the bare name, the full `skill-<name>` token shown in the row,
+// and the description — so a bare `sk` still hits every `skill-*` row
+// even if the namespace-prefix rule above ever regresses.
 const filteredSkills = computed(() => {
   const q = skillQuery.value.toLowerCase()
   if (!q) return skillList.value
-  return skillList.value.filter((s) => s.name.toLowerCase().includes(q))
+  return skillList.value.filter((s) => {
+    const name = s.name.toLowerCase()
+    if (name.includes(q)) return true
+    if (`skill-${name}`.includes(q)) return true
+    const desc = (s.description ?? '').toLowerCase()
+    if (desc.includes(q)) return true
+    return false
+  })
 })
 
 const selectSkill = (skill: api.Skill) => {
@@ -929,9 +946,10 @@ const sendMessage = () => {
       </div>
     </div>
 
-    <!-- Skill picker dropdown -->
+    <!-- Skill picker dropdown — stays open while the `/` trigger is active
+      so an empty filter renders `No skills found` instead of vanishing. -->
     <div
-      v-if="showSkillPicker && (filteredSkills.length > 0 || isLoadingSkills || skillError)"
+      v-if="showSkillPicker"
       ref="skillPickerRef"
       class="skill-picker-list mb-2 p-2 rounded-lg shadow-lg max-h-72 overflow-y-auto"
       style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"

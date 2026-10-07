@@ -127,6 +127,35 @@ describe('FileInput — /skill picker', () => {
     expect(wrapper.find('[data-testid="skill-picker-list"]').exists()).toBe(false)
   })
 
+  it("typing '/sk' (namespace prefix) shows the full skill list", async () => {
+    seedWorkspace()
+    const wrapper = await mountInput()
+    const textarea = wrapper.find('textarea')
+    await typeInTextarea(textarea, '/sk')
+
+    expect(getSkillsMock).toHaveBeenCalledTimes(1)
+    const list = wrapper.find('[data-testid="skill-picker-list"]')
+    expect(list.exists()).toBe(true)
+    expect(list.text()).toContain('review')
+    expect(list.text()).toContain('deploy')
+  })
+
+  it("typing '/' shows the full list and Enter inserts canonical '/skill-<name>'", async () => {
+    seedWorkspace()
+    const wrapper = await mountInput()
+    const textarea = wrapper.find('textarea')
+    await typeInTextarea(textarea, '/')
+
+    const list = wrapper.find('[data-testid="skill-picker-list"]')
+    expect(list.exists()).toBe(true)
+    expect(list.text()).toContain('review')
+
+    await textarea.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    const element = textarea.element as HTMLTextAreaElement
+    expect(element.value).toBe('/skill-review')
+  })
+
   it('Esc closes the picker without inserting', async () => {
     seedWorkspace()
     const wrapper = await mountInput()
