@@ -56,8 +56,8 @@
             // prints. Then `rm -rf zig-pkg && zig build` and confirm the
             // new symbol you rely on actually exists in the extracted
             // package.
-            .url = "https://github.com/ginwa123/ruangsql/archive/389dfad1d53480fe58eb898da51301e7832afaf0.tar.gz",
-            .hash = "databases-0.0.0-vy-BCOJNBQBsnSwgz991ia_RJwWm_ABWlgqDqWJ7Btv1",
+            .url = "https://github.com/ginwa123/ruangsql/archive/c69fbb71314a4d216ee4fc6d61adac03bbf87d47.tar.gz",
+            .hash = "databases-0.0.0-vy-BCP-oBQAAI16ATyzGO0nEwHnnjDyTpCBNkW_It1p3",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Exposes a single `kabelweb` module

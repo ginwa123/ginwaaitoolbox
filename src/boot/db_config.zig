@@ -11,29 +11,35 @@
 //! `wrk -c50`). The two that actually changed the numbers:
 //!
 //!   - `read_conns` — WAL allows MANY concurrent readers and exactly ONE
-//!     writer, so opening extra read connections and round-robining reads
-//!     across them is what moved a benchmark server's read throughput
-//!     +270% (50k -> 185k rps on a 16-core host). Before it, every read
-//!     queued behind one mutex, so a read waiting on a write inherited the
-//!     write's latency.
+//!     writer, so opening extra read connections and serving reads from
+//!     them is what moved a benchmark server's read throughput +270%
+//!     (50k -> 185k rps on a 16-core host). Before it, every read queued
+//!     behind one mutex, so a read waiting on a write inherited the write's
+//!     latency.
+//!
+//!     `read_conns` is the WARM FLOOR, not the ceiling. The pool is elastic:
+//!     a reader is owned exclusively by one read at a time (a connection
+//!     with a live iterator has an open read transaction, and handing it to
+//!     anybody else would serve them that stale snapshot), so when every
+//!     reader is busy the pool opens another rather than making the next
+//!     request wait. `max_read_conns = 0` leaves that unbounded.
 //!
 //!   - `cache_size_kb` — SQLite ships a 2 MiB page cache per connection.
 //!     8 MiB is what the harness ran with. NOTE it MULTIPLIES by the
-//!     connection count: 8 connections x 8 MiB = ~64 MiB of page cache for
-//!     this process, which is the number to watch if pabrik's RSS matters.
-//!     Lower it (and/or `read_conns`) rather than leaving the product
-//!     unbounded on a small machine.
+//!     connection count, and with an elastic pool the count is bounded by
+//!     CONCURRENCY rather than by this file — see `page_cache_budget_kb`.
 //!
 //! `mmap_size_bytes` maps the database file instead of `read()`-ing it:
 //! pages still come from the OS file cache, but each hit skips a syscall
 //! and a copy, and it is file-backed — so unlike `cache_size` it does not
 //! count against a container's `memory.max`.
 //!
-//! `synchronous = .normal` is WAL's documented pairing (sync at
-//! checkpoints rather than on every commit). Trade-off: an OS crash or
-//! power cut can lose the last few commits; `PRAGMA integrity_check` still
-//! passes, because recovery goes through the checkpoint. It was already
-//! pabrik's choice before this file existed.
+//! `synchronous = .full` fsyncs the WAL on every commit, so a write that
+//! reports success survives a power cut. WAL's usual recommendation is
+//! NORMAL (sync at checkpoints instead), which is faster but may lose the
+//! last few commits on power loss. Pabrik's agent database is the one place
+//! that must not lose them, so it pays the fsync — see the field comment on
+//! `best` below.
 //!
 //! `busy_timeout_ms`, `journal_size_limit_bytes` and
 //! `wal_autocheckpoint_pages` are stated explicitly rather than left to the
@@ -46,18 +52,46 @@ const databases = @import("databases");
 
 /// The measured-best sqlite policy for pabrik's agent database.
 pub const best: databases.database.SqliteConfig = .{
-    .synchronous = .normal,
+    // FULL, not WAL's usual NORMAL pairing. NORMAL syncs at checkpoints
+    // rather than on every commit, so a power cut can lose the last few
+    // commits even though they were reported as written — and the agent
+    // database is the one place where "the model said it did the thing"
+    // must survive the machine losing power. FULL fsyncs the WAL on every
+    // commit, so a returned success is durable.
+    //
+    // Cost: one fsync per write transaction. That is the right trade for
+    // this database (writes are user-driven and low-rate) and the wrong one
+    // for a write-throughput benchmark, where sparringhttp deliberately
+    // measures the other setting so the two stay distinguishable.
+    .synchronous = .full,
     .busy_timeout_ms = 15_000,
-    .read_conns = 7, // 8 connections total: 1 writer + 7 readers
+    .read_conns = 7, // warm floor: readers opened up front at boot
+    // 0 = UNLIMITED, deliberately. Read concurrency tracks in-flight reads
+    // instead of a fixed pool size, which is what removed the queueing that
+    // cost 70% of read throughput. `read_conns` above is the warm floor, not
+    // the ceiling.
+    //
+    // The cost is per-reader page cache, so the total is bounded by
+    // CONCURRENCY rather than by this struct — which is why
+    // `pageCacheBudgetKb` takes the reader count as an argument. That is the
+    // knob to turn if page cache ever matters: lower `cache_size_kb`, or set
+    // `max_read_conns` to cap the pool.
+    .max_read_conns = 0,
     .cache_size_kb = 8_000, // 8 MiB per connection (SQLite default is 2 MiB)
     .mmap_size_bytes = 256 * 1024 * 1024,
     .journal_size_limit_bytes = 64 * 1024 * 1024,
     .wal_autocheckpoint_pages = 1_000,
 };
 
-/// Page cache this policy commits to, in KiB — `read_conns + 1` for the
-/// write connection. Used by the test below to keep the product honest.
-pub const page_cache_budget_kb: u32 = best.cache_size_kb * (@as(u32, @intCast(best.read_conns)) + 1);
+/// Page cache this policy commits to for `readers` pooled readers plus the
+/// single write connection, in KiB.
+///
+/// It takes the reader count as an ARGUMENT because the pool is elastic:
+/// with `max_read_conns = 0` there is no constant to read off `best`, and
+/// the honest question is "what does this cost at N concurrent reads".
+pub fn pageCacheBudgetKb(readers: u32) u32 {
+    return best.cache_size_kb * (readers + 1);
+}
 
 /// Read one single-column pragma back from a live connection.
 fn readPragmaInt(db: *databases.database.Db, allocator: std.mem.Allocator, sql: []const u8) !i64 {
@@ -105,8 +139,8 @@ test "the policy pabrik opens with is the policy the connection reports" {
     }
     try std.testing.expectEqualStrings("wal", mode_buf[0..mode_len]);
     try std.testing.expectEqual(@as(i64, 15_000), try readPragmaInt(&db, allocator, "PRAGMA busy_timeout"));
-    // 1 = NORMAL (0 OFF, 2 FULL, 3 EXTRA).
-    try std.testing.expectEqual(@as(i64, 1), try readPragmaInt(&db, allocator, "PRAGMA synchronous"));
+    // 2 = FULL (0 OFF, 1 NORMAL, 3 EXTRA).
+    try std.testing.expectEqual(@as(i64, 2), try readPragmaInt(&db, allocator, "PRAGMA synchronous"));
     // SQLite reports the page cache as a NEGATIVE KiB count.
     try std.testing.expectEqual(@as(i64, -8_000), try readPragmaInt(&db, allocator, "PRAGMA cache_size"));
     try std.testing.expectEqual(@as(i64, 64 * 1024 * 1024), try readPragmaInt(&db, allocator, "PRAGMA journal_size_limit"));
@@ -148,10 +182,77 @@ test "a pooled connection still reads and writes correctly" {
     try std.testing.expectEqualStrings("2", id_row.values[0]);
 }
 
-test "page cache stays inside the budget the comment claims" {
+test "a committed write is visible to the next pooled read" {
+    // The regression this file could not see: with reader pooling, a
+    // connection handed out while a `Rows` from it is still open serves
+    // the OLD snapshot, because the live iterator holds that connection's
+    // read transaction. Writes commit and one read in N reports the
+    // previous state.
+    //
+    // 25 rounds, because one round passes by luck.
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const path = "/tmp/pabrik_db_config_visibility_test.db";
+
+    removeDbFiles(io, path);
+    defer removeDbFiles(io, path);
+
+    var db: databases.database.Db = .{};
+    defer db.deinit();
+    try databases.database.openWithConfig(&db, io, .{ .sqlite_path = path }, best);
+
+    try db.exec(allocator, "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL)", &.{});
+    try db.exec(allocator, "INSERT INTO t (id, v) VALUES (1, 'v0')", &.{});
+
+    const sql = "SELECT v FROM t WHERE id = ?";
+    // Round i asserts: the pre-write read sees the value round i-1 wrote,
+    // and the post-write read sees round i's own value. Both reads are
+    // served by whatever reader the pool hands back.
+    var prev_buf: [16]u8 = @splat(0);
+    var want_buf: [16]u8 = @splat(0);
+    @memcpy(prev_buf[0..2], "v0");
+    var i: usize = 0;
+    while (i < 25) : (i += 1) {
+        const want = try std.fmt.bufPrint(&want_buf, "v{d}", .{i});
+
+        {
+            var rows = try db.query(allocator, sql, &.{"1"});
+            defer rows.deinit();
+            const row = (try rows.next()) orelse return error.NoRow;
+            defer row.deinit(allocator);
+            try std.testing.expectEqualStrings(&prev_buf, row.values[0]);
+        }
+
+        try db.exec(allocator, "UPDATE t SET v = ? WHERE id = ?", &.{ want, "1" });
+
+        var rows = try db.query(allocator, sql, &.{"1"});
+        defer rows.deinit();
+        const row = (try rows.next()) orelse return error.NoRow;
+        defer row.deinit(allocator);
+        try std.testing.expectEqualStrings(want, row.values[0]);
+
+        @memcpy(prev_buf[0..want.len], want);
+    }
+}
+
+test "page cache cost per concurrent read is known and bounded" {
     // The cache is PER CONNECTION, so the number that matters is the
-    // product. 128 MiB is the ceiling this project accepts.
-    try std.testing.expect(page_cache_budget_kb <= 128 * 1024);
+    // product — and with an ELASTIC pool the connection count is the
+    // concurrency, not a constant in this file. So assert the per-read
+    // cost, and that the warm floor alone already fits the 128 MiB
+    // ceiling this project accepts.
+    //
+    // This is the knob to turn if page cache ever matters: lower
+    // `cache_size_kb`, or set `max_read_conns` to cap the pool.
+    try std.testing.expectEqual(@as(u32, 8_000), best.cache_size_kb);
+    try std.testing.expectEqual(@as(u32, 8_000), pageCacheBudgetKb(0));
+    try std.testing.expect(pageCacheBudgetKb(best.read_conns) <= 128 * 1024);
+
+    // Unlimited growth is deliberate: a read must never queue behind
+    // another read, which is what cost 70% of read throughput before.
+    try std.testing.expectEqual(@as(usize, 0), best.max_read_conns);
+    // ...but a warm floor must exist, or the first burst of concurrent
+    // reads each pays to open a connection.
     try std.testing.expect(best.read_conns > 0);
-    try std.testing.expectEqual(databases.sqlite.Synchronous.normal, best.synchronous);
+    try std.testing.expectEqual(databases.sqlite.Synchronous.full, best.synchronous);
 }
