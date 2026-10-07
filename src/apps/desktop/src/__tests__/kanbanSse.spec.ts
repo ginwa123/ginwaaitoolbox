@@ -269,6 +269,207 @@ describe('useKanbanSseStore (bus-backed)', () => {
     }
   })
 
+  it('uses refreshTask (1 row) for remote moved events when the task is cached', async () => {
+    // Fast path: the task is already in the local store and the board
+    // is on the default view (no search, no custom sort), so the
+    // mirror + in-array slot carry the move and one GET confirms
+    // server truth — no blind tasks?limit=100 column fetch.
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'WS',
+        icon: '📁',
+        expanded: true,
+        items: [
+          {
+            id: 'item_1',
+            name: 'Board',
+            item_type: 'kanban',
+            expanded: false,
+            tasks: [
+              {
+                id: 'task_1',
+                name: 'cached',
+                kanban_column_id: 'col_src',
+                kanban_position: 0,
+              },
+            ],
+          },
+        ],
+      },
+    ]
+    const refreshSpy = vi.spyOn(ws, 'refreshTask').mockResolvedValue()
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+    const fetchAllSpy = vi.spyOn(ws, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse('ws_1')
+
+    dispatch({
+      action: 'moved',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_1',
+      new_column_id: 'col_done',
+      new_position: 0,
+    })
+
+    expect(refreshSpy).toHaveBeenCalledTimes(1)
+    expect(refreshSpy).toHaveBeenCalledWith('ws_1', 'item_1', 'task_1')
+    expect(fetchTasksSpy).not.toHaveBeenCalled()
+    expect(fetchAllSpy).not.toHaveBeenCalled()
+  })
+
+  it('falls back to fetchKanbanTasks for moved events when the task is not cached', async () => {
+    // The event beat the initial load (or is for an untracked task):
+    // the fresh page materializes the missing row, so the full
+    // column fetch stays.
+    const ws = useWorkspacesStore()
+    const refreshSpy = vi.spyOn(ws, 'refreshTask').mockResolvedValue()
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse('ws_1')
+
+    dispatch({
+      action: 'moved',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_uncached',
+      new_column_id: 'col_done',
+      new_position: 0,
+    })
+
+    expect(refreshSpy).not.toHaveBeenCalled()
+    expect(fetchTasksSpy).toHaveBeenCalledWith(
+      'ws_1',
+      'item_1',
+      'col_done',
+      100,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    )
+  })
+
+  it('falls back to fetchKanbanTasks for cached moved events while searching', async () => {
+    // The mirror bypasses the backend q filter, so a cached move
+    // during an active search still refetches with q forwarded.
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'WS',
+        icon: '📁',
+        expanded: true,
+        items: [
+          {
+            id: 'item_1',
+            name: 'Board',
+            item_type: 'kanban',
+            expanded: false,
+            tasks: [
+              {
+                id: 'task_1',
+                name: 'cached',
+                kanban_column_id: 'col_src',
+                kanban_position: 0,
+              },
+            ],
+          },
+        ],
+      },
+    ]
+    ws.activeSearchQueries.set('item_1', 'design')
+    const refreshSpy = vi.spyOn(ws, 'refreshTask').mockResolvedValue()
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse('ws_1')
+
+    dispatch({
+      action: 'moved',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_1',
+      new_column_id: 'col_done',
+      new_position: 0,
+    })
+
+    expect(refreshSpy).not.toHaveBeenCalled()
+    expect(fetchTasksSpy).toHaveBeenCalledWith(
+      'ws_1',
+      'item_1',
+      'col_done',
+      100,
+      undefined,
+      'design',
+      undefined,
+      undefined,
+    )
+  })
+
+  it('falls back to fetchKanbanTasks for cached moved events under a custom sort', async () => {
+    // Array order no longer matches the view's order, so the
+    // single-row splice can't place the card — refetch with the
+    // active sort forwarded.
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'WS',
+        icon: '📁',
+        expanded: true,
+        items: [
+          {
+            id: 'item_1',
+            name: 'Board',
+            item_type: 'kanban',
+            expanded: false,
+            tasks: [
+              {
+                id: 'task_1',
+                name: 'cached',
+                kanban_column_id: 'col_src',
+                kanban_position: 0,
+              },
+            ],
+          },
+        ],
+      },
+    ]
+    ws.activeSortBy.set('item_1', 'name')
+    ws.activeSortDirection.set('item_1', 'desc')
+    const refreshSpy = vi.spyOn(ws, 'refreshTask').mockResolvedValue()
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse('ws_1')
+
+    dispatch({
+      action: 'moved',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_1',
+      new_column_id: 'col_done',
+      new_position: 0,
+    })
+
+    expect(refreshSpy).not.toHaveBeenCalled()
+    expect(fetchTasksSpy).toHaveBeenCalledWith(
+      'ws_1',
+      'item_1',
+      'col_done',
+      100,
+      undefined,
+      undefined,
+      'name',
+      'desc',
+    )
+  })
+
   it('triggers fetchKanbanTasks on kanban_task events (assigned action)', async () => {
     const ws = useWorkspacesStore()
     const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()

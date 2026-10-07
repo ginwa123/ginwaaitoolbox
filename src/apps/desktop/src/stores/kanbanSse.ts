@@ -200,18 +200,40 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
         // we conservatively iterate all columns. This is the rare
         // edge case (unassign is manual via the UI), so the cost
         // is acceptable.
+        //
+        // Single-row fast path (not a blind limit=100 column fetch):
+        // the mirror above already applied the event's column,
+        // position AND in-array slot, so one GET for the moved row
+        // is enough to converge with server truth. A cursor/delta
+        // fetch on latest local updated_at cannot replace this —
+        // moveTask writes ONLY the kanban join table (column +
+        // position renumbering) and never bumps updated_at, so an
+        // updated_at-delta would return empty for exactly this
+        // event. The full column fetch remains the fallback when
+        // the task isn't cached (event beat the initial load — the
+        // fresh page materializes the missing row), while searching
+        // (the mirror bypasses the backend q filter), or under a
+        // custom sort (array order no longer matches the view).
         const affectedColumnId = event.new_column_id
         if (affectedColumnId && affectedColumnId.length > 0) {
-          void ws.fetchKanbanTasks(
-            event.workspace_id,
-            event.item_id,
-            affectedColumnId,
-            100, // limit — initial fetch size
-            undefined,
-            q,
-            sortBy,
-            direction,
-          )
+          const hasSearch = q !== undefined && q.length > 0
+          const hasCustomSort = sortBy !== undefined && direction !== undefined
+          const isCached =
+            ws.findCachedTask(event.workspace_id, event.item_id, event.task_id) !== undefined
+          if (!hasSearch && !hasCustomSort && isCached) {
+            void ws.refreshTask(event.workspace_id, event.item_id, event.task_id)
+          } else {
+            void ws.fetchKanbanTasks(
+              event.workspace_id,
+              event.item_id,
+              affectedColumnId,
+              100, // limit — initial fetch size
+              undefined,
+              q,
+              sortBy,
+              direction,
+            )
+          }
         } else {
           // unassign — iterate all columns to catch the task
           // removal + the (rare) reappearance in some other column.
