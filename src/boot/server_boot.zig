@@ -13,6 +13,7 @@ const cli_args = @import("../cli_args.zig");
 const migration = @import("../migrations/mod.zig").migration;
 const static_files = @import("../modules/static_files.zig");
 const shutdown = @import("shutdown.zig");
+const db_config = @import("db_config.zig");
 const static_serve = @import("../http_static/static_serve.zig");
 
 /// Ignore SIGPIPE process-wide (non-Windows). A peer vanishing mid-write
@@ -107,9 +108,10 @@ pub const DatabaseHandles = struct {
     }
 };
 
-/// Resolve the DB path, open with `.synchronous = .normal` (the ONLY knob
-/// the app sets; the rest is the databases package default), log the live
-/// config, and run migrations. Caller owns the handles.
+/// Resolve the DB path, open it with `boot/db_config.zig`'s measured
+/// policy (WAL + `.normal`, reader pooling, 8 MiB page cache per
+/// connection, 256 MiB mmap window), log the live config, and run
+/// migrations. Caller owns the handles.
 pub fn openDatabase(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -119,7 +121,7 @@ pub fn openDatabase(
     errdefer allocator.free(db_path);
     var db: database.Db = .{};
     errdefer db.deinit();
-    try database.openWithConfig(&db, io, .{ .sqlite_path = db_path }, .{ .synchronous = .normal });
+    try database.openWithConfig(&db, io, .{ .sqlite_path = db_path }, db_config.best);
     shutdown.logSqliteConfig(allocator, &db);
     try runMigrations(allocator, &db);
     return .{ .db_path = db_path, .db = db };

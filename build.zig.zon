@@ -8,10 +8,37 @@
         // Pinned by URL + hash; exposes a single `databases` module;
         // consumers `@import("databases")` to use it.
         .databases = .{
-            // 46d96dd = merge of ginwa123/ruangsql#1, "take the WAL writer
-            // slot up front instead of losing writes". busy_timeout 5s ->
-            // 15s, a real Config (journal_size_limit / wal_autocheckpoint),
-            // `BEGIN IMMEDIATE` in `begin()` so a read-then-write
+            // 389dfad = ginwa123/ruangsql#4, "keep \"\" binding as an empty
+            // prepared-statement cache + reader pooling". Same API (no new
+            // methods), so nothing in pabrik had to change to benefit:
+            // exec/query/queryRow now reuse prepared statements instead of
+            // prepare+finalize per call, and reads round-robin over
+            // `Config.read_conns` extra connections while writes stay on the
+            // primary one. Measured on the sparringhttp sqlite harness:
+            // -23% instructions/request and p99 1.23 -> 0.73 ms on a list
+            // endpoint, +270% read throughput on the host.
+            //
+            // This is a PR commit, not a merge: it is pinned so `src/boot/
+            // db_config.zig` can set the new knobs (read_conns /
+            // cache_size_kb / mmap_size_bytes) that only exist there. Once
+            // #3 is merged, move the pin to the merge SHA on main —
+            // `git -C ../ruangsql rev-parse origin/main` — and re-run the
+            // hash step below; nothing else changes.
+            //
+            // This must be a commit that CONTAINS the #3 perf work AND the
+            // #4 binding fix, which is why it is the #4 commit rather than
+            // main: #3 merged alone is BROKEN for this app. It unified the
+            // empty-slice binding of `exec` with `query`/`queryRow`, which
+            // silently turned the `""` optional filter into SQL NULL and
+            // made three `skill_evals_db` tests (`listRuns` uses
+            // `WHERE (? = '' OR id = ?)`) return no rows. #4 restores the
+            // read-side binding. Once #4 is merged, re-pin to that merge
+            // SHA on main; nothing else changes.
+            //
+            // Earlier pin (kept for reference): 46d96dd = merge of
+            // ginwa123/ruangsql#1, "take the WAL writer slot up front
+            // instead of losing writes" — busy_timeout 5s -> 15s, a real
+            // Config, `BEGIN IMMEDIATE` in `begin()` so a read-then-write
             // transaction cannot hit an instant, unretryable
             // SQLITE_BUSY_SNAPSHOT, and `database.openWithConfig` so this
             // app can set its own `synchronous`. Before it, a contended
@@ -29,8 +56,8 @@
             // prints. Then `rm -rf zig-pkg && zig build` and confirm the
             // new symbol you rely on actually exists in the extracted
             // package.
-            .url = "https://github.com/ginwa123/ruangsql/archive/34277a49cf52d5ab0f32e8bf91d9b493212565e0.tar.gz",
-            .hash = "databases-0.0.0-vy-BCKm_BACpq2owAc7vFGF22K9adaubKpZsU6ORghw2",
+            .url = "https://github.com/ginwa123/ruangsql/archive/389dfad1d53480fe58eb898da51301e7832afaf0.tar.gz",
+            .hash = "databases-0.0.0-vy-BCOJNBQBsnSwgz991ia_RJwWm_ABWlgqDqWJ7Btv1",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Exposes a single `kabelweb` module
