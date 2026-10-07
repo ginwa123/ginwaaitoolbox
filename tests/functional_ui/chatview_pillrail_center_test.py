@@ -107,7 +107,7 @@ def _open_chat(ui_harness, page, session_id: str) -> None:
     )
     # The rail renders once >= 2 user groups arrive from history.
     page.wait_for_function(
-        "() => document.querySelectorAll('[data-testid=\"user-pill\"]').length >= 2,",
+        "() => document.querySelectorAll('[data-testid=\"user-pill\"]').length >= 2",
         timeout=20000,
     )
     page.wait_for_timeout(2500)  # initial render + measure passes settle
