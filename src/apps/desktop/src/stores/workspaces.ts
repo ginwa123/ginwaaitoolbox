@@ -2240,6 +2240,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         await cacheTaskMutation(workspaceId, itemId, task, columnId)
       }
     }
+    // Local-mutation dedupe (same pattern as design drags): the
+    // backend fans the `kanban_task moved` SSE event back to the
+    // mover too, and the kanbanSse handler refetches the destination
+    // column (tasks?limit=100) on every event. The local store
+    // already holds the truth here, so register the task id and let
+    // the handler skip that self-echo refetch. Remote moves (agent
+    // tool, other tab) never register, so they still refetch.
+    registerRecentLocalMutations([taskId], Date.now() + RECENT_MUTATION_TTL_MS)
   }
 
   // Mirror a kanban task's column (and optional position) into the

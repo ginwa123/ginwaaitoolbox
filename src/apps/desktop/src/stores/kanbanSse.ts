@@ -36,7 +36,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useSseBus, __getSseBusGlobalClient } from '../helpers/sseBus'
 import type { KanbanColumnEvent, KanbanTaskEvent } from '../api'
-import { useWorkspacesStore } from './workspaces'
+import { useWorkspacesStore, isRecentLocalMutation } from './workspaces'
 
 export const useKanbanSseStore = defineStore('kanbanSse', () => {
   // Mutable ref so `setActiveWorkspaceId` can update the filter
@@ -164,6 +164,16 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
           event.new_column_id ?? null,
           event.new_position ?? undefined,
         )
+        // Self-echo dedupe (same pattern as designSse): the backend
+        // fans `kanban_task` events to every client INCLUDING the
+        // mover, so a drag-and-drop via `moveTaskToColumn` would
+        // otherwise refetch the destination column
+        // (tasks?limit=100) right after the PATCH — the extra
+        // request in the Network panel. The local store already
+        // holds the truth (moveTaskToColumn mutated + registered
+        // this task id), so skip the refetch. Remote moves (agent
+        // tool, other tab) never register and still refetch below.
+        if (isRecentLocalMutation(event.task_id)) return
         // Kanban task search (Chunk 7): forward the active q so a
         // remote move/edit during a search doesn't reset the user's
         // narrowed view to the unfiltered list. activeSearchQueries
@@ -234,9 +244,10 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
     // (not a reactive watcher). The immediate check covers the fast
     // path where the bus is already open when init runs.
     if (bus.state.value === 'open') void fetchInitialKanban(activeWorkspaceId.value)
-    stopOpenSub = __getSseBusGlobalClient()?.onStateChange((s) => {
-      if (s === 'open') void fetchInitialKanban(activeWorkspaceId.value)
-    }) ?? null
+    stopOpenSub =
+      __getSseBusGlobalClient()?.onStateChange((s) => {
+        if (s === 'open') void fetchInitialKanban(activeWorkspaceId.value)
+      }) ?? null
 
     // Stale-on-wake (cross-tab sharing): the subscription above only fires on state
     // transitions the SseClient itself emits. A window that TOOK OVER the shared
@@ -244,9 +255,10 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
     // throttle hidden tabs, so deliveries and rendering were skipped), may have
     // missed events with no state change at all. Re-fetch from the API — every
     // tab can do that directly, whoever holds the SSE connection.
-    offResync = bus.onResync?.(() => {
-      if (activeWorkspaceId.value !== '') void fetchInitialKanban(activeWorkspaceId.value)
-    }) ?? null
+    offResync =
+      bus.onResync?.(() => {
+        if (activeWorkspaceId.value !== '') void fetchInitialKanban(activeWorkspaceId.value)
+      }) ?? null
   }
 
   /**
