@@ -19,6 +19,9 @@ pub const execListMemory = @import("tools_exec_list_memory.zig").execListMemory;
 pub const execSaveMemory = @import("tools_exec_memory.zig").execSaveMemory;
 pub const execLoadMemory = @import("tools_exec_memory.zig").execLoadMemory;
 pub const execReadWorkspaceSession = @import("tools_exec_read_workspace_session.zig").execReadWorkspaceSession;
+// Workspace credential DISCOVERY. The value never leaves the store — this
+// adapter lists names only (see tools_exec_list_secrets.zig).
+pub const execListSecrets = @import("tools_exec_list_secrets.zig").execListSecrets;
 pub const execAddDocument = @import("tools_exec_document.zig").execAddDocument;
 pub const execEditDocument = @import("tools_exec_document.zig").execEditDocument;
 pub const execDeleteDocument = @import("tools_exec_document.zig").execDeleteDocument;
@@ -33,6 +36,7 @@ pub const execListAgents = @import("tools_exec_list_agents.zig").execListAgents;
 pub const execChangeAgent = @import("tools_exec_change_agent.zig").execChangeAgent;
 pub const execSetGitWorktree = @import("tools_exec_set_git_worktree.zig").execSetGitWorktree;
 pub const execSetPullRequest = @import("tools_exec_set_pull_request.zig").execSetPullRequest;
+pub const execStatusPullRequest = @import("tools_exec_status_pull_request.zig").execStatusPullRequest;
 pub const execKanbanList = @import("tools_exec_kanban_list.zig").execKanbanList;
 pub const execKanbanMoveTask = @import("tools_exec_kanban_move_task.zig").execKanbanMoveTask;
 pub const execCreateKanbanTask = @import("tools_exec_create_kanban_task.zig").execCreateKanbanTask;

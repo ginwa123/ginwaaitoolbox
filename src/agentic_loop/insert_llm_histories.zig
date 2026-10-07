@@ -92,10 +92,25 @@ pub fn inserLLMHistories(
     var effective_content: []const u8 = contentStr;
     if (contentStr.len > 0 and !parsing.isChatEnvelope(allocator, contentStr)) {
         if (std.mem.eql(u8, roleStr, "user")) {
-            enveloped_owned = try parsing.encodeUserContent(allocator, "", agentStr, contentStr);
+            // Logged-in identity when the session has an owner; legacy
+            // defaults otherwise (auth off). Lookup failures never block
+            // the insert.
+            var ident = parsing.resolveChatUser(allocator, db, session_id) catch null;
+            defer if (ident) |*ci| ci.deinit(allocator);
+            const uid: []const u8 = if (ident) |*ci| ci.user_id else "";
+            const nm: []const u8 = if (ident) |*ci| (if (ci.name.len > 0) ci.name else agentStr) else agentStr;
+            enveloped_owned = try parsing.encodeUserContent(allocator, uid, nm, contentStr);
             effective_content = enveloped_owned.?;
         } else if (std.mem.eql(u8, roleStr, "assistant")) {
-            enveloped_owned = try parsing.encodeAssistantContent(allocator, model, contentStr);
+            // Profile name the user picked; raw model id when Default /
+            // auth off / lookup fails.
+            const profile_owned: ?[]u8 = parsing.resolveProfileName(allocator, db, session_id) catch null;
+            defer if (profile_owned) |pr| allocator.free(pr);
+            var label: []const u8 = model;
+            if (profile_owned) |pr| {
+                if (pr.len > 0) label = pr;
+            }
+            enveloped_owned = try parsing.encodeAssistantContent(allocator, label, contentStr);
             effective_content = enveloped_owned.?;
         }
     }
@@ -329,4 +344,3 @@ fn serializeToolCalls(allocator: std.mem.Allocator, tool_calls: []agent.ToolCall
     try aw.writer.print("{f}", .{std.json.fmt(tool_calls, .{})});
     return aw.toOwnedSlice();
 }
-

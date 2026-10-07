@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { ref, nextTick, computed, onMounted, onBeforeUnmount, onUpdated } from 'vue'
+import { Effect } from 'effect'
 import * as api from '../../api'
 import { getActivePinia } from 'pinia'
 import { useTabsStore } from '../../stores/tabs'
+import { useWorkspacesStore } from '../../stores/workspaces'
+import { SyncRemoteError } from '../../sync/SyncError'
+import { runSyncResult } from '../../sync/runtime'
 import FilePreview from './FilePreview.vue'
 import UiIcon from '../ui/UiIcon.vue'
 import { parseBackgroundCommandOutput } from '@/helpers/isBackgroundCommandOutput'
@@ -216,6 +220,7 @@ const sendMessageWithFiles = async () => {
   // message must never come back as a draft.
   draftBucket()?.clearDraft(draftKey.value)
   showFilePicker.value = false
+  closeSkillPicker()
   previewFiles.value.forEach((item) => {
     if (item.previewUrl.startsWith('blob:')) {
       URL.revokeObjectURL(item.previewUrl)
@@ -577,6 +582,7 @@ const detectAtTrigger = () => {
     if (!wasOpen) {
       showFilePicker.value = true
       selectedFileIndex.value = 0
+      closeSkillPicker()
       scheduleFileSearch(true) // immediate on open
     } else if (queryChanged) {
       selectedFileIndex.value = 0
@@ -587,11 +593,122 @@ const detectAtTrigger = () => {
   }
 }
 
-// Debounced @-mention detection, driven by the textarea's @input handler
-// (`autoResize`) instead of a watcher — same 150 ms trailing run.
+// Debounced @-mention and /skill detection, driven by the textarea's
+// @input handler instead of a watcher — same 150 ms trailing run.
 function scheduleDetectAtTrigger(): void {
   if (fileDebounceTimer) clearTimeout(fileDebounceTimer)
-  fileDebounceTimer = setTimeout(detectAtTrigger, 150)
+  fileDebounceTimer = setTimeout(() => {
+    detectAtTrigger()
+    detectSlashTrigger()
+  }, 150)
+}
+
+// ── /skill picker (mirrors the @ picker above) ─────────────────────────
+// Trigger: a `/` at message start or after whitespace, followed by a raw
+// token of word chars, dots and dashes. A raw token of `skill` or
+// `skill-<query>` is the namespace form (filter query is the part after
+// `skill-`); anything else is the bare form (the whole token filters).
+// The regex guarantees the position rule, so `http://` and `a/b` never
+// match — the char before `/` must be start-of-line or whitespace.
+const showSkillPicker = ref(false)
+const skillQuery = ref('')
+const skillList = ref<api.Skill[]>([])
+const isLoadingSkills = ref(false)
+const selectedSkillIndex = ref(0)
+const skillPickerRef = ref<HTMLElement | null>(null)
+// A load failure renders in its own error row, never as an empty list.
+const skillError = ref<string | null>(null)
+// Which typed form opened the picker — insert preserves it.
+const skillForm = ref<'namespace' | 'bare'>('namespace')
+// Workspace the cached list was fetched for (fetch once per workspace).
+const skillLoadedWorkspace = ref<string | null>(null)
+
+const activeSkillWorkspaceId = (): string | null => {
+  // FileInput also mounts outside pinia (unit tests, GitFileViewer) where
+  // there is no workspace scope — `/` simply does not open there.
+  if (!getActivePinia()) return null
+  return useWorkspacesStore().activeWorkspace?.id ?? null
+}
+
+const closeSkillPicker = () => {
+  showSkillPicker.value = false
+  skillQuery.value = ''
+  selectedSkillIndex.value = 0
+  skillError.value = null
+}
+
+const loadSkillsOnce = async (workspaceId: string) => {
+  if (skillLoadedWorkspace.value === workspaceId) return
+  isLoadingSkills.value = true
+  skillError.value = null
+  const result = await runSyncResult(
+    Effect.tryPromise({
+      try: () => api.getSkills(workspaceId),
+      catch: (e) =>
+        new SyncRemoteError({
+          op: 'skills.load',
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+    }),
+    'skills.load',
+  )
+  isLoadingSkills.value = false
+  if (result.ok) {
+    skillList.value = Array.isArray(result.value?.skills) ? result.value.skills : []
+    skillLoadedWorkspace.value = workspaceId
+  } else {
+    skillList.value = []
+    skillError.value = result.reason
+  }
+}
+
+const detectSlashTrigger = () => {
+  const text = inputText.value
+  const pos = cursorPos.value
+  const textBeforeCursor = text.slice(0, pos)
+  const slashMatch = textBeforeCursor.match(/(^|\s)\/([\w.-]*)$/)
+  if (slashMatch) {
+    const workspaceId = activeSkillWorkspaceId()
+    if (!workspaceId) {
+      closeSkillPicker()
+      return
+    }
+    const raw = slashMatch[2] ?? ''
+    const isNamespace = raw === 'skill' || raw.startsWith('skill-')
+    skillForm.value = isNamespace ? 'namespace' : 'bare'
+    skillQuery.value = isNamespace ? (raw === 'skill' ? '' : raw.slice('skill-'.length)) : raw
+    if (!showSkillPicker.value) {
+      showSkillPicker.value = true
+      selectedSkillIndex.value = 0
+      closeFilePicker()
+      void loadSkillsOnce(workspaceId)
+    } else {
+      selectedSkillIndex.value = 0
+    }
+  } else {
+    closeSkillPicker()
+  }
+}
+
+// Client-side substring filter over the cached workspace list.
+const filteredSkills = computed(() => {
+  const q = skillQuery.value.toLowerCase()
+  if (!q) return skillList.value
+  return skillList.value.filter((s) => s.name.toLowerCase().includes(q))
+})
+
+const selectSkill = (skill: api.Skill) => {
+  const text = inputText.value
+  const pos = cursorPos.value
+  const textBeforeCursor = text.slice(0, pos)
+  const textAfterCursor = text.slice(pos)
+  const slashMatch = textBeforeCursor.match(/(^|\s)\/([\w.-]*)$/)
+  if (slashMatch && slashMatch.index !== undefined) {
+    const slashPos = slashMatch.index + (slashMatch[1] ?? '').length
+    const insert = skillForm.value === 'namespace' ? `/skill-${skill.name}` : `/${skill.name}`
+    inputText.value = textBeforeCursor.slice(0, slashPos) + insert + textAfterCursor
+  }
+  closeSkillPicker()
 }
 
 const selectFile = (file: FileEntry) => {
@@ -614,6 +731,40 @@ const selectFile = (file: FileEntry) => {
 }
 
 const handleKeydown = (e: KeyboardEvent) => {
+  // Handle skill picker navigation (takes precedence — only one is open)
+  if (showSkillPicker.value) {
+    const skills = filteredSkills.value
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      e.stopPropagation()
+      selectedSkillIndex.value = Math.min(selectedSkillIndex.value + 1, skills.length - 1)
+      scrollSkillSelectedIntoView()
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      e.stopPropagation()
+      selectedSkillIndex.value = Math.max(selectedSkillIndex.value - 1, 0)
+      scrollSkillSelectedIntoView()
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      e.stopPropagation()
+      const selectedSkill = skills[selectedSkillIndex.value]
+      if (selectedSkill) {
+        selectSkill(selectedSkill)
+      }
+    } else if (e.key === 'Escape') {
+      e.stopPropagation()
+      closeSkillPicker()
+    } else if (e.key === 'Tab') {
+      e.preventDefault()
+      e.stopPropagation()
+      const selectedSkill = skills[selectedSkillIndex.value]
+      if (selectedSkill) {
+        selectSkill(selectedSkill)
+      }
+    }
+    return
+  }
+
   // Handle file picker navigation
   if (showFilePicker.value) {
     const files = filteredFiles.value
@@ -679,6 +830,18 @@ const scrollSelectedIntoView = () => {
     if (!root) return
     const buttons = root.querySelectorAll('button')
     const selectedBtn = buttons[selectedFileIndex.value]
+    if (selectedBtn) {
+      selectedBtn.scrollIntoView({ behavior: 'auto', block: 'nearest' })
+    }
+  }, 50)
+}
+
+const scrollSkillSelectedIntoView = () => {
+  setTimeout(() => {
+    const root = skillPickerRef.value
+    if (!root) return
+    const buttons = root.querySelectorAll('button')
+    const selectedBtn = buttons[selectedSkillIndex.value]
     if (selectedBtn) {
       selectedBtn.scrollIntoView({ behavior: 'auto', block: 'nearest' })
     }
@@ -763,6 +926,63 @@ const sendMessage = () => {
         style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim)"
       >
         showing {{ visibleFiles.length }} of {{ serverTotal }} files
+      </div>
+    </div>
+
+    <!-- Skill picker dropdown -->
+    <div
+      v-if="showSkillPicker && (filteredSkills.length > 0 || isLoadingSkills || skillError)"
+      ref="skillPickerRef"
+      class="skill-picker-list mb-2 p-2 rounded-lg shadow-lg max-h-72 overflow-y-auto"
+      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
+      tabindex="0"
+      data-testid="skill-picker-list"
+    >
+      <div v-if="isLoadingSkills" class="p-4 text-center">
+        <div
+          class="w-6 h-6 border-2 rounded-full animate-spin mx-auto mb-2"
+          style="border-color: var(--color-violet); border-top-color: transparent"
+        ></div>
+        <p class="text-body" style="color: var(--semantic-text-dim)">Loading skills…</p>
+      </div>
+      <div
+        v-else-if="skillError"
+        class="p-2 text-body"
+        style="color: var(--semantic-text-dim)"
+        data-testid="skill-picker-error"
+      >
+        {{ skillError }}
+      </div>
+      <div
+        v-else-if="filteredSkills.length === 0"
+        class="p-2 text-body"
+        style="color: var(--semantic-text-dim)"
+      >
+        No skills found
+      </div>
+      <div v-else>
+        <button
+          v-for="(skill, idx) in filteredSkills"
+          :key="skill.name"
+          @click="selectSkill(skill)"
+          class="w-full text-left px-3 py-1.5 rounded text-body flex items-center gap-2 transition-colors"
+          :class="idx === selectedSkillIndex ? 'file-item-selected' : ''"
+          :style="
+            idx === selectedSkillIndex
+              ? 'background-color: var(--color-violet); color: var(--color-bg);'
+              : 'color: var(--semantic-text);'
+          "
+          @mouseenter="selectedSkillIndex = idx"
+          :data-skill-name="skill.name"
+        >
+          <UiIcon name="brain" size-class="w-3.5 h-3.5" />
+          <span class="flex flex-col items-start min-w-0">
+            <span class="truncate font-mono text-dense">/skill-{{ skill.name }}</span>
+            <span class="truncate text-dense" style="color: var(--semantic-text-dim)">{{
+              skill.description
+            }}</span>
+          </span>
+        </button>
       </div>
     </div>
 
@@ -860,7 +1080,7 @@ const sendMessage = () => {
       <textarea
         ref="chatTextareaRef"
         v-model="inputText"
-        placeholder="Type a message... (@ to search files)"
+        placeholder="Type a message... (@ files, /skill- skills)"
         :disabled="isInitializing"
         data-testid="chat-message-textarea"
         class="flex-1 px-4 py-3 rounded-xl text-body outline-none transition-all duration-200 resize-none"

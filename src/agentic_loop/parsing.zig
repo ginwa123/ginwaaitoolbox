@@ -6,6 +6,7 @@ const args_repair = @import("tools_args_repair.zig");
 
 const agent = pabrikcore.agent;
 const json = std.json;
+const sqlite = pabrikcore.sqlite;
 
 pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: LLMHistory) ![]agent.AgentMessage {
     var messages: std.ArrayList(agent.AgentMessage) = .empty;
@@ -303,6 +304,66 @@ pub fn unwrapChatContent(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     // without `user`/`model` stays verbatim instead of being unwrapped.
     if (obj.get("user") == null and obj.get("model") == null) return try allocator.dupe(u8, raw);
     return try allocator.dupe(u8, msg.string);
+}
+
+/// Identity for a `role=user` envelope: the session owner's id + display
+/// name, resolved via `sessions.user_id -> users.name`.
+///
+/// Errors (auth off, minimal test schemas without the tables, unknown
+/// session) propagate to the caller, which falls back to its legacy
+/// defaults — a failed identity lookup must never lose the message row.
+pub const ChatIdentity = struct {
+    user_id: []u8,
+    name: []u8,
+
+    pub fn deinit(self: *ChatIdentity, allocator: std.mem.Allocator) void {
+        allocator.free(self.user_id);
+        allocator.free(self.name);
+    }
+};
+
+pub fn resolveChatUser(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) !ChatIdentity {
+    var uid = try allocator.dupe(u8, "");
+    errdefer allocator.free(uid);
+    var name = try allocator.dupe(u8, "");
+    errdefer allocator.free(name);
+
+    var srows = try db.query(allocator, "SELECT COALESCE(user_id,'') FROM sessions WHERE id=?", &.{session_id});
+    defer srows.deinit();
+    if (try srows.next()) |srow| {
+        defer srow.deinit(allocator);
+        if (srow.values[0].len > 0) {
+            allocator.free(uid);
+            uid = try allocator.dupe(u8, srow.values[0]);
+        }
+    }
+    if (uid.len > 0) {
+        var urows = try db.query(allocator, "SELECT COALESCE(name,'') FROM users WHERE id=?", &.{uid});
+        defer urows.deinit();
+        if (try urows.next()) |urow| {
+            defer urow.deinit(allocator);
+            if (urow.values[0].len > 0) {
+                allocator.free(name);
+                name = try allocator.dupe(u8, urow.values[0]);
+            }
+        }
+    }
+    return .{ .user_id = uid, .name = name };
+}
+
+/// Profile name picked for the session (`sessions.selected_profile_model`,
+/// e.g. `"900ribu"`), for the assistant envelope's identity field.
+///
+/// Errors (auth off / Default profile / minimal test schemas) propagate to
+/// the caller, which falls back to the raw model id.
+pub fn resolveProfileName(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) ![]u8 {
+    var prows = try db.query(allocator, "SELECT COALESCE(selected_profile_model,'') FROM sessions WHERE id=?", &.{session_id});
+    defer prows.deinit();
+    if (try prows.next()) |prow| {
+        defer prow.deinit(allocator);
+        if (prow.values[0].len > 0) return try allocator.dupe(u8, prow.values[0]);
+    }
+    return try allocator.dupe(u8, "");
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

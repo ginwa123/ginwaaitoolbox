@@ -140,6 +140,16 @@ pub fn buildMessages(
     // the default equipped set, so a gate on them would be a constant that
     // costs a cacheable-prefix fragment and buys nothing.
     try final_system.appendSlice(allocator, prompts_const.SkillWriteToolRule);
+    // Workspace credentials. GATED, unlike the four rules above, and the
+    // difference is the whole point: `list_secrets` is not in every agent's
+    // tool list the way `read_workspace_session` is. It is injected past the
+    // allowlist by `filterAndMergeTools`, and `filteringTools` here can still
+    // drop it (a sub-agent session never gets it). Telling an agent about a
+    // tool it cannot call is worse than a cacheable-prefix fragment — it
+    // invites a call that dispatches to `error.UnknownTool`.
+    if (hasTool(filtered_tools, "list_secrets")) {
+        try final_system.appendSlice(allocator, prompts_const.SecretsToolRule);
+    }
     _ = activeAgentContent;
 
     // 2. WorkingDirectoryContext — PABRIK.md / CLAUDE.md / AGENTS.md (right after static sections)

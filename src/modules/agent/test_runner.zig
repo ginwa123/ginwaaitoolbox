@@ -19,6 +19,7 @@ test {
     // set_pull_request tool + pr_provider tests (colocated test blocks)
     _ = @import("tools/pr_provider.zig");
     _ = @import("tools/set_pull_request.zig");
+    _ = @import("tools/status_pull_request.zig");
 
     // Bash tool cross-platform tests
     _ = @import("tools/bash.zig");

@@ -520,6 +520,18 @@ fn registerWorkspaceDocumentRoutes(authed: *Group) !void {
     try authed.get("/api/workspaces/:workspace_id/skills", ai_mod.http_handlers.skillsListHandler);
     try authed.get("/api/workspaces/:workspace_id/skills/:skill_name", ai_mod.http_handlers.skillDetailHandler);
     try authed.delete("/api/workspaces/:workspace_id/skills/:skill_name", ai_mod.http_handlers.skillDeleteHandler);
+
+    // Workspace-scoped secrets (Migration 103). Same shape as documents and
+    // skills: a row that belongs to a workspace, read through
+    // `secrets_store`, whose every function takes `workspace_id` as a
+    // parameter that lands in the SQL `WHERE` clause. The two literal
+    // collection routes come before the `:secret_id` routes for the usual
+    // reason: `matchRoute` walks routes in registration order, so a param
+    // route registered first would swallow the collection.
+    try authed.get("/api/workspaces/:workspace_id/secrets", ai_mod.http_handlers.secretsListHandler);
+    try authed.post("/api/workspaces/:workspace_id/secrets", ai_mod.http_handlers.secretsCreateHandler);
+    try authed.patch("/api/workspaces/:workspace_id/secrets/:secret_id", ai_mod.http_handlers.secretsUpdateHandler);
+    try authed.delete("/api/workspaces/:workspace_id/secrets/:secret_id", ai_mod.http_handlers.secretsDeleteHandler);
 }
 
 fn registerKanbanRoutes(authed: *Group) !void {
@@ -905,6 +917,56 @@ test "route table: the three skills verbs resolve to their handlers" {
             try testing.expect(hit.params.get("skill_name") == null);
         } else {
             try testing.expectEqualStrings(want.param, hit.params.get("skill_name").?);
+        }
+    }
+}
+
+test "route table: the four secrets verbs resolve to their handlers" {
+    // Mirrors the skills route test above: asks `matchRoute` which handler
+    // each path actually lands on, which is what a 404 depends on.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var router = try buildRouteTable(a);
+
+    const expectations = [_]struct { method: []const u8, path: []const u8, handler: HandlerFn, param: []const u8 }{
+        .{
+            .method = "GET",
+            .path = "/api/workspaces/ws_1/secrets",
+            .handler = ai_mod.http_handlers.secretsListHandler,
+            .param = "",
+        },
+        .{
+            .method = "POST",
+            .path = "/api/workspaces/ws_1/secrets",
+            .handler = ai_mod.http_handlers.secretsCreateHandler,
+            .param = "",
+        },
+        .{
+            .method = "PATCH",
+            .path = "/api/workspaces/ws_1/secrets/sec_1",
+            .handler = ai_mod.http_handlers.secretsUpdateHandler,
+            .param = "sec_1",
+        },
+        .{
+            .method = "DELETE",
+            .path = "/api/workspaces/ws_1/secrets/sec_1",
+            .handler = ai_mod.http_handlers.secretsDeleteHandler,
+            .param = "sec_1",
+        },
+    };
+    for (expectations) |want| {
+        const hit = (try resolve(a, &router, want.method, want.path)) orelse {
+            std.debug.print("\n!! no route matches {s} {s} !!\n", .{ want.method, want.path });
+            return error.SecretRouteNotRegistered;
+        };
+        try testing.expect(hit.handler == want.handler);
+        try testing.expectEqualStrings("ws_1", hit.params.get("workspace_id").?);
+        if (want.param.len == 0) {
+            // The collection route must not be captured by `:secret_id`.
+            try testing.expect(hit.params.get("secret_id") == null);
+        } else {
+            try testing.expectEqualStrings(want.param, hit.params.get("secret_id").?);
         }
     }
 }

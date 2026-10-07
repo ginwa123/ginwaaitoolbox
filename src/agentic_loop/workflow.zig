@@ -786,7 +786,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // the name request would add one extra LLM call (with a 5-minute
     // read timeout) to every tool-call iteration of every turn.
 
-
     // Same source as `config` above: the session owner's stored config in
     // auth mode, the process-global singleton otherwise. Named apart
     // because this is the ENTRY config the MCP fetch below reads, while
@@ -829,11 +828,22 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         break :blk di.di.getMcpToolsCached(parent_allocator);
     };
 
+    // Per-turn arena: every loop turn's history loads, prompt builds and
+    // message lists allocate from here. Backed by the process GPA — a nested
+    // arena (init from parent_allocator) would pin each turn's memory in the
+    // run arena until the workflow ends, since arena free is a no-op.
+    // Reclaimed per turn by `reset` as the first statement of the loop body:
+    // a `defer` inside the loop would only run at function exit (that was the
+    // leak — turns accumulated until run end). Resetting at loop top rather
+    // than before each `continue` keeps inner-scope defers running before
+    // reclamation. Anything that must outlive its turn (copies, config,
+    // the retry detail below) lives in parent_allocator.
+    var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(di.allocator);
+    defer arenaAllocatorWhileLoop.deinit();
+    const allocator = arenaAllocatorWhileLoop.allocator();
     while (true) {
+        _ = arenaAllocatorWhileLoop.reset(.free_all);
         _ = active_loops.tryInsert(io, copy_session_id);
-        var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parent_allocator);
-        defer arenaAllocatorWhileLoop.deinit();
-        const allocator = arenaAllocatorWhileLoop.allocator();
 
         touchCheckpointWorkers(.{
             .allocator = allocator,
@@ -1440,9 +1450,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // reflects — not the first failure of this session.
             last_retry_error = err;
             last_retry_source = "callDynamicAgentNew";
-            // Capture the server-side reason for the eventual bail
-            // diagnostics. Arena-owned (see decl comment) — no free.
-            last_retry_server_detail = last_dynamic_agent_error_message;
+            // Cross-turn carry: the per-turn arena is reset every turn, so
+            // dupe into the run arena. Bounded (retries are capped and the
+            // message is clamped to 500 chars at use) — negligible until run end.
+            last_retry_server_detail = if (last_dynamic_agent_error_message) |msg|
+                parent_allocator.dupe(u8, msg) catch null
+            else
+                null;
             // The agent populated `last_dynamic_agent_error_message` with
             // the actual server / transport reason (e.g. "HTTP 429: rate
             // limit exceeded", "scanner.next failed after 12 chunk(s):
@@ -1488,8 +1502,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // `content`, `reasoning_content`, each
         // `tool_calls[i].{id, function.name, function.arguments}`, the
         // `tool_calls` slice itself) is allocated from THIS iteration’s
-        // arena (`arenaAllocatorWhileLoop` declared at the top of the
-        // loop, deferred `deinit` runs at end-of-iteration in LIFO
+        // arena (`arenaAllocatorWhileLoop` declared above the loop; the
+        // per-turn `reset` at loop top reclaims it at end-of-turn in LIFO
         // order). `CallResponse.deinit` is a documented no-op (see
         // `Agent.zig` CallResponse doc), so the explicit `defer` here
         // is purely cosmetic — it’s kept as `res_dynamic_agent.deinit()`
@@ -2304,6 +2318,32 @@ pub fn filterAndMergeTools(
         try out.append(allocator, tool);
     }
 
+    // Workspace secrets discovery: injected SERVER-SIDE, bypassing the
+    // allowlist, exactly as the MCP/progressive and skill_evals injections
+    // below do. It has to be, because the tool list is seeded per workspace
+    // item at creation time and `DEFAULT_AGENT_TOOLS` only reaches agents
+    // created from now on — an existing agent's persisted `agent_tools` rows
+    // never name `list_secrets`, and the Migration099 lesson is exactly that
+    // such a tool is a tool nobody ever sees. The discovery step for
+    // `{{SECRETS:NAME}}` would be dead on arrival for every existing user.
+    //
+    // Placed before the progressive-equipped loop on purpose: an equipped
+    // tool is expected to land LAST in the list, and the composition test
+    // below pins that.
+    //
+    // Scope is the caller's own workspace (resolved from `ctx.session_id` in
+    // the exec adapter) and the payload is names only, so this bypasses a
+    // capability checklist without bypassing isolation.
+    if (!is_sub_agent and !seen.contains("list_secrets")) {
+        for (registered) |tool| {
+            if (std.mem.eql(u8, tool.function.name, "list_secrets")) {
+                try seen.put(allocator, "list_secrets", {});
+                try out.append(allocator, tool);
+                break;
+            }
+        }
+    }
+
     // Built-ins this session enabled for itself. Injected even when the
     // allowlist excluded them — that is the point of `use_tool`.
     for (progressive_equipped) |name| {
@@ -2967,7 +3007,8 @@ test "filterAndMergeTools: the progressive tools ship when the tool config names
         if (std.mem.eql(u8, t.function.name, "read_file")) found_read_file = true;
     }
     try testing.expect(found_read_file);
-    try testing.expectEqual(@as(usize, 4), with_metas.len);
+    // 4 allowlisted + the injected list_secrets.
+    try testing.expectEqual(@as(usize, 5), with_metas.len);
 
     // A tool config that does NOT name them (a design or folder item, which
     // seeds no list, or a user who unticked them): they are simply absent —
@@ -2978,7 +3019,9 @@ test "filterAndMergeTools: the progressive tools ship when the tool config names
             try testing.expect(!std.mem.eql(u8, t.function.name, name));
         }
     }
-    try testing.expectEqual(@as(usize, 2), without_metas.len);
+    // read_file, glob, and the injected list_secrets — none of the three
+    // progressive meta-tools.
+    try testing.expectEqual(@as(usize, 3), without_metas.len);
 
     // `use_tool` remains the escape hatch: an equipped tool is injected even
     // when the allowlist excluded it.
@@ -2988,7 +3031,8 @@ test "filterAndMergeTools: the progressive tools ship when the tool config names
         if (std.mem.eql(u8, t.function.name, "use_tool")) found_equipped = true;
     }
     try testing.expect(found_equipped);
-    try testing.expectEqual(@as(usize, 2), equipped.len);
+    // read_file + use_tool (equipped) + the injected list_secrets.
+    try testing.expectEqual(@as(usize, 3), equipped.len);
 
     // Only spawn_sub_agent is ever stripped for a sub-agent.
     const sub = try filterAndMergeTools(alloc, null, seeded, true, &.{}, false);
@@ -3033,6 +3077,152 @@ test "filterAndMergeTools: a sub-agent cannot re-equip spawn_sub_agent" {
     for (merged) |t| {
         try testing.expect(!std.mem.eql(u8, t.function.name, "spawn_sub_agent"));
     }
+}
+
+test "filterAndMergeTools: list_secrets is injected past the allowlist, for main agents only" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The Migration099 lesson: a tool only new agents have is a tool no
+    // existing agent ever sees. This CSV is what every agent created before
+    // `list_secrets` shipped has persisted in `agent_tools` — a restrictive
+    // list that never mentions the tool — and discovery is dead on arrival
+    // there unless the injection ignores the allowlist the way the
+    // progressive and skill_evals injections do.
+    const restrictive = "read_file,glob";
+    const merged = try filterAndMergeTools(alloc, null, restrictive, false, &.{}, false);
+
+    var found_secrets = false;
+    var found_read_file = false;
+    for (merged) |t| {
+        if (std.mem.eql(u8, t.function.name, "list_secrets")) found_secrets = true;
+        if (std.mem.eql(u8, t.function.name, "read_file")) found_read_file = true;
+    }
+    try testing.expect(found_read_file);
+    try testing.expect(found_secrets);
+
+    // Exactly once — the injection must not duplicate a tool the allowlist
+    // already granted.
+    var count: usize = 0;
+    for (merged) |t| {
+        if (std.mem.eql(u8, t.function.name, "list_secrets")) count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+
+    const with_it_allowed = try filterAndMergeTools(alloc, null, "read_file,list_secrets", false, &.{}, false);
+    var count_allowed: usize = 0;
+    for (with_it_allowed) |t| {
+        if (std.mem.eql(u8, t.function.name, "list_secrets")) count_allowed += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count_allowed);
+
+    // `is_sub_agent` is still respected by the INJECTION. Probed with the same
+    // restrictive CSV on purpose: an allowlist of `"all"` grants `list_secrets`
+    // to a sub-agent by its own configuration, which is the user's choice and
+    // has nothing to do with the injection. What must not happen is the
+    // injection handing it to a sub-agent that never asked for it.
+    const sub = try filterAndMergeTools(alloc, null, restrictive, true, &.{}, false);
+    for (sub) |t| {
+        try testing.expect(!std.mem.eql(u8, t.function.name, "list_secrets"));
+        try testing.expect(std.mem.eql(u8, t.function.name, "read_file") or std.mem.eql(u8, t.function.name, "glob"));
+    }
+
+    // The `"none"` sentinel still receives it, exactly as the skill_evals
+    // injection above does. That is a deliberate consequence of "bypass the
+    // allowlist": the injections are gated on server-side policy
+    // (`is_sub_agent` and, for skill_evals, the config switch), not on what
+    // the checklist says. A read-only, names-only tool that resolves its own
+    // workspace is the same kind of infrastructure the progressive meta-tools
+    // are, and an agent that cannot discover a credential name is the
+    // Migration099 dead end this whole injection exists to avoid.
+    const none = try filterAndMergeTools(alloc, null, "none", false, &.{}, false);
+    var none_secrets = false;
+    for (none) |t| {
+        if (std.mem.eql(u8, t.function.name, "list_secrets")) none_secrets = true;
+    }
+    try testing.expect(none_secrets);
+}
+
+test "filterAndMergeTools: the injected list_secrets schema cannot be pointed at another workspace" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Asserted on the SERIALIZED schema of the tool that actually gets
+    // appended, not on the const in the tool module: this is the copy the
+    // model reads, and it is the copy that matters. A `workspace_id` property
+    // here would be swallowed by the dispatcher's `ignore_unknown_fields`
+    // parse and would then sit unused while looking like it did something —
+    // which is exactly the shape of a future privilege escalation.
+    const merged = try filterAndMergeTools(alloc, null, "read_file", false, &.{}, false);
+
+    var checked = false;
+    for (merged) |t| {
+        if (!std.mem.eql(u8, t.function.name, "list_secrets")) continue;
+        checked = true;
+
+        const schema_json = try std.json.Stringify.valueAlloc(alloc, t, .{});
+        defer alloc.free(schema_json);
+        try testing.expect(std.mem.indexOf(u8, schema_json, "\"workspace_id\"") == null);
+        try testing.expect(std.mem.indexOf(u8, schema_json, "\"value\"") == null);
+        try testing.expect(std.mem.indexOf(u8, schema_json, "\"properties\":[]") != null);
+        try testing.expectEqual(@as(usize, 0), t.function.parameters.properties.len);
+    }
+    try testing.expect(checked);
+}
+
+test "list_secrets prompt rule: the gated append is in buildMessages, and the gate really is a gate" {
+    // Static contract, in the spirit of the source-grep tests above: the
+    // rule exists in `core.zig` and is reachable through the `prompts.zig`
+    // barrel the builder consumes. Wiring it in the tool module and never
+    // appending it is a silent no-op — the schema reads correctly and the
+    // model is never told the syntax exists.
+    const alloc = testing.allocator;
+
+    const builder = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "src/agentic_loop/prompts_build_messages_for_agent_prompt.zig",
+        alloc,
+        .limited(1024 * 1024),
+    );
+    defer alloc.free(builder);
+
+    const gate = std.mem.indexOf(u8, builder, "if (hasTool(filtered_tools, \"list_secrets\")) {") orelse
+        return error.SecretsRuleNotGated;
+    const append = std.mem.indexOf(u8, builder, "prompts_const.SecretsToolRule") orelse
+        return error.SecretsRuleNotAppended;
+
+    // The append has to be INSIDE the gate's block. The gap between the
+    // condition and the append is a few bytes of body and nothing else — a
+    // closing brace in between would mean the rule is unconditional.
+    try testing.expect(gate < append);
+    try testing.expect(append - gate < 120);
+    try testing.expect(std.mem.indexOf(u8, builder[gate..append], "}") == null);
+
+    // The rule has to say the three things the feature cannot work without.
+    // Asserted on `core.zig` because that is where the bytes live; a
+    // paraphrased rule that drops the placeholder syntax or the
+    // never-echo-the-value prohibition still "builds", and the model then
+    // writes a credential into a file.
+    const core_src = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "src/modules/agent/prompts/core.zig",
+        alloc,
+        .limited(1024 * 1024),
+    );
+    defer alloc.free(core_src);
+
+    const rule_start = std.mem.indexOf(u8, core_src, "pub const SecretsToolRule =") orelse
+        return error.SecretsRuleMissing;
+    const rule_end = std.mem.indexOf(u8, core_src, "pub const CrossProjectCwdRule =") orelse
+        return error.RuleEndNotFound;
+    const rule = core_src[rule_start..rule_end];
+
+    try testing.expect(std.mem.indexOf(u8, rule, "{{SECRETS:NAME}}") != null);
+    try testing.expect(std.mem.indexOf(u8, rule, "list_secrets") != null);
+    try testing.expect(std.mem.indexOf(u8, rule, "ANY tool parameter") != null);
+    try testing.expect(std.mem.indexOf(u8, rule, "Never echo, print, log, or write a secret's value") != null);
 }
 
 // Composition test: replays exactly what the loop does at the resolution
