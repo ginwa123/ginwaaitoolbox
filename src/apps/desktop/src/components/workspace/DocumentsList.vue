@@ -16,7 +16,7 @@
 //
 // 3. `router.replace`, not `push`, for a row click. Clicking through five
 //    documents should not bury the previous four under Back.
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, onUpdated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useDocumentsStore } from '../../stores/documents'
@@ -100,22 +100,28 @@ const createDocument = () => {
 
 // Refetch on workspace switch so a stale list is never shown under a new
 // header. `reset()` on the way out is what makes the refetch necessary
-// rather than a stale-merge hazard.
-watch(
-  () => props.workspaceId,
-  (next, prev) => {
-    if (prev && prev !== next) documentsStore.reset()
-    if (next && sidebarStore.documentsExpanded) {
-      void documentsStore.fetchDocuments(next)
-    }
-  },
-  { immediate: true },
-)
+// rather than a stale-merge hazard. Prev-value guard on update — same
+// reset+fetch the watcher did; mount runs the same initial fetch.
+function syncWorkspaceDocuments(next: string | null, prev: string | null | undefined) {
+  if (prev && prev !== next) documentsStore.reset()
+  if (next && sidebarStore.documentsExpanded) {
+    void documentsStore.fetchDocuments(next)
+  }
+}
 
+let prevWorkspaceId: string | null | undefined = undefined
 onMounted(() => {
+  syncWorkspaceDocuments(props.workspaceId, prevWorkspaceId)
+  prevWorkspaceId = props.workspaceId
   if (props.workspaceId && sidebarStore.documentsExpanded && !documentsStore.loaded) {
     void documentsStore.fetchDocuments(props.workspaceId)
   }
+})
+onUpdated(() => {
+  if (props.workspaceId === prevWorkspaceId) return
+  const prev = prevWorkspaceId
+  prevWorkspaceId = props.workspaceId
+  syncWorkspaceDocuments(props.workspaceId, prev)
 })
 </script>
 

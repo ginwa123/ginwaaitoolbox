@@ -20,7 +20,7 @@
             delete()
 -->
 <script setup lang="ts">
-import { ref, watch, nextTick, computed, onBeforeUnmount } from 'vue'
+import { ref, nextTick, computed, onBeforeUnmount, onMounted, onUpdated } from 'vue'
 import UiIcon from '../ui/UiIcon.vue'
 import type { UiIconName } from '../ui/icons'
 
@@ -133,31 +133,36 @@ const handleKeydown = (event: KeyboardEvent) => {
 
 // Seed the name field on first render (so a rename modal opened with
 // show=true at mount time has the column's name pre-filled, not an
-// empty string), and reset + refocus on every subsequent open.
-// Mirrors the AddKanbanDialog / AddItemDialog pattern. The
-// `immediate: true` flag is critical — without it the watcher never
-// fires on first render (Vue's watch defaults to skip-the-current-
-// value), so the rename input would open blank.
+// empty string), and reset + refocus on every subsequent open via
+// the open-sync guard below.
 name.value = props.initialName ?? ''
-watch(
-  () => props.show,
-  async (show) => {
-    if (show) {
-      name.value = props.initialName ?? ''
-      description.value = props.initialDescription ?? ''
-      await nextTick()
-      // Focus the name input when it exists; in delete mode there is
-      // no input to focus, but focusing the dialog itself is harmless.
-      if (showNameInput.value) {
-        nameInput.value?.focus()
-        nameInput.value?.select()
-      }
-    }
-  },
-)
+const handleOpen = async () => {
+  name.value = props.initialName ?? ''
+  description.value = props.initialDescription ?? ''
+  await nextTick()
+  // Focus the name input when it exists; in delete mode there is
+  // no input to focus, but focusing the dialog itself is harmless.
+  if (showNameInput.value) {
+    nameInput.value?.focus()
+    nameInput.value?.select()
+  }
+}
 
 onBeforeUnmount(() => {
   document.body.style.overflow = ''
+})
+
+// Open-reset without watch(): seed on mount (initial show=true) and on
+// closed->open updates. A Transition before-enter hook cannot do this — it
+// never fires on initial mount (no `appear`) and VTU stubs Transition, so
+// specs that mount then setProps(show=true) would see empty fields.
+const wasShown = ref(props.show)
+onMounted(() => {
+  if (props.show) void handleOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShown.value) void handleOpen()
+  wasShown.value = props.show
 })
 </script>
 

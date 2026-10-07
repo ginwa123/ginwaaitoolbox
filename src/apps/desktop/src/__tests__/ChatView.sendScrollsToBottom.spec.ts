@@ -109,10 +109,12 @@ describe('ChatView — sending or queueing a turn takes the transcript to the bo
     const contentShift = slice('const onContentShift = (shift:', 'const teardownContentShiftRaf')
     expect(contentShift).toContain('if (!isAtBottom.value)')
 
-    const lengthWatcher = slice(
-      'watch(\n  () => messages.value.length,',
-      'watch(\n  () => effectiveCwd.value,',
+    // Watch-zero: the messages.length watcher is now an onUpdated
+    // prev-length guard; the isAtBottom gate is unchanged.
+    const lengthGuard = slice(
+      '// Auto-stick on new messages',
+      '// React to an effective-cwd change',
     )
-    expect(lengthWatcher).toContain('if (!isAtBottom.value) return')
+    expect(lengthGuard).toContain('if (!isAtBottom.value) return')
   })
 })

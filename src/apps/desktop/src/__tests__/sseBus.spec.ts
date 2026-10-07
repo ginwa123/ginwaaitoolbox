@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { createApp, nextTick, type App, watch } from 'vue'
+import { createApp, type App } from 'vue'
 import {
   installSseBus,
   useSseBus,
@@ -18,7 +18,6 @@ import * as api from '../api'
  * the listener list in a closure; tests reach it via `as any`).
  */
 function makeStubClient(initial: SseState): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -39,12 +38,11 @@ function makeStubClient(initial: SseState): SseClient {
 
 function emitStubState(c: SseClient, s: SseState): void {
   // Walk the internal listener list. The stub stores it as a non-public
-   
+
   // property — we use `as any` to reach it from the test.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const listeners = (c as any).__stateListeners as
-    | Array<(s: SseState, info: SseStateInfo) => void>
-    | undefined
+    Array<(s: SseState, info: SseStateInfo) => void> | undefined
   if (listeners) {
     for (const cb of listeners) cb(s, {} as SseStateInfo)
   }
@@ -78,10 +76,10 @@ describe('sseBus', () => {
     bus.on('session', cb)
     __dispatchSseBus('session', {
       id: 's_1',
-       
+
       action: 'updated',
       name: 'Renamed',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     expect(cb).toHaveBeenCalledTimes(1)
     expect(cb).toHaveBeenCalledWith({
@@ -94,7 +92,6 @@ describe('sseBus', () => {
   it('on(type, cb) — multiple subscribers all fire', () => {
     const bus = installSseBus(app)
     const a = vi.fn(),
-       
       b = vi.fn()
     bus.on('worker', a)
     bus.on('worker', b)
@@ -105,7 +102,6 @@ describe('sseBus', () => {
   })
 
   it('on(type, cb) — unsubscribe stops delivery', () => {
-     
     const bus = installSseBus(app)
     const cb = vi.fn()
     const off = bus.on('session', cb)
@@ -115,7 +111,6 @@ describe('sseBus', () => {
     expect(cb).not.toHaveBeenCalled()
   })
 
-   
   it('off(type, cb) — removes a specific listener', () => {
     const bus = installSseBus(app)
     const cb = vi.fn()
@@ -126,26 +121,26 @@ describe('sseBus', () => {
     expect(cb).not.toHaveBeenCalled()
   })
 
-  it('__setSseBusGlobalClient replaces the global SseClient and re-wires state', async () => {
+  it('__setSseBusGlobalClient replaces the global SseClient and re-wires state', () => {
     const bus = installSseBus(app)
-    const stateChanges: SseState[] = []
-    const watchUnsub = watch(bus.state, (s) => stateChanges.push(s))
 
     const stub = makeStubClient('connecting')
     __setSseBusGlobalClient(stub)
     expect(bus.state.value).toBe('connecting')
 
+    // Subscribe directly to the stub's state fan-out (explicit push,
+    // not a reactive watcher) and drive a transition.
+    const stateChanges: SseState[] = []
+    const unsub = stub.onStateChange((s) => stateChanges.push(s))
+
     // Drive a state change on the stub
     emitStubState(stub, 'open')
     expect(bus.state.value).toBe('open')
 
-    // Vue's `watch` defaults to async (post-flush), so the subscriber
-    // hasn't been called yet. Drain a microtask so the watcher fires
-    // before we assert on the collected transitions.
-    await nextTick()
+    // The stub fans out synchronously, so no tick-drain is needed.
     expect(stateChanges).toContain('open')
 
-    watchUnsub()
+    unsub()
   })
 
   it('__setSseBusGlobalClient closes the old client when replacing', () => {
@@ -195,9 +190,9 @@ describe('sseBus', () => {
     expect(spy).toHaveBeenCalledTimes(1)
     const callArg = spy.mock.calls[0]![0]
     // The bus must wire up workers, sessions, kanban, llm, queue.
-     
+
     expect(callArg.channels.workers).toBeDefined()
-     
+
     expect(callArg.channels.sessions).toBeDefined()
     expect(callArg.channels.kanban).toBeDefined()
     expect(callArg.channels.llm).toBeDefined()

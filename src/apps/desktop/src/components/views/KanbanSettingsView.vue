@@ -29,7 +29,7 @@
   Plan: docs/superpowers/plans/2026-09-02-kanban-settings-as-page.md
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUpdated, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import KanbanColumnEditor from '../kanban/KanbanColumnEditor.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
@@ -204,13 +204,20 @@ async function loadKanbanAgent() {
   }
 }
 
-watch(
-  () => item.value?.id,
-  (id) => {
-    if (id) void loadKanbanAgent()
-  },
-  { immediate: true },
-)
+// Reload the agent panel when the resolved item changes: mount covers
+// the initial load, prev-id guard on update covers item switches.
+const prevAgentItemId = ref(item.value?.id ?? '')
+onMounted(() => {
+  prevAgentItemId.value = item.value?.id ?? ''
+  if (item.value?.id) void loadKanbanAgent()
+})
+onUpdated(() => {
+  const rowId = item.value?.id ?? ''
+  if (rowId !== prevAgentItemId.value) {
+    prevAgentItemId.value = rowId
+    if (rowId) void loadKanbanAgent()
+  }
+})
 
 // ─── AgentView dialog state (mirrors AppLayout's agent dialogs) ─────────────
 
@@ -542,14 +549,18 @@ const goBack = () => {
 // Agent tab that the previous kanban had selected). The URL
 // is the source of truth, so we use `router.replace` to strip the
 // ?section= query rather than mutating the computed directly.
-watch(
-  () => itemId.value,
-  () => {
+// Reset the settings tab/editor when navigating between kanbans:
+// prev-id guard on update. Writing settingsMode strips ?section= from
+// the URL via its setter; the guard keeps the reset one-shot.
+const prevSettingsItemId = ref(itemId.value)
+onUpdated(() => {
+  if (itemId.value !== prevSettingsItemId.value) {
+    prevSettingsItemId.value = itemId.value
     settingsMode.value = 'columns'
     showSettingsEditor.value = false
     settingsEditorTargetId.value = null
-  },
-)
+  }
+})
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 

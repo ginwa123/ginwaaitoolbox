@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUpdated, ref } from 'vue'
 import { detectLanguage, highlightLine } from '@/helpers/codeHighlight'
 import { displayPathFor } from '@/composables/useCodeEditorSession'
 import UiIcon from '../ui/UiIcon.vue'
@@ -95,10 +95,16 @@ onMounted(() => {
   void scrollToTarget()
 })
 
-watch(
-  () => [props.line, props.content],
-  () => void scrollToTarget(),
-)
+// Re-scroll when the target line or the content changes (prev-value guard
+// on update — same call the watcher made; mount is covered above).
+let prevEditorLine = props.line
+let prevEditorContent = props.content
+onUpdated(() => {
+  if (props.line === prevEditorLine && props.content === prevEditorContent) return
+  prevEditorLine = props.line
+  prevEditorContent = props.content
+  void scrollToTarget()
+})
 
 // Footer shows the full path. filePath from the sidebar explorer is
 // already absolute (backend listDirectory joins dir_path + name), so
@@ -229,7 +235,11 @@ const handleClose = () => {
         This file is empty
       </div>
 
-      <table v-else class="w-full border-collapse" style="font-size: var(--text-dense); line-height: 20px">
+      <table
+        v-else
+        class="w-full border-collapse"
+        style="font-size: var(--text-dense); line-height: 20px"
+      >
         <tbody>
           <tr
             v-for="(line, idx) in lines"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, onUpdated } from 'vue'
 
 /**
  * Full-screen image preview overlay.
@@ -47,19 +47,31 @@ const handleKeydown = (event: KeyboardEvent) => {
   }
 }
 
-watch(
-  isOpen,
-  (open) => {
-    if (open) {
-      lockBodyScroll()
-      document.addEventListener('keydown', handleKeydown)
-    } else {
-      unlockBodyScroll()
-      document.removeEventListener('keydown', handleKeydown)
-    }
-  },
-  { immediate: true },
-)
+// Body scroll lock + Escape listener follow the open state. The open/close
+// transitions originate in the parent (`src` set / `close` emitted), so
+// they are picked up here with a prev-value guard on update — same
+// lock/unlock the watcher did; the mount call covers the initial state,
+// and onBeforeUnmount below always releases.
+function syncOpenLock(open: boolean) {
+  if (open) {
+    lockBodyScroll()
+    document.addEventListener('keydown', handleKeydown)
+  } else {
+    unlockBodyScroll()
+    document.removeEventListener('keydown', handleKeydown)
+  }
+}
+
+let prevImageOpen = isOpen.value
+onMounted(() => {
+  prevImageOpen = isOpen.value
+  syncOpenLock(isOpen.value)
+})
+onUpdated(() => {
+  if (isOpen.value === prevImageOpen) return
+  prevImageOpen = isOpen.value
+  syncOpenLock(isOpen.value)
+})
 
 onBeforeUnmount(() => {
   unlockBodyScroll()
@@ -104,12 +116,7 @@ const onBackdropClick = () => {
               />
             </svg>
           </button>
-          <img
-            :src="src"
-            alt="Preview"
-            class="image-preview-img"
-            @click.stop
-          />
+          <img :src="src" alt="Preview" class="image-preview-img" @click.stop />
         </div>
       </div>
     </Transition>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUpdated, ref } from 'vue'
 import * as api from '../../api'
 import UiIcon from '../ui/UiIcon.vue'
 import type { UiIconName } from '../ui/icons'
@@ -206,19 +206,28 @@ const diffLineStyle = (line: ParsedDiffLine): Record<string, string> => {
   return {}
 }
 
-watch(
-  () => props.cwd,
-  (newCwd) => {
-    selectedSha.value = null
-    if (newCwd) void loadCommits(false)
-    else {
-      isGitRepo.value = false
-      commits.value = []
-      hasMore.value = false
-    }
-  },
-  { immediate: true },
-)
+// Reload on cwd change (prev-value guard on update — same reset+load the
+// watcher did; the mount call covers the initial load).
+function syncCommitsCwd(newCwd: string | undefined) {
+  selectedSha.value = null
+  if (newCwd) void loadCommits(false)
+  else {
+    isGitRepo.value = false
+    commits.value = []
+    hasMore.value = false
+  }
+}
+
+let prevCommitsCwd: string | undefined = props.cwd
+onMounted(() => {
+  prevCommitsCwd = props.cwd
+  syncCommitsCwd(props.cwd)
+})
+onUpdated(() => {
+  if (props.cwd === prevCommitsCwd) return
+  prevCommitsCwd = props.cwd
+  syncCommitsCwd(props.cwd)
+})
 
 const refresh = () => {
   selectedSha.value = null

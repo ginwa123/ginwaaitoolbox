@@ -36,7 +36,7 @@
   component mounts. `App.vue` does the install.
 -->
 <script setup lang="ts">
-import { onUnmounted, ref, toRef, watch } from 'vue'
+import { onMounted, onUpdated, ref, toRef } from 'vue'
 
 import { useSseBus } from '../../helpers/sseBus'
 
@@ -50,25 +50,30 @@ const attempt = ref(0)
 
 // The remaining job is NOT derivation: it counts transitions of an EXTERNAL
 // signal. `attempt` depends on its own history, so `computed()` cannot express
-// it, and there is no local handler to move it into — the SSE bus reconnects
-// on its own. `immediate` keeps the first render honest, and the returned
-// stop-handle tears the watcher down in `onUnmounted`.
-const stop = watch(
-  bus.state,
-  (s) => {
-    // Tracked locally because the bus's state ShallowRef does NOT expose the
-    // underlying `SseClient`'s `info.attempt` — only the state name.
-    if (s === 'reconnecting') {
-      attempt.value += 1
-    } else if (s === 'open' || s === 'closed') {
-      attempt.value = 0
-    }
-  },
-  { immediate: true },
-)
+// it, and the bus exposes no state-subscribe — only the `state` ShallowRef.
+// The template reads `state`, so every transition re-renders this badge:
+// onMounted seeds the initial state (the old `immediate: true`), and the
+// prev-value guard below counts each transition exactly once.
+const countStateTransition = (s: typeof bus.state.value) => {
+  // Tracked locally because the bus's state ShallowRef does NOT expose the
+  // underlying `SseClient`'s `info.attempt` — only the state name.
+  if (s === 'reconnecting') {
+    attempt.value += 1
+  } else if (s === 'open' || s === 'closed') {
+    attempt.value = 0
+  }
+}
 
-onUnmounted(() => {
-  stop()
+let prevSseState = bus.state.value
+onMounted(() => {
+  prevSseState = bus.state.value
+  countStateTransition(bus.state.value)
+})
+onUpdated(() => {
+  const s = bus.state.value
+  if (s === prevSseState) return
+  prevSseState = s
+  countStateTransition(s)
 })
 </script>
 

@@ -8,7 +8,7 @@
   skills".
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUpdated, ref } from 'vue'
 import UiIcon from '../ui/UiIcon.vue'
 import { Effect } from 'effect'
 import { getSkills, type Skill } from '../../api'
@@ -68,13 +68,22 @@ const openSkillDetail = (skill: Skill) => {
   emit('selectSkill', skill.name)
 }
 
-watch(
-  () => workspaceId.value,
-  () => {
-    loadSkills()
-  },
-  { immediate: true },
-)
+// Reload when the resolved workspace changes: mount covers the initial
+// load, prev-id guard on update covers workspace switches. The
+// data-workspace binding below keeps this component's own render effect
+// subscribed to the store workspace (row content alone would not
+// re-render us on a switch) — that render is what fires the guard.
+const prevWorkspaceId = ref<string | null>(workspaceId.value)
+onMounted(() => {
+  prevWorkspaceId.value = workspaceId.value
+  void loadSkills()
+})
+onUpdated(() => {
+  if (workspaceId.value !== prevWorkspaceId.value) {
+    prevWorkspaceId.value = workspaceId.value
+    void loadSkills()
+  }
+})
 
 defineExpose({
   refresh: loadSkills,
@@ -82,7 +91,10 @@ defineExpose({
 </script>
 
 <template>
-  <div class="skill-list">
+  <div
+    class="skill-list"
+    :data-workspace="workspaceId ?? ''"
+  >
     <!-- Loading State -->
     <div v-if="isLoading" class="flex items-center justify-center py-8">
       <div class="flex items-center gap-3">

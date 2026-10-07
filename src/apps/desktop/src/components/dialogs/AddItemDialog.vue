@@ -16,7 +16,7 @@
     emits:  close, create(name: string, path: string)
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, onMounted, onUpdated } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 import UiIcon from '../ui/UiIcon.vue'
@@ -96,21 +96,32 @@ const handleKeydown = (event: KeyboardEvent) => {
 // Reset state when the dialog opens. We deliberately do NOT preserve
 // selectedPath across open/close — matches the pre-migration behavior
 // and keeps the dialog predictable for users.
-watch(() => props.show, async (show) => {
-  if (show) {
-    name.value = ''
-    selectedPath.value = ''
-    showPicker.value = false
-    // Reset the touched flag so the error doesn't flash on first open.
-    // The flag flips on the first @input / @blur after open.
-    nameTouched.value = false
-    await nextTick()
-    nameInput.value?.focus()
-  }
-})
+const handleOpen = async () => {
+  name.value = ''
+  selectedPath.value = ''
+  showPicker.value = false
+  // Reset the touched flag so the error doesn't flash on first open.
+  // The flag flips on the first @input / @blur after open.
+  nameTouched.value = false
+  await nextTick()
+  nameInput.value?.focus()
+}
 
 onBeforeUnmount(() => {
   document.body.style.overflow = ''
+})
+
+// Open-reset without watch(): seed on mount (initial show=true) and on
+// closed->open updates. A Transition before-enter hook cannot do this — it
+// never fires on initial mount (no `appear`) and VTU stubs Transition, so
+// specs that mount then setProps(show=true) would see empty fields.
+const wasShown = ref(props.show)
+onMounted(() => {
+  if (props.show) void handleOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShown.value) void handleOpen()
+  wasShown.value = props.show
 })
 </script>
 
@@ -130,7 +141,7 @@ onBeforeUnmount(() => {
         <!-- Backdrop -->
         <div
           class="absolute inset-0 backdrop-blur-md"
-          style="background: rgba(0, 0, 0, 0.6);"
+          style="background: rgba(0, 0, 0, 0.6)"
           @click="handleClose"
         />
 
@@ -151,15 +162,12 @@ onBeforeUnmount(() => {
             <h3
               id="add-item-title"
               class="text-lead font-semibold flex items-center gap-2"
-              style="color: var(--semantic-text);"
+              style="color: var(--semantic-text)"
             >
               <UiIcon name="folder" />
               Add Project
             </h3>
-            <p
-              class="text-dense mt-1"
-              style="color: var(--semantic-text-dim);"
-            >
+            <p class="text-dense mt-1" style="color: var(--semantic-text-dim)">
               Select a folder to add as a project
             </p>
           </div>
@@ -168,7 +176,7 @@ onBeforeUnmount(() => {
           <div class="px-5 pb-4">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               Project Name
             </label>
@@ -193,7 +201,7 @@ onBeforeUnmount(() => {
               v-if="nameError"
               class="text-dense mt-1"
               data-testid="add-item-name-error"
-              style="color: var(--color-red);"
+              style="color: var(--color-red)"
             >
               {{ nameError }}
             </p>
@@ -203,7 +211,7 @@ onBeforeUnmount(() => {
           <div class="px-5 pb-4">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               Folder
             </label>
@@ -217,28 +225,24 @@ onBeforeUnmount(() => {
                   ? 'var(--semantic-active-bg)'
                   : 'var(--semantic-sidebar-bg)',
                 border: '1px solid var(--color-border)',
-                color: selectedPath
-                  ? 'var(--semantic-text)'
-                  : 'var(--semantic-text-dim)',
+                color: selectedPath ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
               }"
             >
-              <span
-                class="truncate flex-1 text-left font-mono"
-                :title="selectedPath"
-              >
+              <span class="truncate flex-1 text-left font-mono" :title="selectedPath">
                 {{ selectedPath || 'Choose folder...' }}
               </span>
               <span
                 v-if="selectedPath"
                 class="text-dense shrink-0"
-                style="color: var(--semantic-text-dim);"
+                style="color: var(--semantic-text-dim)"
                 aria-hidden="true"
-              >Browse</span>
+                >Browse</span
+              >
               <UiIcon
                 v-else
                 name="folder-open"
                 class="w-4 h-4 shrink-0"
-                style="color: var(--semantic-text-dim);"
+                style="color: var(--semantic-text-dim)"
               />
             </button>
           </div>
@@ -265,11 +269,7 @@ onBeforeUnmount(() => {
               data-testid="add-item-submit"
               class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="
-                background: linear-gradient(
-                  135deg,
-                  var(--color-violet),
-                  var(--color-blue)
-                );
+                background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
                 color: var(--color-bg);
               "
             >

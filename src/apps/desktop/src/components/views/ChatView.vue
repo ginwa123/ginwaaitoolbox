@@ -2,9 +2,9 @@
 import {
   ref,
   reactive,
-  watch,
   onMounted,
   onUnmounted,
+  onUpdated,
   nextTick,
   computed,
   inject,
@@ -789,6 +789,7 @@ const showCenterStage = computed(() => showCenterDiff.value || showCodeViewer.va
 function scrollToCenterFile(path: string) {
   // Click on an already-loaded file scrolls instead of refetching.
   currentPath.value = path
+  if (showCenterDiff.value) syncDiffParam(path)
   // Expand before scrolling: landing on a collapsed section would scroll to a
   // one-line stub and look like the click did nothing.
   if (collapsedPaths.has(path)) {
@@ -802,7 +803,10 @@ function onChatSidebarShowDiff(selection: DiffSelection) {
   centerDiff.value = selection
   const idx = centerFiles.value.findIndex((f) => f.path === selection.path)
   if (idx >= 0) centerFiles.value[idx] = selection
-  else centerFiles.value.push(selection)
+  else {
+    centerFiles.value.push(selection)
+    syncCenterSpy()
+  }
   void nextTick(() => scrollToCenterFile(selection.path))
 }
 
@@ -815,6 +819,7 @@ function onChatSidebarShowDiffList(files: DiffSelection[]) {
     if (!incoming.has(existing.path)) merged.push(existing)
   }
   centerFiles.value = merged
+  syncCenterSpy()
   // A file that arrived WHILE the bulk state was "all collapsed" must arrive
   // collapsed too, or the next poll would silently expand one row.
   if (allCollapsed.value) {
@@ -831,6 +836,7 @@ function onChatSidebarShowDiffList(files: DiffSelection[]) {
 function onCenterDiffBack() {
   centerDiff.value = null
   centerFiles.value = []
+  syncCenterSpy()
   currentPath.value = null
   // Per-file view state dies with the stage, and the bulk param with it.
   collapsedPaths.clear()
@@ -869,7 +875,10 @@ function startCenterSpy() {
           best = path
         }
       }
-      if (best) currentPath.value = best
+      if (best) {
+        currentPath.value = best
+        if (showCenterDiff.value) syncDiffParam(best)
+      }
     },
     { root, rootMargin: '-40% 0px -55%', threshold: [0, 0.25, 0.5, 0.75, 1] },
   )
@@ -900,19 +909,16 @@ function syncDiffParam(path: string | null) {
   router.replace({ path: route.path, query }).catch(() => {})
 }
 
-watch(currentPath, (path) => {
-  // Replace, not push — scrolling must not spam history entries.
-  if (!showCenterDiff.value) return
-  syncDiffParam(path)
-})
+// (The old currentPath watcher lived here — every assignment site below
+// now calls syncDiffParam explicitly. Replace, not push — scrolling must
+// not spam history entries.)
 
-watch(
-  () => centerFiles.value.length,
-  () => {
-    if (centerFiles.value.length === 0) stopCenterSpy()
-    else void nextTick(() => startCenterSpy())
-  },
-)
+// Start/stop the scroll-spy to match the file list (replaces the old
+// centerFiles.length watcher). Called explicitly after every assignment.
+const syncCenterSpy = () => {
+  if (centerFiles.value.length === 0) stopCenterSpy()
+  else void nextTick(() => startCenterSpy())
+}
 
 function onCenterDiffRetry() {
   chatSidebarRef.value?.reloadDiff()
@@ -927,9 +933,12 @@ function onCenterDiffRetry() {
 async function refreshWorktreeBinding() {
   if (!sessionId.value || isPendingSession.value) return
   try {
+    const prevCwd = effectiveCwd.value
     const data = await api.getChatHistory(sessionId.value, 1)
     if (data.git_worktree_cwd !== undefined) gitWorktreeCwd.value = data.git_worktree_cwd
     if (data.cwd) sessionCwd.value = data.cwd
+    // Replaces the old effectiveCwd watcher arm for the SSE-append path.
+    noteCwdMutation(prevCwd)
     if (data.pr_url !== undefined) chatPrUrl.value = data.pr_url ?? ''
     if (data.pr_provider !== undefined) chatPrProvider.value = data.pr_provider ?? ''
   } catch (err) {
@@ -2890,8 +2899,12 @@ const applyDeltaExtra = (extra: {
   max_capacity_total_tokens?: number
   skills?: typeof sessionSkills.value
 }) => {
-  if (extra.cwd) sessionCwd.value = extra.cwd
-  if (extra.git_worktree_cwd !== undefined) gitWorktreeCwd.value = extra.git_worktree_cwd
+  if (extra.cwd || extra.git_worktree_cwd !== undefined) {
+    const prevCwd = effectiveCwd.value
+    if (extra.cwd) sessionCwd.value = extra.cwd
+    if (extra.git_worktree_cwd !== undefined) gitWorktreeCwd.value = extra.git_worktree_cwd
+    noteCwdMutation(prevCwd)
+  }
   if (extra.pr_url !== undefined) chatPrUrl.value = extra.pr_url ?? ''
   if (extra.pr_provider !== undefined) chatPrProvider.value = extra.pr_provider ?? ''
   if (extra.selected_profile_model !== undefined)
@@ -3000,12 +3013,16 @@ const runHistoryLoadAttempt = async () => {
     ),
   )
 
-  if (data.cwd) {
-    sessionCwd.value = data.cwd
-  }
+  if (data.cwd || data.git_worktree_cwd !== undefined) {
+    const prevCwd = effectiveCwd.value
+    if (data.cwd) {
+      sessionCwd.value = data.cwd
+    }
 
-  if (data.git_worktree_cwd !== undefined) {
-    gitWorktreeCwd.value = data.git_worktree_cwd
+    if (data.git_worktree_cwd !== undefined) {
+      gitWorktreeCwd.value = data.git_worktree_cwd
+    }
+    noteCwdMutation(prevCwd)
   }
 
   // Attached-PR binding for the sidebar's PR-changes mode. Loaded
@@ -3019,12 +3036,12 @@ const runHistoryLoadAttempt = async () => {
   }
 
   // 2026-08-07-profile-persist-read — load the persisted profile
-  // selection from the messages endpoint response. The watch on
-  // sessionId.value (below) ALSO reads it from getSession() (which
-  // calls the same endpoint), but the watch is `immediate: false`
+  // selection from the messages endpoint response. onSessionChanged
+  // (below) ALSO reads it from getSession() (which
+  // calls the same endpoint), but it runs on mount/switch
   // and races with loadChatHistory on initial mount. Reading it here
   // is the authoritative source: whichever finishes first, the value
-  // is the same. The watch's later update will agree and not clobber.
+  // is the same. The handler's later update will agree and not clobber.
   if (data.selected_profile_model !== undefined) {
     selectedProfile.value = data.selected_profile_model || null
   }
@@ -4293,6 +4310,9 @@ const updateStreamingMessage = () => {
 
 onMounted(async () => {
   sessionId.value = props.chatId.replace(/^chat-/, '')
+  // Replaces the old sessionId watchers (profile load + scroll-logger
+  // refresh): the id is fixed for the component lifetime.
+  void onSessionChanged(sessionId.value)
 
   if (props.cwd) {
     sessionCwd.value = props.cwd
@@ -4390,33 +4410,38 @@ document.addEventListener('click', closeOnOutsideClick)
 // other window-level listener this view owns.
 window.addEventListener('message', onHtmlFrameResize)
 
-// When the session changes, load the current selection from the backend
-watch(
-  () => sessionId.value,
-  async (newId) => {
-    // Any page armed for the previous session is invalid — drop it before
-    // the new session's history loads. (The component is normally keyed
-    // per chat, but this watcher is the one place we can be sure the id
-    // actually changed without a remount.)
-    resetOlderPrefetch('session-change')
-    if (!newId) {
-      selectedProfile.value = null
-      return
-    }
-    try {
-      const session = await api.getSession(newId)
-      selectedProfile.value = session?.selectedProfile ?? null
-    } catch (err) {
-      console.error('Failed to load session profile:', err)
-      selectedProfile.value = null
-    }
-  },
-  { immediate: false },
-)
+// Session-change entry point (replaces the two old sessionId watchers).
+// The component is keyed per chat, so the id is fixed for the component
+// lifetime — this runs once from onMounted below. It loads the session's
+// profile selection AND refreshes the scroll logger so the chatId tag in
+// every line stays accurate.
+const onSessionChanged = async (newId: string) => {
+  refreshScrollLogger()
+  // Any page armed for the previous session is invalid — drop it before
+  // the new session's history loads.
+  resetOlderPrefetch('session-change')
+  if (!newId) {
+    selectedProfile.value = null
+    return
+  }
+  try {
+    const session = await api.getSession(newId)
+    selectedProfile.value = session?.selectedProfile ?? null
+  } catch (err) {
+    console.error('Failed to load session profile:', err)
+    selectedProfile.value = null
+  }
+}
 
-watch(
-  () => messages.value.length,
-  () => {
+// Auto-stick on new messages (replaces the old messages.length watcher).
+// `onUpdated` with a prev-length guard fires for every append path (user
+// sends, SSE chunks, tool results) exactly like the watcher did, and the
+// isAtBottom gates keep scrolled-up readers undisturbed.
+let prevMessagesLength = messages.value.length
+onUpdated(() => {
+  if (messages.value.length === prevMessagesLength) return
+  prevMessagesLength = messages.value.length
+  {
     if (isInitialLoad) return // initial-load branch handled scroll explicitly
     if (!isAtBottom.value) return // don't disturb scrolled-up readers
     scrollLogger.markProgrammatic()
@@ -4442,41 +4467,37 @@ watch(
       if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
       scrollToBottom(false, 'messages-length')
     })
-  },
-)
+  }
+})
 
-watch(
-  () => effectiveCwd.value,
-  (newCwd) => {
-    // A changed cwd invalidates the shown diff (e.g. worktree bound or
-    // cleared mid-review) — stop the spy synchronously before clearing
-    // so the observer can't fire during teardown and write a stale
-    // ?diff= racing the chat-switch navigation.
-    stopCenterSpy()
-    centerDiff.value = null
-    centerFiles.value = []
-    currentPath.value = null
-    if (newCwd) {
-      checkGitStatus()
-    } else {
-      gitStatus.value = null
-      // Reset the paint gate too — returning to the same cwd later
-      // must re-read the cache instead of waiting out the fetch.
-      gitStatusCwd = ''
-    }
-  },
-)
+// React to an effective-cwd change (replaces the old effectiveCwd
+// watcher). A changed cwd invalidates the shown diff (e.g. worktree
+// bound or cleared mid-review).
+const onEffectiveCwdChanged = (newCwd: string) => {
+  // Stop the spy synchronously before clearing so the observer can't
+  // fire during teardown and write a stale ?diff= racing the
+  // chat-switch navigation.
+  stopCenterSpy()
+  centerDiff.value = null
+  centerFiles.value = []
+  syncCenterSpy()
+  currentPath.value = null
+  if (newCwd) {
+    checkGitStatus()
+  } else {
+    gitStatus.value = null
+    // Reset the paint gate too — returning to the same cwd later
+    // must re-read the cache instead of waiting out the fetch.
+    gitStatusCwd = ''
+  }
+}
 
-// Refresh the scroll logger whenever the active chat changes so the
-// chatId tag in every line stays accurate. Runs on initial mount too
-// (sessionId is set in onMounted but the watch is registered before).
-watch(
-  () => sessionId.value,
-  () => {
-    refreshScrollLogger()
-    resetOlderPrefetch('session-change')
-  },
-)
+// Call after any assignment to sessionCwd / gitWorktreeCwd; runs the
+// side effects only when the effective cwd actually changed (the old
+// watcher only fired on change too).
+const noteCwdMutation = (prevCwd: string) => {
+  if (effectiveCwd.value !== prevCwd) onEffectiveCwdChanged(effectiveCwd.value)
+}
 
 // ─── Send Message ─────────────────────────────────────────────────────────────
 
@@ -5775,10 +5796,8 @@ const compactSession = async () => {
             style="color: var(--semantic-text-dim)"
             data-testid="chat-center-diff-count"
           >
-            {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : '' }}<template
-              v-if="collapsedCount > 0"
-              > · {{ collapsedCount }} collapsed</template
-            >
+            {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : ''
+            }}<template v-if="collapsedCount > 0"> · {{ collapsedCount }} collapsed</template>
           </span>
           <!-- LAYOUT axis (global): how the lines are laid out. -->
           <span

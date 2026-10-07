@@ -9,8 +9,9 @@
  * `No messages yet.`). This host calls the composable exactly once per
  * mount in its own setup and renders the presentational
  * `SubAgentPeekPanel`. ChatView keys the host by `sessionId`, so
- * eye-click A → B remounts with a fresh sid (plus the composable's
- * internal `watch(sessionId)` covers reuse without remount).
+ * eye-click A → B remounts with a fresh sid (the composable reads
+ * `opts.sessionId` once at mount — reuse without remount cannot happen
+ * through this host).
  */
 import SubAgentPeekPanel from './SubAgentPeekPanel.vue'
 import { useSubAgentPeek } from '../../composables/useSubAgentPeek'

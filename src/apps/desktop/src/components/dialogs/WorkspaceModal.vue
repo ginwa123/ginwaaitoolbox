@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, nextTick, onMounted, onUpdated } from 'vue'
 
 const props = defineProps<{
   show: boolean
@@ -13,14 +13,11 @@ const emit = defineEmits<{
 const name = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 
-// Focus input when modal opens
-watch(() => props.show, async (show) => {
-  if (show) {
-    name.value = ''
-    await nextTick()
-    nameInput.value?.focus()
-  }
-})
+const handleOpen = async () => {
+  name.value = ''
+  await nextTick()
+  nameInput.value?.focus()
+}
 
 const handleClose = () => {
   emit('close')
@@ -40,6 +37,19 @@ const handleKeydown = (event: KeyboardEvent) => {
     handleClose()
   }
 }
+
+// Open-reset without watch(): seed on mount (initial show=true) and on
+// closed->open updates. A Transition before-enter hook cannot do this — it
+// never fires on initial mount (no `appear`) and VTU stubs Transition, so
+// specs that mount then setProps(show=true) would see empty fields.
+const wasShown = ref(props.show)
+onMounted(() => {
+  if (props.show) void handleOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShown.value) void handleOpen()
+  wasShown.value = props.show
+})
 </script>
 
 <template>
@@ -52,21 +62,15 @@ const handleKeydown = (event: KeyboardEvent) => {
         @keydown="handleKeydown"
       >
         <!-- Backdrop -->
-        <div
-          class="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          @click="handleClose"
-        />
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="handleClose" />
 
         <!-- Modal Content -->
         <div
           class="relative w-full max-w-sm mx-4 p-6 rounded-xl shadow-2xl"
-          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
         >
           <!-- Header -->
-          <h3
-            class="text-title-sm font-semibold mb-4"
-            style="color: var(--semantic-text);"
-          >
+          <h3 class="text-title-sm font-semibold mb-4" style="color: var(--semantic-text)">
             Create Workspace
           </h3>
 
@@ -74,7 +78,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <div class="mb-6">
             <label
               class="block text-dense font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
             >
               Workspace Name
             </label>
@@ -97,7 +101,10 @@ const handleKeydown = (event: KeyboardEvent) => {
             <button
               @click="handleClose"
               class="px-4 py-2 rounded-lg text-body font-medium transition-all duration-200"
-              style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
+              style="
+                background-color: var(--semantic-sidebar-bg);
+                color: var(--semantic-text-muted);
+              "
             >
               Cancel
             </button>
@@ -105,7 +112,10 @@ const handleKeydown = (event: KeyboardEvent) => {
               @click="handleCreate"
               :disabled="!name.trim()"
               class="px-4 py-2 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+              style="
+                background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+                color: var(--color-bg);
+              "
             >
               Create
             </button>

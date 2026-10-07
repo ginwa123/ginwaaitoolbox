@@ -10,7 +10,7 @@
   is an `error` the template shows, not an empty list.
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import { Effect } from 'effect'
 import { getPrChecks, type GitPrCheck, type GitPrChecks } from '../../../api'
 import { SyncRemoteError } from '../../../sync/SyncError'
@@ -125,13 +125,25 @@ onUnmounted(() => {
   if (poll !== undefined) window.clearInterval(poll)
 })
 
-watch(
-  () => [props.cwd, props.prUrl, props.prProvider] as const,
-  () => {
-    expanded.value = new Set()
-    void load()
-  },
-)
+// Reload on binding change (cwd / PR / provider): the expanded set belongs
+// to the previous PR, so it resets with the data. Prev-value guard on
+// update — same reset+load the watcher did.
+let prevChecksCwd = props.cwd
+let prevChecksPrUrl = props.prUrl
+let prevChecksProvider = props.prProvider
+onUpdated(() => {
+  if (
+    props.cwd === prevChecksCwd &&
+    props.prUrl === prevChecksPrUrl &&
+    props.prProvider === prevChecksProvider
+  )
+    return
+  prevChecksCwd = props.cwd
+  prevChecksPrUrl = props.prUrl
+  prevChecksProvider = props.prProvider
+  expanded.value = new Set()
+  void load()
+})
 
 // The sidebar's ↻ asks for this directly.
 defineExpose({ reload: load })

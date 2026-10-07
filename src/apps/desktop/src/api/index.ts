@@ -1977,11 +1977,11 @@ export async function getSession(sessionId: string): Promise<Session | null> {
       cwd?: string
       messages?: { session_name?: string }[]
       // 2026-08-07-profile-persist-read — extract the per-session
-      // selected profile name. Without this, the watch in ChatView
-      // that loads `selectedProfile` from `getSession()` would always
-      // see undefined and clobber any value loaded earlier from
-      // `getChatHistory()`. The backend's GET messages endpoint
-      // returns it via `SessionMessageResponse.selected_profile_model`.
+      // selected profile name. Without this, the onSessionChanged load
+      // in ChatView that reads `selectedProfile` from `getSession()`
+      // would always see undefined and clobber any value loaded
+      // earlier from `getChatHistory()`. The backend's GET messages
+      // endpoint returns it via `SessionMessageResponse.selected_profile_model`.
       selected_profile_model?: string
       sub_agent_name?: string
       parent_session_id?: string

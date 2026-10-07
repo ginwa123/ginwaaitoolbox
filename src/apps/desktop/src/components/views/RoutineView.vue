@@ -23,7 +23,7 @@
   Routine mode task_1789505553300_1 (option A, mirror agent_kanban_*).
 -->
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, onMounted, onUpdated } from 'vue'
 import {
   getRoutineItem,
   updateRoutineItem,
@@ -427,14 +427,17 @@ onMounted(() => {
   void load()
   void loadRoutineAgent()
 })
-watch(
-  () => props.itemId,
-  () => {
-    activeTab.value = 'routine'
-    void load()
-    void loadRoutineAgent()
-  },
-)
+
+// Reload on item change (prev-value guard on update — same reset+loads
+// the watcher did; mount is covered above).
+let prevRoutineItemId = props.itemId
+onUpdated(() => {
+  if (props.itemId === prevRoutineItemId) return
+  prevRoutineItemId = props.itemId
+  activeTab.value = 'routine'
+  void load()
+  void loadRoutineAgent()
+})
 </script>
 
 <template>

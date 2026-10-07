@@ -32,7 +32,7 @@
     emits: the same set <KanbanColumn> emits, plus `toggleCollapse`.
 -->
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import KanbanSortMenu from './KanbanSortMenu.vue'
 import KanbanTaskRow, { type KanbanRowDensity } from './KanbanTaskRow.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -177,8 +177,10 @@ const handleMenuSort = (columnId: string) => {
 
 // <KanbanSortMenu> has no custom `click` emit — its `@click` is a native
 // DOM listener that fires on ANY click inside the menu (that is how
-// <KanbanColumn> uses it). Watching the v-model pair is precise: it fires
-// only when the user actually picks a sort.
+// <KanbanColumn> uses it). The menu emits `update:sortBy` +
+// `update:direction` together per pick (see handleSelect), so the update
+// handlers below assign and emit exactly like the old watchers did: the
+// first run clears `sortModalColumnId`, the second is a no-op.
 const onSortPicked = () => {
   const columnId = sortModalColumnId.value
   if (!columnId) return
@@ -189,11 +191,15 @@ const onSortPicked = () => {
   })
   sortModalColumnId.value = null
 }
-// Two single-source watchers sharing one handler. The first run clears
-// `sortModalColumnId`, so a same-tick change to both refs is a no-op on the
-// second run rather than a double emit.
-watch(sortBy, onSortPicked)
-watch(direction, onSortPicked)
+
+const onSortByUpdate = (v: SortField) => {
+  sortBy.value = v
+  onSortPicked()
+}
+const onDirectionUpdate = (v: SortDirection) => {
+  direction.value = v
+  onSortPicked()
+}
 
 const handleSortModalBackdrop = () => {
   sortModalColumnId.value = null
@@ -503,9 +509,11 @@ onUnmounted(() => {
         style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
       >
         <KanbanSortMenu
-          v-model:sort-by="sortBy"
-          v-model:direction="direction"
+          :sort-by="sortBy"
+          :direction="direction"
           :show-trigger="false"
+          @update:sort-by="onSortByUpdate"
+          @update:direction="onDirectionUpdate"
         />
       </div>
     </div>

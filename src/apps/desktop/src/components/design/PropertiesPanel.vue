@@ -44,7 +44,7 @@
     data-testid="properties-delete-button" on the delete button
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onUpdated, ref } from 'vue'
 import type { DesignElement } from '../../api'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useDesignHistory } from '../../composables/useDesignHistory'
@@ -108,11 +108,12 @@ const handleNumericChange = (field: NumericField, value: number): void => {
   const el = singleElement.value
   if (el) {
     void history.capturePreState([el.id])
-    // Post-state is captured via watch below — when the element's
-    // field actually changes (via the store update mirror), we
-    // capture post-state. This fires once per @change.
+    // Post-state is captured via the debounced schedule below — when
+    // the element's field actually changes (via the store update
+    // mirror), we capture post-state. This fires once per @change.
   }
   emit('update', { [field]: value } as Partial<DesignElement>)
+  schedulePropertiesPanelCapturePost()
 }
 
 const handleStringChange = (field: StringField, value: string): void => {
@@ -121,34 +122,27 @@ const handleStringChange = (field: StringField, value: string): void => {
     void history.capturePreState([el.id])
   }
   emit('update', { [field]: value } as Partial<DesignElement>)
+  schedulePropertiesPanelCapturePost()
 }
 
 // Watch the single-element fields for actual change. When any
 // field updates (from a PropertiesPanel edit), we capture post-
 // state. The watcher is debounced to collapse rapid edits into a
 // single entry.
-let lastFieldsSnapshot: string = ''
+const fieldsFingerprint = (el: DesignElement): string =>
+  `${el.x}|${el.y}|${el.width}|${el.height}|${el.rotation}|${el.fill}|${el.stroke}|${el.stroke_width}|${el.corner_radius}|${el.opacity}|${el.name}|${el.text_content}|${el.image_url}|${el.type}`
 let propertiesPanelPostTimer: ReturnType<typeof setTimeout> | null = null
 function schedulePropertiesPanelCapturePost(): void {
+  // Snapshot before the parent's store update lands; the debounced
+  // callback only captures post-state when the fields actually changed.
+  const before = singleElement.value ? fieldsFingerprint(singleElement.value) : ''
   if (propertiesPanelPostTimer) clearTimeout(propertiesPanelPostTimer)
   propertiesPanelPostTimer = setTimeout(() => {
     propertiesPanelPostTimer = null
     const el = singleElement.value
-    if (el) void history.capturePostState([el.id])
+    if (el && before !== fieldsFingerprint(el)) void history.capturePostState([el.id])
   }, 80)
 }
-watch(
-  singleElement,
-  (el) => {
-    if (!el) return
-    const fingerprint = `${el.x}|${el.y}|${el.width}|${el.height}|${el.rotation}|${el.fill}|${el.stroke}|${el.stroke_width}|${el.corner_radius}|${el.opacity}|${el.name}|${el.text_content}|${el.image_url}|${el.type}`
-    if (lastFieldsSnapshot && lastFieldsSnapshot !== fingerprint) {
-      schedulePropertiesPanelCapturePost()
-    }
-    lastFieldsSnapshot = fingerprint
-  },
-  { deep: false },
-)
 
 // ─── Confirm-before-delete state ───────────────────────────────────────
 
@@ -184,17 +178,22 @@ const monacoLoadError = ref<string | null>(null)
 // element switch — that would clobber the user's in-progress edit.
 // Instead, we pull on (a) first expand and (b) explicit element
 // change while collapsed.
-watch(
-  () => singleElement.value?.id,
-  () => {
+// Seed the draft when the selected element changes while collapsed
+// (prev-id guard on update). Expanded edits are never clobbered.
+const prevElementId = ref<string | null>(singleElement.value?.id ?? null)
+onUpdated(() => {
+  const id = singleElement.value?.id ?? null
+  if (id !== prevElementId.value) {
+    prevElementId.value = id
     if (!htmlExpanded.value && singleElement.value) {
       htmlDraft.value = singleElement.value.text_content || ''
     }
-  },
-)
+  }
+})
 
-watch(htmlExpanded, async (expanded) => {
-  if (!expanded) return
+const handleExpandHtml = async (): Promise<void> => {
+  htmlExpanded.value = !htmlExpanded.value
+  if (!htmlExpanded.value) return
   if (!singleElement.value) return
   // Seed the draft on first expand.
   htmlDraft.value = singleElement.value.text_content || ''
@@ -243,7 +242,7 @@ watch(htmlExpanded, async (expanded) => {
     monacoLoadError.value = err instanceof Error ? err.message : String(err)
     monacoEditor.value = null
   }
-})
+}
 
 // Wire-up (undo/redo plan Chunk 1): was `emit('htmlChanged', htmlDraft.value)`
 // which went upward to DesignView → re-emitted → AppLayout had no
@@ -633,7 +632,7 @@ const showTypeSpecificSection = computed(
           data-testid="properties-toggle-html-editor"
           class="w-full text-left text-dense font-semibold flex items-center gap-2 mb-2 transition-colors"
           style="color: var(--semantic-text-dim);"
-          @click="htmlExpanded = !htmlExpanded"
+          @click="handleExpandHtml"
         >
           <span aria-hidden="true">{{ htmlExpanded ? '▼' : '▶' }}</span>
           <span>HTML Body (Monaco editor)</span>

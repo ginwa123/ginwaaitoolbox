@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, nextTick, onMounted, onUpdated } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -32,18 +32,12 @@ const emit = defineEmits<{
 const name = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 
-// Reset value when modal opens, focus input
-watch(
-  () => props.show,
-  async (show) => {
-    if (show) {
-      name.value = props.currentName
-      await nextTick()
-      nameInput.value?.focus()
-      nameInput.value?.select()
-    }
-  },
-)
+const handleOpen = async () => {
+  name.value = props.currentName
+  await nextTick()
+  nameInput.value?.focus()
+  nameInput.value?.select()
+}
 
 const handleClose = () => {
   emit('close')
@@ -64,6 +58,19 @@ const handleKeydown = (event: KeyboardEvent) => {
     handleClose()
   }
 }
+
+// Open-reset without watch(): seed on mount (initial show=true) and on
+// closed->open updates. A Transition before-enter hook cannot do this — it
+// never fires on initial mount (no `appear`) and VTU stubs Transition, so
+// specs that mount then setProps(show=true) would see empty fields.
+const wasShown = ref(props.show)
+onMounted(() => {
+  if (props.show) void handleOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShown.value) void handleOpen()
+  wasShown.value = props.show
+})
 </script>
 
 <template>

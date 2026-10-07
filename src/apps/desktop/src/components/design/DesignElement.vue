@@ -41,7 +41,7 @@
     - data-testid="design-element-handle-{corner}" on each resize handle
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUpdated, ref } from 'vue'
 import type { DesignElement } from '../../api'
 import { getDesignElementHtml } from '../../api'
 import DesignElementPreview from './DesignElementPreview.vue'
@@ -316,8 +316,7 @@ const startDrag = (event: PointerEvent, mode: DragMode): void => {
   // guard below still fires for child pointer-drags (the user has
   // to click on the parent's bounding box after the redirect to
   // initiate a drag; the redirect is purely a selection concern).
-  const useParentSelect =
-    !event.shiftKey && isChildOfGroup.value && parentElement.value !== null
+  const useParentSelect = !event.shiftKey && isChildOfGroup.value && parentElement.value !== null
   const selectTarget = useParentSelect ? parentElement.value : null
   const selectElementId = selectTarget ? selectTarget.id : props.element.id
 
@@ -781,26 +780,32 @@ const fetchHtml = async (): Promise<void> => {
 }
 
 onMounted(() => {
+  prevHtmlKey.value = htmlKey()
   void fetchHtml()
 })
 
 // Re-fetch when the element identity, file path, or updated_at
 // changes. `updated_at` is the proxy for "the user re-saved the
 // HTML via Monaco in the PropertiesPanel" — the path stays the same
-// but the file content changed.
-watch(
-  () => [props.element.id, props.element.file_path, props.element.updated_at],
-  () => {
+// but the file content changed. Prev-combo guard on update instead
+// of a watcher; mount above covers the initial fetch.
+const prevHtmlKey = ref('')
+const htmlKey = () => `${props.element.id}|${props.element.file_path}|${props.element.updated_at}`
+onUpdated(() => {
+  const key = htmlKey()
+  if (key !== prevHtmlKey.value) {
+    prevHtmlKey.value = key
     void fetchHtml()
-  },
-)
+  }
+})
 
 // ─── Delete (Delete/Backspace key on the selected element) ──────────────
 //
 // We don't bind window keydown here (the parent DesignView owns
 // keyboard events); the parent emits `delete` on the active element.
-// Expose a method for the parent to call: see the watcher below that
-// listens for the `Delete` key globally when this element is selected.
+// A global keydown listener attached at mount below handles the
+// `Delete` key when this element is selected (gated on selection
+// inside handleKeydown).
 //
 // Actually — we DO bind a window listener when selected so the user
 // can hit Delete without the canvas having to know. Cleaner UX than
@@ -845,11 +850,7 @@ onUnmounted(() => {
     class="design-element absolute"
     :class="[
       selected || selectedIds.includes(element.id) ? 'selected' : '',
-      readonly
-        ? 'cursor-default'
-        : isChildOfGroup
-          ? 'cursor-pointer'
-          : 'cursor-move',
+      readonly ? 'cursor-default' : isChildOfGroup ? 'cursor-pointer' : 'cursor-move',
       isDragging ? 'dragging' : '',
     ]"
     :style="elementStyle"

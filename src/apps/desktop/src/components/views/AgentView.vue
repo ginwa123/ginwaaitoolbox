@@ -14,7 +14,7 @@
   better empty state. See plan: docs/superpowers/plans/2026-08-20-agent-tools-ui-ux.md
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import * as api from '../../api'
 import { useAgentToolsStore } from '../../stores/agentTools'
 import type { WorkspaceItem } from '../../stores/workspaces'
@@ -162,13 +162,6 @@ onMounted(async () => {
     loading.value = false
   }
 })
-
-watch(
-  () => props.tools,
-  () => {
-    // Re-render when tools prop changes.
-  },
-)
 
 function isToolEnabled(name: string): boolean {
   return enabledToolSet.value.has(name)

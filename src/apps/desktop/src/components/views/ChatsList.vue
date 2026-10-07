@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, inject, onMounted, onUnmounted, nextTick, computed, type Ref } from 'vue'
+import { ref, inject, onMounted, onUnmounted, onUpdated, nextTick, computed, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -160,11 +160,10 @@ const refreshChatPrStatus = async (item: ChatRow) => {
   else if (prConflicts.value[item.id]) delete prConflicts.value[item.id]
 }
 
-// Note: the navItems watcher that triggers refreshChatPrStatus lives
-// below, right after the navItems declaration (TDZ: watch() evaluates
-// its source eagerly, so it must run after `const navItems`).
-
-// Helper to check if a session is processing
+// Helper to check if a session is processing. Reads the injected
+// processingState live so rows reflect spinner state without mirroring
+// it onto each row object.
+const isProcessing = (id: string): boolean => !!processingState.value[id]
 
 // State
 const chatsLoading = ref(false)
@@ -173,7 +172,6 @@ const navItems = ref<
     id: string
     name: string
     active?: boolean
-    processing?: boolean
     relativeTime?: string
     selected_profile_model?: string
     sub_agent_name?: string
@@ -196,16 +194,12 @@ const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirectio
 const chatsTotal = ref(0)
 
 // Resolve PR colors whenever the row list (re)populates — same burst
-// pattern as the kanban board mount.
-watch(
-  navItems,
-  (items) => {
-    for (const item of items || []) {
-      if (item.git_branch) void refreshChatPrStatus(item)
-    }
-  },
-  { deep: false },
-)
+// pattern as the kanban board mount. Runs at the end of loadChats().
+const burstChatPrStatus = () => {
+  for (const item of navItems.value || []) {
+    if (item.git_branch) void refreshChatPrStatus(item)
+  }
+}
 
 // Right-click action menu for a chat row. Position state + dismiss
 // wiring live in useContextMenu; the row payload lives here so the menu
@@ -406,6 +400,7 @@ const openGitPrInBackground = () => {
 // Vue template compiler (see ChatsList activeFromUrl specs).
 const onSortToggle = () => {
   chatsSortDirection.value = chatsSortDirection.value === 'desc' ? 'asc' : 'desc'
+  navigationStore.setChatsSortDirection(chatsSortDirection.value)
   loadChats()
 }
 
@@ -480,23 +475,6 @@ const stopChatsResize = () => {
   document.body.style.cursor = ''
 }
 
-// Watch for local changes and sync to store
-watch(chatsSortDirection, (newVal) => {
-  navigationStore.setChatsSortDirection(newVal)
-})
-
-// Watch for processingState changes from App.vue
-watch(
-  processingState,
-  (state) => {
-    navItems.value = navItems.value.map((item) => ({
-      ...item,
-      processing: !!state[item.id], // Show spinner for ANY processing chat, not just active
-    }))
-  },
-  { deep: true },
-)
-
 // Public methods for parent to call
 // Amber stale-dot clear (yellow-dot-fix): optimistic patch + best-effort
 // backend touch. isStale() predicate is unchanged — clearing the dot
@@ -551,7 +529,6 @@ const toNavItem = (session: any) => ({
   // it here would freeze the highlight at loadChats() time and
   // leave stale `active: true` after navigation away from chat.
   active: false,
-  processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
   // Migration 082 — prefer human-touched timestamp when present.
   relativeTime: formatRelativeTime(session.last_human_touched_at || session.updated_at),
   selected_profile_model: session.selected_profile_model || '',
@@ -619,7 +596,7 @@ const scheduleLoadRetry = (ctx: string) => {
   loadRetryAttempt += 1
   loadRetryTimer = setTimeout(() => {
     loadRetryTimer = undefined
-    // Scope moved on while we waited — that watcher owns the load now.
+    // Scope moved on while we waited — the scope guard owns the load now.
     if (sessionCacheKey() !== ctx) return
     void loadChats()
   }, delay)
@@ -684,6 +661,7 @@ const loadChats = async () => {
     )
     chatsLoading.value = false
   }
+  burstChatPrStatus()
 }
 
 // Deep-link / refresh cover, extracted so both the cache paint and
@@ -784,8 +762,9 @@ const toggleNavSection = () => {
 // list is scoped per workspace, so a scope change clears the old
 // workspace's rows FIRST (no stale frame) and refetches. Clearing
 // before the async fetch lands is what keeps the wrong workspace's
-// chats from flashing on a fast switch.
-watch(scopedWorkspaceId, () => {
+// chats from flashing on a fast switch. Runs from the scope guard
+// below (mount seeds it; updates refetch on scope change).
+const switchWorkspaceScope = () => {
   navItems.value = []
   chatsNextCursor.value = null
   chatsHasMore.value = false
@@ -796,6 +775,16 @@ watch(scopedWorkspaceId, () => {
   // A pending retry belongs to the scope that scheduled it.
   clearLoadRetry()
   loadChats()
+}
+const prevScopeId = ref(scopedWorkspaceId.value)
+onMounted(() => {
+  prevScopeId.value = scopedWorkspaceId.value
+})
+onUpdated(() => {
+  if (scopedWorkspaceId.value !== prevScopeId.value) {
+    prevScopeId.value = scopedWorkspaceId.value
+    switchWorkspaceScope()
+  }
 })
 
 /**
@@ -975,14 +964,6 @@ onMounted(async () => {
   loadChats()
 })
 
-// Watch for processingState changes
-watch(processingState, (state) => {
-  navItems.value = navItems.value.map((item) => ({
-    ...item,
-    processing: !!state[item.id], // Show spinner for ANY processing chat, not just active
-  }))
-})
-
 onUnmounted(() => {
   // No SSE teardown needed — ChatsList no longer owns a session-
   // event stream. The canonical subscription lives in the
@@ -1012,10 +993,15 @@ defineExpose({
 </script>
 
 <template>
-  <!-- Chats Section with Resizable Height -->
+  <!-- Chats Section with Resizable Height.
+       data-workspace-scope keeps this component's own render effect
+       subscribed to the scope (row slots render inside VirtualScroller
+       and don't subscribe us): a scope change re-renders here, which
+       is what fires the onUpdated scope guard below. Do not remove. -->
   <div
     v-if="!collapsed"
     class="shrink-0 flex flex-col"
+    :data-workspace-scope="scopedWorkspaceId ?? ''"
     :style="
       sidebarStore.navExpanded
         ? { height: sidebarStore.chatsHeight + '%', minHeight: '80px' }
@@ -1142,7 +1128,7 @@ defineExpose({
                  Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md (Task 8) -->
             <!-- Keep the spinner as the only right-side activity marker while processing. -->
             <span
-              v-if="!processingState[item.id]"
+              v-if="!isProcessing(item.id)"
               class="text-micro opacity-60 shrink-0 ml-2 flex items-center gap-1"
             >
               <span
@@ -1204,7 +1190,7 @@ defineExpose({
     :x="menuPos.x"
     :y="menuPos.y"
     :chat-name="contextMenuChat?.name ?? ''"
-    :is-processing="contextMenuChatId ? !!processingState[contextMenuChatId] : false"
+    :is-processing="contextMenuChatId ? isProcessing(contextMenuChatId) : false"
     :unattended="isUnattended(contextMenuChat ?? {})"
     :is-stopping="isStoppingChat"
     @rename="startRenameFromMenu"

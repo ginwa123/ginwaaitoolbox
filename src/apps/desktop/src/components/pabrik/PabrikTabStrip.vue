@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { onMounted, onUpdated } from 'vue'
 import { useRoute } from 'vue-router'
 
 const STORAGE_KEY = 'pabrik-settings-active-tab'
@@ -48,16 +48,31 @@ onMounted(() => {
   }
 })
 
-watch(
-  () => props.modelValue,
-  (val) => {
-    try {
-      localStorage.setItem(STORAGE_KEY, val)
-    } catch {
-      /* quota / private mode */
-    }
-  },
-)
+// Persist the active tab alongside the emit so refresh restores it (the
+// parent also strips the default tab from the URL — storage is the
+// fallback the URL-backed computed reads).
+function persistTab(id: TabId) {
+  try {
+    localStorage.setItem(STORAGE_KEY, id)
+  } catch {
+    /* quota / private mode */
+  }
+}
+function selectTab(id: TabId) {
+  persistTab(id)
+  emit('update:modelValue', id)
+}
+
+// The strip is controlled: the parent applies v-model after the click, so
+// a parent-driven prop change persists too (prev-value guard on update).
+// The click handler above already wrote the same value — same write twice,
+// not two writes.
+let prevTabValue = props.modelValue
+onUpdated(() => {
+  if (props.modelValue === prevTabValue) return
+  prevTabValue = props.modelValue
+  persistTab(props.modelValue)
+})
 </script>
 
 <template>
@@ -75,7 +90,7 @@ watch(
       :aria-selected="modelValue === tab.id"
       :data-tab-id="tab.id"
       :data-active="modelValue === tab.id ? 'true' : 'false'"
-      @click="emit('update:modelValue', tab.id)"
+      @click="selectTab(tab.id)"
       class="relative px-4 h-10 text-body font-medium transition-colors duration-150"
       :style="{
         color: modelValue === tab.id ? 'var(--semantic-text)' : 'var(--semantic-text-muted)',

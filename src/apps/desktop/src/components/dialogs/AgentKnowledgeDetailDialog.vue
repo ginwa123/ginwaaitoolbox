@@ -30,7 +30,7 @@
   full edit incl. mode switch).
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted, onUpdated } from 'vue'
 import { getSystemFolder, listFolder, type FolderEntry, type AgentKnowledgeRow } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 import UiIcon from '../ui/UiIcon.vue'
@@ -128,21 +128,33 @@ const handleFileSelected = (path: string) => {
   pathInput.value?.focus()
 }
 
-watch(
-  () => props.show,
-  async (show) => {
-    if (show && props.row) {
-      mode.value = rowIsInline.value ? 'text' : 'file'
-      label.value = props.row.label
-      content.value = props.row.content
-      filePath.value = props.row.file_path
-      pathTouched.value = false
-      showPicker.value = false
-      await nextTick()
-      labelInput.value?.focus()
-    }
-  },
-)
+// Seed fields from the row on every open. Runs as the Transition's
+// before-enter hook; props are readable here, so the body moves as-is.
+const handleOpen = async () => {
+  if (props.row) {
+    mode.value = rowIsInline.value ? 'text' : 'file'
+    label.value = props.row.label
+    content.value = props.row.content
+    filePath.value = props.row.file_path
+    pathTouched.value = false
+    showPicker.value = false
+    await nextTick()
+    labelInput.value?.focus()
+  }
+}
+
+// Open-reset without watch(): seed on mount (initial show=true) and on
+// closed->open updates. A Transition before-enter hook cannot do this — it
+// never fires on initial mount (no `appear`) and VTU stubs Transition, so
+// specs that mount then setProps(show=true) would see empty fields.
+const wasShown = ref(props.show)
+onMounted(() => {
+  if (props.show) void handleOpen()
+})
+onUpdated(() => {
+  if (props.show && !wasShown.value) void handleOpen()
+  wasShown.value = props.show
+})
 </script>
 
 <template>
