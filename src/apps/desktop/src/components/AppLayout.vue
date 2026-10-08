@@ -833,6 +833,10 @@ const handleNavigate = (
     // Clear any workspace-item active state — navigating to a chat wins.
     workspacesStore.setActiveWorkspaceItem(null)
     navigationStore.setActiveChat(chatSessionId, chatName)
+    // The new chat URL carries no overlay query, so drop the previous
+    // chat's file synchronously (reconcileRoute also clears on the
+    // next pump — this avoids a one-frame flash of the old file).
+    clearAllOverlays()
     // Fetch cwd for folder explorer and git
     fetchChatSessionCwd(chatSessionId)
     router.push(chatTarget(chatSessionId))
@@ -1097,6 +1101,18 @@ const handleCommentSaved = () => {
 // Git file viewer state
 const gitViewerFile = ref<api.GitFileChange | null>(null)
 const gitViewerStaged = ref(false)
+
+// The editor session is global to AppLayout, not per-chat: switching the
+// main context (chat session, task, workspace item, document) must drop
+// any open overlay, otherwise the old file keeps rendering inside the new
+// chat's center column (ChatView reads the same injected refs). URL-only
+// restores re-open via restoreFromUrl below, so clearing here is safe.
+const clearAllOverlays = () => {
+  gitViewerFile.value = null
+  gitViewerStaged.value = false
+  skillViewerSkill.value = null
+  codeEditorSession.clear()
+}
 
 // Chat session cwd for folder explorer and git (fetched from API)
 const chatSessionCwd = ref<string>('')
@@ -2532,8 +2548,13 @@ const reconcileRoute = async () => {
     await fetchChatSessionCwd(parsed.sessionId)
     // An overlay on a chat path (readable editor link) still needs
     // its restore below — the path adoption above only rebuilds the
-    // cwd context the restore reads from.
-    if (!isOverlayView) return
+    // cwd context the restore reads from. Without an overlay in the
+    // URL the previous chat's file must go, otherwise the global
+    // session keeps rendering inside the new chat's center column.
+    if (!isOverlayView) {
+      clearAllOverlays()
+      return
+    }
   } else if (parsed.kind === 'project' || parsed.kind === 'projectChat') {
     // Path project URLs: adopt workspace + item, sync the task chat
     // suffix, drop any standalone chat. All writes are
@@ -2556,7 +2577,10 @@ const reconcileRoute = async () => {
       navigationStore.clearActiveChat()
     }
     chatSessionCwd.value = ''
-    if (!isOverlayView) return
+    if (!isOverlayView) {
+      clearAllOverlays()
+      return
+    }
   } else if (parsed.kind === 'landing' && !view) {
     if (workspacesStore.activeWorkspaceItemId !== null) {
       workspacesStore.setActiveWorkspaceItem(null)
@@ -2568,6 +2592,7 @@ const reconcileRoute = async () => {
       navigationStore.clearActiveChat()
     }
     chatSessionCwd.value = ''
+    clearAllOverlays()
     return
   } else if (parsed.kind === 'doc') {
     // A document is its own main view, so the chat / item / task
@@ -2593,6 +2618,7 @@ const reconcileRoute = async () => {
       navigationStore.clearActiveChat()
     }
     chatSessionCwd.value = ''
+    clearAllOverlays()
     return
   }
 
@@ -2649,15 +2675,11 @@ const reconcileRoute = async () => {
       })
     }
   } else {
-    // Clear git viewer when not in gitfile view
-    gitViewerFile.value = null
-    gitViewerStaged.value = false
-    // Clear skill viewer when not in skill view
-    skillViewerSkill.value = null
-    // Clear code editor when not in code-editor view
-    codeEditorFile.value = null
-    codeEditorContent.value = ''
-    codeEditorError.value = null
+    // No overlay in the URL: drop any open viewer. The full session
+    // clear also resets loadedKey/cwd/loading, so a later deep link
+    // with the same file still refetches instead of hitting the
+    // restore echo guard.
+    clearAllOverlays()
 
     if (view === 'chat' && sessionId) {
       if (activeChatId.value !== `chat-${sessionId}`) {
@@ -2904,6 +2926,21 @@ onUnmounted(() => {
 let prevPumpItemId: string | null = workspacesStore.activeWorkspaceItemId
 let prevPumpPageId: string | null | undefined = workspacesStore.activeDesignPageId
 let prevPumpCwd = rightSidebarCwd.value ?? ''
+let prevPumpChatId = navigationStore.activeChatId
+navigationStore.$subscribe(() => {
+  const nextChatId = navigationStore.activeChatId
+  if (nextChatId !== prevPumpChatId) {
+    prevPumpChatId = nextChatId
+    // Chat session switched (Sidebar, ChatsList, or handleNavigate all
+    // funnel through setActiveChat). The new chat URL carries no overlay
+    // query, so drop the previous chat's file synchronously — otherwise
+    // the remounted ChatView (keyed on activeChatId) flashes the old file
+    // for a frame before reconcileRoute clears on the next pump. When the
+    // destination URL does carry an overlay (deep link, Back/Forward),
+    // reconcileRoute's restore below re-opens it right after.
+    clearAllOverlays()
+  }
+})
 workspacesStore.$subscribe(() => {
   const wsId = activeWorkspaceId.value
   if (wsId) void initSseStores(wsId)
