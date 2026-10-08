@@ -446,4 +446,10 @@ test "repeated listings hand their pooled reader back instead of exhausting the 
     // out `reader_wait_ms`, and served the read on the WRITE connection —
     // which serializes that read against every concurrent write.
     try testing.expectEqual(@as(u64, 0), db.readFallbackCount());
+
+    // And nothing is still checked out. This catches the leak on its own,
+    // without relying on the pool filling up: a deinited cursor returns its
+    // reader, and a drained one does not. No allocator can see this — the row
+    // bytes belong to the arena, the connection to the pool.
+    try testing.expectEqual(@as(usize, 0), db.outstandingClaims());
 }

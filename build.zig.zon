@@ -8,14 +8,30 @@
         // Pinned by URL + hash; exposes a single `databases` module;
         // consumers `@import("databases")` to use it.
         .databases = .{
-            // e7cfb3f = branch `fix/pool-wait-instead-of-hijack-writer`
+            // 4667a64 = branch `fix/pool-wait-instead-of-hijack-writer`
             // (ruangsql#6), "a read waits for a reader instead of taking the
-            // write connection", plus the idle reaper from #49ac34f that came
+            // write connection", plus the idle reaper (8dbfd61) and "a
+            // reaping pass must never orphan a slot" (4667a64) that came
             // with it. This is a BRANCH SHA, not main: main's #5 merge is
-            // `fd52da1`, and the wait and the reaper are not on it yet. Move
-            // this pin to the merge SHA once #6 lands — see RE-PINNING below
-            // for why a pre-merge pin is a deliberate choice rather than an
-            // accident, and for the cost of forgetting.
+            // `fd52da1`, and none of the above is on it yet. Move this pin to
+            // the merge SHA once #6 lands.
+            //
+            // WHY THIS SHA IS NOT e7cfb3f, which #851 pinned. #851 was merged
+            // from the branch's PRE-rebase state, so main went in with a SHA
+            // that no longer exists on any branch. GitHub still served it, so
+            // main kept building — against the code as it was before the
+            // rebase, i.e. without the orphan fix and without
+            // `outstandingClaims`. That is the RE-PINNING trap below in its
+            // purest form: the build was green and the pin was wrong.
+            //
+            // Two things to check when this pin moves, because neither is
+            // implied by a successful build:
+            //   1. `.hash` CHANGED when the content changed, so a hash that
+            //      does not move across a SHA bump means the URL did not move
+            //      either (the hash is derived from the extracted content).
+            //   2. `rm -rf zig-pkg` before believing it. Zig keys the package
+            //      cache by `.hash`, so a stale extract satisfies a build
+            //      after the URL changes.
             //
             // WHAT #6 FIXES HERE, since the symptom arrived as a log line and
             // not as a bug report:
@@ -86,8 +102,8 @@
             // prints. Then `rm -rf zig-pkg && zig build` and confirm the
             // new symbol you rely on actually exists in the extracted
             // package.
-            .url = "git+https://github.com/ginwa123/ruangsql.git#e7cfb3f85e5515ad9b3d849bce6644c63068ef7a",
-            .hash = "databases-0.0.0-vy-BCDNDBgDM5sJN6-4fnAvVm8g_Rr8KFmMVR49G4DIl",
+            .url = "git+https://github.com/ginwa123/ruangsql.git#4667a64326feb0153ee38138ec7f5bd4e65e3501",
+            .hash = "databases-0.0.0-vy-BCPJXBgDFSm8zatg9HPEaUtpl3vjAFRrlOpSzeXPh",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Exposes a single `kabelweb` module
