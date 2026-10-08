@@ -125,6 +125,11 @@ fn registerWorkerRoutes(authed: *Group) !void {
     // // LLM API aliases (desktop app uses /api/llm/*)
     try authed.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
     try authed.put("/api/llm/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);
+    // Migration 104 - session pin for PINNED section above RECENT.
+    // Literal-first ordering: `reorder_pinned` before `:session_id/pin`
+    // so the literal never resolves as a param (route-order rule).
+    try authed.post("/api/llm/session/reorder_pinned", ai_mod.http_handlers.sessionReorderPinnedHandler);
+    try authed.post("/api/llm/session/:session_id/pin", ai_mod.http_handlers.sessionPinHandler);
     // LLM-alias prefix of the mark-as-seen endpoint above (desktop app
     // uses /api/llm/*). Same no-shadowing argument as above.
     try authed.post("/api/llm/session/:session_id/touched", ai_mod.http_handlers.sessionMarkTouchedHandler);
@@ -1011,4 +1016,26 @@ test "route table: every /api route except the open ones carries authMiddleware"
         }
     }
     try testing.expect(checked > 0);
+}
+
+test "route table: POST /api/llm/session/reorder_pinned wins over :session_id/pin" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var router = try buildRouteTable(a);
+
+    // The literal reorder route must resolve to its own handler, not be
+    // captured as session_id="reorder_pinned" by a param sibling.
+    const reorder = (try resolve(a, &router, "POST", "/api/llm/session/reorder_pinned")) orelse {
+        return error.ReorderRouteNotRegistered;
+    };
+    try testing.expect(reorder.handler == ai_mod.http_handlers.sessionReorderPinnedHandler);
+    try testing.expect(reorder.params.get("session_id") == null);
+
+    // The param route still resolves with the id intact.
+    const pin = (try resolve(a, &router, "POST", "/api/llm/session/sess_1/pin")) orelse {
+        return error.PinRouteNotRegistered;
+    };
+    try testing.expect(pin.handler == ai_mod.http_handlers.sessionPinHandler);
+    try testing.expectEqualStrings("sess_1", pin.params.get("session_id").?);
 }

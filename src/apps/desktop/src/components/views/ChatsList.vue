@@ -186,6 +186,9 @@ const navItems = ref<
     // `sort_by=updated_at` order). Used for display sorting and for
     // cache-first scroll-back (`loadOlderFromCache`).
     sortKey?: string
+    // Migration 104 — pinned sessions (PINNED section above RECENT).
+    is_pinned?: boolean
+    pinned_position?: number
   }[]
 >([])
 const chatsHasMore = ref(false)
@@ -215,13 +218,17 @@ const contextMenuChat = ref<{
   name: string
   selected_profile_model?: string
   is_auto_retry_until_stop?: string
+  is_pinned?: boolean
 } | null>(null)
 
 // Re-entry lock for "Stop agent": the row stays actionable while the
 // POST is in flight otherwise, and a double-click fires it twice.
 const isStoppingChat = ref(false)
 
-const onChatRowContextMenu = (event: MouseEvent, item: { id: string; name: string }) => {
+const onChatRowContextMenu = (
+  event: MouseEvent,
+  item: { id: string; name: string; is_pinned?: boolean },
+) => {
   contextMenuChatId.value = item.id
   contextMenuChat.value = item
   openAt(event)
@@ -546,6 +553,10 @@ const toNavItem = (session: any) => ({
   last_human_touched_at: session.last_human_touched_at || '',
   updated_at: session.updated_at || '',
   sortKey: session.updated_at || '',
+  // Migration 104 — pinned sessions. Boolean on the wire; default
+  // false so legacy caches read as unpinned.
+  is_pinned: session.is_pinned ?? false,
+  pinned_position: session.pinned_position ?? 0,
 })
 
 // Display order for cached paints. The engine stores newest-first;
@@ -559,6 +570,135 @@ const sortNavItemsForDisplay = () => {
     if (ak === bk) return 0
     return (ak < bk ? -1 : 1) * (asc ? 1 : -1)
   })
+}
+
+// Migration 104 — PINNED section above RECENT. Pinned rows sort by
+// `pinned_position` DESC (first pinned = highest position = top);
+// recents exclude pinned rows entirely so a session never renders twice.
+const pinnedItems = computed(() =>
+  navItems.value
+    .filter((i) => i.is_pinned)
+    .slice()
+    .sort((a, b) => (b.pinned_position ?? 0) - (a.pinned_position ?? 0)),
+)
+const recentItems = computed(() => navItems.value.filter((i) => !i.is_pinned))
+const recentTotal = computed(() => Math.max(0, chatsTotal.value - pinnedItems.value.length))
+
+// Right-click pin/unpin (Migration 104). Optimistic flip + cache
+// write-through; reverted on failure. The SSE reload revalidates
+// totals/cursors a moment later regardless of outcome.
+const togglePinFromMenu = async () => {
+  const chat = pickedChat()
+  closeContextMenu()
+  if (!chat) return
+  const next = !chat.is_pinned
+  const row = navItems.value.find((item) => item.id === chat.id)
+  const prevPinned = row?.is_pinned
+  const prevPos = row?.pinned_position
+  if (row) {
+    row.is_pinned = next
+    if (!next) row.pinned_position = 0
+  }
+  try {
+    const res = await api.pinSession(chat.id, next)
+    if (row && next && res && typeof res.pinned_position === 'number') {
+      row.pinned_position = res.pinned_position
+    }
+    await runSyncVoid(
+      sessionEngineDb.putLocal(
+        sessionCacheKey(),
+        navItems.value.map((r) => toSessionRow(mapNavItemToChat(r))),
+      ),
+      'sessions.putLocal',
+    )
+  } catch (err) {
+    if (row) {
+      row.is_pinned = prevPinned
+      row.pinned_position = prevPos
+    }
+    console.error('Failed to toggle session pin:', err)
+  }
+}
+
+// Minimal Chat shape for the cache write-through above. The engine
+// stores the full server row in `raw`; the list mapper is the only
+// shape ChatsList owns, so rebuild the wire object from it.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
+const mapNavItemToChat = (r: any): any => ({
+  session_id: r.id,
+  session_name: r.name,
+  cwd: r.cwd ?? '',
+  git_worktree_cwd: r.git_worktree_cwd ?? '',
+  git_branch: r.git_branch ?? '',
+  updated_at: r.updated_at ?? '',
+  selected_profile_model: r.selected_profile_model ?? '',
+  is_auto_retry_until_stop: r.is_auto_retry_until_stop ?? '0',
+  last_human_touched_at: r.last_human_touched_at ?? '',
+  is_pinned: r.is_pinned ?? false,
+  pinned_position: r.pinned_position ?? 0,
+})
+
+// PINNED drag-drop reorder (Migration 104). HTML5 DnD on the pinned
+// rows only (small list, no virtualization): dragstart captures the id,
+// dragover tracks the target + before/after half, drop splices +
+// POSTs the full top-to-bottom order. Mirrors WorkspaceItem's pinned
+// reorder (custom MIME type so parent drag handlers ignore it).
+const dragPinnedId = ref<string | null>(null)
+const dragPinnedOverId = ref<string | null>(null)
+const dragPinnedBefore = ref(false)
+
+const onPinnedDragStart = (event: DragEvent, id: string) => {
+  dragPinnedId.value = id
+  dragPinnedOverId.value = null
+  event.dataTransfer?.setData('application/x-pinned-session-id', id)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+const onPinnedDragOver = (event: DragEvent, id: string) => {
+  if (!dragPinnedId.value || dragPinnedId.value === id) return
+  event.preventDefault()
+  const el = event.currentTarget as HTMLElement | null
+  const rect = el?.getBoundingClientRect()
+  const before = rect ? event.clientY < rect.top + rect.height / 2 : true
+  dragPinnedOverId.value = id
+  dragPinnedBefore.value = before
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+const onPinnedDragLeave = () => {
+  dragPinnedOverId.value = null
+}
+
+const onPinnedDrop = async (event: DragEvent, targetId: string) => {
+  event.preventDefault()
+  const draggedId = dragPinnedId.value
+  dragPinnedId.value = null
+  dragPinnedOverId.value = null
+  if (!draggedId || draggedId === targetId) return
+  const order = pinnedItems.value.map((i) => i.id).filter((id) => id !== draggedId)
+  const at = order.indexOf(targetId)
+  if (at < 0) {
+    order.push(draggedId)
+  } else {
+    order.splice(dragPinnedBefore.value ? at : at + 1, 0, draggedId)
+  }
+  // Optimistic: renumber positions locally so the drop paints instantly.
+  const count = order.length
+  order.forEach((id, i) => {
+    const row = navItems.value.find((r) => r.id === id)
+    if (row) row.pinned_position = count - 1 - i
+  })
+  try {
+    await api.reorderPinnedSessions(order)
+  } catch (err) {
+    console.error('Failed to reorder pinned sessions:', err)
+    loadChats()
+  }
+}
+
+const onPinnedDragEnd = () => {
+  dragPinnedId.value = null
+  dragPinnedOverId.value = null
 }
 
 // Empty-refresh resilience.
@@ -1052,12 +1192,93 @@ defineExpose({
       </div>
     </button>
 
+    <!-- Migration 104 — PINNED section above RECENT. Draggable rows
+         (HTML5 DnD, custom MIME type mirrors WorkspaceItem). Hidden when
+         empty so recents-only workspaces see no layout shift. -->
+    <div
+      v-if="sidebarStore.navExpanded && pinnedItems.length > 0"
+      class="shrink-0 flex flex-col border-b border-[--color-border]/40"
+      data-testid="pinned-section"
+    >
+      <div
+        class="px-[var(--sb-gutter)] h-7 flex items-center gap-2 w-full text-left shrink-0"
+      >
+        <span
+          class="text-micro font-semibold uppercase tracking-[0.08em]"
+          style="color: var(--semantic-text-dim)"
+          data-testid="pinned-section-title"
+          >Pinned</span
+        >
+        <span
+          class="text-micro opacity-60"
+          style="color: var(--semantic-text-dim)"
+          data-testid="pinned-section-count"
+          >{{ pinnedItems.length }}</span
+        >
+      </div>
+      <div class="flex flex-col pb-1">
+        <button
+          v-for="item in pinnedItems"
+          :key="item.id"
+          draggable="true"
+          @click="onChatRowClick($event, item)"
+          @auxclick="onChatRowAuxClick($event, item)"
+          @contextmenu.prevent="onChatRowContextMenu($event, item)"
+          @dragstart="onPinnedDragStart($event, item.id)"
+          @dragover="onPinnedDragOver($event, item.id)"
+          @dragleave="onPinnedDragLeave"
+          @drop="onPinnedDrop($event, item.id)"
+          @dragend="onPinnedDragEnd"
+          :data-testid="`chat-row-${item.id}`"
+          data-pinned="true"
+          :data-drop-before="dragPinnedOverId === item.id && dragPinnedBefore ? 'true' : undefined"
+          :data-drop-after="dragPinnedOverId === item.id && !dragPinnedBefore ? 'true' : undefined"
+          class="relative w-full flex items-center gap-2 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-dense transition-all duration-150 border-t border-transparent overflow-hidden"
+          :class="isCurrentChat(item.id) ? 'border-[--color-border]/60' : ''"
+          :style="
+            isCurrentChat(item.id)
+              ? 'background: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);'
+              : 'color: var(--semantic-text-muted);'
+          "
+        >
+          <span
+            class="shrink-0 text-yellow-400"
+            title="Pinned — drag to reorder"
+            data-testid="chat-pin-indicator"
+          >
+            <svg
+              class="w-3 h-3"
+              fill="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+              />
+            </svg>
+          </span>
+          <span class="flex-1 text-left truncate">{{ item.name }}</span>
+          <span
+            v-if="!isProcessing(item.id)"
+            class="text-micro opacity-60 shrink-0 ml-2 flex items-center gap-1"
+          >
+            <span
+              :title="'Pinned'"
+              data-testid="chat-time-pill"
+              >{{ item.relativeTime || 'now' }}</span
+            >
+          </span>
+          <SessionSlider :session-id="item.id" />
+        </button>
+      </div>
+    </div>
+
     <!-- Chat List -->
     <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col overflow-hidden">
       <VirtualScroller
         ref="virtualScrollerRef"
-        :totalCount="chatsTotal"
-        :items="navItems"
+        :totalCount="recentTotal"
+        :items="recentItems"
         :default-item-height="32"
         :buffer="5"
         :load-more-threshold="200"
@@ -1193,8 +1414,10 @@ defineExpose({
     :is-processing="contextMenuChatId ? isProcessing(contextMenuChatId) : false"
     :unattended="isUnattended(contextMenuChat ?? {})"
     :is-stopping="isStoppingChat"
+    :is-pinned="pickedChat()?.is_pinned ?? contextMenuChat?.is_pinned ?? false"
     @rename="startRenameFromMenu"
     @toggle-unattended="toggleUnattendedFromMenu"
+    @toggle-pin="togglePinFromMenu"
     @stop="stopAgentFromMenu"
     @open-in-new-tab="openContextMenuInBackground"
   />

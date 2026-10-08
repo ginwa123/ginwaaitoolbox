@@ -250,7 +250,9 @@ fn setupDb() !TestCtx {
         \\  is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\  last_finish_reason TEXT,
         \\  last_human_touched_at_nano INTEGER,
-        \\  git_worktree_cwd TEXT
+        \\  git_worktree_cwd TEXT,
+        \\  is_pinned INTEGER NOT NULL DEFAULT 0,
+        \\  pinned_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
     try db.exec(alloc,

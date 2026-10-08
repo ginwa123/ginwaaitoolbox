@@ -116,6 +116,7 @@ const migration_100 = @import("migration_100.zig");
 const migration_101 = @import("migration_101.zig");
 const migration_102 = @import("migration_102.zig");
 const migration_103 = @import("migration_103.zig");
+const migration_104 = @import("migration_104.zig");
 
 // Re-exports so existing
 // `@import("../migrations/migration.zig").Migration076…` call sites
@@ -221,6 +222,7 @@ pub const Migration100AddWorkspaceMembers = migration_100.Migration100AddWorkspa
 pub const Migration101GuardLlmHistoryModel = migration_101.Migration101GuardLlmHistoryModel;
 pub const Migration102CreateSkills = migration_102.Migration102CreateSkills;
 pub const Migration103CreateWorkspaceSecrets = migration_103.Migration103CreateWorkspaceSecrets;
+pub const Migration104AddSessionPinned = migration_104.Migration104AddSessionPinned;
 
 /// All available migrations - add new migrations to this slice
 pub const allMigrations: []const Migration = &.{
@@ -500,6 +502,7 @@ pub const allMigrations: []const Migration = &.{
     // `skill-creator`) whose bodies reference them by relative path.
     .{ .version = Migration102CreateSkills.version, .name = Migration102CreateSkills.name, .up = Migration102CreateSkills.up },
     .{ .version = Migration103CreateWorkspaceSecrets.version, .name = Migration103CreateWorkspaceSecrets.name, .up = Migration103CreateWorkspaceSecrets.up },
+    .{ .version = Migration104AddSessionPinned.version, .name = Migration104AddSessionPinned.name, .up = Migration104AddSessionPinned.up },
 };
 
 /// Register all migrations with a MigrationManager

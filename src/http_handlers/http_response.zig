@@ -1053,6 +1053,32 @@ pub fn makeTasksReorderPinnedResponse(allocator: std.mem.Allocator, count: usize
     );
 }
 
+/// Typed response for `POST /api/llm/session/:id/pin` (Migration 104).
+/// Mirrors `TaskPinResponse` so the frontend reuses the same handling.
+pub const SessionPinResponse = struct {
+    success: bool = true,
+    id: []const u8,
+    is_pinned: bool,
+    pinned_position: i64,
+};
+
+pub fn makeSessionPinResponse(
+    allocator: std.mem.Allocator,
+    id: []const u8,
+    is_pinned: bool,
+    pinned_position: i64,
+) ![]u8 {
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        SessionPinResponse{
+            .id = id,
+            .is_pinned = is_pinned,
+            .pinned_position = pinned_position,
+        },
+        .{},
+    );
+}
+
 // ─── Design-mode response types ────────────────────────────────────────────
 // Wire shapes for `GET/POST/PUT/PATCH/DELETE /api/.../design/...`.
 // Mirrors the `DesignPage` and `DesignElement` structs in

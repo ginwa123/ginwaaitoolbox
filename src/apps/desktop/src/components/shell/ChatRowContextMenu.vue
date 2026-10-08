@@ -15,6 +15,7 @@
     [title bar]
     Rename chat
     Unattended mode          (label reflects current state)
+    Pin to top / Unpin       (Migration 104, PINNED section)
     ─────────
     Stop agent               (only while processingState[id] is true)
     ─────────
@@ -55,18 +56,22 @@ withDefaults(
     unattended?: boolean
     /** True while the stop request is in flight — re-entry lock. */
     isStopping?: boolean
+    /** Migration 104 — pinned state for the PINNED section. */
+    isPinned?: boolean
   }>(),
   {
     chatName: '',
     isProcessing: false,
     unattended: false,
     isStopping: false,
+    isPinned: false,
   },
 )
 
 const emit = defineEmits<{
   rename: []
   toggleUnattended: []
+  togglePin: []
   stop: []
   openInNewTab: []
 }>()
@@ -190,6 +195,49 @@ const focusRow = (event: MouseEvent) => {
           {{ unattended ? 'Turn off unattended mode' : 'Turn on unattended mode' }}
         </span>
         <span class="menu-dot" aria-hidden="true">{{ unattended ? '●' : '' }}</span>
+      </button>
+
+      <!-- Migration 104 — pin/unpin for the PINNED section above RECENT.
+           Same pin glyph as the kanban menu so the two surfaces match. -->
+      <button
+        type="button"
+        role="menuitem"
+        :aria-checked="isPinned"
+        data-testid="chat-context-menu-pin"
+        class="menu-row"
+        @click="emit('togglePin')"
+        @mouseenter="focusRow"
+      >
+        <span class="menu-ic" aria-hidden="true">
+          <svg
+            v-if="isPinned"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
+            <path
+              d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+            />
+          </svg>
+          <svg
+            v-else
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+            />
+          </svg>
+        </span>
+        <span class="menu-lb">{{ isPinned ? 'Unpin from top' : 'Pin to top' }}</span>
+        <span
+          class="menu-dot"
+          aria-hidden="true"
+          >{{ isPinned ? '●' : '' }}</span
+        >
       </button>
 
       <div class="menu-sep" role="separator" />

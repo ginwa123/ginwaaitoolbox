@@ -197,6 +197,8 @@ _ = @import("../../http_handlers/kanban_tasks_create.zig");
     // detail handler (workspace_id resolution + route contract), and
     // items_count on GET /api/workspaces.
     _ = @import("../../http_handlers/session_list.zig");
+    _ = @import("../../http_handlers/session_pin.zig");
+    _ = @import("../../http_handlers/session_reorder_pinned.zig");
     _ = @import("../../http_handlers/session_get.zig");
     _ = @import("../../http_handlers/workspaces_list.zig");
     // Automatic per-user workspace provisioning: the shared workspace insert

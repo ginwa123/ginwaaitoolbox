@@ -109,6 +109,7 @@ const server_port_bind_test = @import("server_port_bind_test.zig");
 const session_human_touched_at_test = @import("session_human_touched_at_test.zig");
 const session_list_workspace_test = @import("session_list_workspace_test.zig");
 const session_mark_touched_test = @import("session_mark_touched_test.zig");
+const session_pin_test = @import("session_pin_test.zig");
 const session_skills_live_test = @import("session_skills_live_test.zig");
 const session_wire_test = @import("session_wire_test.zig");
 const sessions_and_llm_test = @import("sessions_and_llm_test.zig");
@@ -234,6 +235,7 @@ pub const suites = .{
     session_human_touched_at_test,
     session_list_workspace_test,
     session_mark_touched_test,
+    session_pin_test,
     session_skills_live_test,
     session_wire_test,
     sessions_and_llm_test,
