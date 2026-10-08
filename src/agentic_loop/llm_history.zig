@@ -67,6 +67,12 @@ pub const SessionInfo = struct {
     /// join is one indexed seek on `workspace_item_tasks.id` (its PRIMARY KEY)
     /// per row, so it rides along with a query that already scans the row.
     workspace_item_id: []const u8 = "",
+    /// Migration 104 - pinned sessions (PINNED section above RECENT).
+    /// True when the user pinned this session via right-click menu.
+    is_pinned: bool = false,
+    /// Migration 104 - position inside the pinned region. MAX+1 on pin,
+    /// 0 when unpinned.
+    pinned_position: i64 = 0,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -408,7 +414,9 @@ pub fn getSessionListWithCursor(
         \\COALESCE(s.last_finish_reason, ''),
         \\CASE WHEN s.last_human_touched_at_nano IS NULL OR s.last_human_touched_at_nano = '' THEN '' ELSE strftime('%Y-%m-%d %H:%M:%S', s.last_human_touched_at_nano / 1000, 'unixepoch') END,
         \\COALESCE(s.git_worktree_cwd, ''),
-        \\COALESCE((SELECT t.workspace_item_id FROM workspace_item_tasks t WHERE t.id = s.id LIMIT 1), '')
+        \\COALESCE((SELECT t.workspace_item_id FROM workspace_item_tasks t WHERE t.id = s.id LIMIT 1), ''),
+        \\COALESCE(s.is_pinned, 0),
+        \\COALESCE(s.pinned_position, 0)
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -453,6 +461,10 @@ pub fn getSessionListWithCursor(
             // columns so every existing index in this literal is unchanged.
             // "" for a session that is in no project.
             .workspace_item_id = try allocator.dupe(u8, row.values[12]),
+            // Migration 104 - row.values[13] = is_pinned (0/1),
+            // row.values[14] = pinned_position.
+            .is_pinned = std.mem.eql(u8, row.values[13], "1"),
+            .pinned_position = std.fmt.parseInt(i64, row.values[14], 10) catch 0,
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -520,6 +532,14 @@ pub const SessionInfoJson = struct {
     /// a client that has never heard of it ignores the field, and the web
     /// (`api/index.ts`) does not read it today.
     workspace_item_id: []const u8 = "",
+    /// Migration 104 - pinned sessions (PINNED section above RECENT).
+    /// True when the user pinned this session via right-click menu.
+    /// COALESCE'd to false at the SELECT boundary so legacy rows read
+    /// as unpinned.
+    is_pinned: bool = false,
+    /// Migration 104 - position inside the pinned region. MAX+1 on pin
+    /// (lands at bottom), 0 when unpinned. COALESCE'd to 0.
+    pinned_position: i64 = 0,
 };
 
 /// Build JSON response for a list of sessions with cursor pagination
@@ -558,6 +578,9 @@ pub fn buildSessionListJson(
             .git_worktree_cwd = sess.git_worktree_cwd,
             .git_branch = sess.git_branch,
             .workspace_item_id = sess.workspace_item_id,
+            // Migration 104 - pinned sessions for PINNED section.
+            .is_pinned = sess.is_pinned,
+            .pinned_position = sess.pinned_position,
         });
     }
 
@@ -5576,6 +5599,15 @@ pub fn setTaskPinned(
             "UPDATE workspace_item_tasks SET is_pinned = 1, pinned_position = ?, updated_at = datetime('now') WHERE id = ?",
             &.{ new_pos_str, id },
         );
+        // Migration 104 - keep the linked session row in sync so the
+        // PINNED section above RECENT reflects kanban pins (same id
+        // convention, best-effort: a task with no session row only
+        // touches workspace_item_tasks).
+        db.exec(
+            allocator,
+            "UPDATE sessions SET is_pinned = 1, pinned_position = ?, updated_at = datetime('now') WHERE id = ?",
+            &.{ new_pos_str, id },
+        ) catch {};
         return new_pos;
     } else {
         try db.exec(
@@ -5583,7 +5615,111 @@ pub fn setTaskPinned(
             "UPDATE workspace_item_tasks SET is_pinned = 0, pinned_position = 0, updated_at = datetime('now') WHERE id = ?",
             &.{id},
         );
+        db.exec(
+            allocator,
+            "UPDATE sessions SET is_pinned = 0, pinned_position = 0, updated_at = datetime('now') WHERE id = ?",
+            &.{id},
+        ) catch {};
         return 0;
+    }
+}
+
+/// Set or clear the `is_pinned` flag for a single session (Migration 104).
+/// Mirrors `setTaskPinned` but global (no workspace_item scope): new pins
+/// bump to MAX(pinned_position WHERE is_pinned=1)+1 so they land at the
+/// bottom of the PINNED section; unpins reset to 0.
+///
+/// Also syncs `workspace_item_tasks` when a task row shares the same id
+/// (task.id == session_id convention): pinning from recents keeps the
+/// kanban pin button in sync, and vice versa. The task sync is
+/// best-effort — a plain chat with no task row only touches `sessions`.
+///
+/// Returns the new `pinned_position` so the caller can echo it back.
+pub fn setSessionPinned(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    is_pinned: bool,
+) !i64 {
+    // Verify the session exists first so unknown ids 404 instead of
+    // silently succeeding with zero rows touched.
+    var exist_q = try db.query(
+        allocator,
+        "SELECT id FROM sessions WHERE id = ?",
+        &.{id},
+    );
+    defer exist_q.deinit();
+    const exist_row = (try exist_q.next()) orelse {
+        return error.SessionNotFound;
+    };
+    exist_row.deinit(allocator);
+
+    if (is_pinned) {
+        var max_q = try db.query(
+            allocator,
+            "SELECT COALESCE(MAX(pinned_position), -1) FROM sessions WHERE is_pinned = 1",
+            &.{},
+        );
+        defer max_q.deinit();
+        const max_row = (try max_q.next()) orelse return error.SessionNotFound;
+        defer max_row.deinit(allocator);
+        const max_pos = std.fmt.parseInt(i64, max_row.values[0], 10) catch 0;
+        const new_pos = max_pos + 1;
+        const new_pos_str = try std.fmt.allocPrint(allocator, "{d}", .{new_pos});
+        defer allocator.free(new_pos_str);
+        try db.exec(
+            allocator,
+            "UPDATE sessions SET is_pinned = 1, pinned_position = ?, updated_at = datetime('now') WHERE id = ?",
+            &.{ new_pos_str, id },
+        );
+        // Best-effort task sync (same id convention).
+        db.exec(
+            allocator,
+            "UPDATE workspace_item_tasks SET is_pinned = 1, pinned_position = ?, updated_at = datetime('now') WHERE id = ?",
+            &.{ new_pos_str, id },
+        ) catch {};
+        return new_pos;
+    } else {
+        try db.exec(
+            allocator,
+            "UPDATE sessions SET is_pinned = 0, pinned_position = 0, updated_at = datetime('now') WHERE id = ?",
+            &.{id},
+        );
+        db.exec(
+            allocator,
+            "UPDATE workspace_item_tasks SET is_pinned = 0, pinned_position = 0, updated_at = datetime('now') WHERE id = ?",
+            &.{id},
+        ) catch {};
+        return 0;
+    }
+}
+
+/// Reorder the global pinned-sessions subset (Migration 104, drag-drop).
+/// `ordered_ids` is the full top-to-bottom display order of pinned
+/// session ids. Each row gets `pinned_position = count-1-i` so the first
+/// id sorts to the top with `ORDER BY pinned_position DESC`.
+///
+/// Defense in depth: every UPDATE is scoped by `is_pinned = 1`, so a
+/// stale or unpinned id is a silent no-op.
+pub fn reorderPinnedSessions(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    ordered_ids: []const []const u8,
+) !void {
+    if (ordered_ids.len == 0) return;
+    const count: i64 = @intCast(ordered_ids.len);
+    var buf: [32]u8 = undefined;
+    for (ordered_ids, 0..) |id_str, i| {
+        const new_pos: i64 = count - 1 - @as(i64, @intCast(i));
+        const pos_str = std.fmt.bufPrint(&buf, "{d}", .{new_pos}) catch {
+            return error.IntegerTooLarge;
+        };
+        try db.exec(
+            allocator,
+            "UPDATE sessions SET pinned_position = ?, updated_at = datetime('now') " ++
+                "WHERE id = ? AND is_pinned = 1",
+            &.{ pos_str, id_str },
+        );
     }
 }
 
@@ -8522,7 +8658,9 @@ test "getSessionListWithCursor converts unix-ms storage to SQLite datetime on th
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\    last_finish_reason TEXT,
         \\    last_human_touched_at_nano INTEGER,
-        \\    git_worktree_cwd TEXT
+        \\    git_worktree_cwd TEXT,
+        \\    is_pinned INTEGER NOT NULL DEFAULT 0,
+        \\    pinned_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
     // Minimal llm_history (the SELECT LEFT JOINs to it).
@@ -8586,7 +8724,9 @@ test "getSessionListWithCursor returns empty string for NULL last_human_touched_
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\    last_finish_reason TEXT,
         \\    last_human_touched_at_nano INTEGER,
-        \\    git_worktree_cwd TEXT
+        \\    git_worktree_cwd TEXT,
+        \\    is_pinned INTEGER NOT NULL DEFAULT 0,
+        \\    pinned_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
     // Minimal llm_history (the SELECT LEFT JOINs to it).
@@ -8643,7 +8783,9 @@ test "getSessionListWithCursor pages on the sort field's column, not created_at"
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\    last_finish_reason TEXT,
         \\    last_human_touched_at_nano INTEGER,
-        \\    git_worktree_cwd TEXT
+        \\    git_worktree_cwd TEXT,
+        \\    is_pinned INTEGER NOT NULL DEFAULT 0,
+        \\    pinned_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
     try db.exec(alloc,
@@ -8735,7 +8877,9 @@ test "getSessionListWithCursor keeps the created_at filter when sorting by creat
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\    last_finish_reason TEXT,
         \\    last_human_touched_at_nano INTEGER,
-        \\    git_worktree_cwd TEXT
+        \\    git_worktree_cwd TEXT,
+        \\    is_pinned INTEGER NOT NULL DEFAULT 0,
+        \\    pinned_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
     try db.exec(alloc,
@@ -8811,7 +8955,9 @@ test "getSessionListWithCursor: workspace_ids bounds sessions AND total (count h
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\    last_finish_reason TEXT,
         \\    last_human_touched_at_nano INTEGER,
-        \\    git_worktree_cwd TEXT
+        \\    git_worktree_cwd TEXT,
+        \\    is_pinned INTEGER NOT NULL DEFAULT 0,
+        \\    pinned_position INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
     try db.exec(alloc,

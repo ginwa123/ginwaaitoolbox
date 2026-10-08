@@ -1367,6 +1367,13 @@ export interface Chat {
   /// the ChatsList time pill can fall back to `updated_at` predictably.
   /// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
   last_human_touched_at?: string
+  /// Migration 104 — pinned sessions (PINNED section above RECENT).
+  /// True when the user pinned via right-click menu. Always present
+  /// in GET /api/sessions (COALESCE'd server-side).
+  is_pinned?: boolean
+  /// Migration 104 — position inside the pinned region (MAX+1 on pin,
+  /// 0 when unpinned). PINNED section sorts by this DESC.
+  pinned_position?: number
 }
 
 export interface Message {
@@ -1755,6 +1762,36 @@ export async function markSessionTouched(
   )
 }
 
+// Migration 104 — pin/unpin a session for the PINNED section above RECENT.
+// Mirrors `pinTask` (kanban). The backend bumps `pinned_position` to MAX+1
+// on pin (lands at bottom) and syncs the linked task row when
+// task.id == session_id, so kanban pin buttons stay in sync.
+export async function pinSession(
+  sessionId: string,
+  isPinned: boolean,
+): Promise<{ success: boolean; id: string; is_pinned: boolean; pinned_position: number }> {
+  return await apiFetch<{
+    success: boolean
+    id: string
+    is_pinned: boolean
+    pinned_position: number
+  }>(`/llm/session/${sessionId}/pin`, {
+    method: 'POST',
+    body: { is_pinned: isPinned },
+  })
+}
+
+// Migration 104 — reorder the PINNED section (drag-drop). `orderedIds`
+// is the full top-to-bottom display order of pinned session ids.
+export async function reorderPinnedSessions(
+  orderedIds: string[],
+): Promise<{ success: boolean; count: number }> {
+  return await apiFetch<{ success: boolean; count: number }>(`/llm/session/reorder_pinned`, {
+    method: 'POST',
+    body: { ordered_ids: orderedIds },
+  })
+}
+
 // SSE event types matching the backend
 // Note: Backend sends events without explicit 'type' field in data.
 // The 'finish_reason' field indicates message completion.
@@ -1906,6 +1943,10 @@ export async function getChats(
           // when absent so the ChatsList `?? updated_at` fallback is
           // a defined check (NOT undefined).
           last_human_touched_at: session.last_human_touched_at || '',
+          // Migration 104 — pinned sessions. Boolean on the wire;
+          // default false so legacy caches read as unpinned.
+          is_pinned: session.is_pinned ?? false,
+          pinned_position: session.pinned_position ?? 0,
         }
       })
     }

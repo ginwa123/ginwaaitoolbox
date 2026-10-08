@@ -139,6 +139,15 @@ const openTaskMenuInBackground = () => {
   })
 }
 
+// Migration 104 — right-click Pin/Unpin on kanban task rows (session
+// list in kanban). Emits pinTask directly (handlePinToggle needs a click
+// event for stopPropagation; the menu has none). The backend syncs
+// sessions so the PINNED section updates.
+const pinTaskFromMenu = () => {
+  closeTaskMenu()
+  emit('pinTask', props.workspaceId, props.itemId, props.task.id, !props.task.is_pinned)
+}
+
 // 2026-08-29 agent-error-row — reactive read of the latest agent
 // error keyed by task.id == session_id (migration 052 invariant).
 // Same store + helper as the kanban card and ChatView's
@@ -331,7 +340,10 @@ const errorRetryLabel = computed(() =>
       v-if="menuPos"
       :x="menuPos.x"
       :y="menuPos.y"
+      show-pin
+      :is-pinned="task.is_pinned"
       @open="openTaskMenuInBackground"
+      @pin="pinTaskFromMenu"
     />
   </div>
 </template>

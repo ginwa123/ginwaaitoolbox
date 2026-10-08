@@ -25,6 +25,10 @@ withDefaults(
     showFile?: boolean
     /** Show the "Go to settings" item for workspace item rows. */
     showSettings?: boolean
+    /** Migration 104 — show Pin/Unpin for session rows (kanban task rows). */
+    showPin?: boolean
+    /** Current pinned state — flips the pin row label. */
+    isPinned?: boolean
   }>(),
   { showChat: true },
 )
@@ -35,6 +39,7 @@ const emit = defineEmits<{
   stop: []
   openFile: []
   settings: []
+  pin: []
 }>()
 </script>
 
@@ -63,6 +68,31 @@ const emit = defineEmits<{
       >
         <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span
         >{{ openLabel ?? 'Open chat in new tab' }}
+      </button>
+      <!-- Migration 104 — Pin/Unpin for kanban task rows (session list
+           in kanban). Same label contract as ChatRowContextMenu. -->
+      <button
+        v-if="showPin"
+        type="button"
+        role="menuitem"
+        data-testid="open-new-tab-pin-item"
+        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
+        @click="emit('pin')"
+      >
+        <svg
+          class="mr-2 opacity-70 inline w-3.5 h-3.5"
+          viewBox="0 0 24 24"
+          :fill="isPinned ? 'currentColor' : 'none'"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+          /></svg
+        >{{ isPinned ? 'Unpin from top' : 'Pin to top' }}
       </button>
       <button
         v-if="showFile"
