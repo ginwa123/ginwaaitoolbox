@@ -928,19 +928,20 @@ function onCenterDiffRetry() {
 // is created/removed mid-chat by the LLM's set_git_worktree tool, so
 // the mount-time value from loadChatHistory() goes stale — the sidebar
 // (and git chip) would keep showing the session's original cwd (e.g.
-// main) instead of the bound worktree. limit=1 keeps it cheap: we only
-// need the session-level fields, not messages.
+// main) instead of the bound worktree. Uses the lightweight session
+// detail endpoint (no message payload), not messages?limit=1.
 async function refreshWorktreeBinding() {
   if (!sessionId.value || isPendingSession.value) return
   try {
     const prevCwd = effectiveCwd.value
-    const data = await api.getChatHistory(sessionId.value, 1)
+    const data = await api.getSession(sessionId.value)
+    if (!data) return
     if (data.git_worktree_cwd !== undefined) gitWorktreeCwd.value = data.git_worktree_cwd
     if (data.cwd) sessionCwd.value = data.cwd
     // Replaces the old effectiveCwd watcher arm for the SSE-append path.
     noteCwdMutation(prevCwd)
-    if (data.pr_url !== undefined) chatPrUrl.value = data.pr_url ?? ''
-    if (data.pr_provider !== undefined) chatPrProvider.value = data.pr_provider ?? ''
+    if (data.prUrl !== undefined) chatPrUrl.value = data.prUrl ?? ''
+    if (data.prProvider !== undefined) chatPrProvider.value = data.prProvider ?? ''
   } catch (err) {
     console.warn('[ChatView] worktree binding refresh failed:', err)
   }
@@ -3037,8 +3038,8 @@ const runHistoryLoadAttempt = async () => {
 
   // 2026-08-07-profile-persist-read — load the persisted profile
   // selection from the messages endpoint response. onSessionChanged
-  // (below) ALSO reads it from getSession() (which
-  // calls the same endpoint), but it runs on mount/switch
+  // (below) ALSO reads it from getSession() (lightweight session detail
+  // endpoint, same sessions row), but it runs on mount/switch
   // and races with loadChatHistory on initial mount. Reading it here
   // is the authoritative source: whichever finishes first, the value
   // is the same. The handler's later update will agree and not clobber.

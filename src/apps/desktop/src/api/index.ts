@@ -1951,7 +1951,14 @@ export async function deleteChat(id: string): Promise<{ success: boolean }> {
   return await apiFetch<{ success: boolean }>(`/chats/${id}`, { method: 'DELETE' })
 }
 
-// Session API - Fetch session info including cwd
+// Session API - Fetch session info including cwd.
+// Lightweight detail read: GET /api/llm/session/:id returns the sessions
+// row (cwd, profile, worktree binding, PR binding, ...) with NO message
+// payload. Previously this used GET .../messages?limit=1, which returned
+// the oldest message (backend defaults to asc) — a single row carrying
+// full tool JSON / base64 that routinely weighed ~194 kB. Two mount-time
+// callers (AppLayout.fetchChatSessionCwd + ChatView.onSessionChanged) fired
+// it concurrently for the same session, doubling the waste.
 export interface Session {
   sessionId: string
   cwd: string
@@ -1965,34 +1972,56 @@ export interface Session {
   // Bound git worktree path (empty string when no worktree is bound;
   // optional because older sessions predate the set_git_worktree tool).
   git_worktree_cwd?: string
+  prUrl?: string
+  prProvider?: string
+  workspaceId?: string | null
 }
 
+// In-flight dedupe: AppLayout + ChatView mount concurrently for the same
+// session, so two getSession() calls for one id share a single fetch.
+const sessionInflight = new Map<string, Promise<Session | null>>()
+
 export async function getSession(sessionId: string): Promise<Session | null> {
+  const pending = sessionInflight.get(sessionId)
+  if (pending) return pending
+  const task = fetchSessionDetail(sessionId)
+  sessionInflight.set(sessionId, task)
   try {
-    // Use the same endpoint as getChatHistory - it returns session info including cwd
-    // silent: true — AppLayout.fetchChatSessionCwd swallows this
-    // error to fall back to a message-derived cwd, so a toast on
-    // 404/5xx would be noise.
+    return await task
+  } finally {
+    if (sessionInflight.get(sessionId) === task) sessionInflight.delete(sessionId)
+  }
+}
+
+async function fetchSessionDetail(sessionId: string): Promise<Session | null> {
+  try {
+    // silent: true — AppLayout.fetchChatSessionCwd falls back to a cached
+    // cwd on null, so a toast on 404/5xx would be noise.
     const data = await apiFetch<{
+      session_id?: string
+      name?: string
       cwd?: string
-      messages?: { session_name?: string }[]
+      created_at?: string
       // 2026-08-07-profile-persist-read — extract the per-session
       // selected profile name. Without this, the onSessionChanged load
       // in ChatView that reads `selectedProfile` from `getSession()`
       // would always see undefined and clobber any value loaded
-      // earlier from `getChatHistory()`. The backend's GET messages
-      // endpoint returns it via `SessionMessageResponse.selected_profile_model`.
+      // earlier from `getChatHistory()`. The detail endpoint returns it
+      // straight from the sessions row (no message JOIN needed).
       selected_profile_model?: string
       sub_agent_name?: string
       parent_session_id?: string
-    }>(`/llm/session/${sessionId}/messages?limit=1`, { silent: true })
-    // The session info is in the cwd field - construct session object
+      git_worktree_cwd?: string
+      pr_url?: string
+      pr_provider?: string
+      workspace_id?: string | null
+    }>(`/llm/session/${encodeURIComponent(sessionId)}`, { silent: true })
     return {
-      sessionId: sessionId,
+      sessionId: data.session_id || sessionId,
       cwd: data.cwd || '',
-      createdAt: '',
+      createdAt: data.created_at || '',
       agent: '',
-      sessionName: data.messages?.[0]?.session_name || '',
+      sessionName: data.name || '',
       // 2026-08-07-profile-persist-read — pass through the persisted
       // profile name. Empty string (= "no profile set" from the
       // backend's COALESCE-on-NULL) is preserved here; ChatView
@@ -2000,6 +2029,10 @@ export async function getSession(sessionId: string): Promise<Session | null> {
       selectedProfile: data.selected_profile_model,
       subAgentName: data.sub_agent_name,
       parentSessionId: data.parent_session_id,
+      git_worktree_cwd: data.git_worktree_cwd,
+      prUrl: data.pr_url,
+      prProvider: data.pr_provider,
+      workspaceId: data.workspace_id,
     }
   } catch (error) {
     console.error('Failed to get session:', error)

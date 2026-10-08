@@ -33,15 +33,10 @@ import { useWorkspacesStore } from '../stores/workspaces'
 import { useNavigationStore } from '../stores/navigation'
 import AppLayout from '../components/AppLayout.vue'
 import { makeLocalStorageStub } from './helpers'
-import {
-  installSseBus,
-  __resetSseBus,
-  __setSseBusGlobalClient,
-} from '../helpers/sseBus'
+import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
 import type { SseClient } from '../helpers/sseClient'
 
 function makeStubClient(): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -82,7 +77,7 @@ function mountAppLayoutForChatTest() {
   // Pre-seed stores the same way AppLayout's onMounted would, so
   // the route watcher doesn't have to wait for any fetch.
   const ws = useWorkspacesStore()
-  ws.workspaces = []  // empty workspace tree (no kanban / no parent task)
+  ws.workspaces = [] // empty workspace tree (no kanban / no parent task)
   return mount(AppLayout, {
     global: {
       stubs: {
@@ -94,7 +89,16 @@ function mountAppLayoutForChatTest() {
         // assert it actually mounted.
         ChatView: {
           template: '<div data-testid="chatview-stub" />',
-          props: ['chatId', 'chatName', 'type', 'cwd', 'taskId', 'taskName', 'projectName', 'showHeader'],
+          props: [
+            'chatId',
+            'chatName',
+            'type',
+            'cwd',
+            'taskId',
+            'taskName',
+            'projectName',
+            'showHeader',
+          ],
         },
         // STUB Chats with a stub-active flag too.
         Chats: {
@@ -129,13 +133,13 @@ describe('AppLayout — ?view=chat&session=X renders <ChatView>, not <Chats/> (r
       absolute: '/',
       home: '/',
     })
-    // fetchChatSessionCwd (AppLayout.vue:454) fires from onMounted
-    // when the URL has a `session` query param. Stub both code
-    // paths it tries: getSession (first try) and getChatHistory
-    // (fallback). Without these, jsdom's fetch throws an
+    // fetchChatSessionCwd (AppLayout.vue) fires from onMounted
+    // when the URL has a `session` query param. Stub the session
+    // detail read (getSession) plus getChatHistory (used by other
+    // mount paths). Without these, jsdom's fetch throws an
     // ERR_INVALID_URL on every test (no test server) — the error
     // is caught by AppLayout's own try/catch so the test still
-     
+
     // passes, but it floods the output.
     // Boot rewrite for ?view=chat resolves the owning workspace via
     // the session-detail endpoint. Mock it so the async rewrite
@@ -146,18 +150,17 @@ describe('AppLayout — ?view=chat&session=X renders <ChatView>, not <Chats/> (r
     vi.spyOn(api, 'getChatHistory').mockResolvedValue({
       messages: [],
       has_more: false,
-       
+
       next_cursor: null,
       total: 0,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // Default the route mock to the failing URL.
     useRouteMock.mockReturnValue({
-       
       query: { view: 'chat', session: SESSION_ID } as Record<string, string>,
       path: '/app',
       fullPath: `/app?view=chat&session=${SESSION_ID}`,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })
 

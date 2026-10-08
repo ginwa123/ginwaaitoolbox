@@ -1104,18 +1104,14 @@ const chatSessionCwd = ref<string>('')
 const fetchChatSessionCwd = async (sessionId: string) => {
   chatSessionCwd.value = ''
   try {
+    // Single lightweight detail read (GET /api/llm/session/:id, no message
+    // payload). The old messages?limit=1 fallback is gone: the detail
+    // endpoint reads the sessions row directly, so cwd is present even for
+    // zero-message sessions where the messages JOIN yields no rows.
     const session = await api.getSession(sessionId)
     if (session && session.cwd) {
       chatSessionCwd.value = session.cwd
       writeSessionCwdCache(session.cwd)
-      return
-    }
-
-    // Fallback: get cwd from session messages
-    const historyData = await api.getChatHistory(sessionId, 1)
-    if (historyData.cwd) {
-      chatSessionCwd.value = historyData.cwd
-      writeSessionCwdCache(historyData.cwd)
     }
   } catch (err) {
     console.error('Failed to fetch chat session cwd:', err)
