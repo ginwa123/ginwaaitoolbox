@@ -4009,7 +4009,14 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             break :blk b.addSystemCommand(&.{"true"});
         }
         if (!is_windows_host) break :blk b.addSystemCommand(&.{
-            effective_python, "-m", "venv", venv_dir,
+            // `--clear`: the venv dir may already exist with DANGLING
+            // interpreter symlinks -- e.g. a cached venv restored under a
+            // different Python patch version (bin/python points at a
+            // toolcache path that no longer exists). Without `--clear`,
+            // `python -m venv` over such a dir exits 1 with
+            // `Error: [Errno 2] .../bin/python3` (CI runs 37713928128 /
+            // 37760720058); with it, the dir is wiped and recreated.
+            effective_python, "-m", "venv", "--clear", venv_dir,
         });
         var chosen: ?[]const u8 = null;
         var chosen_args: []const []const u8 = &.{};
@@ -4034,7 +4041,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         var argv: std.ArrayList([]const u8) = .empty;
         argv.append(b.allocator, chosen orelse "python") catch unreachable;
         argv.appendSlice(b.allocator, chosen_args) catch unreachable;
-        argv.appendSlice(b.allocator, &.{ "-m", "venv", venv_dir }) catch unreachable;
+        argv.appendSlice(b.allocator, &.{ "-m", "venv", "--clear", venv_dir }) catch unreachable;
         break :blk b.addSystemCommand(argv.items);
     };
     install_venv.setCwd(b.path(""));

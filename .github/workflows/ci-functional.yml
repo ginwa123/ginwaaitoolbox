@@ -154,13 +154,25 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Python 3.12
-        # Pinned rather than "whatever the image ships": the venv below is
-        # cached, and a venv is only valid for the exact minor version that
-        # created it. An unpinned image default would let a base-image bump
-        # silently restore an unusable venv.
+        # Minor-pinned, NOT patch-pinned: `setup-python` resolves '3.12' to
+        # the latest patch (3.12.14 -> 3.12.15 during the Oct 2026 toolcache
+        # rollout). A venv is only valid for the EXACT interpreter that
+        # created it, so the venv cache key below is scoped to the full
+        # version resolved here — a rotation then costs one cold venv
+        # instead of a red pipeline.
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Resolve full Python version for the venv cache key
+        id: py-full
+        # `python3` is the canonical name on Linux/macOS; on Windows it is
+        # often just a shim, so fall back to `python`. Either prints
+        # `Python X.Y.Z`, of which the key needs the whole `X.Y.Z`.
+        shell: bash
+        run: |
+          ver=$(python3 --version 2>/dev/null || python --version 2>/dev/null)
+          echo "version=${ver#Python }" >> "$GITHUB_OUTPUT"
 
       - name: Install Node.js 24
         # Both suites need Node: the UI suite's UIHarness spawns
@@ -328,21 +340,32 @@ jobs:
         #     (build.zig reads PABRIK_FUNC_VENV_DIR at config time)
         #   - Playwright's Chromium download, at ~/.cache/ms-playwright
         #
-        # Key scoped by RUNNER IMAGE (`inputs.os`) plus the interpreter,
-        # never by `runner.os`: a venv is a directory of scripts and
-        # site-packages whose layout and wheel tags are platform-specific
-        # (Windows uses `Scripts/`, not `bin/`), so a Linux-built venv
-        # restored onto a Windows runner is not a slow cache hit — it is a
-        # broken interpreter path. Three cells means three caches; that is
-        # the price of running the suites on three platforms.
+        # Key scoped by RUNNER IMAGE (`inputs.os`) plus the FULL interpreter
+        # version, never by `runner.os` and never by minor version alone:
+        # a venv is a directory of scripts and site-packages whose layout
+        # and wheel tags are platform-specific (Windows uses `Scripts/`,
+        # not `bin/`), so a Linux-built venv restored onto a Windows
+        # runner is not a slow cache hit — it is a broken interpreter
+        # path. Three cells means three caches; that is the price of
+        # running the suites on three platforms.
+        #
+        # The full patch version (not just `py312`) is load-bearing: a
+        # venv's `bin/python` symlinks into the EXACT toolcache interpreter
+        # that created it, so a venv restored under a different patch
+        # (3.12.14 -> 3.12.15 in the Oct 2026 rollout) has dangling links
+        # and `python3 -m venv` over it exits 1 (CI runs 37713928128 /
+        # 37760720058). The restore-key is scoped to the same full version
+        # for the same reason — a cross-patch prefix restore would
+        # reintroduce the exact breakage the key avoids. A rotation then
+        # costs one cold venv instead of a red pipeline.
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/ms-playwright
             ${{ runner.temp }}/pabrik-ci-venv
-          key: v3-py-${{ inputs.os }}-py312-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
+          key: v4-py-${{ inputs.os }}-py${{ steps.py-full.outputs.version }}-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
           restore-keys: |
-            v3-py-${{ inputs.os }}-py312-
+            v4-py-${{ inputs.os }}-py${{ steps.py-full.outputs.version }}-
 
       - name: Cache pnpm store
         # The Vite dev server is spawned by UIHarness during the run via

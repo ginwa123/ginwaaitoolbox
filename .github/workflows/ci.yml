@@ -725,11 +725,21 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Setup Python 3.12
-        # Pinned because the venv below is cached, and a venv is only valid for
-        # the exact minor version that created it.
+        # Minor-pinned, NOT patch-pinned: `setup-python` resolves '3.12' to
+        # the latest patch (3.12.14 -> 3.12.15 during the Oct 2026 toolcache
+        # rollout). A venv is only valid for the EXACT interpreter that
+        # created it, so the venv cache key below is scoped to the full
+        # version resolved here.
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Resolve full Python version for the venv cache key
+        id: py-full
+        shell: bash
+        run: |
+          ver=$(python3 --version 2>/dev/null || python --version 2>/dev/null)
+          echo "version=${ver#Python }" >> "$GITHUB_OUTPUT"
 
       - name: Cache the python venv
         # Shares the key prefix with the other two suites so this job restores
@@ -747,9 +757,18 @@ jobs:
           # `v2-py-Linux-py312-` (os, and a stale major version), so the
           # prefix could not match and every run paid a cold venv. Both
           # halves now say `ubuntu-24.04`.
-          key: v3-py-ubuntu-24.04-py312-android-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_android/requirements.txt') }}
+          #
+          # The `py<full-version>` segment (not just `py312`) is
+          # load-bearing: a venv's `bin/python` symlinks into the EXACT
+          # toolcache interpreter that created it, so a venv restored
+          # under a different patch (3.12.14 -> 3.12.15 in the Oct 2026
+          # rollout) has dangling links and `python3 -m venv` over it
+          # exits 1 (CI runs 37713928128 / 37760720058, including this
+          # job). The restore-key is scoped to the same full version —
+          # a cross-patch prefix restore would reintroduce the breakage.
+          key: v4-py-ubuntu-24.04-py${{ steps.py-full.outputs.version }}-android-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_android/requirements.txt') }}
           restore-keys: |
-            v3-py-ubuntu-24.04-py312-
+            v4-py-ubuntu-24.04-py${{ steps.py-full.outputs.version }}-
 
       - name: Enable KVM
         # GitHub-hosted Linux runners do expose /dev/kvm, but the runner user
@@ -774,7 +793,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -x "$PABRIK_FUNC_VENV_DIR/bin/python" ]; then
-            python3 -m venv "$PABRIK_FUNC_VENV_DIR"
+            # `--clear`: the dir may hold a cached venv whose interpreter
+            # symlinks dangle after a Python patch rotation — plain
+            # `python3 -m venv` over it exits 1 (CI runs 37713928128 /
+            # 37760720058).
+            python3 -m venv --clear "$PABRIK_FUNC_VENV_DIR"
           fi
           "$PABRIK_FUNC_VENV_DIR/bin/pip" install -q -r tests/functional/requirements.txt
           "$PABRIK_FUNC_VENV_DIR/bin/pip" install -q -r tests/functional_android/requirements.txt
