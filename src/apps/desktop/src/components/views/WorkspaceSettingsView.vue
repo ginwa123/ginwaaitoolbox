@@ -1,96 +1,35 @@
+<!--
+  Workspace settings (`/app/:workspaceId/settings`) — one workspace's
+  Overview, Secrets, Skills and Memories.
+
+  Skills are rows scoped to one workspace (`GET
+  /workspaces/:id/skills`), so the panel binds the route workspace — not
+  the active workspace from the store, which is what the old global
+  Skills tab showed without saying so. Memories are per-item directories
+  (`<item-path>/.pabrik/memories/`), picked per item in the section.
+  Secrets never leave this scope: they are invisible under User scope.
+-->
 <script setup lang="ts">
-// Workspace settings shell — `/app/:workspaceId/settings`.
-//
-// The open section lives in the URL, not in a local `ref`. A view that only
-// exists in component state is unreachable by refresh, by Back/Forward, and
-// by a shared link; the repo rule is that every view switch syncs the
-// browser URL. `activeSection` below is a writable computed over `?section=`,
-// copied from `components/NalarSettings.vue`'s `activeTab` — same read
-// order (URL → localStorage → default), same `router.replace` on write, same
-// "strip the default from the query" cleanup.
-//
-// The query key is `section`, not `tab`: `?tab=` belongs to browser tab-mode
-// (`helpers/tabTarget.ts`, `stores/tabs.ts`), and reusing it here would make
-// "which browser tab" and "which settings section" the same value.
-import { computed, onMounted, ref } from 'vue'
-import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
+import { computed, onMounted } from 'vue'
+import { onBeforeRouteUpdate, useRoute } from 'vue-router'
 import { useSecretsStore } from '../../stores/secrets'
 import { useWorkspacesStore } from '../../stores/workspaces'
+import SettingsShell from '../settings/SettingsShell.vue'
 import SecretsSection from '../workspace/SecretsSection.vue'
-
-type Section = 'overview' | 'secrets'
-
-const SECTION_IDS: readonly string[] = ['overview', 'secrets']
-const DEFAULT_SECTION: Section = 'overview'
-/** Same key the tab strip persists to, read as the fallback below the URL. */
-const SECTION_STORAGE_KEY = 'workspace-settings-active-section'
-
-const SECTIONS: ReadonlyArray<{ id: Section; label: string }> = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'secrets', label: 'Secrets' },
-]
+import SkillsSettings from '../preview/SkillsSettings.vue'
+import WorkspaceMemoriesSection from '../workspace/WorkspaceMemoriesSection.vue'
 
 const route = useRoute()
-const router = useRouter()
 const secretsStore = useSecretsStore()
 const workspacesStore = useWorkspacesStore()
-
-function readStoredSection(): Section | null {
-  try {
-    const saved = localStorage.getItem(SECTION_STORAGE_KEY)
-    return saved && SECTION_IDS.includes(saved) ? (saved as Section) : null
-  } catch (e) {
-    // Best-effort UI chrome, but the failure stays visible: without this
-    // log a broken storage backend is indistinguishable from 'no saved
-    // section' (local/no-silent-fallback-catch).
-    console.warn('[workspace-settings] stored section unreadable, using default', e)
-    return null
-  }
-}
-
-// `route`/`router` are undefined when this mounts without a router (unit
-// tests), so a local ref backs the setter and keeps the render reactive
-// even where there is nothing to write to.
-const activeSectionLocal = ref<Section>(readStoredSection() ?? DEFAULT_SECTION)
-
-const activeSection = computed<Section>({
-  get() {
-    if (route) {
-      const raw = route.query.section
-      const section = Array.isArray(raw) ? raw[0] : raw
-      if (typeof section === 'string' && SECTION_IDS.includes(section)) return section as Section
-      return readStoredSection() ?? DEFAULT_SECTION
-    }
-    return activeSectionLocal.value
-  },
-  set(next) {
-    activeSectionLocal.value = next
-    try {
-      localStorage.setItem(SECTION_STORAGE_KEY, next)
-    } catch {
-      /* private mode */
-    }
-    if (!router || !route) return
-    const rest = { ...route.query }
-    // The default section is stripped from the URL to keep it clean; every
-    // other param (e.g. `?focus=`) is carried through untouched.
-    if (next === DEFAULT_SECTION) delete rest.section
-    else rest.section = next
-    void router.replace({ query: rest })
-  },
-})
-
-function selectSection(next: Section): void {
-  activeSection.value = next
-}
 
 /**
  * The workspace this settings page belongs to.
  *
  * Read from the route param, not from `parseAppPath`: `/app/{ws}/settings`
- * is not one of the shapes `helpers/appUrl.ts` knows, and that file is not
- * on this task's edit surface. Falls back to the active workspace so the
- * page still works if it is ever mounted without the param.
+ * is not one of the shapes `helpers/appUrl.ts` knows. Falls back to the
+ * active workspace so the page still works if it is ever mounted without
+ * the param.
  */
 const workspaceId = computed<string>(() => {
   const fromPath = route?.params?.workspaceId
@@ -166,77 +105,76 @@ function handleRetry(): void {
 
 <template>
   <div class="h-full overflow-y-auto" data-testid="workspace-settings-view">
-    <div class="mx-auto w-full max-w-3xl px-6 py-8 space-y-6">
-      <header class="space-y-1">
-        <h1 class="text-title-lg font-semibold" style="color: var(--semantic-text)">
-          Workspace settings
-        </h1>
-        <p class="text-dense" style="color: var(--semantic-text-muted)">
-          Configuration for {{ workspaceName }}.
-        </p>
-      </header>
+    <SettingsShell scope="workspace" :workspace-id="workspaceId">
+      <template #default="{ section, notify }">
+        <div v-if="section === 'overview'" class="mx-auto w-full max-w-3xl space-y-6">
+          <header class="space-y-1">
+            <h1 class="text-title-lg font-semibold" style="color: var(--semantic-text)">
+              Workspace settings
+            </h1>
+            <p class="text-dense" style="color: var(--semantic-text-muted)">
+              Configuration for {{ workspaceName }}.
+            </p>
+          </header>
 
-      <div role="tablist" class="flex gap-1 border-b" style="border-color: var(--color-border)">
-        <button
-          v-for="section in SECTIONS"
-          :key="section.id"
-          type="button"
-          role="tab"
-          :data-tab-id="section.id"
-          :data-active="activeSection === section.id ? 'true' : 'false'"
-          :aria-selected="activeSection === section.id"
-          class="px-3 h-9 text-dense font-medium border-b-2 -mb-px transition-colors duration-150"
-          :style="
-            activeSection === section.id
-              ? { color: 'var(--color-violet)', borderBottomColor: 'var(--color-violet)' }
-              : { color: 'var(--semantic-text-muted)', borderBottomColor: 'transparent' }
-          "
-          @click="selectSection(section.id)"
-        >
-          {{ section.label }}
-        </button>
-      </div>
+          <section
+            data-testid="overview-section"
+            role="tabpanel"
+            class="px-4 py-4 rounded-md space-y-2"
+            style="
+              background-color: var(--semantic-content-bg);
+              border: 1px solid var(--color-border);
+            "
+          >
+            <div class="flex items-baseline justify-between gap-4">
+              <span class="text-dense" style="color: var(--semantic-text-muted)">Workspace</span>
+              <span class="text-body font-mono" style="color: var(--semantic-text)">{{
+                workspaceName
+              }}</span>
+            </div>
+            <div class="flex items-baseline justify-between gap-4">
+              <span class="text-dense" style="color: var(--semantic-text-muted)">Workspace ID</span>
+              <span class="text-body font-mono" style="color: var(--semantic-text)">{{
+                workspaceId || '—'
+              }}</span>
+            </div>
+            <div class="flex items-baseline justify-between gap-4">
+              <span class="text-dense" style="color: var(--semantic-text-muted)">Items</span>
+              <span class="text-body font-mono" style="color: var(--semantic-text)">{{
+                itemCount
+              }}</span>
+            </div>
+          </section>
+        </div>
 
-      <section
-        v-if="activeSection === 'overview'"
-        data-testid="overview-section"
-        role="tabpanel"
-        class="px-4 py-4 rounded-md space-y-2"
-        style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border)"
-      >
-        <div class="flex items-baseline justify-between gap-4">
-          <span class="text-dense" style="color: var(--semantic-text-muted)">Workspace</span>
-          <span class="text-body font-mono" style="color: var(--semantic-text)">{{
-            workspaceName
-          }}</span>
+        <div v-else-if="section === 'secrets'" class="mx-auto w-full max-w-3xl">
+          <section data-testid="secrets-section" role="tabpanel">
+            <SecretsSection
+              :secrets="secretsStore.secrets"
+              :loading="secretsStore.loading"
+              :loaded="secretsStore.loaded"
+              :error="secretsStore.error"
+              :saving="secretsStore.saving"
+              @add="handleAdd"
+              @rotate="handleRotate"
+              @delete="handleDelete"
+              @retry="handleRetry"
+            />
+          </section>
         </div>
-        <div class="flex items-baseline justify-between gap-4">
-          <span class="text-dense" style="color: var(--semantic-text-muted)">Workspace ID</span>
-          <span class="text-body font-mono" style="color: var(--semantic-text)">{{
-            workspaceId || '—'
-          }}</span>
-        </div>
-        <div class="flex items-baseline justify-between gap-4">
-          <span class="text-dense" style="color: var(--semantic-text-muted)">Items</span>
-          <span class="text-body font-mono" style="color: var(--semantic-text)">{{
-            itemCount
-          }}</span>
-        </div>
-      </section>
 
-      <section v-else data-testid="secrets-section" role="tabpanel">
-        <SecretsSection
-          :secrets="secretsStore.secrets"
-          :loading="secretsStore.loading"
-          :loaded="secretsStore.loaded"
-          :error="secretsStore.error"
-          :saving="secretsStore.saving"
-          @add="handleAdd"
-          @rotate="handleRotate"
-          @delete="handleDelete"
-          @retry="handleRetry"
-        />
-      </section>
-    </div>
+        <div v-else-if="section === 'skills'" class="h-full">
+          <section data-testid="skills-section" role="tabpanel" class="h-full">
+            <SkillsSettings :workspace-id="workspaceId" @notification="notify" />
+          </section>
+        </div>
+
+        <div v-else-if="section === 'memories'" class="h-full">
+          <section data-testid="memories-section" role="tabpanel" class="h-full">
+            <WorkspaceMemoriesSection :workspace-id="workspaceId" />
+          </section>
+        </div>
+      </template>
+    </SettingsShell>
   </div>
 </template>
