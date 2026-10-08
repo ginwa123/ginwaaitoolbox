@@ -86,6 +86,15 @@ pub fn kanbanTasksCreateHandler(
     const user_cfg = auth_common.requestUserConfig(allocator, di.db, di.auth_enabled, req.headers) orelse
         pabrikcore.getLlmConfig(di);
 
+    // Owner for the `sessions` row this request creates (plan 2026-09-25).
+    // Server-derived from the `pabrik_session` cookie only — never a body
+    // field. Empty when auth is off, which leaves the row in the shared
+    // legacy bucket. Without this the row is ownerless, `forSession` cannot
+    // resolve the user's `users.config_json`, and the agent run falls back
+    // to the process-global `config.json`.
+    var owner_buf: [128]u8 = undefined;
+    const owner: []const u8 = auth_common.resolveOwnerInto(&owner_buf, req.headers) orelse "";
+
     // 1. Validate path params + body presence + JSON shape.
     const item_id = req.params.get("item_id") orelse "";
     if (item_id.len == 0) {
@@ -196,6 +205,7 @@ pub fn kanbanTasksCreateHandler(
         .workspace_id = ws_id,
         .io = ctx.io,
         .body = std_req,
+        .owner = owner,
     };
 
     const outcome = tc_handler.useCase(allocator, sqlite_db, input) catch |err| {
@@ -262,14 +272,15 @@ pub fn kanbanTasksCreateHandler(
 
         sqlite_db.exec(
             allocator,
-            "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop) " ++
-                "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)",
+            "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop, user_id) " ++
+                "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?)",
             &[_][]const u8{
                 standard_result.task_id,
                 standard_result.name,
                 standard_result.cwd,
                 profile,
                 normalized,
+                owner,
             },
         ) catch |err| {
             return res.jsonResponse(.{
@@ -277,6 +288,19 @@ pub fn kanbanTasksCreateHandler(
                 .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),
             });
         };
+
+        // Claim an ownerless row when the INSERT OR IGNORE above no-opped
+        // on a pre-existing row (e.g. legacy mode='create' wrote a bare
+        // sessions row first without `user_id`). Only claims ownerless
+        // rows, so a real owner is never overwritten. Mirrors
+        // session_create.zig's post-create stamp.
+        if (di.auth_enabled and owner.len > 0) {
+            sqlite_db.exec(
+                allocator,
+                "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')",
+                &[_][]const u8{ owner, standard_result.task_id },
+            ) catch {};
+        }
 
         // Queue the agent turn. Only fire for create_and_run —
         // create_session wants the row inserted but no worker started
@@ -296,6 +320,12 @@ pub fn kanbanTasksCreateHandler(
                 .video_urls = video_urls_wire,
                 .selected_profile_model = profile,
                 .is_auto_retry_until_stop = normalized,
+                // Owner rides along so the concurrent insert_worker task
+                // stamps the session row at INSERT time (plan 2026-09-25).
+                // Without it the row is briefly ownerless and the workflow
+                // resolves the process-global config.json instead of the
+                // user's users.config_json.
+                .user_id = owner,
             }) catch |err| {
                 std.log.warn("kanban_tasks_create: emit_run_agent failed (non-fatal): {s}", .{@errorName(err)});
             };

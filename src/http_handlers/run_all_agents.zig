@@ -24,6 +24,7 @@
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
+const auth_common = @import("auth_common.zig");
 const gserverz = pabrikcore.gserverz;
 const sqlite = pabrikcore.sqlite;
 const http_response = @import("http_response.zig");
@@ -172,11 +173,12 @@ const LiveCtx = struct {
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     di: *pabrikcore.App,
+    owner: []const u8,
 };
 
 fn liveRun(ptr: ?*anyopaque, task_id: []const u8) PerTaskResult {
     const c: *LiveCtx = @ptrCast(@alignCast(ptr.?));
-    const outcome = start_agent.startAgentUseCase(c.allocator, c.db, c.di, task_id) catch return .failed;
+    const outcome = start_agent.startAgentUseCase(c.allocator, c.db, c.di, task_id, c.owner) catch return .failed;
     return switch (outcome) {
         .triggered => .started,
         .worker_already_running => .skipped,
@@ -193,8 +195,9 @@ pub fn runAllAgentsUseCase(
     db: *sqlite.SqliteBackend,
     di: *pabrikcore.App,
     column_id: []const u8,
+    owner: []const u8,
 ) !RunAllAgentsOutcome {
-    var live = LiveCtx{ .allocator = allocator, .db = db, .di = di };
+    var live = LiveCtx{ .allocator = allocator, .db = db, .di = di, .owner = owner };
     // Explicit reference keeps the reuse grep stable: startAgentUseCase
     const starter: TaskStarter = .{ .ptr = &live, .run = liveRun };
     return runAllAgentsWithStarter(allocator, db, column_id, starter);
@@ -236,7 +239,11 @@ pub fn runAllAgentsHandler(
     const sqlite_db = di.db;
 
     // 3. Apply the use-case (which reuses startAgentUseCase per task id).
-    const outcome = runAllAgentsUseCase(allocator, sqlite_db, di, column_id) catch |err| {
+    // Owner rides along so each started worker keeps its session row owned
+    // under `--auth` (plan 2026-09-25).
+    var owner_buf: [128]u8 = undefined;
+    const owner: []const u8 = auth_common.resolveOwnerInto(&owner_buf, req.headers) orelse "";
+    const outcome = runAllAgentsUseCase(allocator, sqlite_db, di, column_id, owner) catch |err| {
         if (err == error.ColumnNotFound) {
             return res.jsonResponse(.{
                 .status_code = 404,
