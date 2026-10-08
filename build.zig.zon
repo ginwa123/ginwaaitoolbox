@@ -8,41 +8,39 @@
         // Pinned by URL + hash; exposes a single `databases` module;
         // consumers `@import("databases")` to use it.
         .databases = .{
-            // 389dfad = ginwa123/ruangsql#4, "keep \"\" binding as an empty
-            // prepared-statement cache + reader pooling". Same API (no new
-            // methods), so nothing in pabrik had to change to benefit:
-            // exec/query/queryRow now reuse prepared statements instead of
-            // prepare+finalize per call, and reads round-robin over
-            // `Config.read_conns` extra connections while writes stay on the
-            // primary one. Measured on the sparringhttp sqlite harness:
-            // -23% instructions/request and p99 1.23 -> 0.73 ms on a list
-            // endpoint, +270% read throughput on the host.
+            // fd52da1 = merge of ginwa123/ruangsql#5, "stop the reader pool
+            // from exhausting file descriptors". Pins MAIN, not a PR branch.
             //
-            // This is a PR commit, not a merge: it is pinned so `src/boot/
-            // db_config.zig` can set the new knobs (read_conns /
-            // cache_size_kb / mmap_size_bytes) that only exist there. Once
-            // #3 is merged, move the pin to the merge SHA on main —
-            // `git -C ../ruangsql rev-parse origin/main` — and re-run the
-            // hash step below; nothing else changes.
+            // #842 asked for an unlimited reader pool (`max_read_conns = 0`).
+            // Taken literally that is unbounded, and it exhausted this
+            // daemon's descriptors: one fd per connected SSE client, plus two
+            // per pooled sqlite reader. Observed as
+            // `unable to open database file (sql: PRAGMA journal_mode =
+            // WAL)` — `sqlite3_open` returning SQLITE_CANTOPEN, surfaced
+            // from a PRAGMA, so it reads like a permissions problem and is
+            // neither — and then a heap-corrupting double free on that same
+            // error path (`panic: incorrect alignment`). #5 caps the pool at
+            // the process's real `RLIMIT_NOFILE` minus headroom for the
+            // app's own sockets, and removes the double free.
             //
-            // This must be a commit that CONTAINS the #3 perf work AND the
-            // #4 binding fix, which is why it is the #4 commit rather than
-            // main: #3 merged alone is BROKEN for this app. It unified the
-            // empty-slice binding of `exec` with `query`/`queryRow`, which
-            // silently turned the `""` optional filter into SQL NULL and
-            // made three `skill_evals_db` tests (`listRuns` uses
-            // `WHERE (? = '' OR id = ?)`) return no rows. #4 restores the
-            // read-side binding. Once #4 is merged, re-pin to that merge
-            // SHA on main; nothing else changes.
+            // #5 also carries what the previous pin was reaching for. The
+            // pin used to be `389dfad`, which is #4's PRE-merge SHA — kept
+            // because #3's pooled readers merged alone are BROKEN for this
+            // app: #3 unified the empty-slice binding of `exec` with
+            // `query`/`queryRow`, silently turning the `""` optional filter
+            // into SQL NULL and making three `skill_evals_db` tests
+            // (`listRuns` uses `WHERE (? = '' OR id = ?)`) return no rows.
+            // #4 restored the read-side binding and is now `a39c15f` on
+            // main, so that reason to pin a pre-merge SHA is gone.
             //
-            // Earlier pin (kept for reference): 46d96dd = merge of
-            // ginwa123/ruangsql#1, "take the WAL writer slot up front
-            // instead of losing writes" — busy_timeout 5s -> 15s, a real
-            // Config, `BEGIN IMMEDIATE` in `begin()` so a read-then-write
-            // transaction cannot hit an instant, unretryable
-            // SQLITE_BUSY_SNAPSHOT, and `database.openWithConfig` so this
-            // app can set its own `synchronous`. Before it, a contended
-            // write FAILED with "database is locked" and was lost.
+            // Kept for reference — 46d96dd = merge of ginwa123/ruangsql#1,
+            // "take the WAL writer slot up front instead of losing writes"
+            // — busy_timeout 5s -> 15s, a real Config, `BEGIN IMMEDIATE` in
+            // `begin()` so a read-then-write transaction cannot hit an
+            // instant, unretryable SQLITE_BUSY_SNAPSHOT, and
+            // `database.openWithConfig` so this app can set its own
+            // `synchronous`. Before it, a contended write FAILED with
+            // "database is locked" and was lost.
             //
             // RE-PINNING: this URL is a COMMIT SHA. A squash-merge of
             // ruangsql invalidates it — the old SHA stays reachable on its
@@ -56,8 +54,8 @@
             // prints. Then `rm -rf zig-pkg && zig build` and confirm the
             // new symbol you rely on actually exists in the extracted
             // package.
-            .url = "https://github.com/ginwa123/ruangsql/archive/c69fbb71314a4d216ee4fc6d61adac03bbf87d47.tar.gz",
-            .hash = "databases-0.0.0-vy-BCP-oBQAAI16ATyzGO0nEwHnnjDyTpCBNkW_It1p3",
+            .url = "https://github.com/ginwa123/ruangsql/archive/fd52da1c06db3e812501a358279db0058f2ef85b.tar.gz",
+            .hash = "databases-0.0.0-vy-BCEnPBQAWL_GNq2rs6MB_VskCUb2WBBeKRJLdGjR2",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Exposes a single `kabelweb` module
