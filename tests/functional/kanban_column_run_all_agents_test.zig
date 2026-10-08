@@ -586,3 +586,152 @@ test "single_task_get_unshadowed" {
         }
     }
 }
+
+// ============================================================================
+// Test 6: run_all_agents never corrupts selected_profile_model wire shape
+// ============================================================================
+
+// After `run_all_agents`, `GET /api/llm/session/:id` (and
+// `.../messages?limit=1`) must carry `selected_profile_model` as a JSON
+// string (or null/absent) — never a byte array like `[170, 170, ...]`.
+//
+// Root cause it guards: `startAgentUseCase` used to forward freed row
+// memory to the worker, and `workflow.zig` persisted the 0xAA poison to
+// `sessions.selected_profile_model`. `std.json` emits invalid-UTF-8
+// slices as arrays of numbers, so the frontend's profile picker
+// rendered `[170, 170, ...]` instead of the model name.
+//
+// Positive control: task-0 gets profile "900ribu" via PUT before the bulk
+// run, so the test proves the value survives (not just that the field is
+// absent). Every poll asserts the wire type; a single array observation
+// fails the test.
+test "run_all_agents_preserves_profile_string_wire" {
+    try harness.requirePabrikBin(io, gpa);
+    var h = try Harness.boot(io, gpa, .{});
+    defer h.deinit(io) catch |err| {
+        std.debug.print("teardown: {s}\n", .{@errorName(err)});
+    };
+
+    var seed = try seedColumnWithThreeTasks(&h);
+    defer seed.deinit();
+
+    // Positive control: pin a profile on task-0's session row.
+    {
+        const path = try std.fmt.allocPrint(gpa, "/api/llm/session/{s}", .{seed.ids[0]});
+        defer gpa.free(path);
+        var r = try h.http(io, .PUT, path, .{
+            .json_body = "{\"selected_profile_model\":\"900ribu\"}",
+            .expect = &.{200},
+        });
+        defer r.deinit();
+    }
+
+    {
+        var r = try runAllAgents(&h, seed.ws_id, seed.kanban_id, seed.col_id, &.{200});
+        defer r.deinit();
+        var doc = try r.json();
+        defer doc.deinit();
+        try expectTrue(&doc, "success", r.body);
+    }
+
+    // Poll the detail endpoint: workers persist asynchronously, so the
+    // corruption (if present) lands after the POST returns. Every
+    // observation must be string-or-null; at least one must show the
+    // pinned "900ribu" so the test cannot pass vacuously.
+    var saw_pinned: bool = false;
+    const deadline = std.Io.Timestamp.now(io, .awake).toMilliseconds() + 10_000;
+    while (true) {
+        const path = try std.fmt.allocPrint(gpa, "/api/llm/session/{s}", .{seed.ids[0]});
+        defer gpa.free(path);
+        var r = try h.http(io, .GET, path, .{ .expect = &.{ 200, 404 } });
+        defer r.deinit();
+        if (r.status == 200) {
+            var doc = try r.json();
+            defer doc.deinit();
+            if (doc.get("selected_profile_model")) |v| {
+                switch (v) {
+                    .string => |s| {
+                        if (std.mem.eql(u8, s, "900ribu")) saw_pinned = true;
+                    },
+                    .null => {},
+                    else => {
+                        std.debug.print(
+                            "selected_profile_model must be string-or-null, got {s}: {s}\n",
+                            .{ @tagName(v), r.body },
+                        );
+                        return error.TestUnexpectedResult;
+                    },
+                }
+            }
+            // Raw-body guard: the poisoned wire shape is a JSON array.
+            if (std.mem.indexOf(u8, r.body, "\"selected_profile_model\":[") != null) {
+                std.debug.print("wire carries byte-array profile: {s}\n", .{r.body});
+                return error.TestUnexpectedResult;
+            }
+        }
+        if (saw_pinned) break;
+        if (std.Io.Timestamp.now(io, .awake).toMilliseconds() >= deadline) break;
+        std.Io.sleep(io, .fromMilliseconds(250), .awake) catch {};
+    }
+    if (!saw_pinned) {
+        std.debug.print("pinned profile 900ribu never observed on task-0 detail\n", .{});
+        return error.TestUnexpectedResult;
+    }
+
+    // Messages endpoint for task-0: same type contract.
+    {
+        const path = try std.fmt.allocPrint(gpa, "/api/llm/session/{s}/messages", .{seed.ids[0]});
+        defer gpa.free(path);
+        const params = [1]Harness.Param{.{ .name = "limit", .value = "1" }};
+        var r = try h.http(io, .GET, path, .{ .params = &params, .expect = &.{200} });
+        defer r.deinit();
+        var doc = try r.json();
+        defer doc.deinit();
+        if (doc.get("selected_profile_model")) |v| {
+            switch (v) {
+                .string => {},
+                .null => {},
+                else => {
+                    std.debug.print(
+                        "messages selected_profile_model must be string-or-null, got {s}: {s}\n",
+                        .{ @tagName(v), r.body },
+                    );
+                    return error.TestUnexpectedResult;
+                },
+            }
+        }
+        if (std.mem.indexOf(u8, r.body, "\"selected_profile_model\":[") != null) {
+            std.debug.print("messages wire carries byte-array profile: {s}\n", .{r.body});
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // Sibling tasks (no profile pinned): still never an array.
+    for (seed.ids[1..]) |tid| {
+        const path = try std.fmt.allocPrint(gpa, "/api/llm/session/{s}", .{tid});
+        defer gpa.free(path);
+        var r = try h.http(io, .GET, path, .{ .expect = &.{ 200, 404 } });
+        defer r.deinit();
+        if (r.status == 200) {
+            var doc = try r.json();
+            defer doc.deinit();
+            if (doc.get("selected_profile_model")) |v| {
+                switch (v) {
+                    .string => {},
+                    .null => {},
+                    else => {
+                        std.debug.print(
+                            "sibling {s} profile must be string-or-null, got {s}: {s}\n",
+                            .{ tid, @tagName(v), r.body },
+                        );
+                        return error.TestUnexpectedResult;
+                    },
+                }
+            }
+            if (std.mem.indexOf(u8, r.body, "\"selected_profile_model\":[") != null) {
+                std.debug.print("sibling {s} wire carries byte-array profile: {s}\n", .{ tid, r.body });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}

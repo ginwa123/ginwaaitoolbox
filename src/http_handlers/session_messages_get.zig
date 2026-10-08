@@ -91,8 +91,15 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     // capacity cascade) so the chatview's profile chip is correct from
     // the very first GET — no race with the worker.
     const selected_profile_model_final: ?[]const u8 = blk: {
-        if (msg_response.selected_profile_model) |spm| break :blk spm;
-        if (profile_name.len > 0) break :blk profile_name;
+        // Already-corrupted rows (0xAA poison) are invalid UTF-8, which
+        // std.json would emit as a byte array ([170, ...]) instead of a
+        // string — the frontend then renders the array literally. Fall
+        // back to null (Default chip) so the wire never carries garbage.
+        if (msg_response.selected_profile_model) |spm| {
+            if (std.unicode.utf8ValidateSlice(spm)) break :blk spm;
+            break :blk null;
+        }
+        if (profile_name.len > 0 and std.unicode.utf8ValidateSlice(profile_name)) break :blk profile_name;
         break :blk null;
     };
 
@@ -185,13 +192,13 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 // ===== Tests merged from session_messages_get_test.zig (2026-09-11 flatten) =====
 // Behavioural tests for `getSessionMessagesSorted` carrying
 // `selected_profile_model` through to its response.
-// 
+//
 // Why this file exists
 // ─────────────────────
 // Bug "profiles in chatview not persistent" (2026-08-07): the user
 // picks a profile ("900ribu") in the chatview dropdown → chip shows
 // the selection → user refreshes the page → chip reverts to "Default".
-// 
+//
 // Root cause: `sessions.selected_profile_model` IS persisted by
 // `session_update.zig`'s PUT handler, but the read-side
 // `getSessionMessagesSorted` (called by `GET /api/llm/session/:id/messages`)
@@ -199,14 +206,14 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
 // frontend's `getChatHistory()` / `getSession()` calls both return
 // nothing for `selected_profile_model`. The chip resets because the
 // frontend defaults to `null` when the field is missing.
-// 
+//
 // These tests pin down the fix end-to-end:
 //   1. The SQL actually selects `s.selected_profile_model` from the
 //      joined `sessions` row.
 //   2. The `SessionMessageResponse` struct carries the value.
 //   3. The HTTP `SessionMessagesResponse` JSON builder (the wire
 //      shape the frontend reads) emits the field.
-// 
+//
 // Why we test against `getSessionMessagesSorted` + a manual JSON
 // builder (not the full HTTP handler)
 // ─────────────────────────────────────

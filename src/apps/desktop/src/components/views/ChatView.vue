@@ -2909,7 +2909,8 @@ const applyDeltaExtra = (extra: {
   if (extra.pr_url !== undefined) chatPrUrl.value = extra.pr_url ?? ''
   if (extra.pr_provider !== undefined) chatPrProvider.value = extra.pr_provider ?? ''
   if (extra.selected_profile_model !== undefined)
-    selectedProfile.value = extra.selected_profile_model || null
+    selectedProfile.value =
+      typeof extra.selected_profile_model === 'string' ? extra.selected_profile_model || null : null
   if (extra.max_total_tokens !== undefined) maxTotalTokens.value = extra.max_total_tokens
   if (extra.max_capacity_total_tokens !== undefined)
     maxCapacityTotalTokens.value = extra.max_capacity_total_tokens
@@ -3044,7 +3045,8 @@ const runHistoryLoadAttempt = async () => {
   // is the authoritative source: whichever finishes first, the value
   // is the same. The handler's later update will agree and not clobber.
   if (data.selected_profile_model !== undefined) {
-    selectedProfile.value = data.selected_profile_model || null
+    selectedProfile.value =
+      typeof data.selected_profile_model === 'string' ? data.selected_profile_model || null : null
   }
 
   if (data.max_total_tokens !== undefined) {
@@ -4427,7 +4429,8 @@ const onSessionChanged = async (newId: string) => {
   }
   try {
     const session = await api.getSession(newId)
-    selectedProfile.value = session?.selectedProfile ?? null
+    const raw = session?.selectedProfile ?? null
+    selectedProfile.value = typeof raw === 'string' ? raw : null
   } catch (err) {
     console.error('Failed to load session profile:', err)
     selectedProfile.value = null
