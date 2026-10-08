@@ -8,13 +8,45 @@
         // Pinned by URL + hash; exposes a single `databases` module;
         // consumers `@import("databases")` to use it.
         .databases = .{
-            // fd52da1 = merge of ginwa123/ruangsql#5, "stop the reader pool
-            // from exhausting file descriptors". Pins MAIN, not a PR branch.
+            // e7cfb3f = branch `fix/pool-wait-instead-of-hijack-writer`
+            // (ruangsql#6), "a read waits for a reader instead of taking the
+            // write connection", plus the idle reaper from #49ac34f that came
+            // with it. This is a BRANCH SHA, not main: main's #5 merge is
+            // `fd52da1`, and the wait and the reaper are not on it yet. Move
+            // this pin to the merge SHA once #6 lands — see RE-PINNING below
+            // for why a pre-merge pin is a deliberate choice rather than an
+            // accident, and for the cost of forgetting.
             //
-            // #842 asked for an unlimited reader pool (`max_read_conns = 0`).
-            // Taken literally that is unbounded, and it exhausted this
-            // daemon's descriptors: one fd per connected SSE client, plus two
-            // per pooled sqlite reader. Observed as
+            // WHAT #6 FIXES HERE, since the symptom arrived as a log line and
+            // not as a bug report:
+            //
+            //     warning: sqlite: reader pool unavailable (PoolExhausted);
+            //              serving this read on the write connection
+            //
+            // repeated once per read, for every read in a burst. `claimReader`
+            // fell back to the PRIMARY connection, which carries one mutex and
+            // the WAL's single writer slot — so the read serialized against
+            // every concurrent write AND held the writer mutex for its whole
+            // duration, delaying unrelated `BEGIN IMMEDIATE`s into their own
+            // 15 s `busy_timeout`. On a 4 GiB `agent.db` that is the
+            // difference between slow and `database is locked`. A read now
+            // waits for a pooled reader (`Config.reader_wait_ms`, default 5 s)
+            // and only falls back when the pool stays saturated for the whole
+            // budget; the fallback is logged at most once per minute.
+            //
+            // The reaper (49ac34f) is what makes "elastic" mean transient:
+            // before it, `claim` opened a reader per in-flight read and
+            // NOTHING ever closed one except `closeAll` at shutdown, so peak
+            // concurrency set the connection count for the life of the process
+            // (75 readers = 150 fds observed while developing it).
+            //
+            // Kept for reference — fd52da1 = merge of ginwa123/ruangsql#5,
+            // "stop the reader pool from exhausting file descriptors", which
+            // introduced the fd-derived ceiling and `PoolExhausted` in the
+            // first place. #842 asked for an unlimited reader pool
+            // (`max_read_conns = 0`). Taken literally that is unbounded, and
+            // it exhausted this daemon's descriptors: one fd per connected SSE
+            // client, plus two per pooled sqlite reader. Observed as
             // `unable to open database file (sql: PRAGMA journal_mode =
             // WAL)` — `sqlite3_open` returning SQLITE_CANTOPEN, surfaced
             // from a PRAGMA, so it reads like a permissions problem and is
@@ -54,8 +86,8 @@
             // prints. Then `rm -rf zig-pkg && zig build` and confirm the
             // new symbol you rely on actually exists in the extracted
             // package.
-            .url = "git+https://github.com/ginwa123/ruangsql.git#fd52da1c06db3e812501a358279db0058f2ef85b",
-            .hash = "databases-0.0.0-vy-BCEnPBQAWL_GNq2rs6MB_VskCUb2WBBeKRJLdGjR2",
+            .url = "git+https://github.com/ginwa123/ruangsql.git#e7cfb3f85e5515ad9b3d849bce6644c63068ef7a",
+            .hash = "databases-0.0.0-vy-BCDNDBgDM5sJN6-4fnAvVm8g_Rr8KFmMVR49G4DIl",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Exposes a single `kabelweb` module

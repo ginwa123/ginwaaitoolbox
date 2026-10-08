@@ -70,19 +70,23 @@ pub const best: databases.database.SqliteConfig = .{
     // fixed pool size, which is what removed the queueing that cost 70% of
     // read throughput. `read_conns` above is the warm floor, not the ceiling.
     //
-    // It is NOT unbounded. The package still caps the pool at what this
-    // process can fund in file descriptors
-    // (`databases.sqlite.fdDerivedReaderCap()`), because a reader costs 2
-    // descriptors and Pabrik keeps one fd per connected SSE client. Leaving
-    // the pool genuinely unbounded ran the process out of descriptors in
-    // development: every read that needed a new reader failed with
-    // `unable to open database file` on `PRAGMA journal_mode = WAL`, and the
-    // heap was then corrupted by a double free on that error path.
+    // It is NOT unbounded, but the bound that stops it is NOT this field, and
+    // the difference matters when a "reader pool unavailable" warning turns up
+    // in a log. The package's backstop is
+    // `databases.sqlite.fdDerivedReaderCap()` — the process's soft
+    // `RLIMIT_NOFILE` minus `FD_HEADROOM`, divided by the two descriptors a
+    // pooled reader holds. On a machine whose soft limit is the modern default
+    // of 524288 that is 262016: a descriptor backstop, not a statement about
+    // how many reads can be in flight. So read this field as "no policy cap
+    // chosen" and read the boot log line (`describeReaderPool`) for the
+    // backstop, rather than assuming 0 means "the pool can grow without end".
     //
-    // So the ceiling is the RESOURCE, and this field is only for choosing a
-    // tighter one. To cap it deliberately, set a number here. The other knob
-    // is `cache_size_kb`, which is also per-reader — see
-    // `pageCacheBudgetKb`.
+    // To cap it deliberately, set a number here — and keep it well above
+    // `read_conns`, which is the floor `init` opens eagerly: a cap at or below
+    // the floor leaves the pool unable to hand out connections it already
+    // opened, and every read falls back to the write connection, which is the
+    // expensive direction. `page_cache cost per concurrent read is known and
+    // bounded` pins that relationship.
     .max_read_conns = 0,
     .cache_size_kb = 8_000, // 8 MiB per connection (SQLite default is 2 MiB)
     .mmap_size_bytes = 256 * 1024 * 1024,
@@ -98,6 +102,26 @@ pub const best: databases.database.SqliteConfig = .{
 /// the honest question is "what does this cost at N concurrent reads".
 pub fn pageCacheBudgetKb(readers: u32) u32 {
     return best.cache_size_kb * (readers + 1);
+}
+
+/// The reader-pool policy as one boot-log line.
+///
+/// WHY A LINE AND NOT A COMMENT. A boot log that prints pragmas and says
+/// nothing about the reader pool cannot answer the only question a
+///
+///     warning: sqlite: reader pool unavailable (PoolExhausted);
+///              serving this read on the write connection
+///
+/// raises: how many readers does this process have, and what stops it having
+/// more? The answer is three numbers, and `max_read_conns = 0` is not one of
+/// them — it reads as "unbounded" and means "no policy cap chosen", with the
+/// real backstop being the process's descriptor budget.
+pub fn describeReaderPool(buf: []u8) ![]const u8 {
+    return std.fmt.bufPrint(
+        buf,
+        "readers warm_floor={d} policy_cap={d} fd_backstop={d}",
+        .{ best.read_conns, best.max_read_conns, databases.sqlite.fdDerivedReaderCap() },
+    );
 }
 
 /// Read one single-column pragma back from a live connection.
@@ -258,15 +282,52 @@ test "page cache cost per concurrent read is known and bounded" {
     // Unlimited GROWTH is deliberate: a read must never queue behind
     // another read, which is what cost 70% of read throughput before.
     //
-    // It is not unbounded, though: the package caps the pool at what this
-    // process can fund in descriptors. Assert that ceiling is a real,
-    // positive number so a future change cannot quietly make the pool
-    // either unbounded or useless.
+    // It is not unbounded, though: the package backstops the pool at what
+    // this process can fund in descriptors. That backstop is what the
+    // "reader pool unavailable" warning means, so it has to be a real number
+    // — and it has to leave room for the warm floor, or the pool would open
+    // connections it is then forbidden to hand out, and every read would fall
+    // back onto the write connection.
     try std.testing.expectEqual(@as(usize, 0), best.max_read_conns);
-    try std.testing.expect(databases.sqlite.fdDerivedReaderCap() >= 1);
+    try std.testing.expect(databases.sqlite.fdDerivedReaderCap() > best.read_conns);
     try std.testing.expect(databases.sqlite.FDS_PER_READER > 0);
     // A warm floor must exist, or the first burst of concurrent reads each
     // pays to open a connection.
     try std.testing.expect(best.read_conns > 0);
     try std.testing.expectEqual(databases.sqlite.Synchronous.full, best.synchronous);
+}
+
+test "the boot log names the pool's warm floor, policy cap and descriptor backstop" {
+    // The warning this answers —
+    //
+    //     warning: sqlite: reader pool unavailable (PoolExhausted);
+    //              serving this read on the write connection
+    //
+    // — says nothing about how many readers exist or what stops there being
+    // more, and `max_read_conns = 0` in particular reads as "unbounded"
+    // rather than as "no policy cap chosen". So the numbers have to be in the
+    // boot log, with their values, not as prose.
+    var buf: [128]u8 = undefined;
+    const line = try describeReaderPool(&buf);
+
+    var expected_warm: [32]u8 = undefined;
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        line,
+        try std.fmt.bufPrint(&expected_warm, "warm_floor={d}", .{best.read_conns}),
+    ) != null);
+
+    var expected_cap: [32]u8 = undefined;
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        line,
+        try std.fmt.bufPrint(&expected_cap, "policy_cap={d}", .{best.max_read_conns}),
+    ) != null);
+
+    var expected_backstop: [48]u8 = undefined;
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        line,
+        try std.fmt.bufPrint(&expected_backstop, "fd_backstop={d}", .{databases.sqlite.fdDerivedReaderCap()}),
+    ) != null);
 }
