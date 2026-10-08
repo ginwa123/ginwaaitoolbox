@@ -2219,6 +2219,36 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Reposition a task within `item.tasks` so it renders at `position`
+  // among its column's cards. `cardsInColumn` (KanbanColumn.vue) just
+  // filters by column id — display order IS array order — so a bare
+  // column_id flip leaves the card at its old array slot until the
+  // next full fetch. Splicing it into place keeps the board correct
+  // with zero network: the server already renumbered siblings around
+  // `position`, and the next full fetch converges any residual drift
+  // (e.g. concurrent remote moves). Clamps out-of-range positions
+  // into [0, destination card count].
+  function placeTaskAtColumnPosition(
+    item: WorkspaceItem,
+    taskId: string,
+    columnId: string,
+    position: number,
+  ): void {
+    if (!item.tasks) return
+    const idx = item.tasks.findIndex((t) => t.id === taskId)
+    if (idx === -1) return
+    const removed = item.tasks.splice(idx, 1)
+    const task = removed[0]
+    if (!task) return
+    const destIndices: number[] = []
+    item.tasks.forEach((t, i) => {
+      if (t.kanban_column_id === columnId) destIndices.push(i)
+    })
+    const at = Math.max(0, Math.min(Math.floor(position), destIndices.length))
+    const insertIdx = at === destIndices.length ? item.tasks.length : destIndices[at]!
+    item.tasks.splice(insertIdx, 0, task)
+  }
+
   // Move a task to a different column and/or position. The
   // backend does the move + sibling re-numbering in a single
   // transaction; we update the local task's `kanban_column_id`
@@ -2237,9 +2267,18 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       if (task) {
         task.kanban_column_id = columnId
         task.kanban_position = position
+        placeTaskAtColumnPosition(item, taskId, columnId, position)
         await cacheTaskMutation(workspaceId, itemId, task, columnId)
       }
     }
+    // Local-mutation dedupe (same pattern as design drags): the
+    // backend fans the `kanban_task moved` SSE event back to the
+    // mover too, and the kanbanSse handler refetches the destination
+    // column (tasks?limit=100) on every event. The local store
+    // already holds the truth here, so register the task id and let
+    // the handler skip that self-echo refetch. Remote moves (agent
+    // tool, other tab) never register, so they still refetch.
+    registerRecentLocalMutations([taskId], Date.now() + RECENT_MUTATION_TTL_MS)
   }
 
   // Mirror a kanban task's column (and optional position) into the
@@ -2281,6 +2320,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     task.kanban_column_id = newColumnId
     if (newPosition !== undefined) {
       task.kanban_position = newPosition
+    }
+    if (newColumnId !== null && newColumnId.length > 0 && newPosition !== undefined) {
+      placeTaskAtColumnPosition(item, taskId, newColumnId, newPosition)
     }
     void cacheTaskMutation(workspaceId, itemId, task, newColumnId ?? undefined)
   }
@@ -4757,6 +4799,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // source-column copy AND adds the fresh destination-column copy,
     // producing a visible duplicate in the UI until refresh.
     mirrorKanbanTaskMove,
+    // Read helper for the kanbanSse single-row fast path: a
+    // moved/assigned task that is already cached needs only a
+    // refreshTask (1 row), while an uncached one still needs the
+    // full column fetch to materialize the missing row.
+    findCachedTask,
     // NEW (chatview-open api-spam fix, 2026-08-24): in-place
     // needs_human_review patch for `human_touched` SSE events —
     // replaces the 7× tasks?limit=100 refetch that fired every time

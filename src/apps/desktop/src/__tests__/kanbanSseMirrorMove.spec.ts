@@ -42,7 +42,6 @@ import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
 function makeStubClient(initial: SseState): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -149,22 +148,22 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
     return { ws, wsId, itemId, taskId }
   }
 
-  it('moved event: mirrors local task column_id to the destination BEFORE fetch resolves', async () => {
+  it('moved event: mirrors local task column_id to the destination BEFORE refresh resolves', async () => {
     const { ws, wsId, itemId, taskId } = seedKanbanWithTask({})
 
-    // Spy on fetchKanbanTasks but DON'T resolve immediately so we can
-    // observe the local state between dispatch and fetch resolution.
+    // Spy on refreshTask but DON'T resolve immediately so we can
+    // observe the local state between dispatch and refresh resolution.
     // Definite-assignment assertion on the resolve callback because
     // the inner closure assigns before the outer code reads it.
-    let resolveFetch!: () => void
-    const fetchSpy = vi
-      .spyOn(ws, 'fetchKanbanTasks')
-      .mockImplementation(
-        () =>
-          new Promise<void>((resolve) => {
-            resolveFetch = resolve
-          }),
-      )
+    let resolveRefresh!: () => void
+    const refreshSpy = vi.spyOn(ws, 'refreshTask').mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRefresh = resolve
+        }),
+    )
+    // The blind limit=100 column fetch must NOT fire on the fast path.
+    const fetchSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
 
     const store = useKanbanSseStore()
     await store.initKanbanSse(wsId)
@@ -178,55 +177,41 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
       new_position: 0,
     })
 
-    // Fetch was triggered for the destination column.
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(fetchSpy).toHaveBeenCalledWith(
-      wsId,
-      itemId,
-      'colB',
-      100,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    )
+    // Single-row fast path: refreshTask once, no column fetch.
+    expect(refreshSpy).toHaveBeenCalledTimes(1)
+    expect(refreshSpy).toHaveBeenCalledWith(wsId, itemId, taskId)
+    expect(fetchSpy).not.toHaveBeenCalled()
 
     // The local task's column_id was mirrored to 'colB' BEFORE the
-    // awaited fetch resolves — this is the fix. Pre-fix this would
+    // awaited refresh resolves — this is the fix. Pre-fix this would
     // still be 'colA' and the subsequent merge would duplicate the
     // task.
-    const localTask = ws.workspaces[0]!.items[0]!.tasks!.find(
-      (t) => t.id === taskId,
-    )!
+    const localTask = ws.workspaces[0]!.items[0]!.tasks!.find((t) => t.id === taskId)!
     expect(localTask.kanban_column_id).toBe('colB')
     expect(localTask.kanban_position).toBe(0)
 
-    // Drain the pending fetch so afterEach's cleanup doesn't hang.
-    resolveFetch()
+    // Drain the pending refresh so afterEach's cleanup doesn't hang.
+    resolveRefresh()
     await nextTick()
   })
 
-  it('moved event (full integration): merge produces NO duplicate after wire response', async () => {
+  it('moved event (full integration): single-row refresh lands exactly 1 copy in colB', async () => {
     // End-to-end: local task in colA, agent moves it to colB, the SSE
-    // event arrives, the mirror updates local state, the fetch returns
-    // the fresh colB list, the merge lands exactly 1 copy of the task
-    // in colB and 0 in colA.
+    // event arrives, the mirror updates local state (column + slot),
+    // the single-row refresh returns the post-move wire shape, and
+    // the in-place splice lands exactly 1 copy of the task in colB
+    // and 0 in colA — with no column fetch on the wire.
     const { ws, wsId, itemId, taskId } = seedKanbanWithTask({})
 
-    // Mock api.getTasks to return the moved task in colB (the
+    // Mock api.getTask to return the moved task in colB (the
     // post-move wire shape).
-    vi.spyOn(api, 'getTasks').mockResolvedValue({
-      tasks: [
-        {
-          id: taskId,
-          name: 'cli',
-          kanban_column_id: 'colB',
-          kanban_position: 0,
-        },
-      ],
-      has_more: false,
-      next_cursor: null,
+    const getTaskSpy = vi.spyOn(api, 'getTask').mockResolvedValue({
+      id: taskId,
+      name: 'cli',
+      kanban_column_id: 'colB',
+      kanban_position: 0,
     })
+    const fetchSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
 
     const store = useKanbanSseStore()
     await store.initKanbanSse(wsId)
@@ -240,11 +225,16 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
       new_position: 0,
     })
 
-    // Drain microtasks: the SSE handler calls fetchKanbanTasks
-    // (void, no await) but the mock api.getTasks returns a resolved
-    // promise, so the merge lands in the same task queue.
+    // Drain microtasks: the SSE handler calls refreshTask
+    // (void, no await) but the mock api.getTask returns a resolved
+    // promise, so the splice lands in the same task queue.
     await new Promise((r) => setTimeout(r, 10))
     await nextTick()
+
+    // One row on the wire, no column fetch.
+    expect(getTaskSpy).toHaveBeenCalledTimes(1)
+    expect(getTaskSpy).toHaveBeenCalledWith(wsId, itemId, taskId)
+    expect(fetchSpy).not.toHaveBeenCalled()
 
     const tasks = ws.workspaces[0]!.items[0]!.tasks!
     const inColA = tasks.filter((t) => t.kanban_column_id === 'colA')
@@ -263,14 +253,12 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
     // Spy on fetchKanbanTasksForAllColumns (the path the unassigned
     // branch takes). Don't resolve immediately.
     let resolveFetch!: () => void
-    const fetchAllSpy = vi
-      .spyOn(ws, 'fetchKanbanTasksForAllColumns')
-      .mockImplementation(
-        () =>
-          new Promise<void>((resolve) => {
-            resolveFetch = resolve
-          }),
-      )
+    const fetchAllSpy = vi.spyOn(ws, 'fetchKanbanTasksForAllColumns').mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFetch = resolve
+        }),
+    )
 
     const store = useKanbanSseStore()
     await store.initKanbanSse(wsId)
@@ -289,9 +277,7 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
     // Local task's column_id is null (unassigned) BEFORE the fetch
     // resolves. Pre-fix this would still be 'colA' and the source-
     // column refetch would leave the stale copy.
-    const localTask = ws.workspaces[0]!.items[0]!.tasks!.find(
-      (t) => t.id === taskId,
-    )!
+    const localTask = ws.workspaces[0]!.items[0]!.tasks!.find((t) => t.id === taskId)!
     expect(localTask.kanban_column_id).toBeNull()
 
     resolveFetch()
@@ -352,17 +338,11 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
     // local task should move to colB.
     const { ws, wsId, itemId, taskId } = seedKanbanWithTask({})
 
-    vi.spyOn(api, 'getTasks').mockResolvedValue({
-      tasks: [
-        {
-          id: taskId,
-          name: 'cli',
-          kanban_column_id: 'colB',
-          kanban_position: 0,
-        },
-      ],
-      has_more: false,
-      next_cursor: null,
+    vi.spyOn(api, 'getTask').mockResolvedValue({
+      id: taskId,
+      name: 'cli',
+      kanban_column_id: 'colB',
+      kanban_position: 0,
     })
 
     const store = useKanbanSseStore()
@@ -415,9 +395,7 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
     await nextTick()
 
     // The known task is untouched.
-    const localTask = ws.workspaces[0]!.items[0]!.tasks!.find(
-      (t) => t.id === 'task_1',
-    )!
+    const localTask = ws.workspaces[0]!.items[0]!.tasks!.find((t) => t.id === 'task_1')!
     expect(localTask.kanban_column_id).toBe('colA')
   })
 
@@ -436,9 +414,7 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
 
     // Seed the "awaiting review" state the card shows before the
     // touch: the orange dot renders when needs_human_review=true.
-    const localTaskBefore = ws.workspaces[0]!.items[0]!.tasks!.find(
-      (t) => t.id === taskId,
-    )!
+    const localTaskBefore = ws.workspaces[0]!.items[0]!.tasks!.find((t) => t.id === taskId)!
     localTaskBefore.needs_human_review = true
 
     const store = useKanbanSseStore()
@@ -460,9 +436,7 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
     // Zero network — the whole point of the fix.
     expect(getTasksSpy).not.toHaveBeenCalled()
 
-    const localTask = ws.workspaces[0]!.items[0]!.tasks!.find(
-      (t) => t.id === taskId,
-    )!
+    const localTask = ws.workspaces[0]!.items[0]!.tasks!.find((t) => t.id === taskId)!
     // The review flag flipped (orange dot → green checkmark).
     expect(localTask.needs_human_review).toBe(false)
     // Column + position are untouched (it was NOT a move).
@@ -473,17 +447,11 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
   it('idempotent mirror: dispatching the same moved event twice is safe', async () => {
     const { ws, wsId, itemId, taskId } = seedKanbanWithTask({})
 
-    vi.spyOn(api, 'getTasks').mockResolvedValue({
-      tasks: [
-        {
-          id: taskId,
-          name: 'cli',
-          kanban_column_id: 'colB',
-          kanban_position: 0,
-        },
-      ],
-      has_more: false,
-      next_cursor: null,
+    vi.spyOn(api, 'getTask').mockResolvedValue({
+      id: taskId,
+      name: 'cli',
+      kanban_column_id: 'colB',
+      kanban_position: 0,
     })
 
     const store = useKanbanSseStore()
@@ -509,5 +477,70 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
     expect(tasks).toHaveLength(1)
     expect(tasks[0]!.kanban_column_id).toBe('colB')
     expect(tasks[0]!.kanban_position).toBe(0)
+  })
+
+  it('moved event: mirror slots the card at new_position among destination cards', async () => {
+    // colB already holds [t2, t3]; the agent moves task_1 from colA
+    // to colB position 1. The mirror must splice the card between
+    // t2 and t3 (display order IS array order — cardsInColumn just
+    // filters), so the board is correct with zero network beyond
+    // the single-row refresh.
+    const { ws, wsId, itemId, taskId } = seedKanbanWithTask({
+      extraTasks: [
+        { id: 't2', columnId: 'colB' },
+        { id: 't3', columnId: 'colB' },
+      ],
+    })
+    const refreshSpy = vi.spyOn(ws, 'refreshTask').mockResolvedValue()
+    const fetchSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse(wsId)
+
+    dispatch({
+      action: 'moved',
+      workspace_id: wsId,
+      item_id: itemId,
+      task_id: taskId,
+      new_column_id: 'colB',
+      new_position: 1,
+    })
+
+    expect(refreshSpy).toHaveBeenCalledTimes(1)
+    expect(fetchSpy).not.toHaveBeenCalled()
+
+    const tasks = ws.workspaces[0]!.items[0]!.tasks!
+    const colBCards = tasks.filter((t) => t.kanban_column_id === 'colB')
+    expect(colBCards.map((t) => t.id)).toEqual(['t2', taskId, 't3'])
+    expect(tasks.find((t) => t.id === taskId)!.kanban_position).toBe(1)
+  })
+
+  it('moved event within the same column: mirror reorders the card to new_position', async () => {
+    // colA holds [task_1, t2, t3]; the task is dragged to position 2
+    // within colA. Same-column moves renumber server-side too, so
+    // the mirror must reorder locally as well.
+    const { ws, wsId, itemId, taskId } = seedKanbanWithTask({
+      extraTasks: [
+        { id: 't2', columnId: 'colA' },
+        { id: 't3', columnId: 'colA' },
+      ],
+    })
+    vi.spyOn(ws, 'refreshTask').mockResolvedValue()
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse(wsId)
+
+    dispatch({
+      action: 'moved',
+      workspace_id: wsId,
+      item_id: itemId,
+      task_id: taskId,
+      new_column_id: 'colA',
+      new_position: 2,
+    })
+
+    const tasks = ws.workspaces[0]!.items[0]!.tasks!
+    const colACards = tasks.filter((t) => t.kanban_column_id === 'colA')
+    expect(colACards.map((t) => t.id)).toEqual(['t2', 't3', taskId])
   })
 })

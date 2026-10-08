@@ -36,7 +36,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useSseBus, __getSseBusGlobalClient } from '../helpers/sseBus'
 import type { KanbanColumnEvent, KanbanTaskEvent } from '../api'
-import { useWorkspacesStore } from './workspaces'
+import { useWorkspacesStore, isRecentLocalMutation } from './workspaces'
 
 export const useKanbanSseStore = defineStore('kanbanSse', () => {
   // Mutable ref so `setActiveWorkspaceId` can update the filter
@@ -164,6 +164,16 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
           event.new_column_id ?? null,
           event.new_position ?? undefined,
         )
+        // Self-echo dedupe (same pattern as designSse): the backend
+        // fans `kanban_task` events to every client INCLUDING the
+        // mover, so a drag-and-drop via `moveTaskToColumn` would
+        // otherwise refetch the destination column
+        // (tasks?limit=100) right after the PATCH — the extra
+        // request in the Network panel. The local store already
+        // holds the truth (moveTaskToColumn mutated + registered
+        // this task id), so skip the refetch. Remote moves (agent
+        // tool, other tab) never register and still refetch below.
+        if (isRecentLocalMutation(event.task_id)) return
         // Kanban task search (Chunk 7): forward the active q so a
         // remote move/edit during a search doesn't reset the user's
         // narrowed view to the unfiltered list. activeSearchQueries
@@ -190,18 +200,40 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
         // we conservatively iterate all columns. This is the rare
         // edge case (unassign is manual via the UI), so the cost
         // is acceptable.
+        //
+        // Single-row fast path (not a blind limit=100 column fetch):
+        // the mirror above already applied the event's column,
+        // position AND in-array slot, so one GET for the moved row
+        // is enough to converge with server truth. A cursor/delta
+        // fetch on latest local updated_at cannot replace this —
+        // moveTask writes ONLY the kanban join table (column +
+        // position renumbering) and never bumps updated_at, so an
+        // updated_at-delta would return empty for exactly this
+        // event. The full column fetch remains the fallback when
+        // the task isn't cached (event beat the initial load — the
+        // fresh page materializes the missing row), while searching
+        // (the mirror bypasses the backend q filter), or under a
+        // custom sort (array order no longer matches the view).
         const affectedColumnId = event.new_column_id
         if (affectedColumnId && affectedColumnId.length > 0) {
-          void ws.fetchKanbanTasks(
-            event.workspace_id,
-            event.item_id,
-            affectedColumnId,
-            100, // limit — initial fetch size
-            undefined,
-            q,
-            sortBy,
-            direction,
-          )
+          const hasSearch = q !== undefined && q.length > 0
+          const hasCustomSort = sortBy !== undefined && direction !== undefined
+          const isCached =
+            ws.findCachedTask(event.workspace_id, event.item_id, event.task_id) !== undefined
+          if (!hasSearch && !hasCustomSort && isCached) {
+            void ws.refreshTask(event.workspace_id, event.item_id, event.task_id)
+          } else {
+            void ws.fetchKanbanTasks(
+              event.workspace_id,
+              event.item_id,
+              affectedColumnId,
+              100, // limit — initial fetch size
+              undefined,
+              q,
+              sortBy,
+              direction,
+            )
+          }
         } else {
           // unassign — iterate all columns to catch the task
           // removal + the (rare) reappearance in some other column.
@@ -234,9 +266,10 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
     // (not a reactive watcher). The immediate check covers the fast
     // path where the bus is already open when init runs.
     if (bus.state.value === 'open') void fetchInitialKanban(activeWorkspaceId.value)
-    stopOpenSub = __getSseBusGlobalClient()?.onStateChange((s) => {
-      if (s === 'open') void fetchInitialKanban(activeWorkspaceId.value)
-    }) ?? null
+    stopOpenSub =
+      __getSseBusGlobalClient()?.onStateChange((s) => {
+        if (s === 'open') void fetchInitialKanban(activeWorkspaceId.value)
+      }) ?? null
 
     // Stale-on-wake (cross-tab sharing): the subscription above only fires on state
     // transitions the SseClient itself emits. A window that TOOK OVER the shared
@@ -244,9 +277,10 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
     // throttle hidden tabs, so deliveries and rendering were skipped), may have
     // missed events with no state change at all. Re-fetch from the API — every
     // tab can do that directly, whoever holds the SSE connection.
-    offResync = bus.onResync?.(() => {
-      if (activeWorkspaceId.value !== '') void fetchInitialKanban(activeWorkspaceId.value)
-    }) ?? null
+    offResync =
+      bus.onResync?.(() => {
+        if (activeWorkspaceId.value !== '') void fetchInitialKanban(activeWorkspaceId.value)
+      }) ?? null
   }
 
   /**
