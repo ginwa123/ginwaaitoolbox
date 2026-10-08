@@ -24,6 +24,7 @@ import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { buildAppUrl } from '../../helpers/appUrl'
+import SidebarSkeleton from '../shell/SidebarSkeleton.vue'
 
 const props = defineProps<{
   workspaceId: string | null
@@ -192,6 +193,16 @@ onUpdated(() => {
       >
         No workspace selected
       </p>
+
+      <!-- Documents loading skeleton — shown on first fetch while no
+           rows are painted yet. Keeps the section from flashing the
+           empty state on a slow boot. Refreshes keep old rows, so no
+           skeleton there. -->
+      <SidebarSkeleton
+        v-else-if="workspaceId && documents.length === 0 && documentsStore.loading"
+        :rows="3"
+        test-id="documents-loading-skeleton"
+      />
 
       <p
         v-else-if="documents.length === 0 && !documentsStore.loading"
