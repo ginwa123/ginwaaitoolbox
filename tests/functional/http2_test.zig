@@ -132,7 +132,20 @@ fn curlRun(args: []const []const u8) !CurlResult {
 /// `assert proc.returncode == 0, f"curl failed: {proc.stderr}"` lives
 /// here, because this helper is only used where success IS the
 /// precondition.
-const Versioned = struct { version: []const u8, body: []const u8 };
+/// OWNS `body`: `version` is a slice into it (Python's
+/// `rpartition("\\n")[2]`, trimmed), so the caller must `defer deinit()`.
+/// A previous revision returned both slices while freeing the curl result
+/// on return — every `version`/`body` comparison then read
+/// DebugAllocator's 0xAA freed-memory fill and all four callers went red.
+const Versioned = struct {
+    version: []const u8,
+    body: []u8,
+
+    fn deinit(self: *Versioned) void {
+        gpa.free(self.body);
+        self.* = undefined;
+    }
+};
 
 fn curlHttpVersion(extra: []const []const u8, url: []const u8) !Versioned {
     var argv: std.ArrayList([]const u8) = .empty;
@@ -142,13 +155,15 @@ fn curlHttpVersion(extra: []const []const u8, url: []const u8) !Versioned {
     try argv.append(gpa, url);
 
     var r = try curlRun(argv.items);
-    defer r.deinit();
+    errdefer r.deinit();
     if (r.exit == null or r.exit.? != 0) {
         std.debug.print("curl failed: {s}\n", .{r.stderr});
         return error.TestUnexpectedResult;
     }
-    // rpartition("\n")
-    return .{ .version = std.mem.trim(u8, afterLastNewline(r.stdout), " \t\r\n"), .body = r.stdout };
+    gpa.free(r.stderr);
+    // rpartition("\n"); `version` borrows from the returned `body`.
+    const version = std.mem.trim(u8, afterLastNewline(r.stdout), " \t\r\n");
+    return .{ .version = version, .body = r.stdout };
 }
 
 /// Python's `"ok" in body.lower()` — a case-insensitive substring test
@@ -310,7 +325,8 @@ test "h2_prior_knowledge_health" {
     const url = try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}/health", .{h.port});
     defer gpa.free(url);
 
-    const got = try curlHttpVersion(&.{"--http2-prior-knowledge"}, url);
+    var got = try curlHttpVersion(&.{"--http2-prior-knowledge"}, url);
+    defer got.deinit();
     if (!std.mem.eql(u8, got.version, "2")) {
         std.debug.print("expected HTTP/2, got '{s}' (body='{s}')\n", .{ got.version, got.body });
         return error.TestUnexpectedResult;
@@ -339,7 +355,8 @@ test "h2_and_h1_share_the_same_port" {
     defer gpa.free(url);
 
     {
-        const h1 = try curlHttpVersion(&.{}, url);
+        var h1 = try curlHttpVersion(&.{}, url);
+        defer h1.deinit();
         if (!std.mem.eql(u8, h1.version, "1.1")) {
             std.debug.print("expected HTTP/1.1 on the default path, got '{s}'\n", .{h1.version});
             return error.TestUnexpectedResult;
@@ -350,7 +367,8 @@ test "h2_and_h1_share_the_same_port" {
         }
     }
     {
-        const h2 = try curlHttpVersion(&.{"--http2-prior-knowledge"}, url);
+        var h2 = try curlHttpVersion(&.{"--http2-prior-knowledge"}, url);
+        defer h2.deinit();
         if (!std.mem.eql(u8, h2.version, "2")) {
             std.debug.print("expected HTTP/2 with prior knowledge, got '{s}'\n", .{h2.version});
             return error.TestUnexpectedResult;
@@ -381,7 +399,8 @@ test "h1_only_when_flag_absent" {
     defer gpa.free(url);
 
     {
-        const got = try curlHttpVersion(&.{}, url);
+        var got = try curlHttpVersion(&.{}, url);
+        defer got.deinit();
         if (!std.mem.eql(u8, got.version, "1.1")) {
             std.debug.print("expected HTTP/1.1 without --http2, got '{s}'\n", .{got.version});
             return error.TestUnexpectedResult;
@@ -593,7 +612,8 @@ test "h2_bogus_preface_gets_goaway_and_server_survives" {
     // The process must still be alive and serving.
     const url = try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}/health", .{h.port});
     defer gpa.free(url);
-    const got = try curlHttpVersion(&.{}, url);
+    var got = try curlHttpVersion(&.{}, url);
+    defer got.deinit();
     if (!std.mem.eql(u8, got.version, "1.1") and !std.mem.eql(u8, got.version, "2")) {
         std.debug.print(
             "server should still answer after a protocol error, got http_version '{s}'\n",
@@ -671,6 +691,7 @@ comptime {
     _ = CurlResult.deinit;
     _ = curlRun;
     _ = curlHttpVersion;
+    _ = Versioned.deinit;
     _ = containsIgnoreCase;
     _ = isLowercaseName;
     _ = beforeFirstSpace;

@@ -410,7 +410,7 @@ fn dbPath(temp_dir: []const u8) ![]u8 {
 /// / `": "` separators), because that string is what the backend parses
 /// into the `function_call` replay item.
 const TOOL_CALLS_JSON =
-    \\[{"id": "call_01a06fb93f1878c19cd31a8ad82456e3", "type": "function", "function": {"name": "bash", "arguments": "{\\"command\\": \\"timeout 10 ls -R /tmp | head -n 5\\", \\"cwd\\": \\"/tmp\\", \\"mandatory_timeout\\": 15.0}"}}]
+    \\[{"id": "call_01a06fb93f1878c19cd31a8ad82456e3", "type": "function", "function": {"name": "bash", "arguments": "{\"command\": \"timeout 10 ls -R /tmp | head -n 5\", \"cwd\": \"/tmp\", \"mandatory_timeout\": 15.0}"}}]
 ;
 
 /// Insert the assistant tool_calls row + the ELF-poisoned tool row for
@@ -644,42 +644,21 @@ test "responses_replay_sanitizes_binary_tool_output" {
     // the only thing that tells a reader which of the two replay items
     // is missing. A bare "expected a function_call item" sends them back
     // to the capture.
-    // KNOWN-PORT-DEFECT: the Python asserted `"function_call" in kinds` and it
-    // does NOT hold against the current backend. Verified on
-    // 2026-09-05 against `zig-out/bin/pabrikcore-linux-x86_64`:
-    //   * both seeded rows land in `agent.db` with the exact documented
-    //     shape (read back with `quote()`; `tool_calls_json` is the
-    //     verbatim Python `json.dumps` array, `response_content` on the
-    //     tool row is a BLOB carrying 0xFF/0x80);
-    //   * the worker loads BOTH rows — `[STREAM START] messages=4`
-    //     (system + assistant + tool + user) and the `tool` row does
-    //     produce its `function_call_output` item;
-    //   * the assistant row produces a `message` item and NO
-    //     `function_call` item, so `input_items` stays at 3
-    //     ([message, function_call_output, message]).
-    // Re-running with a NON-empty `response_content` on the assistant
-    // row (so the `has_c` branch also fires) changes nothing, so this is
-    // not an "empty content" edge case.
-    //
-    // `Agent.zig::buildJsonResponsesRequest` DOES have
-    // `if (has_tool_calls) { ... .item_type = "function_call" ... }`, so
-    // the loss is upstream of it: `msg.tool_calls` is null by the time
-    // the item list is built, even though
-    // `parsing.transformLLMHistoryToAgentMessage` is the only producer
-    // and it parses `tool_calls_json` unconditionally.
-    //
-    // WHY THIS MATTERS EVEN THOUGH IT IS NOT THE SUBJECT OF THE SUITE:
-    // a `function_call_output` with no matching `function_call` is
-    // precisely what the strict gateway rejects, so a replayed poisoned
-    // history would still be rejected — for a different reason than the
-    // one this test was written to pin. The assertion is KEPT (not
-    // weakened) so the suite stays red until the pairing is fixed.
+    // PORT HISTORY: this assertion once failed with
+    // `[message, function_call_output, message]` and the failure was
+    // misdiagnosed as a backend defect (see git history). The backend was
+    // innocent: the port's `TOOL_CALLS_JSON` literal carried DOUBLED inner
+    // backslashes (\\" where Python json.dumps emits \"), because
+    // a Zig \\ literal keeps backslashes verbatim while the author wrote
+    // them as if escapes were processed. The seeded `arguments` string was
+    // therefore not valid JSON, the backend could not parse `tool_calls`,
+    // and the assistant row replayed as a plain `message`. Fixed by halving
+    // the inner escapes; the literal is now byte-identical to `json.dumps`.
     if (!saw_function_call) {
         const kinds = try inputTypes(input);
         defer gpa.free(kinds);
         std.debug.print(
-            "expected a function_call replay item, got input types {s} — see KNOWN-PORT-DEFECT above: " ++
-                "the assistant row's tool_calls_json is not reaching the Responses `input`.\n",
+            "expected a function_call replay item, got input types {s}\n",
             .{kinds},
         );
         return error.TestUnexpectedResult;

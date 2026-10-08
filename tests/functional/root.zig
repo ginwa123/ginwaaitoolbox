@@ -39,11 +39,13 @@ const agent_tools_toggle_test = @import("agent_tools_toggle_test.zig");
 const agent_video_upload_test = @import("agent_video_upload_test.zig");
 const agent_workspace_history_test = @import("agent_workspace_history_test.zig");
 const chat_content_envelope_test = @import("chat_content_envelope_test.zig");
+const android_chat_sse_contract_test = @import("android_chat_sse_contract_test.zig");
 const android_sidebar_contract_test = @import("android_sidebar_contract_test.zig");
 const android_workers_contract_test = @import("android_workers_contract_test.zig");
 const anthropic_chat_headers_test = @import("anthropic_chat_headers_test.zig");
 const ask_user_multi_question_test = @import("ask_user_multi_question_test.zig");
 const ask_user_test = @import("ask_user_test.zig");
+const auth_config_source_test = @import("auth_config_source_test.zig");
 const auth_test = @import("auth_test.zig");
 const background_command_completion_test = @import("background_command_completion_test.zig");
 const background_process_sse_test = @import("background_process_sse_test.zig");
@@ -54,6 +56,7 @@ const config_simplify_test = @import("config_simplify_test.zig");
 const config_tools_test = @import("config_tools_test.zig");
 const cross_project_cwd_prompt_test = @import("cross_project_cwd_prompt_test.zig");
 const default_workspace_provisioning_test = @import("default_workspace_provisioning_test.zig");
+const design_advanced_test = @import("design_advanced_test.zig");
 const design_lifecycle_test = @import("design_lifecycle_test.zig");
 const desktop_webapp_404_test = @import("desktop_webapp_404_test.zig");
 const desktop_webapp_stable_symlink_test = @import("desktop_webapp_stable_symlink_test.zig");
@@ -65,6 +68,7 @@ const git_folder_diffs_test = @import("git_folder_diffs_test.zig");
 const git_file_relative_path_crash_test = @import("git_file_relative_path_crash_test.zig");
 const git_pr_checks_test = @import("git_pr_checks_test.zig");
 const git_pr_conflicts_test = @import("git_pr_conflicts_test.zig");
+const git_pr_diff_test = @import("git_pr_diff_test.zig");
 const git_pr_gitlab_test = @import("git_pr_gitlab_test.zig");
 const git_pr_status_branch_test = @import("git_pr_status_branch_test.zig");
 const git_pr_status_crash_test = @import("git_pr_status_crash_test.zig");
@@ -106,6 +110,8 @@ const progressive_tool_search_test = @import("progressive_tool_search_test.zig")
 const read_file_raw_content_test = @import("read_file_raw_content_test.zig");
 const responses_tool_output_sanitize_test = @import("responses_tool_output_sanitize_test.zig");
 const server_port_bind_test = @import("server_port_bind_test.zig");
+const session_auto_name_retry_test = @import("session_auto_name_retry_test.zig");
+const session_detail_metadata_test = @import("session_detail_metadata_test.zig");
 const session_human_touched_at_test = @import("session_human_touched_at_test.zig");
 const session_list_workspace_test = @import("session_list_workspace_test.zig");
 const session_mark_touched_test = @import("session_mark_touched_test.zig");
@@ -121,6 +127,7 @@ const skills_memories_boundary_test = @import("skills_memories_boundary_test.zig
 const skills_sqlite_test = @import("skills_sqlite_test.zig");
 const smoke_boot_test = @import("smoke_boot_test.zig");
 const spawn_sub_agent_tools_required_test = @import("spawn_sub_agent_tools_required_test.zig");
+const sqlite_write_lock_test = @import("sqlite_write_lock_test.zig");
 const sse_auth_test = @import("sse_auth_test.zig");
 const sse_endtoend_test = @import("sse_endtoend_test.zig");
 const sse_isolation_test = @import("sse_isolation_test.zig");
@@ -150,6 +157,7 @@ const workspace_items_test = @import("workspace_items_test.zig");
 const workspace_lifecycle_test = @import("workspace_lifecycle_test.zig");
 const workspace_members_sharing_test = @import("workspace_members_sharing_test.zig");
 const workspace_routines_test = @import("workspace_routines_test.zig");
+const workspace_secrets_test = @import("workspace_secrets_test.zig");
 
 pub const suites = .{
     agent_add_mcp_server_test,
@@ -165,11 +173,13 @@ pub const suites = .{
     agent_video_upload_test,
     agent_workspace_history_test,
     chat_content_envelope_test,
+    android_chat_sse_contract_test,
     android_sidebar_contract_test,
     android_workers_contract_test,
     anthropic_chat_headers_test,
     ask_user_multi_question_test,
     ask_user_test,
+    auth_config_source_test,
     auth_test,
     background_command_completion_test,
     background_process_sse_test,
@@ -180,6 +190,7 @@ pub const suites = .{
     config_tools_test,
     cross_project_cwd_prompt_test,
     default_workspace_provisioning_test,
+    design_advanced_test,
     design_lifecycle_test,
     desktop_webapp_404_test,
     desktop_webapp_stable_symlink_test,
@@ -191,6 +202,7 @@ pub const suites = .{
     git_file_relative_path_crash_test,
     git_pr_checks_test,
     git_pr_conflicts_test,
+    git_pr_diff_test,
     git_pr_gitlab_test,
     git_pr_status_branch_test,
     git_pr_status_crash_test,
@@ -232,6 +244,8 @@ pub const suites = .{
     read_file_raw_content_test,
     responses_tool_output_sanitize_test,
     server_port_bind_test,
+    session_auto_name_retry_test,
+    session_detail_metadata_test,
     session_human_touched_at_test,
     session_list_workspace_test,
     session_mark_touched_test,
@@ -247,6 +261,7 @@ pub const suites = .{
     skills_sqlite_test,
     smoke_boot_test,
     spawn_sub_agent_tools_required_test,
+    sqlite_write_lock_test,
     sse_auth_test,
     sse_endtoend_test,
     sse_isolation_test,
@@ -276,6 +291,7 @@ pub const suites = .{
     workspace_lifecycle_test,
     workspace_members_sharing_test,
     workspace_routines_test,
+    workspace_secrets_test,
 };
 
 test {
