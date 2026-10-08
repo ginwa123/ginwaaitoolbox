@@ -4,6 +4,7 @@ import { createApp, type App as VueApp, nextTick, ref } from 'vue'
 import { mount } from '@vue/test-utils'
 import * as api from '../api'
 import ChatsList from '../components/views/ChatsList.vue'
+import { useSidebarStore } from '../stores/sidebar'
 import { makeLocalStorageStub } from './helpers'
 import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
 
@@ -51,9 +52,27 @@ describe('ChatsList — PINNED section (Migration 104)', () => {
     __setSseBusGlobalClient(makeStubClient())
     vi.spyOn(api, 'getChats').mockResolvedValue({
       sessions: [
-        { session_id: 'pinned_1', session_name: 'Pinned one', updated_at: '2026-06-18T10:00:00Z', is_pinned: true, pinned_position: 1 },
-        { session_id: 'pinned_2', session_name: 'Pinned two', updated_at: '2026-06-18T09:00:00Z', is_pinned: true, pinned_position: 0 },
-        { session_id: 'chat_1', session_name: 'Hello', updated_at: '2026-06-18T10:00:00Z', is_pinned: false, pinned_position: 0 },
+        {
+          session_id: 'pinned_1',
+          session_name: 'Pinned one',
+          updated_at: '2026-06-18T10:00:00Z',
+          is_pinned: true,
+          pinned_position: 1,
+        },
+        {
+          session_id: 'pinned_2',
+          session_name: 'Pinned two',
+          updated_at: '2026-06-18T09:00:00Z',
+          is_pinned: true,
+          pinned_position: 0,
+        },
+        {
+          session_id: 'chat_1',
+          session_name: 'Hello',
+          updated_at: '2026-06-18T10:00:00Z',
+          is_pinned: false,
+          pinned_position: 0,
+        },
       ],
       has_more: false,
       next_cursor: null,
@@ -78,15 +97,14 @@ describe('ChatsList — PINNED section (Migration 104)', () => {
     const recentTitle = document.body.querySelector('[data-testid="recent-section-title"]')
     expect(recentTitle).toBeTruthy()
     expect(
-      pinned!.compareDocumentPosition(recentTitle!) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      pinned!.compareDocumentPosition(recentTitle!) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
       document.body.querySelector('[data-testid="pinned-section-title"]')?.textContent,
     ).toContain('Pinned')
-    const rows = Array.from(
-      pinned!.querySelectorAll('[data-testid^="chat-row-"]'),
-    ).map((el) => el.getAttribute('data-testid'))
+    const rows = Array.from(pinned!.querySelectorAll('[data-testid^="chat-row-"]')).map((el) =>
+      el.getAttribute('data-testid'),
+    )
     expect(rows).toEqual(['chat-row-pinned_1', 'chat-row-pinned_2'])
     const recentRows = wrapper.findAll('[data-testid^="chat-row-"]')
     const ids = recentRows.map((b) => b.attributes('data-testid'))
@@ -97,7 +115,9 @@ describe('ChatsList — PINNED section (Migration 104)', () => {
 
   it('hides the PINNED section when nothing is pinned', async () => {
     vi.spyOn(api, 'getChats').mockResolvedValue({
-      sessions: [{ session_id: 'chat_1', session_name: 'Hello', updated_at: '2026-06-18T10:00:00Z' }],
+      sessions: [
+        { session_id: 'chat_1', session_name: 'Hello', updated_at: '2026-06-18T10:00:00Z' },
+      ],
       has_more: false,
       next_cursor: null,
       total: 1,
@@ -162,6 +182,49 @@ describe('ChatsList — PINNED section (Migration 104)', () => {
     const pinItem = document.body.querySelector('[data-testid="chat-context-menu-pin"]')
     expect(pinItem?.textContent).toContain('Unpin from top')
     expect(pinItem?.getAttribute('aria-checked')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('collapsing RECENT keeps PINNED visible (independent flags)', async () => {
+    const wrapper = mount(ChatsList, {
+      attachTo: document.body,
+      global: { provide: { processingState: ref<Record<string, boolean>>({}) } },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    await nextTick()
+    const sidebarStore = useSidebarStore()
+    expect(sidebarStore.navExpanded).toBe(true)
+    expect(sidebarStore.pinnedExpanded).toBe(true)
+    // Collapse RECENT — the reported bug hid PINNED here.
+    sidebarStore.toggleNavExpanded()
+    await nextTick()
+    expect(sidebarStore.navExpanded).toBe(false)
+    const pinned = document.body.querySelector('[data-testid="pinned-section"]')
+    expect(pinned).toBeTruthy()
+    expect(pinned!.querySelector('[data-testid="chat-row-pinned_1"]')).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it('collapsing PINNED hides only pinned rows, RECENT stays', async () => {
+    const wrapper = mount(ChatsList, {
+      attachTo: document.body,
+      global: { provide: { processingState: ref<Record<string, boolean>>({}) } },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    await nextTick()
+    const sidebarStore = useSidebarStore()
+    sidebarStore.togglePinnedExpanded()
+    await nextTick()
+    expect(sidebarStore.pinnedExpanded).toBe(false)
+    // Section shell stays (header + count) so the user can re-expand,
+    // but the pinned rows unmount.
+    expect(document.body.querySelector('[data-testid="pinned-section"]')).toBeTruthy()
+    expect(document.body.querySelector('[data-testid="chat-row-pinned_1"]')).toBeNull()
+    // RECENT is untouched.
+    expect(document.body.querySelector('[data-testid="recent-section-title"]')).toBeTruthy()
+    expect(localStorage.getItem('pabrik-sidebar-pinned-expanded')).toBe('false')
     wrapper.unmount()
   })
 })
