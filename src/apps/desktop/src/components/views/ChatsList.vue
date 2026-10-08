@@ -1150,15 +1150,24 @@ defineExpose({
   >
     <!-- Migration 104 — PINNED section above RECENT. Draggable rows
          (HTML5 DnD, custom MIME type mirrors WorkspaceItem). Hidden when
-         empty so recents-only workspaces see no layout shift. -->
+         empty so recents-only workspaces see no layout shift.
+         Independent from RECENT: collapsing RECENT (navExpanded) keeps
+         PINNED visible; PINNED has its own pinnedExpanded flag. -->
     <div
-      v-if="sidebarStore.navExpanded && pinnedItems.length > 0"
+      v-if="pinnedItems.length > 0"
       class="shrink-0 flex flex-col border-b border-[--color-border]/40"
       data-testid="pinned-section"
     >
-      <div
-        class="px-[var(--sb-gutter)] h-7 flex items-center gap-2 w-full text-left shrink-0"
+      <button
+        class="px-[var(--sb-gutter)] h-7 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0"
+        @click="sidebarStore.togglePinnedExpanded()"
       >
+        <span
+          class="text-meta transition-transform duration-200"
+          :style="{ transform: sidebarStore.pinnedExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
+          style="color: var(--semantic-text-dim)"
+          >▶</span
+        >
         <span
           class="text-micro font-semibold uppercase tracking-[0.08em]"
           style="color: var(--semantic-text-dim)"
@@ -1171,8 +1180,8 @@ defineExpose({
           data-testid="pinned-section-count"
           >{{ pinnedItems.length }}</span
         >
-      </div>
-      <div class="flex flex-col pb-1">
+      </button>
+      <div v-if="sidebarStore.pinnedExpanded" class="flex flex-col pb-1">
         <button
           v-for="item in pinnedItems"
           :key="item.id"
@@ -1202,12 +1211,7 @@ defineExpose({
             title="Pinned — drag to reorder"
             data-testid="chat-pin-indicator"
           >
-            <svg
-              class="w-3 h-3"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
+            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path
                 d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
               />
@@ -1218,11 +1222,9 @@ defineExpose({
             v-if="!isProcessing(item.id)"
             class="text-micro opacity-60 shrink-0 ml-2 flex items-center gap-1"
           >
-            <span
-              :title="'Pinned'"
-              data-testid="chat-time-pill"
-              >{{ item.relativeTime || 'now' }}</span
-            >
+            <span :title="'Pinned'" data-testid="chat-time-pill">{{
+              item.relativeTime || 'now'
+            }}</span>
           </span>
           <SessionSlider :session-id="item.id" />
         </button>

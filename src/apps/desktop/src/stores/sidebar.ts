@@ -12,6 +12,10 @@ const STORAGE_KEY_PROJECTS_EXPANDED = 'pabrik-sidebar-projects-expanded'
 // so collapsing Projects does not collapse Documents — they are
 // independent lists and the user collapses them independently.
 const STORAGE_KEY_DOCUMENTS_EXPANDED = 'pabrik-sidebar-documents-expanded'
+// Pinned section (fix: PINNED gone when RECENT collapsed). Separate key
+// from the recents one so collapsing RECENT does not collapse PINNED —
+// they are independent lists and the user collapses them independently.
+const STORAGE_KEY_PINNED_EXPANDED = 'pabrik-sidebar-pinned-expanded'
 const STORAGE_KEY_RIGHT_SIDEBAR_WIDTH = 'pabrik-right-sidebar-width'
 // One key, because there is one list: the global/local split was the
 // two-tier filesystem, and the list is now one workspace's rows.
@@ -125,6 +129,28 @@ export const useSidebarStore = defineStore('sidebar', () => {
     saveDocumentsExpanded()
   }
 
+  // Pinned section expanded state. Default expanded so existing pins stay
+  // visible, matching the recents section. Independent from navExpanded
+  // so collapsing RECENT keeps PINNED on screen.
+  const loadPinnedExpanded = (): boolean => {
+    const saved = localStorage.getItem(STORAGE_KEY_PINNED_EXPANDED)
+    if (saved !== null) {
+      return saved === 'true'
+    }
+    return true
+  }
+
+  const pinnedExpanded = ref(loadPinnedExpanded())
+
+  const savePinnedExpanded = () => {
+    localStorage.setItem(STORAGE_KEY_PINNED_EXPANDED, String(pinnedExpanded.value))
+  }
+
+  const togglePinnedExpanded = () => {
+    pinnedExpanded.value = !pinnedExpanded.value
+    savePinnedExpanded()
+  }
+
   const saveNavExpanded = () => {
     localStorage.setItem(STORAGE_KEY_NAV_EXPANDED, String(navExpanded.value))
   }
@@ -172,6 +198,8 @@ export const useSidebarStore = defineStore('sidebar', () => {
     toggleProjectsExpanded,
     documentsExpanded,
     toggleDocumentsExpanded,
+    pinnedExpanded,
+    togglePinnedExpanded,
     rightSidebarWidth,
     setRightSidebarWidth,
     skillsExpanded,
