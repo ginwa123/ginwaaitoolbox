@@ -1206,25 +1206,66 @@ defineExpose({
               : 'color: var(--semantic-text-muted);'
           "
         >
-          <span
-            class="shrink-0 text-yellow-400"
-            title="Pinned — drag to reorder"
-            data-testid="chat-pin-indicator"
-          >
-            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
-              />
-            </svg>
+          <span class="flex-1 text-left truncate">
+            <!-- Same branch badge as RECENT rows: icon-only git branch with
+                 PR status color + conflict hint. Tooltip carries branch and
+                 worktree path. -->
+            <span
+              v-if="item.git_branch && prStatuses[item.id]"
+              class="mr-1 inline-flex items-center align-middle cursor-context-menu"
+              :style="chatBranchStyle(item.id)"
+              :title="chatBranchTitle(item) + ' — right-click to open the change request'"
+              :data-pr-status="prStatuses[item.id] || undefined"
+              :data-pr-conflict="prConflicts[item.id] || undefined"
+              data-testid="chat-git-branch"
+              @contextmenu.prevent.stop="onGitIconContextMenu($event, item)"
+            >
+              <svg
+                class="w-4 h-4 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2.5"
+                aria-hidden="true"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
+                />
+              </svg>
+              <span v-if="prConflicts[item.id]" class="ml-0.5 text-micro font-bold">⚠</span>
+            </span>
+            {{ item.name }}
+            <span
+              v-if="item.sub_agent_name"
+              class="ml-1 text-micro font-mono"
+              style="color: var(--color-violet)"
+              :title="
+                item.parent_session_id ? 'Sub-agent of ' + item.parent_session_id : 'Sub-agent'
+              "
+              ><UiIcon name="tools" size-class="w-3 h-3" /> {{ item.sub_agent_name }}</span
+            >
           </span>
-          <span class="flex-1 text-left truncate">{{ item.name }}</span>
           <span
             v-if="!isProcessing(item.id)"
             class="text-micro opacity-60 shrink-0 ml-2 flex items-center gap-1"
           >
-            <span :title="'Pinned'" data-testid="chat-time-pill">{{
-              item.relativeTime || 'now'
-            }}</span>
+            <span
+              v-if="isStale(item.last_human_touched_at, item.updated_at)"
+              class="w-1 h-1 rounded-full bg-amber-400"
+              title="AI is still working — your last touch was earlier"
+              data-testid="chat-stale-dot"
+            />
+            <span
+              :title="
+                item.last_human_touched_at
+                  ? 'Last human activity'
+                  : 'Last activity (never touched by you yet)'
+              "
+              data-testid="chat-time-pill"
+              >{{ item.relativeTime || 'now' }}</span
+            >
           </span>
           <SessionSlider :session-id="item.id" />
         </button>
