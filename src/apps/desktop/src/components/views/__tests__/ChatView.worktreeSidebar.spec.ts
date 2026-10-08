@@ -12,7 +12,8 @@
  *
  * Contract (all frontend-only, no backend change):
  *  1. `refreshWorktreeBinding()` re-reads the binding via
- *     `getChatHistory(sessionId, 1)` (cheap — session fields only).
+ *     `getSession()` (lightweight session detail endpoint, no message
+ *     payload — previously `getChatHistory(sessionId, 1)`).
  *  2. Both SSE full-event paths (in-place update + push) call
  *     `maybeRefreshWorktreeBinding(role, event.tool_name)`, which
  *     refreshes only for `tool_name === 'set_git_worktree'`.
@@ -40,9 +41,9 @@ const shellSrc = readFileSync(
 )
 
 describe('ChatView worktree sidebar binding', () => {
-  it('refreshWorktreeBinding re-reads git_worktree_cwd via getChatHistory(limit=1)', () => {
+  it('refreshWorktreeBinding re-reads git_worktree_cwd via getSession (detail endpoint)', () => {
     expect(chatViewSrc).toMatch(/async function refreshWorktreeBinding\(\)/)
-    expect(chatViewSrc).toMatch(/getChatHistory\(sessionId\.value, 1\)/)
+    expect(chatViewSrc).toMatch(/getSession\(sessionId\.value\)/)
     expect(chatViewSrc).toMatch(/data\.git_worktree_cwd !== undefined/)
     expect(chatViewSrc).toMatch(/gitWorktreeCwd\.value = data\.git_worktree_cwd/)
   })
