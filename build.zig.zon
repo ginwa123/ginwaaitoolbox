@@ -54,7 +54,7 @@
             // prints. Then `rm -rf zig-pkg && zig build` and confirm the
             // new symbol you rely on actually exists in the extracted
             // package.
-            .url = "https://github.com/ginwa123/ruangsql/archive/fd52da1c06db3e812501a358279db0058f2ef85b.tar.gz",
+            .url = "git+https://github.com/ginwa123/ruangsql.git#fd52da1c06db3e812501a358279db0058f2ef85b",
             .hash = "databases-0.0.0-vy-BCEnPBQAWL_GNq2rs6MB_VskCUb2WBBeKRJLdGjR2",
         },
         // External web-framework library (pure-Zig HTTP server +
