@@ -66,16 +66,23 @@ pub const best: databases.database.SqliteConfig = .{
     .synchronous = .full,
     .busy_timeout_ms = 15_000,
     .read_conns = 7, // warm floor: readers opened up front at boot
-    // 0 = UNLIMITED, deliberately. Read concurrency tracks in-flight reads
-    // instead of a fixed pool size, which is what removed the queueing that
-    // cost 70% of read throughput. `read_conns` above is the warm floor, not
-    // the ceiling.
+    // 0 = no POLICY cap: read concurrency tracks in-flight reads rather than a
+    // fixed pool size, which is what removed the queueing that cost 70% of
+    // read throughput. `read_conns` above is the warm floor, not the ceiling.
     //
-    // The cost is per-reader page cache, so the total is bounded by
-    // CONCURRENCY rather than by this struct — which is why
-    // `pageCacheBudgetKb` takes the reader count as an argument. That is the
-    // knob to turn if page cache ever matters: lower `cache_size_kb`, or set
-    // `max_read_conns` to cap the pool.
+    // It is NOT unbounded. The package still caps the pool at what this
+    // process can fund in file descriptors
+    // (`databases.sqlite.fdDerivedReaderCap()`), because a reader costs 2
+    // descriptors and Pabrik keeps one fd per connected SSE client. Leaving
+    // the pool genuinely unbounded ran the process out of descriptors in
+    // development: every read that needed a new reader failed with
+    // `unable to open database file` on `PRAGMA journal_mode = WAL`, and the
+    // heap was then corrupted by a double free on that error path.
+    //
+    // So the ceiling is the RESOURCE, and this field is only for choosing a
+    // tighter one. To cap it deliberately, set a number here. The other knob
+    // is `cache_size_kb`, which is also per-reader — see
+    // `pageCacheBudgetKb`.
     .max_read_conns = 0,
     .cache_size_kb = 8_000, // 8 MiB per connection (SQLite default is 2 MiB)
     .mmap_size_bytes = 256 * 1024 * 1024,
@@ -248,11 +255,18 @@ test "page cache cost per concurrent read is known and bounded" {
     try std.testing.expectEqual(@as(u32, 8_000), pageCacheBudgetKb(0));
     try std.testing.expect(pageCacheBudgetKb(best.read_conns) <= 128 * 1024);
 
-    // Unlimited growth is deliberate: a read must never queue behind
+    // Unlimited GROWTH is deliberate: a read must never queue behind
     // another read, which is what cost 70% of read throughput before.
+    //
+    // It is not unbounded, though: the package caps the pool at what this
+    // process can fund in descriptors. Assert that ceiling is a real,
+    // positive number so a future change cannot quietly make the pool
+    // either unbounded or useless.
     try std.testing.expectEqual(@as(usize, 0), best.max_read_conns);
-    // ...but a warm floor must exist, or the first burst of concurrent
-    // reads each pays to open a connection.
+    try std.testing.expect(databases.sqlite.fdDerivedReaderCap() >= 1);
+    try std.testing.expect(databases.sqlite.FDS_PER_READER > 0);
+    // A warm floor must exist, or the first burst of concurrent reads each
+    // pays to open a connection.
     try std.testing.expect(best.read_conns > 0);
     try std.testing.expectEqual(databases.sqlite.Synchronous.full, best.synchronous);
 }
