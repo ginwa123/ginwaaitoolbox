@@ -90,7 +90,13 @@ fn useCase(
         .cwd = session.cwd,
         .created_at = session.created_at,
         .updated_at = session.updated_at,
-        .selected_profile_model = session.selected_profile_model,
+        // Already-corrupted rows (0xAA poison) are invalid UTF-8, which
+        // std.json would emit as a byte array ([170, ...]). Fall back to
+        // empty (Default chip) so the wire never carries garbage.
+        .selected_profile_model = if (std.unicode.utf8ValidateSlice(session.selected_profile_model))
+            session.selected_profile_model
+        else
+            "",
         .git_worktree_cwd = session.git_worktree_cwd,
         .is_auto_retry_until_stop = session.is_auto_retry_until_stop,
         .last_finish_reason = session.last_finish_reason,

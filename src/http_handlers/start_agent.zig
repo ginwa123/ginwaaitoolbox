@@ -132,6 +132,16 @@ pub fn startAgentUseCase(
     //    pre-insert pattern).
     var session_profile: []const u8 = "";
     var session_auto_retry: []const u8 = "0";
+    // Owned dupes live at function scope so they outlive `emit_run_agent`
+    // below (which dupes them synchronously into the long-lived allocator).
+    // The `Rows` query itself stays in a tight block scope so its open
+    // read statement does not pin the WAL across the emit write.
+    var session_profile_owned: ?[]u8 = null;
+    var session_auto_retry_owned: ?[]u8 = null;
+    defer {
+        if (session_profile_owned) |b| allocator.free(b);
+        if (session_auto_retry_owned) |b| allocator.free(b);
+    }
     {
         // Block scope, NOT function scope: `db.query` hands back a `Rows`
         // holding an UNFINALIZED `sqlite3_stmt`, which is an open read
@@ -156,23 +166,26 @@ pub fn startAgentUseCase(
         // `selected_profile_model: [170, 170, ...]` — Zig's 0xAA freed/
         // byte pattern, serialized as a JSON array because it is not valid
         // UTF-8). Dupe first, mirroring `wakeSessionForCompletion` in
-        // cleanup_stale_background_process.zig; the frees below are paired
-        // with the dupes (harmless on the request arena, required if the
-        // handler ever runs on a non-arena allocator).
-        var session_profile_owned: ?[]u8 = null;
-        var session_auto_retry_owned: ?[]u8 = null;
-        defer {
-            if (session_profile_owned) |b| allocator.free(b);
-            if (session_auto_retry_owned) |b| allocator.free(b);
-        }
-
+        // cleanup_stale_background_process.zig; the function-scope frees
+        // above are paired with the dupes (harmless on the request arena,
+        // required if the handler ever runs on a non-arena allocator).
         if (try session_row.next()) |row| {
             defer row.deinit(allocator);
             if (row.values.len >= 2) {
-                session_profile_owned = try allocator.dupe(u8, row.values[0]);
-                session_auto_retry_owned = try allocator.dupe(u8, row.values[1]);
-                session_profile = session_profile_owned.?;
-                session_auto_retry = session_auto_retry_owned.?;
+                // Already-corrupted rows (0xAA poison from before the fix)
+                // are invalid UTF-8 — fall back to empty so we never
+                // forward garbage to the worker (which would re-persist it).
+                const raw_profile = row.values[0];
+                const raw_retry = row.values[1];
+                if (std.unicode.utf8ValidateSlice(raw_profile)) {
+                    session_profile_owned = try allocator.dupe(u8, raw_profile);
+                    session_profile = session_profile_owned.?;
+                }
+                // is_auto_retry_until_stop is "0"/"1" — same guard for symmetry.
+                if (std.unicode.utf8ValidateSlice(raw_retry) and raw_retry.len > 0) {
+                    session_auto_retry_owned = try allocator.dupe(u8, raw_retry);
+                    session_auto_retry = session_auto_retry_owned.?;
+                }
             }
         }
     }
