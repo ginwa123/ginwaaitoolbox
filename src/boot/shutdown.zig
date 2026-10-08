@@ -7,6 +7,7 @@
 const std = @import("std");
 const database = @import("databases").database;
 const gserverz = @import("kabelweb").server;
+const db_config = @import("db_config.zig");
 
 // Live server pointer the signal handler closes. Set once after
 // `GinwaServer.init`; the handler is process-lifetime so it is never cleared.
@@ -49,6 +50,12 @@ pub fn logSqliteConfig(allocator: std.mem.Allocator, db: *database.Db) void {
         applied.wal_autocheckpoint_pages,
         applied.journal_size_limit_bytes,
     });
+    // The reader pool is a separate set of decisions from the pragmas, and
+    // the only warning it produces ("reader pool unavailable (PoolExhausted);
+    // serving this read on the write connection") is unreadable without them.
+    var pool_buf: [128]u8 = undefined;
+    const pool_line = db_config.describeReaderPool(&pool_buf) catch return;
+    std.log.info("sqlite: {s}", .{pool_line});
 }
 
 test "shutdown: signal with no server only sets the requested flag" {
