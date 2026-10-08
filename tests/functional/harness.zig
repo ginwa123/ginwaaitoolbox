@@ -295,14 +295,14 @@ pub const POSIX_TMP_PREFIXES = [_][]const u8{
 pub fn tmpRoot(allocator: Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
         if (getEnvOrEmpty(allocator, "TEMP")) |v| {
-        defer allocator.free(v);
-        if (v.len > 0) return allocator.dupe(u8, v);
-    } else |_| {}
-    if (getEnvOrEmpty(allocator, "TMP")) |v| {
-        defer allocator.free(v);
-        if (v.len > 0) return allocator.dupe(u8, v);
-    } else |_| {}
-    return allocator.dupe(u8, "C:\\Windows\\Temp");
+            defer allocator.free(v);
+            if (v.len > 0) return allocator.dupe(u8, v);
+        } else |_| {}
+        if (getEnvOrEmpty(allocator, "TMP")) |v| {
+            defer allocator.free(v);
+            if (v.len > 0) return allocator.dupe(u8, v);
+        } else |_| {}
+        return allocator.dupe(u8, "C:\\Windows\\Temp");
     }
     if (getEnvOrEmpty(allocator, "TMPDIR")) |v| {
         defer allocator.free(v);
@@ -648,6 +648,11 @@ pub const Harness = struct {
         stub_llm_profile: bool = false,
         /// Extra CLI flags appended after `--port` (e.g. `&.{"--http2"}`).
         extra_args: []const []const u8 = &.{},
+        /// Extra env entries for the CHILD only (e.g. test-only feature
+        /// gates the server reads from its own environment). The parent
+        /// process env is never mutated; each pair is added to the copied
+        /// `env_map` `boot` already builds.
+        extra_env: []const [2][]const u8 = &.{},
     };
 
     /// Boot a fresh `pabrik` binary against an isolated tmpdir HOME.
@@ -764,6 +769,10 @@ pub const Harness = struct {
             try std.Io.Dir.cwd().createDirPath(io, local);
             try env_map.put("APPDATA", roaming);
             try env_map.put("LOCALAPPDATA", local);
+        }
+
+        for (opts.extra_env) |kv| {
+            try env_map.put(kv[0], kv[1]);
         }
 
         // 10. Spawn.
