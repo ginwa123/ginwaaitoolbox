@@ -180,6 +180,8 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
         // (`h` for `llm_history`, `s` for `sessions`, etc.).
         const items_sql = try std.fmt.allocPrint(alloc, "SELECT wi.id, wi.workspace_id, wi.item_type, wi.name, wi.path, wi.created_at, wi.updated_at FROM workspace_items wi WHERE wi.workspace_id IN {s} ORDER BY wi.position DESC, wi.id ASC", .{in_clause.items});
         var items_rows = try db.query(alloc, items_sql, workspace_ids.items);
+        // Owns a pooled reader until `deinit`; draining `next()` does not return it.
+        defer items_rows.deinit();
 
         // Collect items and their IDs
         var items_list = std.ArrayList(struct {
@@ -238,6 +240,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
             // present. shifts no other columns (appsended at the end).
             const tasks_sql = try std.fmt.allocPrint(alloc, "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), t.tags FROM workspace_item_tasks t LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id IN {s} ORDER BY t.is_pinned DESC, t.pinned_position DESC, t.created_at DESC", .{task_in_clause.items});
             var tasks_rows = try db.query(alloc, tasks_sql, item_ids.items);
+            defer tasks_rows.deinit();
 
             while (true) {
                 const row_opt = try tasks_rows.next();

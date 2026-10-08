@@ -857,8 +857,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         const is_auto_retry_until_stop: bool = blk: {
             var flag_rows = db.query(allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;
+            // Owns a pooled reader until `deinit`; draining `next()` does not return it.
+            defer flag_rows.deinit();
             const flag_row = flag_rows.next() catch break :blk false;
             if (flag_row) |row| {
+                defer row.deinit(allocator);
                 break :blk std.mem.eql(u8, row.values[0], "1");
             }
             break :blk false;

@@ -43,6 +43,8 @@ fn useCase(
 ) QueueMessagesError!QueueMessagesResult {
     const select_sql = "SELECT id, message FROM session_queue_messages WHERE session_id = ? ORDER BY created_at ASC";
     var rows = db.query(allocator, select_sql, &.{session_id}) catch return error.QueryFailed;
+    // Owns a pooled reader until `deinit`; draining `next()` does not return it.
+    defer rows.deinit();
 
     var messages = std.ArrayList(QueueMessageEntry).empty;
     errdefer messages.deinit(allocator);

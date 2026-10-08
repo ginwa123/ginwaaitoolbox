@@ -103,6 +103,8 @@ fn useCase(
         &[_][]const u8{ owner, owner };
 
     var rows = db.query(allocator, query_sql, query_params) catch return error.QueryFailed;
+    // Owns a pooled reader until `deinit`; draining `next()` does not return it.
+    defer rows.deinit();
 
     var workers = std.ArrayList(http_response.WorkerInfo).empty;
     while (true) {
@@ -375,4 +377,79 @@ test "a missing worker table surfaces as QueryFailed rather than an empty list" 
         error.QueryFailed,
         listAs(&s.db, arena.allocator(), .{ .limit = 50, .session_id_filter = null }, ""),
     );
+}
+
+test "repeated listings hand their pooled reader back instead of exhausting the pool" {
+    // FILE-BACKED, deliberately: `initWithConfig` skips pooling for
+    // `:memory:` (a second connection would see an empty database), so the
+    // in-memory `setupDb` above cannot observe this at all.
+    //
+    // A leaked cursor would also stay invisible to a leak-checking allocator,
+    // because the row bytes are freed by the arena — what leaks is the
+    // pooled reader, which `ReaderPool` owns, not the caller.
+    const alloc = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const joined = try std.fs.path.join(alloc, &.{ dir_buf[0..dir_len], "pool.db" });
+    defer alloc.free(joined);
+    const path = try alloc.dupeZ(u8, joined);
+    defer alloc.free(path);
+
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    // ONE reader, and a budget short enough to fail fast: with a single
+    // reader, a second listing that finds the pool empty has no way to grow
+    // it, so it waits and then falls back onto the write connection. That
+    // fallback is the leak, made countable.
+    try db.initWithConfig(threaded.io(), path, .{
+        .read_conns = 1,
+        .max_read_conns = 1,
+        .reader_wait_ms = 20,
+    });
+
+    try db.exec(alloc,
+        \\CREATE TABLE worker (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    working_directory TEXT,
+        \\    last_activity_nano INTEGER,
+        \\    last_activity_description TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    cancelled INTEGER DEFAULT 0,
+        \\    user_id TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\INSERT INTO worker (id, session_id, working_directory) VALUES ('w1', 's1', '/tmp')
+    , &.{});
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // This endpoint is polled continuously, so repeat it: one call proves
+    // nothing, and the single pooled reader is what makes the second one
+    // decisive.
+    for (0..5) |_| {
+        const result = try listAs(&db, a, .{ .limit = 50, .session_id_filter = null }, "");
+        try testing.expectEqual(@as(u32, 1), result.count);
+    }
+
+    // Every listing found a reader waiting for it. Had the cursor leaked its
+    // reader, the second call onwards would have found the pool empty, waited
+    // out `reader_wait_ms`, and served the read on the WRITE connection —
+    // which serializes that read against every concurrent write.
+    try testing.expectEqual(@as(u64, 0), db.readFallbackCount());
+
+    // And nothing is still checked out. This catches the leak on its own,
+    // without relying on the pool filling up: a deinited cursor returns its
+    // reader, and a drained one does not. No allocator can see this — the row
+    // bytes belong to the arena, the connection to the pool.
+    try testing.expectEqual(@as(usize, 0), db.outstandingClaims());
 }
