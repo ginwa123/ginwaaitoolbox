@@ -23,6 +23,12 @@ import { runSyncResult } from '../../sync/runtime'
 
 const props = defineProps<{
   skillName: string | null
+  /**
+   * Explicit workspace binding. When set, detail reads/deletes in this
+   * workspace instead of the active one — the workspace settings page binds
+   * the route workspace. Absent = previous behaviour (active workspace).
+   */
+  workspaceId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -31,9 +37,10 @@ const emit = defineEmits<{
 }>()
 
 // The RESOLVED workspace, not the raw `activeWorkspaceId` ref — see
-// RightSideBarSkillList.vue / DocumentsView.vue for why.
+// RightSideBarSkillList.vue / DocumentsView.vue for why. An explicit prop
+// wins over the store so a page can show a non-active workspace.
 const workspacesStore = useWorkspacesStore()
-const workspaceId = computed(() => workspacesStore.activeWorkspace?.id ?? null)
+const workspaceId = computed(() => props.workspaceId ?? workspacesStore.activeWorkspace?.id ?? null)
 
 const skillDetail = ref<SkillDetail | null>(null)
 const isLoading = ref(false)

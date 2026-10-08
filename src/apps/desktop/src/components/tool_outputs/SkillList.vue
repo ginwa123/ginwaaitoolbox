@@ -18,12 +18,20 @@ import { runSyncResult } from '../../sync/runtime'
 
 const props = defineProps<{
   selectedSkillName: string | null
+  /**
+   * Explicit workspace binding. When set, the list reads this workspace's
+   * skills instead of the active workspace's — the workspace settings page
+   * binds the route workspace, which may differ from the active one.
+   * Absent = previous behaviour (active workspace).
+   */
+  workspaceId?: string | null
 }>()
 
 // The RESOLVED workspace, not the raw `activeWorkspaceId` ref (see
-// DocumentsView.vue).
+// DocumentsView.vue). An explicit prop wins over the store so a page can
+// show a non-active workspace without switching context.
 const workspacesStore = useWorkspacesStore()
-const workspaceId = computed(() => workspacesStore.activeWorkspace?.id ?? null)
+const workspaceId = computed(() => props.workspaceId ?? workspacesStore.activeWorkspace?.id ?? null)
 
 const skills = ref<Skill[]>([])
 const isLoading = ref(true)
@@ -91,10 +99,7 @@ defineExpose({
 </script>
 
 <template>
-  <div
-    class="skill-list"
-    :data-workspace="workspaceId ?? ''"
-  >
+  <div class="skill-list" :data-workspace="workspaceId ?? ''">
     <!-- Loading State -->
     <div v-if="isLoading" class="flex items-center justify-center py-8">
       <div class="flex items-center gap-3">
