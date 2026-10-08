@@ -1148,50 +1148,6 @@ defineExpose({
         : { height: 'auto', minHeight: '0' }
     "
   >
-    <!-- Header with expand/collapse toggle. Every measurement here
-         resolves against the --sb-* tokens in style.css, and
-         Sidebar.spacing.spec.ts asserts the rendered values, so this
-         block is free to change shape without a grep guard. Inside:
-         a single chevron + the section title; the trailing sort
-         control uses bare text (no SVG, no decoration) for a minimal
-         typographic feel. There is deliberately NO "+ new chat"
-         button (removed 2026-09-22 revamp) — new chats are created
-         from workspace items (projects), so every chat belongs to a
-         workspace and the list below can stay scoped. -->
-    <button
-      class="px-[var(--sb-gutter)] h-7 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0 border-b border-[--color-border]/40"
-      @click="toggleNavSection"
-    >
-      <span
-        class="text-meta transition-transform duration-200"
-        :style="{ transform: sidebarStore.navExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
-        style="color: var(--semantic-text-dim)"
-        >▶</span
-      >
-      <span
-        class="text-micro font-semibold uppercase tracking-[0.08em]"
-        style="color: var(--semantic-text-dim)"
-        data-testid="recent-section-title"
-        >Recent</span
-      >
-      <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
-        <button
-          @click.stop="onSortToggle"
-          :title="
-            chatsSortDirection === 'desc'
-              ? 'Newest first (click to flip)'
-              : 'Oldest first (click to flip)'
-          "
-          :aria-label="chatsSortDirection === 'desc' ? 'Sort: newest first' : 'Sort: oldest first'"
-          data-testid="chats-sort-toggle"
-          class="w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
-          style="color: var(--semantic-text-dim); opacity: 0.7"
-        >
-          {{ chatsSortDirection === 'desc' ? '↓' : '↑' }}
-        </button>
-      </div>
-    </button>
-
     <!-- Migration 104 — PINNED section above RECENT. Draggable rows
          (HTML5 DnD, custom MIME type mirrors WorkspaceItem). Hidden when
          empty so recents-only workspaces see no layout shift. -->
@@ -1272,6 +1228,50 @@ defineExpose({
         </button>
       </div>
     </div>
+
+    <!-- Header with expand/collapse toggle. Every measurement here
+         resolves against the --sb-* tokens in style.css, and
+         Sidebar.spacing.spec.ts asserts the rendered values, so this
+         block is free to change shape without a grep guard. Inside:
+         a single chevron + the section title; the trailing sort
+         control uses bare text (no SVG, no decoration) for a minimal
+         typographic feel. There is deliberately NO "+ new chat"
+         button (removed 2026-09-22 revamp) — new chats are created
+         from workspace items (projects), so every chat belongs to a
+         workspace and the list below can stay scoped. -->
+    <button
+      class="px-[var(--sb-gutter)] h-7 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0 border-b border-[--color-border]/40"
+      @click="toggleNavSection"
+    >
+      <span
+        class="text-meta transition-transform duration-200"
+        :style="{ transform: sidebarStore.navExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
+        style="color: var(--semantic-text-dim)"
+        >▶</span
+      >
+      <span
+        class="text-micro font-semibold uppercase tracking-[0.08em]"
+        style="color: var(--semantic-text-dim)"
+        data-testid="recent-section-title"
+        >Recent</span
+      >
+      <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
+        <button
+          @click.stop="onSortToggle"
+          :title="
+            chatsSortDirection === 'desc'
+              ? 'Newest first (click to flip)'
+              : 'Oldest first (click to flip)'
+          "
+          :aria-label="chatsSortDirection === 'desc' ? 'Sort: newest first' : 'Sort: oldest first'"
+          data-testid="chats-sort-toggle"
+          class="w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
+          style="color: var(--semantic-text-dim); opacity: 0.7"
+        >
+          {{ chatsSortDirection === 'desc' ? '↓' : '↑' }}
+        </button>
+      </div>
+    </button>
 
     <!-- Chat List -->
     <div v-if="sidebarStore.navExpanded" class="flex-1 min-h-0 flex flex-col overflow-hidden">

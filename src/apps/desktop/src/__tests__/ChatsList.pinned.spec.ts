@@ -73,6 +73,14 @@ describe('ChatsList — PINNED section (Migration 104)', () => {
 
     const pinned = document.body.querySelector('[data-testid="pinned-section"]')
     expect(pinned).toBeTruthy()
+    // Layout contract: Pinned, Recent, Projects — the PINNED section must
+    // precede the RECENT header in DOM order.
+    const recentTitle = document.body.querySelector('[data-testid="recent-section-title"]')
+    expect(recentTitle).toBeTruthy()
+    expect(
+      pinned!.compareDocumentPosition(recentTitle!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
     expect(
       document.body.querySelector('[data-testid="pinned-section-title"]')?.textContent,
     ).toContain('Pinned')
