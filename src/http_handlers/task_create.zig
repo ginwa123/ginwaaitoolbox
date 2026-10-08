@@ -38,6 +38,7 @@
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
+const auth_common = @import("auth_common.zig");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const ai_mod = pabrikcore.ai_mod;
@@ -119,6 +120,13 @@ pub const TaskCreateInput = struct {
     workspace_id: []const u8,
     io: std.Io,
     body: http_response.TaskCreateRequest,
+    /// Owning user id for any `sessions` row this create path writes
+    /// (unattended-flag INSERT below). Server-derived from the
+    /// `pabrik_session` cookie by the handler — never a body field.
+    /// Empty means "no identity" (auth off) and the row stays in the
+    /// shared bucket, so `session_llm_config.forSession` keeps falling
+    /// back to the process-global `config.json` exactly as before.
+    owner: []const u8 = "",
 };
 
 /// Tagged outcome of the use-case. The fields are the data needed
@@ -562,10 +570,14 @@ fn createStandardTask(
         // that landed first (e.g. the user typed a message in the new
         // task's chat before this row was written) doesn't trip a
         // UNIQUE constraint failure. The `name` column is NOT NULL.
+        // `user_id` carries the requesting owner under `--auth` so the
+        // workflow's `session_llm_config.forSession` resolves the user's
+        // `users.config_json` instead of falling back to `config.json`.
+        // Empty binds as NULL (shared bucket) — the auth-off behaviour.
         db.exec(
             allocator,
-            "INSERT OR IGNORE INTO sessions (id, name, status, is_auto_retry_until_stop) VALUES (?, ?, 'active', ?)",
-            &[_][]const u8{ task.id, task.name, normalized },
+            "INSERT OR IGNORE INTO sessions (id, name, status, is_auto_retry_until_stop, user_id) VALUES (?, ?, 'active', ?, ?)",
+            &[_][]const u8{ task.id, task.name, normalized, input.owner },
         ) catch |err| {
             std.log.warn("task_create: session INSERT for unattended flag failed (non-fatal): {s}", .{@errorName(err)});
         };
@@ -661,11 +673,19 @@ pub fn tasksCreateHandler(
         });
     };
 
+    // Owner for the `sessions` row this request may create (plan 2026-09-25).
+    // Server-derived from the `pabrik_session` cookie only — never a body,
+    // query, or header field. Empty when auth is off, which leaves the row in
+    // the shared legacy bucket.
+    var owner_buf: [128]u8 = undefined;
     const outcome = useCase(allocator, sqlite_db, .{
         .item_id = item_id,
         .workspace_id = ws_id,
         .io = ctx.io,
         .body = parsed,
+        // Owner for the unattended-flag `sessions` row (plan 2026-09-25).
+        // Server-derived from the cookie only; empty when auth is off.
+        .owner = auth_common.resolveOwnerInto(&owner_buf, req.headers) orelse "",
     }) catch |err| {
         const status: u16 = switch (err) {
             error.ItemIdRequired, error.MissingBody, error.InvalidJson => 400,
@@ -851,4 +871,66 @@ test "workspaces_create: generateWorkspaceId mints distinct ids from 32 concurre
     for (threads) |t| t.join();
     try expectAllIdsDistinct(a, ids, n);
     for (ids) |maybe| if (maybe) |id| a.free(id);
+}
+
+const migration_mod = @import("../migrations/migration.zig");
+
+// The unattended-flag `sessions` row must carry the requesting owner under
+// `--auth`. Without it the row is ownerless, `session_llm_config.forSession`
+// cannot resolve the user's `users.config_json`, and the agent run falls
+// back to the process-global `config.json` — the reported bug.
+test "task_create: unattended sessions row carries the requesting owner" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: pabrikcore.sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+    var manager = migration_mod.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration_mod.registerAllMigrations(&manager);
+    try manager.runMigrations();
+
+    // No parent row on purpose: the kanban auto-assign path treats a
+    // missing parent as non-kanban, so this stays on the sessions-INSERT
+    // path under test.
+    const owned = try useCase(alloc, &db, .{
+        .item_id = "item_folder",
+        .workspace_id = "ws_1",
+        .io = io,
+        .body = .{
+            .name = "Owned task",
+            .is_auto_retry_until_stop = "1",
+        },
+        .owner = "user_1",
+    });
+    {
+        var q = try db.query(alloc, "SELECT COALESCE(user_id, '') FROM sessions WHERE id = ?", &.{owned.standard.task_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.SessionRowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("user_1", row.values[0]);
+    }
+
+    // Empty owner (auth off) keeps the legacy shared bucket: NULL.
+    const shared = try useCase(alloc, &db, .{
+        .item_id = "item_folder",
+        .workspace_id = "ws_1",
+        .io = io,
+        .body = .{
+            .name = "Shared task",
+            .is_auto_retry_until_stop = "1",
+        },
+    });
+    {
+        var q = try db.query(alloc, "SELECT user_id IS NULL FROM sessions WHERE id = ?", &.{shared.standard.task_id});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.SessionRowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("1", row.values[0]);
+    }
 }

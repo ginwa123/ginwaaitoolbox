@@ -86,6 +86,7 @@ const kanban_column_run_all_agents_test = @import("kanban_column_run_all_agents_
 const kanban_create_session_user_message_test = @import("kanban_create_session_user_message_test.zig");
 const kanban_lifecycle_test = @import("kanban_lifecycle_test.zig");
 const kanban_task_create_message_format_test = @import("kanban_task_create_message_format_test.zig");
+const kanban_task_auth_config_test = @import("kanban_task_auth_config_test.zig");
 const kanban_task_get_test = @import("kanban_task_get_test.zig");
 const kanban_task_image_urls_test = @import("kanban_task_image_urls_test.zig");
 const kanban_task_long_description_test = @import("kanban_task_long_description_test.zig");
@@ -220,6 +221,7 @@ pub const suites = .{
     kanban_create_session_user_message_test,
     kanban_lifecycle_test,
     kanban_task_create_message_format_test,
+    kanban_task_auth_config_test,
     kanban_task_get_test,
     kanban_task_image_urls_test,
     kanban_task_long_description_test,

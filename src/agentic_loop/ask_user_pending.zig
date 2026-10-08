@@ -554,12 +554,18 @@ pub const SessionRunFields = struct {
     cwd: []const u8,
     selected_profile_model: []const u8,
     is_auto_retry_until_stop: []const u8,
+    /// Owning user id (`COALESCE(user_id, '')`). Passed through to
+    /// `emit_run_agent` so the worker's session upsert keeps the row
+    /// owned under `--auth`; empty means shared bucket (auth off or
+    /// legacy ownerless row).
+    user_id: []const u8,
 
     pub fn deinit(self: *const SessionRunFields, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.cwd);
         allocator.free(self.selected_profile_model);
         allocator.free(self.is_auto_retry_until_stop);
+        allocator.free(self.user_id);
     }
 };
 
@@ -573,7 +579,7 @@ pub fn loadSessionRunFields(
 ) !SessionRunFields {
     var rows = try db.query(
         allocator,
-        "SELECT COALESCE(name, ''), COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?",
+        "SELECT COALESCE(name, ''), COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0'), COALESCE(user_id, '') FROM sessions WHERE id = ?",
         &.{session_id},
     );
     defer rows.deinit();
@@ -584,6 +590,7 @@ pub fn loadSessionRunFields(
             .cwd = try allocator.dupe(u8, row.values[1]),
             .selected_profile_model = try allocator.dupe(u8, row.values[2]),
             .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[3]),
+            .user_id = try allocator.dupe(u8, row.values[4]),
         };
     }
     return .{
@@ -591,6 +598,7 @@ pub fn loadSessionRunFields(
         .cwd = try allocator.dupe(u8, ""),
         .selected_profile_model = try allocator.dupe(u8, ""),
         .is_auto_retry_until_stop = try allocator.dupe(u8, "0"),
+        .user_id = try allocator.dupe(u8, ""),
     };
 }
 
@@ -625,6 +633,9 @@ pub fn resumeSession(
         .selected_profile_model = fields.selected_profile_model,
         .is_auto_retry_until_stop = fields.is_auto_retry_until_stop,
         .skip_initial_queue_message = true,
+        // Preserve the session's owner so the worker's upsert keeps the
+        // row owned under `--auth` (plan 2026-09-25).
+        .user_id = fields.user_id,
     });
     return true;
 }

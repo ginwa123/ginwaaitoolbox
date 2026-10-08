@@ -44,6 +44,7 @@
 
 const std = @import("std");
 const pabrikcore = @import("pabrikcore");
+const auth_common = @import("auth_common.zig");
 const gserverz = pabrikcore.gserverz;
 const ai_mod = pabrikcore.ai_mod;
 const sqlite = pabrikcore.sqlite;
@@ -107,6 +108,7 @@ pub fn startAgentUseCase(
     db: *sqlite.SqliteBackend,
     di: *pabrikcore.App,
     task_id: []const u8,
+    owner: []const u8,
 ) !StartAgentOutcome {
     // 1. Validate the task exists. `getWorkspaceItemTask` returns
     //    null when the row is absent (vs. propagating a NOT_FOUND
@@ -200,7 +202,24 @@ pub fn startAgentUseCase(
         .selected_profile_model = session_profile,
         .is_auto_retry_until_stop = session_auto_retry,
         .skip_initial_queue_message = true,
+        // Owner rides along so the concurrent insert_worker task stamps
+        // the session row at INSERT time when it has to upsert one
+        // (brand-new task, no session row yet). Otherwise the workflow
+        // resolves the process-global config.json instead of the user's
+        // users.config_json (plan 2026-09-25).
+        .user_id = owner,
     });
+
+    // Claim an ownerless session row the upsert above may have left behind
+    // (INSERT OR IGNORE no-ops on an existing ownerless row). Only claims
+    // ownerless rows, so a real owner is never overwritten.
+    if (di.auth_enabled and owner.len > 0) {
+        db.exec(
+            allocator,
+            "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')",
+            &[_][]const u8{ owner, task_id },
+        ) catch {};
+    }
 
     return .triggered;
 }
@@ -244,8 +263,11 @@ pub fn startAgentHandler(
     };
     const sqlite_db = di.db;
 
-    // 3. Apply the use-case.
-    const outcome = startAgentUseCase(allocator, sqlite_db, di, task_id) catch |err| {
+    // 3. Apply the use-case. Owner rides along so the worker's session
+    // upsert keeps the row owned under `--auth` (plan 2026-09-25).
+    var owner_buf: [128]u8 = undefined;
+    const owner: []const u8 = auth_common.resolveOwnerInto(&owner_buf, req.headers) orelse "";
+    const outcome = startAgentUseCase(allocator, sqlite_db, di, task_id, owner) catch |err| {
         std.log.err("start_agent: useCase failed: {s}", .{@errorName(err)});
         return res.jsonResponse(.{
             .status_code = 500,

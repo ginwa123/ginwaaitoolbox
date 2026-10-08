@@ -350,6 +350,19 @@ pub const App = struct {
             &.{ session_id, copy_session_name, copy_cwd, copy_profile, effective_auto_retry, copy_user_id },
         );
 
+        // Claim an ownerless row when the INSERT OR IGNORE above no-opped
+        // on a pre-existing ownerless row (a handler that wrote the row
+        // without `user_id` before this task ran). Only claims ownerless
+        // rows, so a real owner is never overwritten. Best-effort: a
+        // transient failure here must not block the run.
+        if (parsed.user_id.len > 0) {
+            self.db.exec(
+                allocator,
+                "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')",
+                &.{ parsed.user_id, session_id },
+            ) catch {};
+        }
+
         // Broadcast session created event
         try agentic_loop_mod.on_event_sent.onEventSendSessions(allocator, .{
             .action = "created",

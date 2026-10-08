@@ -288,16 +288,18 @@ pub fn wakeSessionForCompletion(di: *pabrikcore.App, allocator: std.mem.Allocato
     var scwd: []const u8 = "";
     var sprofile: []const u8 = "";
     var sretry: []const u8 = "0";
-    if (di.db.query(allocator, "SELECT name, COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{sid})) |rows| {
+    var sowner: []const u8 = "";
+    if (di.db.query(allocator, "SELECT name, COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0'), COALESCE(user_id, '') FROM sessions WHERE id = ?", &.{sid})) |rows| {
         var q = rows;
         defer q.deinit();
         if (q.next() catch null) |row| {
             defer row.deinit(allocator);
-            if (row.values.len >= 4) {
+            if (row.values.len >= 5) {
                 sname = allocator.dupe(u8, row.values[0]) catch "";
                 scwd = allocator.dupe(u8, row.values[1]) catch "";
                 sprofile = allocator.dupe(u8, row.values[2]) catch "";
                 sretry = allocator.dupe(u8, row.values[3]) catch "0";
+                sowner = allocator.dupe(u8, row.values[4]) catch "";
             }
         }
     } else |_| {
@@ -316,6 +318,9 @@ pub fn wakeSessionForCompletion(di: *pabrikcore.App, allocator: std.mem.Allocato
         .selected_profile_model = sprofile,
         .is_auto_retry_until_stop = sretry,
         .skip_initial_queue_message = true,
+        // Preserve the session's owner so the worker's upsert keeps the
+        // row owned under `--auth` (plan 2026-09-25).
+        .user_id = sowner,
     }) catch |err| {
         logger.errFmt(
             "[cleanup_stale_background_process] wake emit failed for session {s}: {s}\n",
