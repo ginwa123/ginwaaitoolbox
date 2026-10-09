@@ -16,11 +16,13 @@ import ForgeIcon from '../../git/ForgeIcon.vue'
 import PrChecksPanel from './PrChecksPanel.vue'
 import SkillEvalsPanel from './SkillEvalsPanel.vue'
 import {
+  countDiffLines,
   parseUnifiedDiff,
   splitDiffByFile,
   type DiffSelection,
   type SplitDiffFile,
 } from './parseUnifiedDiff'
+import DiffCounts from './DiffCounts.vue'
 
 const props = defineProps<{
   cwd: string
@@ -70,6 +72,37 @@ let loadSeq = 0
 
 const selectedPath = ref<string | null>(null)
 const selectedStaged = ref(false)
+
+// ── Per-file +added / -removed ────────────────────────────────────────────
+// GitHub/GitLab put a line count on every file row; without one a 35-file
+// list is 35 identical-looking paths and the only way to find the big
+// change is to click each.
+//
+// Keyed by `folderDiffKey(staged, path)` — the same key the shared
+// folder-diff snapshot uses — so a row's counts and the diff it opens can
+// never disagree about which file they describe.
+//
+// A path ABSENT from the map has UNKNOWN counts and renders nothing. That
+// is deliberate and load-bearing: `+0 -0` would read as "this file is
+// unchanged", which is a lie whenever the diff fetch failed or the file
+// simply has no hunks to show yet.
+const diffCounts = ref(new Map<string, { added: number; removed: number }>())
+
+// PR mode has no batch fetch to lean on — but it does not need one: the
+// whole PR diff is already in hand as `prFiles[].text`, so the counts are
+// a pure computation over text we already hold. Cached in a computed so a
+// 35-file list does not re-scan 900-line chunks on every re-render.
+const prDiffCounts = computed(() => {
+  const counts = new Map<string, { added: number; removed: number }>()
+  for (const file of prFiles.value) counts.set(file.path, countDiffLines(file.text))
+  return counts
+})
+
+/** Counts for one row, or null when unknown. */
+function countsFor(path: string, staged: boolean): { added: number; removed: number } | null {
+  if (isPrMode.value) return prDiffCounts.value.get(path) ?? null
+  return diffCounts.value.get(folderDiffKey(staged, path)) ?? null
+}
 
 const changeCount = computed(
   () => stagedFiles.value.length + unstagedFiles.value.length + untrackedFiles.value.length,
@@ -660,6 +693,7 @@ const loadGitStatus = async () => {
     stagedFiles.value = []
     unstagedFiles.value = []
     untrackedFiles.value = []
+    diffCounts.value = new Map()
     return
   }
   // Stale-response guard: rapid cwd flips (session → worktree A → B)
@@ -683,10 +717,12 @@ const loadGitStatus = async () => {
       stagedFiles.value = []
       unstagedFiles.value = []
       untrackedFiles.value = []
+      diffCounts.value = new Map()
       emit('show-diff-list', [])
     }
   } catch (err) {
     if (seq !== loadSeq) return
+    diffCounts.value = new Map()
     console.error('Failed to load git status:', err)
     isGitRepo.value = false
     gitError.value = 'Failed to load git status'
@@ -753,6 +789,14 @@ const loadFullList = async (cwd: string = props.cwd) => {
     // and the standalone GitFileViewer) before rendering, so a click landing
     // in the next few milliseconds is already a cache hit.
     primeFolderDiffs(cwd, batch.diffs)
+    // Counts come straight off the payload we already have — no second
+    // request, and no re-derivation from the parsed line arrays below.
+    const counts = new Map<string, { added: number; removed: number }>()
+    for (const d of batch.diffs) {
+      const { added, removed } = countDiffLines(d.diff_content)
+      counts.set(folderDiffKey(d.staged, d.path), { added, removed })
+    }
+    diffCounts.value = counts
     const byKey = new Map(batch.diffs.map((d) => [folderDiffKey(d.staged, d.path), d.diff_content]))
     const list: DiffSelection[] = targets.map((t) => {
       const content = byKey.get(folderDiffKey(t.staged, t.path))
@@ -765,6 +809,9 @@ const loadFullList = async (cwd: string = props.cwd) => {
     // from turning back into a silent per-file request storm.
     console.error(`[SidebarDiffPanel] folder diff failed for ${cwd}:`, err)
     if (seq !== loadSeq) return
+    // Unknown, not zero: the rows must not claim "unchanged" for files
+    // whose diff we never received.
+    diffCounts.value = new Map()
     emit('show-diff-list', targets.map(toError))
   }
 }
@@ -1577,6 +1624,10 @@ defineExpose({
                 <span style="color: var(--semantic-text-dim)">{{ pathParts(file.path).dir }}</span
                 ><span style="color: var(--semantic-text)">{{ pathParts(file.path).name }}</span>
               </span>
+              <DiffCounts
+                :added="countsFor(file.path, false)?.added ?? null"
+                :removed="countsFor(file.path, false)?.removed ?? null"
+              />
             </div>
           </div>
         </template>
@@ -1777,6 +1828,10 @@ defineExpose({
                   <span style="color: var(--semantic-text-dim)">{{ pathParts(file.path).dir }}</span
                   ><span style="color: var(--semantic-text)">{{ pathParts(file.path).name }}</span>
                 </span>
+                <DiffCounts
+                  :added="countsFor(file.path, true)?.added ?? null"
+                  :removed="countsFor(file.path, true)?.removed ?? null"
+                />
                 <button
                   type="button"
                   class="w-5 h-5 shrink-0 rounded text-dense flex items-center justify-center hover:opacity-70"
@@ -1830,6 +1885,10 @@ defineExpose({
                   <span style="color: var(--semantic-text-dim)">{{ pathParts(file.path).dir }}</span
                   ><span style="color: var(--semantic-text)">{{ pathParts(file.path).name }}</span>
                 </span>
+                <DiffCounts
+                  :added="countsFor(file.path, false)?.added ?? null"
+                  :removed="countsFor(file.path, false)?.removed ?? null"
+                />
                 <button
                   type="button"
                   class="w-5 h-5 shrink-0 rounded text-dense flex items-center justify-center hover:opacity-70"
@@ -1883,6 +1942,10 @@ defineExpose({
                   <span style="color: var(--semantic-text-dim)">{{ pathParts(file.path).dir }}</span
                   ><span style="color: var(--semantic-text)">{{ pathParts(file.path).name }}</span>
                 </span>
+                <DiffCounts
+                  :added="countsFor(file.path, false)?.added ?? null"
+                  :removed="countsFor(file.path, false)?.removed ?? null"
+                />
                 <button
                   type="button"
                   class="w-5 h-5 shrink-0 rounded text-dense flex items-center justify-center hover:opacity-70"

@@ -17,6 +17,14 @@ function tryParseInt(s: string): number | null {
   return isNaN(n) ? null : n
 }
 
+/**
+ * One `@@ -a,b +c,d @@` header. Module-level and shared by
+ * `parseUnifiedDiff` and `countDiffLines` on purpose: two copies of this
+ * pattern drift the moment either is edited, and then the row counts stop
+ * matching the diff they sit next to.
+ */
+const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)?$/
+
 // Pure extraction of GitFileViewer.vue parseUnifiedDiff logic so the
 // ChatView-embedded sidebar and the legacy fullscreen viewer share one
 // parser. No Vue reactivity here — takes a string, returns data.
@@ -37,7 +45,7 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
       continue
     }
 
-    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)?$/)
+    const hunkMatch = HUNK_HEADER.exec(line)
     if (hunkMatch) {
       inHunk = true
       oldLine = tryParseInt(hunkMatch[1] ?? '') ?? 1
@@ -113,6 +121,48 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
   }
 
   return { lines: parsed, added, removed }
+}
+
+export interface DiffLineCounts {
+  added: number
+  removed: number
+}
+
+/**
+ * `+added / -removed` for ONE file's diff chunk, without building the line
+ * array `parseUnifiedDiff` returns.
+ *
+ * Why this exists: the file lists want a number per row, and the only diff
+ * text they have is the chunk they already hold. Parsing it into
+ * `ParsedDiffLine[]` just to read two counters allocates an object per line
+ * for a 900-line file — on a 35-file list that is tens of thousands of
+ * objects to render two digits.
+ *
+ * Deliberately mirrors `parseUnifiedDiff`'s line classification (same hunk
+ * regex, same "nothing before the first hunk counts" rule) so a row's
+ * counts always agree with the diff the center column shows for that file.
+ * `\ No newline at end of file` and the `--- / +++` headers are therefore
+ * not counted, exactly as in the parser.
+ */
+export function countDiffLines(diffText: string): DiffLineCounts {
+  let added = 0
+  let removed = 0
+  let inHunk = false
+
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('diff --git') || line.startsWith('index ')) continue
+    if (HUNK_HEADER.test(line)) {
+      inHunk = true
+      continue
+    }
+    if (!inHunk) continue
+    if (line.length === 0) continue
+    const firstChar = line[0]
+    if (firstChar === '+') added++
+    else if (firstChar === '-') removed++
+  }
+
+  return { added, removed }
 }
 
 export interface SplitDiffFile {
