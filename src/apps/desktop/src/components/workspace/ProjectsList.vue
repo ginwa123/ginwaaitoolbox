@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { inject, onMounted, onUnmounted, ref, type Ref } from 'vue'
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import type { Workspace, WorkspaceItem } from '../../stores/workspaces'
@@ -9,6 +8,7 @@ import WorkspaceItemComponent from './WorkspaceItem.vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
+import SidebarSkeleton from '../shell/SidebarSkeleton.vue'
 
 // The single SELECTED workspace (header dropdown + Projects section,
 // plan: docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
@@ -78,14 +78,11 @@ const emit = defineEmits<{
 }>()
 
 const sidebarStore = useSidebarStore()
+const workspacesStore = useWorkspacesStore()
 const activeAddMenu = ref<string | null>(null)
 
 // Sidebar shows every project — the header search filter was removed
 // (v2 sidebar UX: no search, always-visible actions, tighter indent).
-
-// Loading state
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-const workspacesLoading = ref(false)
 
 // ─── Drag-and-drop state (item reordering) ────────────────────────────────
 // Scoped to a single workspace's items — the revamp plan removed
@@ -485,6 +482,14 @@ const handleItemDragEnd = () => {
     <div>
       <Transition name="collapse">
         <div v-show="sidebarStore.projectsExpanded" class="pb-2">
+          <!-- Projects loading skeleton — shown while the workspace tree
+               is fetching and no items are painted yet. Keeps the section
+               from flashing "No projects yet" on a slow boot. -->
+          <SidebarSkeleton
+            v-if="workspacesStore.isLoading && (!workspace || workspace.items.length === 0)"
+            :rows="4"
+            test-id="projects-loading-skeleton"
+          />
           <!-- Selected workspace items (single workspace — revamp plan).
                One indent step per level (--sb-indent); the row supplies
                its own gutter, so the guide never double-counts. -->
@@ -532,7 +537,7 @@ const handleItemDragEnd = () => {
               @open-design-page-in-background="emit('openDesignPageInBackground', $event)"
             />
             <li
-              v-if="workspace.items.length === 0"
+              v-if="workspace.items.length === 0 && !workspacesStore.isLoading"
               class="px-[var(--sb-gutter)] py-2 text-micro"
               style="color: var(--semantic-text-dim)"
               data-testid="projects-empty"
@@ -541,7 +546,7 @@ const handleItemDragEnd = () => {
             </li>
           </ul>
           <div
-            v-else
+            v-else-if="!workspacesStore.isLoading"
             class="px-[var(--sb-gutter)] py-2 text-micro"
             style="color: var(--semantic-text-dim)"
             data-testid="projects-no-workspace"

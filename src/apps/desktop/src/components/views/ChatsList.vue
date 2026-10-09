@@ -20,6 +20,7 @@ import { sessionEngineDb, toSessionRow } from '../../sync/SessionEngineDb'
 import { runSyncEffect, runSyncEffectOr, runSyncVoid } from '../../sync/runtime'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
+import SidebarSkeleton from '../shell/SidebarSkeleton.vue'
 import ChatRowContextMenu from '../shell/ChatRowContextMenu.vue'
 import RenameTaskModal from '../dialogs/RenameTaskModal.vue'
 import GitBranchMenu from '../shell/GitBranchMenu.vue'
@@ -1421,8 +1422,19 @@ defineExpose({
         </template>
       </VirtualScroller>
 
-      <!-- Loading indicator -->
-      <div v-if="chatsLoading" class="py-2 text-center shrink-0">
+      <!-- Initial load skeleton — shown while the first page is in
+           flight and nothing is painted yet. Replaces the old plain
+           "Loading..." text so the list keeps its layout instead of
+           flashing empty. Pagination (rows already on screen) keeps
+           the text indicator below. -->
+      <SidebarSkeleton
+        v-if="chatsLoading && navItems.length === 0"
+        :rows="6"
+        test-id="chats-loading-skeleton"
+      />
+
+      <!-- Loading indicator (pagination only) -->
+      <div v-if="chatsLoading && navItems.length > 0" class="py-2 text-center shrink-0">
         <span class="px-[var(--sb-gutter)] py-2 text-micro" style="color: var(--semantic-text-dim)"
           >Loading...</span
         >
