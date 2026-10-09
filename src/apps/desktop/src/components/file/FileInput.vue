@@ -604,31 +604,27 @@ function scheduleDetectAtTrigger(): void {
 }
 
 // ── /skill picker (mirrors the @ picker above) ─────────────────────────
-// Trigger: a `/` at message start or after whitespace, followed by a raw
-// token of word chars, dots and dashes, with single spaces or `/` as
-// separators — so `/skill foo`, `/team/name` and `/skill-a-b` all keep the
-// picker open. A raw token of `skill`, `skill-…`, `skill …`, `skill/…`,
-// or any leading prefix of `skill` (`s`, `sk`, `ski`, `skil`) is the
-// namespace form (insert keeps `/skill-<name>`); anything else is the
-// bare form (insert keeps `/<name>` — the backend expands both).
+// Trigger: the literal `/skill-` prefix at message start or after
+// whitespace, followed by the skill-name alphabet `[A-Za-z0-9._-]`.
+// Nothing else opens it — a bare `/`, a partial `/sk`, a path like
+// `/home/ginwa/pabrik`, or prose that merely contains a slash all leave
+// the composer alone. The dash is required on purpose: it is the one
+// character that separates "the user is invoking a skill" from "the user
+// typed a slash for some other reason", and without it the picker fired
+// on every filesystem path in the message.
 // The regex guarantees the position rule, so `http://` and `a/b` never
 // match — the char before `/` must be start-of-line or whitespace.
-// Stored skill names are `[A-Za-z0-9._-]` (see `isValidSkillName` — `/`
-// and space are rejected as a directory-escape guard), so a `/` segment
-// or space in the TYPED token is only ever a separator: filtering uses
-// the last `/`-segment, split into AND-words on spaces.
-const SLASH_TOKEN_RE = /(^|\s)\/([\w.-]*(?:[ /][\w.-]+)*)$/
+// Case-insensitive, so `/SKILL-DEPLOY` behaves like `/skill-deploy`.
+const SLASH_TOKEN_RE = /(^|\s)\/skill-([\w.-]*)$/i
 const showSkillPicker = ref(false)
-// Lower-cased filter words derived from the token (empty = show all).
-const skillQueryWords = ref<string[]>([])
+// Lower-cased filter text after the `skill-` marker (empty = show all).
+const skillQuery = ref('')
 const skillList = ref<api.Skill[]>([])
 const isLoadingSkills = ref(false)
 const selectedSkillIndex = ref(0)
 const skillPickerRef = ref<HTMLElement | null>(null)
 // A load failure renders in its own error row, never as an empty list.
 const skillError = ref<string | null>(null)
-// Which typed form opened the picker — insert preserves it.
-const skillForm = ref<'namespace' | 'bare'>('namespace')
 // Workspace the cached list was fetched for (fetch once per workspace).
 const skillLoadedWorkspace = ref<string | null>(null)
 
@@ -641,7 +637,7 @@ const activeSkillWorkspaceId = (): string | null => {
 
 const closeSkillPicker = () => {
   showSkillPicker.value = false
-  skillQueryWords.value = []
+  skillQuery.value = ''
   selectedSkillIndex.value = 0
   skillError.value = null
 }
@@ -682,34 +678,11 @@ const detectSlashTrigger = () => {
       closeSkillPicker()
       return
     }
-    const raw = slashMatch[2] ?? ''
-    // Case-insensitive: `/SKILL-DEPLOY` is the same namespace as
-    // `/skill-deploy` (stored names are lowercase by convention).
-    const lower = raw.toLowerCase()
-    const isSkillPrefix = lower.length > 0 && 'skill'.startsWith(lower)
-    const isNamespace =
-      raw === '' ||
-      lower === 'skill' ||
-      isSkillPrefix ||
-      lower.startsWith('skill-') ||
-      lower.startsWith('skill ') ||
-      lower.startsWith('skill/')
-    skillForm.value = isNamespace ? 'namespace' : 'bare'
-    // Strip one leading `skill`, `skill-`, `skill ` or `skill/` marker
-    // (all six chars), then filter on the last `/`-segment split into
-    // AND-words on spaces — so `/skill a b`, `/team/name` and
-    // `/skill-a-b` all narrow the same cached list.
-    let rest: string
-    if (isNamespace) {
-      rest = raw === '' || raw === 'skill' || isSkillPrefix ? '' : raw.slice('skill-'.length)
-    } else {
-      rest = raw
-    }
-    const lastSegment = rest.split('/').pop() ?? ''
-    skillQueryWords.value = lastSegment
-      .toLowerCase()
-      .split(/ +/)
-      .filter((w) => w.length > 0)
+    // Everything after the `skill-` marker is the filter query. Stored
+    // names are `[A-Za-z0-9._-]` (see `isValidSkillName`), so the query
+    // alphabet matches the name alphabet exactly — no separators to
+    // split, no last-segment walk.
+    skillQuery.value = (slashMatch[2] ?? '').toLowerCase()
     if (!showSkillPicker.value) {
       showSkillPicker.value = true
       selectedSkillIndex.value = 0
@@ -723,16 +696,16 @@ const detectSlashTrigger = () => {
   }
 }
 
-// Client-side AND-word filter over the cached workspace list. Every word
-// must hit the bare name, the full `skill-<name>` token shown in the row,
-// or the description — so `/skill before shots`, `/team/deploy` and
-// `/SKILL-DEPLOY` all narrow correctly (matching is case-insensitive).
+// Client-side substring filter over the cached workspace list. Matches
+// the bare name, the full `skill-<name>` token shown in the row, or the
+// description — so `/skill-dep` narrows to `deploy-prod` and
+// `/SKILL-DEPLOY` behaves the same (matching is case-insensitive).
 const filteredSkills = computed(() => {
-  const words = skillQueryWords.value
-  if (words.length === 0) return skillList.value
+  const q = skillQuery.value
+  if (q === '') return skillList.value
   return skillList.value.filter((s) => {
     const hay = `${s.name.toLowerCase()} skill-${s.name.toLowerCase()} ${s.description.toLowerCase()}`
-    return words.every((w) => hay.includes(w))
+    return hay.includes(q)
   })
 })
 
@@ -743,9 +716,11 @@ const selectSkill = (skill: api.Skill) => {
   const textAfterCursor = text.slice(pos)
   const slashMatch = textBeforeCursor.match(SLASH_TOKEN_RE)
   if (slashMatch && slashMatch.index !== undefined) {
+    // Replace the whole `/skill-<query>` span with the canonical token,
+    // keeping whatever preceded the trigger (start-of-line or the
+    // whitespace the regex consumed) untouched.
     const slashPos = slashMatch.index + (slashMatch[1] ?? '').length
-    const insert = skillForm.value === 'namespace' ? `/skill-${skill.name}` : `/${skill.name}`
-    inputText.value = textBeforeCursor.slice(0, slashPos) + insert + textAfterCursor
+    inputText.value = textBeforeCursor.slice(0, slashPos) + `/skill-${skill.name}` + textAfterCursor
   }
   closeSkillPicker()
 }
@@ -968,8 +943,9 @@ const sendMessage = () => {
       </div>
     </div>
 
-    <!-- Skill picker dropdown — stays open while the `/` trigger is active
-      so an empty filter renders `No skills found` instead of vanishing. -->
+    <!-- Skill picker dropdown — stays open while the `/skill-` trigger is
+      active so an empty filter renders `No skills found` instead of
+      vanishing. -->
     <div
       v-if="showSkillPicker"
       ref="skillPickerRef"
