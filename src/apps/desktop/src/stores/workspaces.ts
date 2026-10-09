@@ -642,6 +642,45 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Map (not reactive ref) — same reason as activeSearchQueries.
   const activeSortBy: Map<string, 'created_at' | 'updated_at' | 'name'> = new Map()
   const activeSortDirection: Map<string, 'asc' | 'desc'> = new Map()
+
+  // Per-column FIRST-PAGE loading signal. A reactive Set of
+  // `${itemId}:${columnId}` keys, true while that column's page-1
+  // fetch is in flight.
+  //
+  // Why a separate signal instead of `columnPagination[colId]`:
+  // the ABSENCE of a `columnPagination` entry is the sentinel
+  // KanbanView.vue's mount path uses to decide which columns still
+  // need fetching (`needFetch = columns.filter(col => !cp[col.id])`).
+  // Pre-creating the entry with `isLoading: true` would make every
+  // column look already-fetched and the board would never load.
+  //
+  // Without this signal a column renders its "No tasks yet" empty
+  // state during the first-page fetch — a false statement about the
+  // user's data, since the column may well have tasks. The skeleton
+  // gates on this set instead.
+  const firstPageLoadingColumns = ref<Set<string>>(new Set())
+
+  const firstPageLoadingKey = (itemId: string, columnId: string) => `${itemId}:${columnId}`
+
+  function isFirstPageLoading(itemId: string, columnId: string): boolean {
+    return firstPageLoadingColumns.value.has(firstPageLoadingKey(itemId, columnId))
+  }
+
+  // Design-element fetch signal. Holds `${itemId}:${pageId}` while that
+  // page's elements are in flight, null otherwise. Same rationale as
+  // `firstPageLoadingColumns`: DesignView's canvas, LayersPanel and
+  // PropertiesPanel all read `item.design_elements`, and while it is
+  // still empty they render their empty states — "Click + Element to add
+  // your first element" is a false statement about the page's data.
+  //
+  // A single key rather than a Set because only ONE page is ever active
+  // at a time (the store tracks `activeDesignPageId`).
+  const designElementsLoadingKey = ref<string | null>(null)
+
+  function isDesignElementsLoading(itemId: string, pageId: string): boolean {
+    return designElementsLoadingKey.value === `${itemId}:${pageId}`
+  }
+
   const taskEngineDb = new TaskEngineDb()
 
   function taskRequest(
@@ -1948,6 +1987,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   ): Promise<void> {
     const item = findItem(workspaceId, itemId)
     if (!item) return
+    // Mark this column's first page as in-flight so KanbanColumn /
+    // KanbanRowView can show a skeleton instead of the "No tasks yet"
+    // empty state. Only for page-1 (no cursor) — a "Load more" fetch
+    // already has rows on screen and its own `isLoading` flag.
+    const isFirstPage = !cursor
+    if (isFirstPage) {
+      firstPageLoadingColumns.value.add(firstPageLoadingKey(itemId, columnId))
+    }
     try {
       const cached = cursor
         ? []
@@ -2013,6 +2060,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Leave the existing tasks array untouched so the UI doesn't
       // flash to empty on a transient network blip. The next SSE
       // event will trigger another fetch.
+    } finally {
+      // Clear the first-page flag on BOTH paths — a failed fetch must
+      // not park the skeleton forever (the column falls back to its
+      // empty state, which is the honest answer when the request
+      // failed).
+      if (isFirstPage) {
+        firstPageLoadingColumns.value.delete(firstPageLoadingKey(itemId, columnId))
+      }
     }
   }
 
@@ -2391,6 +2446,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   ): Promise<void> {
     const item = findItem(workspaceId, itemId)
     if (!item) return
+    // Mark this page's element fetch in flight so DesignView's canvas,
+    // LayersPanel and PropertiesPanel can hold a skeleton instead of
+    // rendering their empty states — "Click + Element to add your first
+    // element" is a false statement while the fetch is outstanding.
+    designElementsLoadingKey.value = `${itemId}:${pageId}`
     try {
       const { elements } = await api.getDesignPage(workspaceId, itemId, pageId)
       // Mirror in PLACE (per-id replace + splice + append) rather than
@@ -2461,6 +2521,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Leave the existing elements array untouched so the UI
       // doesn't flash to empty on a transient network blip. The
       // next SSE event will trigger another fetch.
+    } finally {
+      // Cleared on BOTH paths so a failed fetch cannot park the
+      // skeleton — the surfaces fall back to their empty states, which
+      // is the honest answer when the request failed.
+      designElementsLoadingKey.value = null
     }
   }
 
@@ -4687,6 +4752,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // fetch a meaningless page.
     activeSortBy,
     activeSortDirection,
+    // Per-column first-page loading signal (see the declaration above
+    // for why it is not `columnPagination[colId].isLoading`).
+    firstPageLoadingColumns,
+    isFirstPageLoading,
+    // Design-element fetch signal (see the declaration above).
+    designElementsLoadingKey,
+    isDesignElementsLoading,
     systemFolderInfo,
     systemFolderLoading,
     systemFolderError,

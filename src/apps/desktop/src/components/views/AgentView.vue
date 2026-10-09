@@ -35,9 +35,25 @@ interface Props {
   knowledge: AgnosticKnowledgeRow[]
   tools: string[]
   systemPrompts?: AgnosticSystemPromptRow[]
+  /**
+   * True while the PARENT's agent-bundle fetch is in flight.
+   *
+   * The three parents (AppLayout, KanbanSettingsView, RoutineView)
+   * fetch fire-and-forget with no flag of their own, so `knowledge`
+   * and `systemPrompts` start as `[]` and the panels below render
+   * their empty states — "No knowledge files yet." for an agent that
+   * has five. This prop lets them hold a skeleton instead.
+   *
+   * Distinct from the local `loading` ref, which tracks AgentView's
+   * OWN tool-registry fetch.
+   */
+  loading?: boolean
 }
 
-const props = withDefaults(defineProps<Props>(), { systemPrompts: () => [] })
+const props = withDefaults(defineProps<Props>(), {
+  systemPrompts: () => [],
+  loading: false,
+})
 
 const emit = defineEmits<{
   addKnowledge: []
@@ -465,7 +481,22 @@ function handleClearAllVisible() {
           </button>
         </div>
 
-        <div v-if="systemPrompts.length === 0" class="text-dense text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
+        <!-- Parent-fetch skeleton — same rationale as the knowledge panel. -->
+        <div
+          v-if="props.loading"
+          class="space-y-1.5"
+          data-testid="agent-system-prompt-skeleton"
+          role="status"
+          aria-label="Loading system prompts"
+        >
+          <div
+            v-for="n in 2"
+            :key="n"
+            class="h-9 rounded border animate-pulse"
+            style="background-color: var(--semantic-active-bg); border-color: var(--color-border)"
+          />
+        </div>
+        <div v-else-if="systemPrompts.length === 0" class="text-dense text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
           <UiIcon name="note" size-class="w-4.5 h-4.5" class="mb-1" />
           <div>No system prompts yet.</div>
           <div class="mt-1">Add one to give this Agent a persona or standing instructions.</div>
@@ -560,7 +591,25 @@ function handleClearAllVisible() {
             + Add
           </button>
         </div>
-        <div v-if="knowledge.length === 0" class="text-dense text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
+        <!-- Parent-fetch skeleton — shown while the parent's agent-bundle
+             fetch is in flight. Without it the empty state below fires the
+             instant `knowledge.length === 0`, which on a cold load is a
+             false "No knowledge files yet." -->
+        <div
+          v-if="props.loading"
+          class="space-y-1.5 mt-2"
+          data-testid="agent-knowledge-skeleton"
+          role="status"
+          aria-label="Loading knowledge"
+        >
+          <div
+            v-for="n in 3"
+            :key="n"
+            class="h-9 rounded border animate-pulse"
+            style="background-color: var(--semantic-active-bg); border-color: var(--color-border)"
+          />
+        </div>
+        <div v-else-if="knowledge.length === 0" class="text-dense text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
           <UiIcon name="books" size-class="w-4.5 h-4.5" class="mb-1" />
           <div>No knowledge files yet.</div>
           <div class="mt-1">Click <strong>+ Add</strong> to attach a markdown file the agent will read on every chat start.</div>

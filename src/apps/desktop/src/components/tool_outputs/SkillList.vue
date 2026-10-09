@@ -10,6 +10,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUpdated, ref } from 'vue'
 import UiIcon from '../ui/UiIcon.vue'
+import ListSkeleton from '../shell/ListSkeleton.vue'
 import { Effect } from 'effect'
 import { getSkills, type Skill } from '../../api'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -100,16 +101,9 @@ defineExpose({
 
 <template>
   <div class="skill-list" :data-workspace="workspaceId ?? ''">
-    <!-- Loading State -->
-    <div v-if="isLoading" class="flex items-center justify-center py-8">
-      <div class="flex items-center gap-3">
-        <div
-          class="w-5 h-5 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-violet); border-top-color: transparent"
-        ></div>
-        <span style="color: var(--semantic-text-muted)">Loading skills...</span>
-      </div>
-    </div>
+    <!-- Loading State — skeleton holds the card list's height instead of
+         collapsing the panel to one centered row. -->
+    <ListSkeleton v-if="isLoading" :rows="5" row-height="h-16" test-id="skill-list-skeleton" />
 
     <!-- Error State -->
     <div v-else-if="error" class="text-center py-8" data-testid="skill-list-error">

@@ -184,10 +184,17 @@ const kanbanKnowledge = ref<api.AgentKanbanKnowledgeRow[]>([])
 const kanbanTools = ref<string[]>([])
 const kanbanSystemPrompts = ref<api.AgentKanbanSystemPromptRow[]>([])
 
+// True while `loadKanbanAgent` is in flight — AgentView's knowledge and
+// system-prompt panels gate their skeletons on this. Without it they
+// render "No knowledge files yet." during the fetch, which is a false
+// statement about the board's data.
+const kanbanAgentLoading = ref(false)
+
 async function loadKanbanAgent() {
   const id = item.value?.id
   const wsId = workspaceId.value
   if (!id || !wsId) return
+  kanbanAgentLoading.value = true
   try {
     const data = await api.getAgentKanban(wsId, id)
     if (data) {
@@ -201,6 +208,9 @@ async function loadKanbanAgent() {
     }
   } catch (e) {
     console.error('[KanbanSettingsView] failed to load kanban agent:', e)
+  } finally {
+    // Cleared on BOTH paths so a failed fetch cannot park the skeleton.
+    kanbanAgentLoading.value = false
   }
 }
 
@@ -862,6 +872,7 @@ function sortedColumns() {
           :knowledge="kanbanKnowledge"
           :tools="kanbanTools"
           :system-prompts="kanbanSystemPrompts"
+          :loading="kanbanAgentLoading"
           @add-knowledge="handleKanbanAddKnowledge"
           @remove-knowledge="handleKanbanRemoveKnowledge"
           @edit-knowledge="handleKanbanEditKnowledge"

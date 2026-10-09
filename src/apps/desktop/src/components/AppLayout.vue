@@ -1378,6 +1378,12 @@ const agentTools = ref<string[]>([])
 // knowledge above; the GET /agent bundle carries them in one round-trip.
 const agentSystemPrompts = ref<api.AgentSystemPromptRow[]>([])
 
+// True while `loadAgentData` is in flight. AgentView's knowledge and
+// system-prompt panels gate their skeletons on this — without it they
+// render "No knowledge files yet." / "No system prompts yet." during
+// the fetch, which is a false statement about the agent's data.
+const agentDataLoading = ref(false)
+
 // FIX (agent-tools-fetch-on-view): the previous code only fetched
 // `agentTools` inside the `activeTask` watcher. When the user landed
 // directly on the agent view (?view=workspace&itemId=AGENT_ID,
@@ -1392,6 +1398,7 @@ const agentSystemPrompts = ref<api.AgentSystemPromptRow[]>([])
 // `activeTask` watcher is reduced to only controlling the chat
 // dialog visibility (no fetch).
 async function loadAgentData(agentItemId: string) {
+  agentDataLoading.value = true
   try {
     const wsId = activeWorkspace?.value?.id
     if (!wsId) return
@@ -1403,6 +1410,11 @@ async function loadAgentData(agentItemId: string) {
     agentSystemPrompts.value = data.system_prompts ?? []
   } catch (e) {
     console.error('[AppLayout] failed to load agent:', e)
+  } finally {
+    // Cleared on BOTH paths — a failed fetch must not park the
+    // skeleton forever (the panels fall back to their empty states,
+    // which is the honest answer when the request failed).
+    agentDataLoading.value = false
   }
 }
 
@@ -3366,6 +3378,7 @@ defineExpose({
         :knowledge="agentKnowledge"
         :tools="agentTools"
         :system-prompts="agentSystemPrompts"
+        :loading="agentDataLoading"
         @add-knowledge="handleAgentAddKnowledge"
         @remove-knowledge="handleAgentRemoveKnowledge"
         @edit-knowledge="handleAgentEditKnowledge"

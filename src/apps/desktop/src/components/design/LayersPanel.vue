@@ -38,6 +38,7 @@
 import { computed, ref } from 'vue'
 import type { DesignElement } from '../../api'
 import LayerRow, { type LayerTreeNode } from './LayerRow.vue'
+import ListSkeleton from '../shell/ListSkeleton.vue'
 import DesignContextMenu from './DesignContextMenu.vue'
 import { useDesignContextMenu } from '../../composables/useDesignContextMenu'
 import { useLayerDragDrop, TOP_LEVEL_SENTINEL } from '../../composables/useLayerDragDrop'
@@ -51,6 +52,16 @@ const workspacesStore = useWorkspacesStore()
 const activeWorkspaceId = computed(() => workspacesStore.activeWorkspace?.id ?? null)
 const activeWorkspaceItemId = computed(() => workspacesStore.activeWorkspaceItemId)
 const activeDesignPageId = computed(() => workspacesStore.activeDesignPageId)
+
+// True while the active page's element fetch is in flight. Without it
+// the panel renders "No elements on this page yet" during the fetch —
+// a false statement about the page's data.
+const isElementsLoading = computed(() => {
+  const itemId = activeWorkspaceItemId.value
+  const pageId = activeDesignPageId.value
+  if (!itemId || !pageId) return false
+  return workspacesStore.isDesignElementsLoading(itemId, pageId)
+})
 
 const props = withDefaults(
   defineProps<{
@@ -317,8 +328,14 @@ const handleMoveDown = (elementId: string): void => {
     >
       Layers ({{ elements.length }})
     </div>
+    <ListSkeleton
+      v-if="isElementsLoading"
+      :rows="6"
+      row-height="h-8"
+      test-id="layers-panel-skeleton"
+    />
     <div
-      v-if="elements.length === 0"
+      v-else-if="elements.length === 0"
       class="flex-1 flex items-center justify-center p-4 text-dense"
       style="color: var(--semantic-text-dim);"
       data-testid="layers-panel-empty"

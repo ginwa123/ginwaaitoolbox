@@ -364,9 +364,31 @@ onUpdated(() => {
                 </ul>
               </div>
 
-              <!-- Source preview: small list of columns in the source -->
+              <!-- Source preview: small list of columns in the source.
+                   The loading branch renders the flag `loadSourceColumns`
+                   already maintains — without it the preview block is
+                   simply absent until the fetch lands, then pops in and
+                   shifts the dialog's content mid-interaction. -->
               <div
-                v-if="sourceColumns.length > 0"
+                v-if="sourceColumnsLoading"
+                class="mt-3 rounded-lg overflow-hidden p-3 space-y-2"
+                style="
+                  background-color: var(--semantic-sidebar-bg);
+                  border: 1px solid var(--color-border);
+                "
+                data-testid="copy-kanban-spec-source-loading"
+                role="status"
+                aria-label="Loading source columns"
+              >
+                <div
+                  v-for="n in 3"
+                  :key="n"
+                  class="h-6 rounded animate-pulse"
+                  style="background-color: var(--semantic-active-bg)"
+                />
+              </div>
+              <div
+                v-else-if="sourceColumns.length > 0"
                 class="mt-3 rounded-lg overflow-hidden"
                 style="
                   background-color: var(--semantic-sidebar-bg);

@@ -14,6 +14,14 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+
+// Running means the tool has not returned yet: the dispatcher passes an
+// empty-string placeholder. Without this the card renders its failure
+// styling (`border-red-500/50` + a red cross) for the whole tool call,
+// because `parsed.edited` is false while the envelope is empty.
+const isEmptyContent = (c: unknown): boolean =>
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const isRunning = computed(() => isEmptyContent(props.content))
 const normalized = computed(() => normalizeToolContent(props.content))
 const parsed = computed(() => {
   const p = parseEditSkill(normalized.value.data)
@@ -37,12 +45,13 @@ const handleToggle = (next: boolean) => {
 <template>
   <div
     class="chat-tool-card font-mono text-dense"
-    :class="{ 'border-red-500/50 opacity-80': !parsed.edited }"
+    :class="{ 'border-red-500/50 opacity-80': !parsed.edited && !isRunning }"
   >
     <ToolCardHeader
       tool-name="edit_skill"
       :primary="parsed.skillName"
       :success="parsed.edited"
+      :running="isRunning"
       :expanded="isExpanded"
       :expandable="!parsed.edited || !!parsed.error || hasArgs"
       :show-open-in-editor="false"

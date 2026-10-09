@@ -24,6 +24,7 @@ import ProfilesSection, { type ProfileRow } from './pabrik/ProfilesSection.vue'
 import McpServersSection from './pabrik/McpServersSection.vue'
 import WebSearchSection from './pabrik/WebSearchSection.vue'
 import ToolsSection from './pabrik/ToolsSection.vue'
+import SettingsSkeleton from './pabrik/SettingsSkeleton.vue'
 import SkillEvalsSection, { type SkillEvalsSettings } from './pabrik/SkillEvalsSection.vue'
 import { parseMcpServers, serializeMcpServers } from './pabrik/mcpServers'
 import {
@@ -839,14 +840,19 @@ const isLoading = computed(() => !loaded.value)
 
 <template>
   <div class="flex flex-col h-full" data-testid="pabrik-settings">
-    <!-- Loading state -->
-    <div
-      v-if="isLoading"
-      class="flex-1 flex items-center justify-center text-body"
-      style="color: var(--semantic-text-muted)"
-    >
-      Loading settings…
-    </div>
+    <!-- Loading skeleton — holds the tab strip + a few section cards so
+         the surface does not collapse to one line of text and snap open.
+         The tab strip stays interactive so the user can pick where they
+         were going; the sections below render their own skeletons via
+         the `loading` prop. -->
+    <template v-if="isLoading">
+      <div class="shrink-0 px-1 pt-1">
+        <PabrikTabStrip v-model="activeTab" />
+      </div>
+      <div class="flex-1 overflow-y-auto p-6 space-y-6" data-testid="pabrik-settings-skeleton">
+        <SettingsSkeleton :rows="4" test-id="pabrik-settings-loading-skeleton" />
+      </div>
+    </template>
 
     <template v-else>
       <!-- Tab strip -->
@@ -912,6 +918,7 @@ const isLoading = computed(() => !loaded.value)
           v-if="activeTab === 'profiles'"
           v-model="profilesList"
           :active-profile="activeProfile"
+          :loading="isLoading"
           @update:model-value="syncToConfig"
           @set-active="setActiveProfile"
           @clear-active="clearActiveProfile"
@@ -930,6 +937,7 @@ const isLoading = computed(() => !loaded.value)
         <McpServersSection
           v-else-if="activeTab === 'mcp'"
           v-model="mcpServersList"
+          :loading="isLoading"
           @update:model-value="syncToConfig"
           @edit="startEditMcpServer"
           @delete="deleteMcpServer"
@@ -951,6 +959,7 @@ const isLoading = computed(() => !loaded.value)
           <WebSearchSection
             :model-value="webSearchRows"
             :errors="webSearchErrors"
+            :loading="isLoading"
             @update:model-value="updateWebSearchRows"
             @add="addWebSearchRow"
           />

@@ -19,6 +19,11 @@ const LOG_MAX_BYTES = 20480
 
 const processes = ref<BackgroundProcess[]>([])
 const listError = ref<string | null>(null)
+// True while `fetchList` is in flight. Without it the "No background
+// commands for this session" empty state fires on every open — a false
+// statement, since the popup is opened precisely BECAUSE commands are
+// running.
+const isLoadingList = ref(false)
 const show = ref(false)
 const expandedPid = ref<number | null>(null)
 const logContent = ref<Record<number, string>>({})
@@ -54,6 +59,7 @@ const fullDateTitle = (startedAt: number): string => {
 const fetchList = async (): Promise<void> => {
   const sid = props.sessionId
   if (!sid) return
+  isLoadingList.value = true
   try {
     const data = await getBackgroundProcesses(sid)
     if (disposed || props.sessionId !== sid) return
@@ -69,6 +75,9 @@ const fetchList = async (): Promise<void> => {
     if (disposed || props.sessionId !== sid) return
     console.error('[BackgroundCommands] list fetch failed:', err)
     listError.value = 'Failed to load background commands'
+  } finally {
+    // Cleared on BOTH paths so a failed fetch cannot park the skeleton.
+    isLoadingList.value = false
   }
 }
 
@@ -327,6 +336,25 @@ onUnmounted(() => {
               style="color: var(--color-red)"
             >
               {{ listError }}
+            </div>
+            <!-- List-loading skeleton — shown while `getBackgroundProcesses`
+                 is in flight. Without it the "No background commands for this
+                 session" empty state below fires on every open, which is
+                 maximally misleading: the popup is opened precisely BECAUSE
+                 commands are running. -->
+            <div
+              v-if="isLoadingList && processes.length === 0"
+              class="space-y-2 py-2"
+              data-testid="bg-list-skeleton"
+              role="status"
+              aria-label="Loading background commands"
+            >
+              <div
+                v-for="n in 3"
+                :key="n"
+                class="h-12 rounded animate-pulse"
+                style="background-color: var(--semantic-active-bg)"
+              />
             </div>
             <div v-else-if="processes.length === 0" data-testid="bg-empty" class="text-center py-8">
               <UiIcon name="inbox" size-class="w-7 h-7" class="mb-2" />

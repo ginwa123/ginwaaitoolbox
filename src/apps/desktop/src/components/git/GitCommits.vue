@@ -2,6 +2,7 @@
 import { computed, onMounted, onUpdated, ref } from 'vue'
 import * as api from '../../api'
 import UiIcon from '../ui/UiIcon.vue'
+import ListSkeleton from '../shell/ListSkeleton.vue'
 import type { UiIconName } from '../ui/icons'
 import {
   escapeDiffHtml,
@@ -239,8 +240,16 @@ defineExpose({ refresh })
 
 <template>
   <div class="flex flex-col h-full">
-    <!-- Loading -->
-    <div v-if="isLoading" class="flex-1 flex items-center justify-center">
+    <!-- Loading — skeleton on the first page (holds the list's height);
+         a centered spinner on a refresh, where the previous rows are
+         already on screen and only the badge is changing. -->
+    <ListSkeleton
+      v-if="isLoading && commits.length === 0"
+      :rows="10"
+      row-height="h-12"
+      test-id="git-commits-skeleton"
+    />
+    <div v-else-if="isLoading" class="flex-1 flex items-center justify-center">
       <svg
         class="animate-spin w-5 h-5"
         style="color: var(--color-aqua)"

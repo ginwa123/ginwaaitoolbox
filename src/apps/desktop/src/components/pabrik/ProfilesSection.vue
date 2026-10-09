@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 
 import EmptyState from './EmptyState.vue'
+import SettingsSkeleton from './SettingsSkeleton.vue'
 import type { PabrikProfile, SubAgent } from '../../api'
 
 /**
@@ -24,6 +25,8 @@ export interface ProfileRow extends PabrikProfile {
 defineProps<{
   modelValue: ProfileRow[]
   activeProfile: string | null
+  /** True while the parent's config fetch is in flight. */
+  loading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -126,9 +129,15 @@ function compactionSummary(profile: ProfileRow): string {
       >+ Add profile</button>
     </div>
 
+    <!-- Loading placeholder — shown while the parent's config fetch is
+         in flight. Without it the EmptyState below fires the instant
+         `modelValue.length === 0`, which on a cold load is a false
+         "No profiles yet". -->
+    <SettingsSkeleton v-if="loading" test-id="profiles-loading-skeleton" />
+
     <!-- Empty state -->
     <EmptyState
-      v-if="modelValue.length === 0"
+      v-else-if="modelValue.length === 0"
       data-testid="empty-state"
       glyph="⌗"
       title="No profiles yet"
