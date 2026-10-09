@@ -7,11 +7,63 @@ import { installSseBus, useSseBus, __getSseBusGlobalClient } from './helpers/sse
 import { useTabsStore } from './stores/tabs'
 import { useNavigationStore } from './stores/navigation'
 import { useDocumentTitle } from './composables/useDocumentTitle'
+import type { WorkerActivity } from './components/WorkerElapsedChip.vue'
 
 // LLM processing state - provided to child components
 // Object mapping sessionId to processing status (using object instead of Set for better reactivity)
 const processingState = ref<Record<string, boolean>>({})
 provide('processingState', processingState)
+
+// Worker activity - provided to child components
+//
+// A SECOND, additive key beside `processingState`, not a widening of it.
+// `processingState` is a boolean map read by eight components; making it
+// carry timestamps would touch every one of them. This key holds the
+// richer shape only `<WorkerElapsedChip>` needs, and is populated from the
+// same two sources (SSE worker events + the bootstrap refetch), so the two
+// maps can never disagree about which sessions are running.
+//
+// `startedAt` comes from `worker.created_at`; `lastActivityAt` from
+// `worker.last_activity_nano` (unix seconds on the wire). Both are
+// normalised to unix MILLISECONDS here so consumers can subtract them
+// from `Date.now()` without remembering which is which.
+const workerActivity = ref<Record<string, WorkerActivity>>({})
+provide('workerActivity', workerActivity)
+
+// One app-wide 1s ticker, provided so every <WorkerElapsedChip> can render
+// a counting label without owning an interval of its own. A sidebar mounts
+// one chip per row; a timer per row would be a timer per row.
+//
+// Started and stopped from the two places that change whether anything is
+// running — the SSE worker handler and the bootstrap refetch — i.e. from the
+// event handlers that cause the change, so no component needs a watcher.
+const workerNow = ref(Date.now())
+provide('workerNow', workerNow)
+
+let workerTicker: ReturnType<typeof setInterval> | null = null
+
+const startWorkerTicker = () => {
+  if (workerTicker !== null) return
+  workerNow.value = Date.now()
+  workerTicker = setInterval(() => {
+    workerNow.value = Date.now()
+  }, 1000)
+}
+
+const stopWorkerTicker = () => {
+  if (workerTicker === null) return
+  clearInterval(workerTicker)
+  workerTicker = null
+}
+
+// The ticker exists only while at least one worker is running.
+const syncWorkerTicker = () => {
+  if (Object.keys(workerActivity.value).length > 0) {
+    startWorkerTicker()
+  } else {
+    stopWorkerTicker()
+  }
+}
 
 // Browser tab title follows the active session / task name.
 useDocumentTitle()
@@ -36,6 +88,14 @@ const handleWorkerEvent = (event: api.WorkerEvent) => {
       delete newState[sessionId]
       processingState.value = newState
     }
+    // …and from the activity map, so the elapsed chip disappears with the
+    // spinner rather than freezing on its last reading.
+    if (sessionId && workerActivity.value[sessionId]) {
+      const nextActivity = { ...workerActivity.value }
+      delete nextActivity[sessionId]
+      workerActivity.value = nextActivity
+      syncWorkerTicker()
+    }
   } else {
     // created or updated - add to processing state
     const sessionId = event.session_id || event.id
@@ -44,8 +104,48 @@ const handleWorkerEvent = (event: api.WorkerEvent) => {
         ...processingState.value,
         [sessionId]: true,
       }
+      // Fold the event's timestamps into the activity map. `created` is the
+      // only event that carries a real `created_at`, so an `updated` must
+      // preserve whatever start time the row already has — otherwise every
+      // heartbeat would reset the elapsed clock to zero.
+      const prev = workerActivity.value[sessionId]
+      const startedAt = parseWorkerTimestamp(event.created_at) ?? prev?.startedAt ?? Date.now()
+      const lastActivityAt = toMillis(event.last_activity) ?? prev?.lastActivityAt ?? Date.now()
+      workerActivity.value = {
+        ...workerActivity.value,
+        [sessionId]: {
+          startedAt,
+          lastActivityAt,
+          description: event.last_activity_description || prev?.description || '',
+        },
+      }
+      syncWorkerTicker()
     }
   }
+}
+
+// Unix-ms from a wire value that may be a number (the SSE
+// `last_activity` field) or a numeric string (the REST `Worker` shape —
+// every `Row.values` entry is a `[]u8`, so the INTEGER column is
+// serialised as a string). Seconds and milliseconds are both accepted.
+// Returns null when the value is absent or unusable, so callers can fall
+// back rather than render "NaNs".
+function toMillis(value: number | string | null | undefined): number | null {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n) || n <= 0) return null
+  // Anything below ~2001-09-09 in seconds is really milliseconds already.
+  return n < 1e11 ? n * 1000 : n
+}
+
+// Unix-ms from `worker.created_at`, which is a SQLite `CURRENT_TIMESTAMP`
+// UTC string ("YYYY-MM-DD HH:MM:SS"). The space separator is not valid ISO,
+// so it is swapped for 'T' and marked UTC — the same normalisation
+// `formatTaskTimestamp` does. Returns null for empty/unparseable input.
+function parseWorkerTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T')
+  const ms = new Date(normalized.endsWith('Z') ? normalized : `${normalized}Z`).getTime()
+  return Number.isFinite(ms) ? ms : null
 }
 
 // Fetch initial worker state (fallback for when SSE connection starts)
@@ -59,13 +159,25 @@ const fetchInitialWorkers = async () => {
   try {
     const { workers } = await api.getWorkers(undefined, 50)
     const newState: Record<string, boolean> = {}
+    const newActivity: Record<string, WorkerActivity> = {}
     for (const worker of workers) {
       const sessionId = worker.session_id || worker.id
       if (sessionId) {
         newState[sessionId] = true
+        // The REST list is the only source that carries `created_at`, so it
+        // is where the elapsed clock gets its real start time. A worker row
+        // with an unparseable `created_at` falls back to "now" rather than
+        // being dropped — the chip still shows a live run, just a young one.
+        newActivity[sessionId] = {
+          startedAt: parseWorkerTimestamp(worker.created_at) ?? Date.now(),
+          lastActivityAt: toMillis(worker.last_activity) ?? Date.now(),
+          description: worker.last_activity_description || '',
+        }
       }
     }
     processingState.value = newState
+    workerActivity.value = newActivity
+    syncWorkerTicker()
   } catch (err) {
     console.error('Failed to fetch initial workers:', err)
   }
@@ -147,6 +259,8 @@ onUnmounted(() => {
     offBusOpen = null
   }
   useTabsStore().disposeTitleFeed()
+  // The worker ticker is app-scoped, so it outlives any single chip.
+  stopWorkerTicker()
   // Close the bus. Forwards to all underlying SseClients (global +
   // any per-session). Terminal — removes visibility/online listeners,
   // cancels retry timers (no timer leak that would create a dangling

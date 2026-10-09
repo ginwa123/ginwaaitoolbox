@@ -46,6 +46,7 @@ import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { useContextMenu } from '../../composables/useContextMenu'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
 import SessionSlider from '../SessionSlider.vue'
+import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 // 2026-08-29 agent-error-row (task_1787985074550_0) — sidebar
 // variant of the kanban-card indicator. Same store + helper as the
@@ -336,6 +337,8 @@ const errorRetryLabel = computed(() =>
          level covers "any task on this item is busy"; this covers
          "this specific task is busy". Both can render at once. -->
     <SessionSlider :session-id="task.id" test-id="task-spinner" />
+    <!-- How long this task has been running. Beside the spinner. -->
+    <WorkerElapsedChip :session-id="task.id" test-id="task-elapsed-chip" />
     <OpenInNewTabMenu
       v-if="menuPos"
       :x="menuPos.x"

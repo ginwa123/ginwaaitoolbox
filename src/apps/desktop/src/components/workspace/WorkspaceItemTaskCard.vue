@@ -47,6 +47,7 @@ import {
 } from '../../helpers/prStatusCache'
 import { formatTaskTimestamp as formatRelativeTime } from '../../helpers/formatTaskTimestamp'
 import UiIcon from '../ui/UiIcon.vue'
+import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 
 // Kanban task tags palette (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
@@ -716,6 +717,10 @@ onUpdated(() => {
           />
         </svg>
       </span>
+      <!-- How long this task has been running. Placed AFTER the indicator
+           chain (spinner → review → reviewed → error) so it does not break
+           the v-if/v-else-if adjacency those spans depend on. -->
+      <WorkerElapsedChip :session-id="task.id" test-id="task-card-elapsed-chip" />
       <span class="flex-1 min-w-0 text-body font-medium leading-snug truncate">{{
         task.name
       }}</span>

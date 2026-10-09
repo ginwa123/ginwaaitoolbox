@@ -2193,6 +2193,16 @@ export interface Worker {
   id: string
   session_id: string
   working_directory: string | null
+  /**
+   * Unix SECONDS of the last heartbeat, as a numeric string.
+   *
+   * The backend selects `w.last_activity_nano AS last_activity` and every
+   * `Row.values` entry is a `[]u8`, so the column is serialised as a JSON
+   * string even though the underlying column is INTEGER. The SSE
+   * `WorkerEvent.last_activity` is a bare number — the two wire shapes
+   * disagree, which is why consumers normalise both (see `toMillis` in
+   * App.vue).
+   */
   last_activity: string | null
   last_activity_description: string | null
   created_at: string | null

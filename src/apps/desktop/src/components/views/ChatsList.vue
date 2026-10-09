@@ -20,6 +20,7 @@ import { sessionEngineDb, toSessionRow } from '../../sync/SessionEngineDb'
 import { runSyncEffect, runSyncEffectOr, runSyncVoid } from '../../sync/runtime'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
+import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import SidebarSkeleton from '../shell/SidebarSkeleton.vue'
 import ChatRowContextMenu from '../shell/ChatRowContextMenu.vue'
 import RenameTaskModal from '../dialogs/RenameTaskModal.vue'
@@ -1268,6 +1269,10 @@ defineExpose({
               >{{ item.relativeTime || 'now' }}</span
             >
           </span>
+          <!-- Elapsed time for a running worker. Takes the slot the
+               relative-time pill vacates above, so the row never grows a
+               second trailing element. -->
+          <WorkerElapsedChip v-else :session-id="item.id" test-id="chat-elapsed-chip" />
           <SessionSlider :session-id="item.id" />
         </button>
       </div>
@@ -1412,6 +1417,10 @@ defineExpose({
                 >{{ item.relativeTime || 'now' }}</span
               >
             </span>
+            <!-- Elapsed time for a running worker. Takes the slot the
+                 relative-time pill vacates above, so the row never grows a
+                 second trailing element. -->
+            <WorkerElapsedChip v-else :session-id="item.id" test-id="chat-nav-elapsed-chip" />
             <!-- Per-session LLM circle spinner at the end of this row.
                  Hidden when this session is idle; spins while
                  processingState[item.id] is true. Reads

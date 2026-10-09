@@ -53,6 +53,7 @@ import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import { formatTaskTimestamp, taskTimestampTooltip } from '../../helpers/formatTaskTimestamp'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 import UiIcon from '../ui/UiIcon.vue'
+import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import type { Task } from '../../stores/workspaces'
 
 export type KanbanRowDensity = 'comfortable' | 'compact'
@@ -298,6 +299,16 @@ const openTaskMenuInBackground = () => {
         data-testid="kanban-row-meta"
       >
         <span v-if="statusLabel" :data-testid="statusTestId ?? undefined">{{ statusLabel }}</span>
+
+        <!-- Elapsed + last-activity for a running worker. The rail above
+             already says "busy" in yellow; these two numbers say for how
+             long and whether it is still heart-beating. -->
+        <WorkerElapsedChip
+          v-if="isBusy"
+          :session-id="props.task.id"
+          variant="text"
+          test-id="kanban-row-elapsed"
+        />
 
         <span
           v-if="gitBranch"

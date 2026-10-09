@@ -311,3 +311,231 @@ describe('App', () => {
     })
   })
 })
+
+// ────────────────────────────────────────────────────────────────────────
+// workerActivity — the additive second provide key
+// ────────────────────────────────────────────────────────────────────────
+
+describe('App workerActivity', () => {
+  let app: VueApp
+  let stub: SseClient
+
+  /** Read a provided ref off a root-mounted App instance. */
+  const readProvide = (wrapper: ReturnType<typeof mount>, key: string) => {
+    // With `mount(App)` (root mount, no outer app) provides land on
+    // `vm.$.provides`, NOT `vm.$.appContext.provides` — that is only for
+    // nested-app ancestors.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only reach into Vue internals.
+    const provides = (wrapper.vm as any).$.provides as Record<string, unknown>
+    return provides[key] as { value: unknown } | undefined
+  }
+
+  beforeEach(() => {
+    __resetSseBus()
+    setActivePinia(createPinia())
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+    app = createApp({})
+    installSseBus(app)
+    stub = makeStubClient('connecting')
+    __setSseBusGlobalClient(stub)
+    vi.spyOn(api, 'getWorkers').mockResolvedValue({ workers: [], count: 0 })
+    // The worker ticker is a real interval; fake timers let the lifecycle
+    // tests count it and advance it deterministically.
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('provides workerActivity alongside processingState', () => {
+    const wrapper = mount(App)
+    // The boolean map is untouched — eight components still read it.
+    expect(readProvide(wrapper, 'processingState')).toBeDefined()
+    expect(readProvide(wrapper, 'workerActivity')).toBeDefined()
+  })
+
+  it('a worker_created event seeds startedAt and lastActivityAt', async () => {
+    const wrapper = mount(App)
+    const activity = readProvide(wrapper, 'workerActivity') as {
+      value: Record<string, { startedAt: number; lastActivityAt: number }>
+    }
+
+    __dispatchSseBus('worker', {
+      action: 'created',
+      id: 'w_1',
+      session_id: 'sess_a',
+      working_directory: '/tmp',
+      // SSE carries a bare unix-SECONDS number.
+      last_activity: 1_800_000_000,
+      last_activity_description: '',
+      created_at: '2026-10-09 12:00:00',
+    } as unknown as api.WorkerEvent)
+    await nextTick()
+
+    const row = activity.value['sess_a']
+    expect(row).toBeDefined()
+    // Seconds normalised to milliseconds.
+    expect(row.lastActivityAt).toBe(1_800_000_000_000)
+    expect(row.startedAt).toBe(Date.parse('2026-10-09T12:00:00Z'))
+  })
+
+  it('a worker_updated event moves the heartbeat but NOT the start time', async () => {
+    const wrapper = mount(App)
+    const activity = readProvide(wrapper, 'workerActivity') as {
+      value: Record<string, { startedAt: number; lastActivityAt: number }>
+    }
+
+    __dispatchSseBus('worker', {
+      action: 'created',
+      id: 'w_1',
+      session_id: 'sess_b',
+      working_directory: '/tmp',
+      last_activity: 1_800_000_000,
+      last_activity_description: '',
+      created_at: '2026-10-09 12:00:00',
+    } as unknown as api.WorkerEvent)
+    await nextTick()
+    const startedAt = activity.value['sess_b'].startedAt
+
+    // A heartbeat must not reset the elapsed clock to zero.
+    __dispatchSseBus('worker', {
+      action: 'updated',
+      id: 'w_1',
+      session_id: 'sess_b',
+      working_directory: '/tmp',
+      last_activity: 1_800_000_060,
+      last_activity_description: 'Tool call: bash',
+      created_at: '',
+    } as unknown as api.WorkerEvent)
+    await nextTick()
+
+    expect(activity.value['sess_b'].startedAt).toBe(startedAt)
+    expect(activity.value['sess_b'].lastActivityAt).toBe(1_800_000_060_000)
+  })
+
+  it('a worker_deleted event clears the activity entry', async () => {
+    const wrapper = mount(App)
+    const activity = readProvide(wrapper, 'workerActivity') as {
+      value: Record<string, unknown>
+    }
+
+    __dispatchSseBus('worker', {
+      action: 'created',
+      id: 'w_1',
+      session_id: 'sess_c',
+      working_directory: '/tmp',
+      last_activity: 1_800_000_000,
+      last_activity_description: '',
+      created_at: '2026-10-09 12:00:00',
+    } as unknown as api.WorkerEvent)
+    await nextTick()
+    expect(activity.value['sess_c']).toBeDefined()
+
+    __dispatchSseBus('worker', {
+      action: 'deleted',
+      id: 'w_1',
+      session_id: 'sess_c',
+      working_directory: '/tmp',
+      last_activity: 0,
+      last_activity_description: '',
+      created_at: '',
+    } as unknown as api.WorkerEvent)
+    await nextTick()
+
+    expect(activity.value['sess_c']).toBeUndefined()
+  })
+
+  it('starts the shared ticker when a worker appears and stops it when the last one goes', async () => {
+    const wrapper = mount(App)
+    // No worker yet → no interval anywhere in the app.
+    expect(vi.getTimerCount()).toBe(0)
+
+    __dispatchSseBus('worker', {
+      action: 'created',
+      id: 'w_1',
+      session_id: 'sess_t',
+      working_directory: '/tmp',
+      last_activity: 1_800_000_000,
+      last_activity_description: '',
+      created_at: '2026-10-09 12:00:00',
+    } as unknown as api.WorkerEvent)
+    await nextTick()
+    expect(vi.getTimerCount()).toBe(1)
+
+    __dispatchSseBus('worker', {
+      action: 'deleted',
+      id: 'w_1',
+      session_id: 'sess_t',
+      working_directory: '/tmp',
+      last_activity: 0,
+      last_activity_description: '',
+      created_at: '',
+    } as unknown as api.WorkerEvent)
+    await nextTick()
+    // The last worker leaving must release the timer, not leave it idling.
+    expect(vi.getTimerCount()).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('the shared ticker advances workerNow so chips count without polling', async () => {
+    const wrapper = mount(App)
+    const now = readProvide(wrapper, 'workerNow') as { value: number }
+
+    __dispatchSseBus('worker', {
+      action: 'created',
+      id: 'w_1',
+      session_id: 'sess_t2',
+      working_directory: '/tmp',
+      last_activity: 1_800_000_000,
+      last_activity_description: '',
+      created_at: '2026-10-09 12:00:00',
+    } as unknown as api.WorkerEvent)
+    await nextTick()
+
+    const before = now.value
+    vi.advanceTimersByTime(3_000)
+    await nextTick()
+    expect(now.value).toBeGreaterThan(before)
+    wrapper.unmount()
+  })
+
+  it('the bootstrap refetch normalises the REST string shape of last_activity', async () => {
+    // The REST wire types `last_activity` as a numeric STRING (every Zig
+    // `Row.values` entry is a `[]u8`), while the SSE event sends a bare
+    // number. Both must land as milliseconds.
+    vi.mocked(api.getWorkers).mockResolvedValue({
+      workers: [
+        {
+          id: 'w_rest',
+          session_id: 'sess_rest',
+          working_directory: '/tmp',
+          last_activity: '1800000000',
+          last_activity_description: 'Tool call: read_file',
+          created_at: '2026-10-09 11:55:00',
+          status: 'running',
+          is_running: true,
+          queue_count: 0,
+        },
+      ],
+      count: 1,
+    })
+
+    const wrapper = mount(App)
+    const activity = readProvide(wrapper, 'workerActivity') as {
+      value: Record<string, { startedAt: number; lastActivityAt: number; description: string }>
+    }
+
+    // Drive the reconnect path that triggers fetchInitialWorkers.
+    emitStubState(stub, 'open')
+    await vi.waitFor(() => expect(activity.value['sess_rest']).toBeDefined())
+
+    expect(activity.value['sess_rest'].lastActivityAt).toBe(1_800_000_000_000)
+    expect(activity.value['sess_rest'].startedAt).toBe(Date.parse('2026-10-09T11:55:00Z'))
+    expect(activity.value['sess_rest'].description).toBe('Tool call: read_file')
+  })
+})
