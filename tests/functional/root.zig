@@ -126,6 +126,7 @@ const skill_evals_api_test = @import("skill_evals_api_test.zig");
 const skill_evals_config_toggle_test = @import("skill_evals_config_toggle_test.zig");
 const skills_memories_boundary_test = @import("skills_memories_boundary_test.zig");
 const skills_sqlite_test = @import("skills_sqlite_test.zig");
+const skills_write_test = @import("skills_write_test.zig");
 const smoke_boot_test = @import("smoke_boot_test.zig");
 const spawn_sub_agent_tools_required_test = @import("spawn_sub_agent_tools_required_test.zig");
 const sqlite_write_lock_test = @import("sqlite_write_lock_test.zig");
@@ -261,6 +262,7 @@ pub const suites = .{
     skill_evals_config_toggle_test,
     skills_memories_boundary_test,
     skills_sqlite_test,
+    skills_write_test,
     smoke_boot_test,
     spawn_sub_agent_tools_required_test,
     sqlite_write_lock_test,

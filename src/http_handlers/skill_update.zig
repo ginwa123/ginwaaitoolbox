@@ -1,0 +1,485 @@
+//! `PATCH /api/workspaces/:workspace_id/skills/:skill_name`.
+//!
+//! Edits one workspace-scoped skill. This is the HTTP half of what the
+//! `edit_skill` agent tool already does — the tool exists so a MODEL can
+//! revise a skill, and this route exists so the human in the Settings →
+//! Skills panel can. Both go through `skills_store.updateSkill`, so the
+//! two cannot disagree about what an edit is.
+//!
+//! The name is a PATH PARAM and is immutable. A rename would silently
+//! break every `use_skill({ name })` call, every `skill_eval` verdict
+//! keyed on the name, and every prompt that spells it — and no rename can
+//! be undone from the UI. A `name` in the body is therefore not an
+//! instruction: it is a claim about which row is being addressed, and a
+//! claim that does not match is the same answer as a row that is not
+//! there (see `useCase`).
+//!
+//! Wire shape: `{ "skill": { name, description, content, asset_count } }`,
+//! the same projection `skill_detail.zig` returns, so a caller that just
+//! saved an edit can render the result without a second GET.
+
+const std = @import("std");
+const pabrikcore = @import("pabrikcore");
+const gserverz = pabrikcore.gserverz;
+const http_response = @import("http_response.zig");
+const skills_store = @import("../agentic_loop/skills_store.zig");
+
+/// PATCH body. Both fields default to `null` so an omitted field is
+/// distinguishable from an explicit `""` — the latter is a real "clear
+/// this" request, and it is honoured.
+const UpdateSkillBody = struct {
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    content: ?[]const u8 = null,
+};
+
+pub const SkillUpdateError = error{
+    WorkspaceIdRequired,
+    SkillNameRequired,
+    InvalidName,
+    ContentTooLarge,
+    NothingToChange,
+    NotFound,
+    QueryFailed,
+    UpdateFailed,
+    OutOfMemory,
+};
+
+pub const SkillUpdateInput = struct {
+    workspace_id: []const u8,
+    skill_name: []const u8,
+    body: UpdateSkillBody,
+};
+
+pub const SkillUpdateOutput = struct {
+    /// Owned; free with `skills_store.freeSkillRow`.
+    skill: skills_store.SkillRow,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *pabrikcore.sqlite.SqliteBackend,
+    input: SkillUpdateInput,
+) SkillUpdateError!SkillUpdateOutput {
+    if (input.workspace_id.len == 0) return error.WorkspaceIdRequired;
+    if (input.skill_name.len == 0) return error.SkillNameRequired;
+
+    // A `name` in the body is a claim about which row is being addressed,
+    // not a rename instruction: renaming would silently break every
+    // `use_skill({ name })` call and every `skill_eval` verdict keyed on
+    // the name. A claim that does not match the stored name gets the same
+    // answer as a row that is not there, so a rename attempt cannot be
+    // told apart from a cross-workspace probe — one more thing this
+    // endpoint does not disclose. Checked BEFORE the write so a refused
+    // rename leaves the stored body untouched.
+    if (input.body.name) |name| {
+        if (!skills_store.isValidSkillName(name)) return error.InvalidName;
+        const current = try readRow(allocator, db, input.workspace_id, input.skill_name);
+        defer skills_store.freeSkillRow(allocator, current);
+        if (!std.mem.eql(u8, current.name, name)) return error.NotFound;
+    }
+
+    // A PATCH with neither field keeps the stored row, and the cheapest
+    // way to keep a skill is not to write it: no UPDATE means the row is
+    // returned as-is and `updated_at` does not advance either.
+    if (input.body.description == null and input.body.content == null) {
+        return .{ .skill = try readRow(allocator, db, input.workspace_id, input.skill_name) };
+    }
+
+    const row = skills_store.updateSkill(allocator, db, input.workspace_id, input.skill_name, .{
+        .description = input.body.description,
+        .content = input.body.content,
+    }) catch |err| switch (err) {
+        error.WorkspaceIdNameRequired => return error.WorkspaceIdRequired,
+        error.NotFound => return error.NotFound,
+        error.ContentTooLarge => return error.ContentTooLarge,
+        error.NothingToChange => return error.NothingToChange,
+        error.UpdateFailed => return error.UpdateFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    return .{ .skill = row };
+}
+
+/// `skills_store.getSkillByName` narrowed to this handler's error set.
+fn readRow(
+    allocator: std.mem.Allocator,
+    db: *pabrikcore.sqlite.SqliteBackend,
+    workspace_id: []const u8,
+    name: []const u8,
+) SkillUpdateError!skills_store.SkillRow {
+    return skills_store.getSkillByName(allocator, db, workspace_id, name) catch |err| switch (err) {
+        error.WorkspaceIdNameRequired => return error.WorkspaceIdRequired,
+        error.NotFound => return error.NotFound,
+        error.QueryFailed => return error.QueryFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+}
+
+// =====================================================================
+// Error mapping
+// =====================================================================
+//
+// Two exhaustive switches, one for the status and one for the message, so a
+// variant added to `SkillUpdateError` fails the build here rather than
+// surfacing as an unhandled error at runtime.
+
+fn statusFor(err: SkillUpdateError) u16 {
+    return switch (err) {
+        error.WorkspaceIdRequired, error.SkillNameRequired, error.InvalidName => 400,
+        error.ContentTooLarge => 413,
+        // 404, never 403: a 403 would confirm the name exists, which is
+        // the one thing workspace scoping exists to withhold.
+        error.NotFound => 404,
+        // 409, not 200: the caller asked for a change and got none. A 200
+        // here would render a saved-looking pane that saved nothing.
+        error.NothingToChange => 409,
+        error.QueryFailed, error.UpdateFailed, error.OutOfMemory => 500,
+    };
+}
+
+fn messageFor(err: SkillUpdateError) []const u8 {
+    return switch (err) {
+        error.WorkspaceIdRequired => "workspace_id required",
+        error.SkillNameRequired => "skill_name required",
+        error.InvalidName => "name must be 1-128 characters of letters, digits, dot, dash or underscore",
+        error.ContentTooLarge => "content exceeds the 2 MiB per-skill cap",
+        error.NotFound => "skill not found",
+        error.NothingToChange => "nothing to change — the skill already holds these values",
+        error.QueryFailed => "DB error",
+        error.UpdateFailed => "DB error",
+        error.OutOfMemory => "Out of memory",
+    };
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+pub fn skillUpdateHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const di = try pabrikcore.getSingleton();
+    const sqlite_db = di.db;
+
+    if (req.body.len == 0) {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }),
+        });
+    }
+
+    const body = std.json.parseFromSliceLeaky(UpdateSkillBody, allocator, req.body, .{}) catch {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }),
+        });
+    };
+
+    const output = useCase(allocator, sqlite_db, .{
+        .workspace_id = req.params.get("workspace_id") orelse "",
+        .skill_name = req.params.get("skill_name") orelse "",
+        .body = body,
+    }) catch |err| {
+        return res.jsonResponse(.{
+            .status_code = statusFor(err),
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = messageFor(err) }),
+        });
+    };
+    defer skills_store.freeSkillRow(allocator, output.skill);
+
+    const data = try std.json.Stringify.valueAlloc(allocator, .{
+        .skill = http_response.makeSkillDetailResponse(.{
+            .name = output.skill.name,
+            .description = output.skill.description,
+            .content = output.skill.content,
+            // The stored row, not the patch: an edit that mentions only
+            // the description must come back with the body it did not
+            // touch, or the caller would render a blank instruction set.
+            .asset_count = 0,
+        }),
+    }, .{});
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
+}
+
+// See the note in `skill_delete.zig`: the test binary has no HTTP server,
+// so nothing else in `zig build test` would analyse this handler's body.
+comptime {
+    _ = &skillUpdateHandler;
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
+
+const sqlite = pabrikcore.sqlite;
+const testing = std.testing;
+const migration = @import("../migrations/migration.zig");
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try migration.Migration102CreateSkills.up(&db, testing.allocator);
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn seed(ctx: *TestCtx, workspace_id: []const u8, name: []const u8, description: []const u8, content: []const u8) !void {
+    const row = try skills_store.upsertSkill(testing.allocator, &ctx.db, .{
+        .workspace_id = workspace_id,
+        .name = name,
+        .description = description,
+        .content = content,
+    });
+    defer skills_store.freeSkillRow(testing.allocator, row);
+}
+
+/// Read the stored body straight from SQL, bypassing the store, so an
+/// assertion about what was persisted cannot be satisfied by the same code
+/// path it is testing.
+fn storedContent(ctx: *TestCtx, workspace_id: []const u8, name: []const u8) ![]const u8 {
+    const alloc = testing.allocator;
+    var q = try ctx.db.query(
+        alloc,
+        "SELECT content FROM skills WHERE workspace_id = ? AND name = ?",
+        &[_][]const u8{ workspace_id, name },
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.SkillMissing;
+    defer row.deinit(alloc);
+    return alloc.dupe(u8, row.values[0]);
+}
+
+test "useCase: patches the description and keeps the body it does not mention" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seed(&ctx, "ws_1", "pdf", "old description", "the body that must survive");
+
+    const output = try useCase(alloc, &ctx.db, .{
+        .workspace_id = "ws_1",
+        .skill_name = "pdf",
+        .body = .{ .description = "new description" },
+    });
+    defer skills_store.freeSkillRow(alloc, output.skill);
+
+    // Without the load-current-first step inside the store, a
+    // description-only patch would blank the instruction set — which IS
+    // the whole skill.
+    try testing.expectEqualStrings("new description", output.skill.description);
+    try testing.expectEqualStrings("the body that must survive", output.skill.content);
+}
+
+test "useCase: patches the body and keeps the description it does not mention" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seed(&ctx, "ws_1", "pdf", "the description that must survive", "old body");
+
+    const output = try useCase(alloc, &ctx.db, .{
+        .workspace_id = "ws_1",
+        .skill_name = "pdf",
+        .body = .{ .content = "new body" },
+    });
+    defer skills_store.freeSkillRow(alloc, output.skill);
+
+    try testing.expectEqualStrings("the description that must survive", output.skill.description);
+    try testing.expectEqualStrings("new body", output.skill.content);
+}
+
+test "useCase: an explicit empty string clears the field rather than keeping it" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seed(&ctx, "ws_1", "pdf", "a description", "a body");
+
+    // `""` is a real "clear this" request, which is why the body fields are
+    // `?[]const u8` and not `[]const u8` with a "" default: an omitted
+    // field keeps its value, an explicit empty one does not.
+    const output = try useCase(alloc, &ctx.db, .{
+        .workspace_id = "ws_1",
+        .skill_name = "pdf",
+        .body = .{ .description = "" },
+    });
+    defer skills_store.freeSkillRow(alloc, output.skill);
+
+    try testing.expectEqualStrings("", output.skill.description);
+    try testing.expectEqualStrings("a body", output.skill.content);
+}
+
+test "useCase: a body with neither field keeps the stored row, untouched" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seed(&ctx, "ws_1", "pdf", "a description", "a body");
+
+    // Backdate so a same-second CURRENT_TIMESTAMP write is still visible.
+    try ctx.db.exec(
+        alloc,
+        "UPDATE skills SET updated_at = '2000-01-01 00:00:00' WHERE workspace_id = 'ws_1' AND name = 'pdf'",
+        &.{},
+    );
+
+    const output = try useCase(alloc, &ctx.db, .{
+        .workspace_id = "ws_1",
+        .skill_name = "pdf",
+        .body = .{},
+    });
+    defer skills_store.freeSkillRow(alloc, output.skill);
+
+    // "Omitted means keep" is only honest if nothing at all moved: the
+    // values stay AND updated_at stays, because no write happened.
+    try testing.expectEqualStrings("a description", output.skill.description);
+    try testing.expectEqualStrings("a body", output.skill.content);
+    try testing.expectEqualStrings("2000-01-01 00:00:00", output.skill.updated_at);
+}
+
+test "useCase: a matching name in the body is accepted and changes nothing" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seed(&ctx, "ws_1", "pdf", "a description", "a body");
+
+    const output = try useCase(alloc, &ctx.db, .{
+        .workspace_id = "ws_1",
+        .skill_name = "pdf",
+        .body = .{ .name = "pdf", .content = "new body" },
+    });
+    defer skills_store.freeSkillRow(alloc, output.skill);
+
+    try testing.expectEqualStrings("pdf", output.skill.name);
+    try testing.expectEqualStrings("new body", output.skill.content);
+}
+
+test "useCase: a rename is refused, and the body is left as it was" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seed(&ctx, "ws_1", "pdf", "a description", "the body that must survive");
+
+    // A rename would break every `use_skill({ name })` call and every
+    // `skill_eval` verdict keyed on the name, so the answer is "no such
+    // skill" rather than a quiet half-applied edit — and the same answer a
+    // foreign workspace gets.
+    try testing.expectError(
+        error.NotFound,
+        useCase(alloc, &ctx.db, .{
+            .workspace_id = "ws_1",
+            .skill_name = "pdf",
+            .body = .{ .name = "pdf-renamed", .content = "never applied" },
+        }),
+    );
+
+    const kept = try storedContent(&ctx, "ws_1", "pdf");
+    defer alloc.free(kept);
+    try testing.expectEqualStrings("the body that must survive", kept);
+}
+
+test "useCase: an unchanged patch is NothingToChange, a 409" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seed(&ctx, "ws_1", "pdf", "same", "same body");
+
+    // A 200 here would render a saved-looking pane that saved nothing.
+    try testing.expectError(
+        error.NothingToChange,
+        useCase(alloc, &ctx.db, .{
+            .workspace_id = "ws_1",
+            .skill_name = "pdf",
+            .body = .{ .description = "same", .content = "same body" },
+        }),
+    );
+    try testing.expectEqual(@as(u16, 409), statusFor(error.NothingToChange));
+}
+
+test "useCase: missing ids are 400s before the database is touched" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seed(&ctx, "ws_1", "pdf", "a description", "a body");
+
+    try testing.expectError(
+        error.WorkspaceIdRequired,
+        useCase(alloc, &ctx.db, .{ .workspace_id = "", .skill_name = "pdf", .body = .{ .content = "x" } }),
+    );
+    try testing.expectError(
+        error.SkillNameRequired,
+        useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1", .skill_name = "", .body = .{ .content = "x" } }),
+    );
+
+    try testing.expectEqual(@as(u16, 400), statusFor(error.WorkspaceIdRequired));
+    try testing.expectEqualStrings("workspace_id required", messageFor(error.WorkspaceIdRequired));
+    try testing.expectEqual(@as(u16, 400), statusFor(error.SkillNameRequired));
+    try testing.expectEqualStrings("skill_name required", messageFor(error.SkillNameRequired));
+}
+
+test "useCase: another workspace's skill name is NotFound — 404, never 403" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seed(&ctx, "ws_1", "pdf", "a description", "the body that must survive");
+
+    // A 403 would confirm the name exists, which is exactly what workspace
+    // scoping exists to withhold.
+    try testing.expectError(
+        error.NotFound,
+        useCase(alloc, &ctx.db, .{
+            .workspace_id = "ws_2",
+            .skill_name = "pdf",
+            .body = .{ .content = "stolen" },
+        }),
+    );
+    try testing.expectEqual(@as(u16, 404), statusFor(error.NotFound));
+    try testing.expectEqualStrings("skill not found", messageFor(error.NotFound));
+
+    const kept = try storedContent(&ctx, "ws_1", "pdf");
+    defer alloc.free(kept);
+    try testing.expectEqualStrings("the body that must survive", kept);
+}
+
+test "useCase: an unknown skill name is NotFound" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.NotFound,
+        useCase(alloc, &ctx.db, .{
+            .workspace_id = "ws_1",
+            .skill_name = "ghost",
+            .body = .{ .content = "x" },
+        }),
+    );
+}
+
+test "useCase: store failures are 500 DB errors" {
+    try testing.expectEqual(@as(u16, 500), statusFor(error.UpdateFailed));
+    try testing.expectEqualStrings("DB error", messageFor(error.UpdateFailed));
+    try testing.expectEqual(@as(u16, 500), statusFor(error.QueryFailed));
+    try testing.expectEqual(@as(u16, 413), statusFor(error.ContentTooLarge));
+}

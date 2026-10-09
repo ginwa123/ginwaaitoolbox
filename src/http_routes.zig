@@ -529,7 +529,9 @@ fn registerWorkspaceDocumentRoutes(authed: *Group) !void {
     // `registerSystemRoutes` for why the eval routes live outside this
     // prefix entirely.
     try authed.get("/api/workspaces/:workspace_id/skills", ai_mod.http_handlers.skillsListHandler);
+    try authed.post("/api/workspaces/:workspace_id/skills", ai_mod.http_handlers.skillCreateHandler);
     try authed.get("/api/workspaces/:workspace_id/skills/:skill_name", ai_mod.http_handlers.skillDetailHandler);
+    try authed.patch("/api/workspaces/:workspace_id/skills/:skill_name", ai_mod.http_handlers.skillUpdateHandler);
     try authed.delete("/api/workspaces/:workspace_id/skills/:skill_name", ai_mod.http_handlers.skillDeleteHandler);
 
     // Workspace-scoped secrets (Migration 103). Same shape as documents and
@@ -887,7 +889,7 @@ test "route table: all five documents verbs resolve to their handlers" {
     }
 }
 
-test "route table: the three skills verbs resolve to their handlers" {
+test "route table: the five skills verbs resolve to their handlers" {
     // Replaces four `@embedFile("http_routes.zig")` greps in skills_list.zig.
     // Those could only compare byte offsets; this asks `matchRoute` which
     // handler each path actually lands on, which is what a 404 depends on.
@@ -904,9 +906,21 @@ test "route table: the three skills verbs resolve to their handlers" {
             .param = "",
         },
         .{
+            .method = "POST",
+            .path = "/api/workspaces/ws_1/skills",
+            .handler = ai_mod.http_handlers.skillCreateHandler,
+            .param = "",
+        },
+        .{
             .method = "GET",
             .path = "/api/workspaces/ws_1/skills/pdf",
             .handler = ai_mod.http_handlers.skillDetailHandler,
+            .param = "pdf",
+        },
+        .{
+            .method = "PATCH",
+            .path = "/api/workspaces/ws_1/skills/pdf",
+            .handler = ai_mod.http_handlers.skillUpdateHandler,
             .param = "pdf",
         },
         .{
