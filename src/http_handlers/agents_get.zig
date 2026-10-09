@@ -30,39 +30,16 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_db = @import("../models/agent.db.zig");
 
 /// Wire shape for a knowledge row in the GET response.
-pub const AgentKnowledgeRow = struct {
-    id: []const u8,
-    agent_id: []const u8,
-    file_path: []const u8,
-    label: []const u8,
-    /// Inline manual text ('' = file-backed row).
-    content: []const u8,
-    position: i64,
-    created_at: []const u8,
-    updated_at: []const u8,
-};
+pub const AgentKnowledgeRow = agent_db.KnowledgeRow;
 
 /// Wire shape for a system-prompt row in the GET response (Migration 080).
-pub const AgentSystemPromptRow = struct {
-    id: []const u8,
-    agent_id: []const u8,
-    title: []const u8,
-    content: []const u8,
-    position: i64,
-    created_at: []const u8,
-    updated_at: []const u8,
-};
+pub const AgentSystemPromptRow = agent_db.SystemPromptRow;
 
 /// Wire shape for the agent row in the GET response.
-pub const AgentRow = struct {
-    id: []const u8,
-    workspace_item_id: []const u8,
-    description: []const u8,
-    created_at: []const u8,
-    updated_at: []const u8,
-};
+pub const AgentRow = agent_db.AgentRow;
 
 /// Domain-level error set for `useCase`. The handler maps each
 /// variant to an HTTP status code + message via two exhaustive
@@ -120,6 +97,8 @@ fn useCase(
         return error.IdsRequired;
     }
 
+    const handle: agent_db.DbOrTx = .{ .db = db };
+
     // Validate item exists + is an agent.
     var q = db.query(allocator,
         "SELECT item_type FROM workspace_items WHERE id = ?",
@@ -131,138 +110,24 @@ fn useCase(
     if (!std.mem.eql(u8, row.values[0], "agent")) return error.ItemNotAgent;
 
     // Load agent row.
-    const agent = loadAgentRow(allocator, db, input.item_id) catch return error.DatabaseError;
+    const agent = (agent_db.getById(allocator, handle, input.item_id) catch return error.DatabaseError) orelse
+        return error.ItemNotFound;
 
-    // Load knowledge rows.
-    var knowledge = std.ArrayList(AgentKnowledgeRow).empty;
-    errdefer {
-        for (knowledge.items) |k| freeKnowledgeRow(allocator, k);
-        knowledge.deinit(allocator);
-    }
-    {
-        var qk = db.query(allocator,
-            \\SELECT id, agent_id, file_path, label, content, position,
-            \\       IFNULL(created_at, ''), IFNULL(updated_at, '')
-            \\FROM agent_knowledge WHERE agent_id = ?
-            \\ORDER BY position DESC
-        , &[_][]const u8{input.item_id}) catch return error.DatabaseError;
-        defer qk.deinit();
-        while ((qk.next() catch null)) |r| {
-            defer r.deinit(allocator);
-            const position = std.fmt.parseInt(i64, r.values[5], 10) catch 0;
-            try knowledge.append(allocator, .{
-                .id = try allocator.dupe(u8, r.values[0]),
-                .agent_id = try allocator.dupe(u8, r.values[1]),
-                .file_path = try allocator.dupe(u8, r.values[2]),
-                .label = try allocator.dupe(u8, r.values[3]),
-                .content = try allocator.dupe(u8, r.values[4]),
-                .position = position,
-                .created_at = try allocator.dupe(u8, r.values[6]),
-                .updated_at = try allocator.dupe(u8, r.values[7]),
-            });
-        }
-    }
-    const knowledge_owned = try knowledge.toOwnedSlice(allocator);
+    // Load knowledge rows (position DESC).
+    const knowledge = agent_db.listKnowledge(allocator, handle, input.item_id) catch return error.DatabaseError;
 
-    // Load enabled tool names.
-    var tools = std.ArrayList([]u8).empty;
-    errdefer {
-        for (tools.items) |n| allocator.free(n);
-        tools.deinit(allocator);
-    }
-    {
-        var qt = db.query(allocator,
-            "SELECT tool_name FROM agent_tools WHERE agent_id = ? AND enabled = 1 ORDER BY tool_name ASC",
-            &[_][]const u8{input.item_id}) catch return error.DatabaseError;
-        defer qt.deinit();
-        while ((qt.next() catch null)) |r| {
-            defer r.deinit(allocator);
-            try tools.append(allocator, try allocator.dupe(u8, r.values[0]));
-        }
-    }
-    const tools_owned = try tools.toOwnedSlice(allocator);
+    // Load enabled tool names (tool_name ASC).
+    const tools = agent_db.listEnabledToolNames(allocator, handle, input.item_id) catch return error.DatabaseError;
 
     // Load system-prompt rows (Migration 080), position DESC.
-    var system_prompts = std.ArrayList(AgentSystemPromptRow).empty;
-    errdefer {
-        for (system_prompts.items) |p| freeSystemPromptRow(allocator, p);
-        system_prompts.deinit(allocator);
-    }
-    {
-        var qp = db.query(allocator,
-            \\SELECT id, agent_id, title, content, position,
-            \\       IFNULL(created_at, ''), IFNULL(updated_at, '')
-            \\FROM agent_system_prompt WHERE agent_id = ?
-            \\ORDER BY position DESC
-        , &[_][]const u8{input.item_id}) catch return error.DatabaseError;
-        defer qp.deinit();
-        while ((qp.next() catch null)) |r| {
-            defer r.deinit(allocator);
-            const position = std.fmt.parseInt(i64, r.values[4], 10) catch 0;
-            try system_prompts.append(allocator, .{
-                .id = try allocator.dupe(u8, r.values[0]),
-                .agent_id = try allocator.dupe(u8, r.values[1]),
-                .title = try allocator.dupe(u8, r.values[2]),
-                .content = try allocator.dupe(u8, r.values[3]),
-                .position = position,
-                .created_at = try allocator.dupe(u8, r.values[5]),
-                .updated_at = try allocator.dupe(u8, r.values[6]),
-            });
-        }
-    }
-    const system_prompts_owned = try system_prompts.toOwnedSlice(allocator);
+    const system_prompts = agent_db.listSystemPrompts(allocator, handle, input.item_id) catch return error.DatabaseError;
 
     return .{
         .agent = agent,
-        .knowledge = knowledge_owned,
-        .tools = tools_owned,
-        .system_prompts = system_prompts_owned,
+        .knowledge = knowledge,
+        .tools = tools,
+        .system_prompts = system_prompts,
     };
-}
-
-/// Load the agents row (description + timestamps) — all slices
-/// dup'd into the returned `AgentRow` so the caller doesn't have to
-/// worry about the source row.
-fn loadAgentRow(
-    allocator: std.mem.Allocator,
-    db: *pabrikcore.sqlite.SqliteBackend,
-    agent_id: []const u8,
-) AgentGetError!AgentRow {
-    var q = db.query(allocator,
-        "SELECT id, workspace_item_id, description, IFNULL(created_at, ''), IFNULL(updated_at, '') FROM agents WHERE id = ?",
-        &[_][]const u8{agent_id},
-    ) catch return error.DatabaseError;
-    defer q.deinit();
-    const row = (q.next() catch null) orelse return error.ItemNotFound;
-    defer row.deinit(allocator);
-    return .{
-        .id = try allocator.dupe(u8, row.values[0]),
-        .workspace_item_id = try allocator.dupe(u8, row.values[1]),
-        .description = try allocator.dupe(u8, row.values[2]),
-        .created_at = try allocator.dupe(u8, row.values[3]),
-        .updated_at = try allocator.dupe(u8, row.values[4]),
-    };
-}
-
-/// Free every slice field on a single knowledge row.
-fn freeKnowledgeRow(allocator: std.mem.Allocator, k: AgentKnowledgeRow) void {
-    allocator.free(k.id);
-    allocator.free(k.agent_id);
-    allocator.free(k.file_path);
-    if (k.label.len > 0) allocator.free(k.label);
-    if (k.content.len > 0) allocator.free(k.content);
-    if (k.created_at.len > 0) allocator.free(k.created_at);
-    if (k.updated_at.len > 0) allocator.free(k.updated_at);
-}
-
-/// Free every slice field on a single system-prompt row.
-fn freeSystemPromptRow(allocator: std.mem.Allocator, p: AgentSystemPromptRow) void {
-    allocator.free(p.id);
-    allocator.free(p.agent_id);
-    if (p.title.len > 0) allocator.free(p.title);
-    if (p.content.len > 0) allocator.free(p.content);
-    if (p.created_at.len > 0) allocator.free(p.created_at);
-    if (p.updated_at.len > 0) allocator.free(p.updated_at);
 }
 
 // =====================================================================
@@ -401,16 +266,12 @@ fn setupDb() !TestCtx {
 
 /// Free everything the use-case allocated for the output.
 fn freeOutput(allocator: std.mem.Allocator, output: AgentGetOutput) void {
-    allocator.free(output.agent.id);
-    allocator.free(output.agent.workspace_item_id);
-    allocator.free(output.agent.description);
-    allocator.free(output.agent.created_at);
-    allocator.free(output.agent.updated_at);
-    for (output.knowledge) |k| freeKnowledgeRow(allocator, k);
+    agent_db.freeAgentRow(allocator, output.agent);
+    for (output.knowledge) |k| agent_db.freeKnowledgeRow(allocator, k);
     allocator.free(output.knowledge);
     for (output.tools) |n| allocator.free(n);
     allocator.free(output.tools);
-    for (output.system_prompts) |p| freeSystemPromptRow(allocator, p);
+    for (output.system_prompts) |p| agent_db.freeSystemPromptRow(allocator, p);
     allocator.free(output.system_prompts);
 }
 

@@ -17,6 +17,7 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_db = @import("../models/agent.db.zig");
 
 /// HTTP request body for agent-update. Decoupled from the
 /// `AgentUpdateInput` domain struct so the wire format can evolve
@@ -28,13 +29,7 @@ const UpdateAgentBody = struct {
 
 /// Subset of the agents row returned by the use-case. Field strings
 /// are owned by the caller (lifetime = request arena).
-pub const Agent = struct {
-    id: []const u8,
-    workspace_item_id: []const u8,
-    description: []const u8,
-    created_at: []const u8,
-    updated_at: []const u8,
-};
+pub const Agent = agent_db.AgentRow;
 
 /// Domain-level error set for `useCase`. The handler maps each
 /// variant to an HTTP status code + message via two exhaustive
@@ -93,6 +88,8 @@ fn useCase(
         return error.IdsRequired;
     }
 
+    const handle: agent_db.DbOrTx = .{ .db = db };
+
     // Validate item exists + is an agent.
     var q = db.query(allocator,
         "SELECT item_type FROM workspace_items WHERE id = ?",
@@ -103,45 +100,11 @@ fn useCase(
     defer row.deinit(allocator);
     if (!std.mem.eql(u8, row.values[0], "agent")) return error.NotAnAgent;
 
-    // UPDATE description.
-    db.exec(allocator,
-        "UPDATE agents SET description = ?, updated_at = datetime('now') WHERE id = ?",
-        &[_][]const u8{ input.description, input.item_id },
-    ) catch return error.UpdateFailed;
+    // UPDATE description, then read the row back.
+    const agent = (agent_db.updateDescription(allocator, handle, input.item_id, input.description) catch
+        return error.UpdateFailed) orelse return error.RowVanished;
 
-    // Read back the updated row.
-    var q2 = db.query(allocator,
-        "SELECT id, workspace_item_id, description, IFNULL(created_at, ''), IFNULL(updated_at, '') FROM agents WHERE id = ?",
-        &[_][]const u8{input.item_id},
-    ) catch return error.RefetchFailed;
-    defer q2.deinit();
-    const updated_row = (q2.next() catch null) orelse return error.RowVanished;
-    defer updated_row.deinit(allocator); // safe — we dupe into the Agent struct below
-
-    // Dupe the slices out of row.values[] so the Agent struct owns
-    // them independently of the row. In production this is no-op
-    // (arena allocator); in tests it gives clean ownership for
-    // assertions + leak detection.
-    const id = try allocator.dupe(u8, updated_row.values[0]);
-    errdefer allocator.free(id);
-    const ws_item_id = try allocator.dupe(u8, updated_row.values[1]);
-    errdefer allocator.free(ws_item_id);
-    const description = try allocator.dupe(u8, updated_row.values[2]);
-    errdefer allocator.free(description);
-    const created_at = try allocator.dupe(u8, updated_row.values[3]);
-    errdefer allocator.free(created_at);
-    const updated_at = try allocator.dupe(u8, updated_row.values[4]);
-    errdefer allocator.free(updated_at);
-
-    return .{
-        .agent = .{
-            .id = id,
-            .workspace_item_id = ws_item_id,
-            .description = description,
-            .created_at = created_at,
-            .updated_at = updated_at,
-        },
-    };
+    return .{ .agent = agent };
 }
 
 // =====================================================================

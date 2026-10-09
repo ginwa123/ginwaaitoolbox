@@ -19,6 +19,7 @@ const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 const helpers = @import("helpers");
+const agent_db = @import("../models/agent.db.zig");
 
 /// HTTP request body for tool-create. Decoupled from the
 /// `ToolCreateInput` domain struct so the wire format can evolve
@@ -29,12 +30,7 @@ const CreateToolBody = struct {
 };
 
 /// Subset of the agent_tools row returned by the use-case.
-pub const ToolRow = struct {
-    id: []const u8,
-    agent_id: []const u8,
-    tool_name: []const u8,
-    enabled: u8,
-};
+pub const ToolRow = agent_db.ToolRow;
 
 /// Domain-level error set for `useCase`. The handler maps each
 /// variant to an HTTP status code + message via two exhaustive
@@ -105,54 +101,15 @@ fn useCase(
     if (input.tool_name.len == 0) return error.ToolNameRequired;
     if (!isKnownTool(input.tool_name)) return error.UnknownTool;
 
-    // Generate id + INSERT.
-    const ts = helpers.unixTimestampNanos();
-    const id = try std.fmt.allocPrint(allocator, "at_{d}", .{ts});
-    // If INSERT fails (UNIQUE violation, etc.) free the id since
-    // we never reach the "dupes own it" path below.
-    errdefer allocator.free(id);
+    const handle: agent_db.DbOrTx = .{ .db = db };
 
-    // Map SQLite UNIQUE violations (sqlite returns ExecuteFailed on
-    // UNIQUE conflicts) to `DuplicateTool`. Other failures surface
-    // as `InsertFailed` so the handler can distinguish 409 (the
-    // user did something they can fix by re-checking the state) vs
-    // 500 (something's actually wrong with the DB).
-    db.exec(allocator,
-        "INSERT INTO agent_tools (id, agent_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
-        &[_][]const u8{ id, input.agent_id, input.tool_name },
-    ) catch return error.DuplicateTool;
+    // INSERT. A null return means the UNIQUE(agent_id, tool_name)
+    // constraint fired — the agent already has this tool, so the
+    // caller answers 409 rather than 500.
+    const tool = (agent_db.insertTool(allocator, handle, input.agent_id, input.tool_name) catch
+        return error.InsertFailed) orelse return error.DuplicateTool;
 
-    // Read back.
-    var q = db.query(allocator,
-        "SELECT id, agent_id, tool_name, enabled FROM agent_tools WHERE id = ?",
-        &.{id},
-    ) catch return error.RefetchFailed;
-    defer q.deinit();
-    const r = (q.next() catch null) orelse return error.RowVanished;
-    defer r.deinit(allocator); // safe — we copy into ToolRow slices below
-
-    // Copy slices into owned allocations. In production this is
-    // essentially a no-op (arena allocator); in tests it gives the
-    // caller explicit ownership to free each field after assertions.
-    const out_id = try allocator.dupe(u8, r.values[0]);
-    errdefer allocator.free(out_id);
-    const out_agent_id = try allocator.dupe(u8, r.values[1]);
-    errdefer allocator.free(out_agent_id);
-    const out_tool_name = try allocator.dupe(u8, r.values[2]);
-    errdefer allocator.free(out_tool_name);
-
-    // The original `id` is no longer needed — `out_id` (duped from
-    // the SELECT result) takes its place. Free it now.
-    allocator.free(id);
-
-    return .{
-        .tool = .{
-            .id = out_id,
-            .agent_id = out_agent_id,
-            .tool_name = out_tool_name,
-            .enabled = 1,
-        },
-    };
+    return .{ .tool = tool };
 }
 
 // =====================================================================

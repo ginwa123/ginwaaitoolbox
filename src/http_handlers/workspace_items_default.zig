@@ -58,6 +58,7 @@ const auth_common = @import("auth_common.zig");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
+const agent_db = @import("../models/agent.db.zig");
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 const SystemFolder = pabrikcore.system_folder.SystemFolder;
 
@@ -172,11 +173,7 @@ pub fn ensureDefaultProject(
 
     // The agent sibling shares the item's id (spec D3), which
     // `agents.workspace_item_id UNIQUE` turns into a 1-1 invariant.
-    tx.exec(
-        allocator,
-        "INSERT INTO agents (id, workspace_item_id) VALUES (?, ?)",
-        &[_][]const u8{ item_id, item_id },
-    ) catch return error.DatabaseError;
+    agent_db.insert(allocator, .{ .tx = &tx }, item_id, item_id) catch return error.DatabaseError;
 
     // Seed the tool allowlist so a fresh default is immediately usable
     // rather than a NotConfigured dead-end. Inside the same tx, and through
