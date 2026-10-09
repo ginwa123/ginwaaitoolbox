@@ -182,8 +182,15 @@ async function handleBootUrl(): Promise<void> {
   // Prefer the workspace encoded by a workspace/project deep link. A
   // fresh tab may otherwise boot with the persisted/default workspace,
   // leave the URL-restored item inactive, and render a blank main view.
+  // `chat` belongs here too: a chat path names its workspace, and
+  // omitting it let the store fall back to the persisted
+  // `pabrik-active-workspace` key — so the sidebar rendered one
+  // workspace while the URL named another (task_1791556124905_10).
   const preferredWorkspaceId =
-    parsed.kind === 'workspace' || parsed.kind === 'project' || parsed.kind === 'projectChat'
+    parsed.kind === 'workspace' ||
+    parsed.kind === 'project' ||
+    parsed.kind === 'projectChat' ||
+    parsed.kind === 'chat'
       ? parsed.workspaceId
       : undefined
   workspacesStore.initializeFromSystemFolder(preferredWorkspaceId)
@@ -2553,6 +2560,13 @@ const reconcileRoute = async () => {
   // query-only change re-ran the path branch underneath it, and the
   // class of bug is gone with the query param.
   if (parsed.kind === 'chat') {
+    // The path names the workspace too — adopt it, exactly as the
+    // project branch below does. Without this, Back/Forward into a
+    // chat left the previous workspace selected in the sidebar while
+    // the URL named another one (task_1791556124905_10).
+    if (workspacesStore.activeWorkspaceId !== parsed.workspaceId) {
+      await workspacesStore.setActiveWorkspace(parsed.workspaceId)
+    }
     if (activeChatId.value !== `chat-${parsed.sessionId}`) {
       workspacesStore.setActiveWorkspaceItem(null)
       navigationStore.setActiveChat(parsed.sessionId, navigationStore.activeChatName)
