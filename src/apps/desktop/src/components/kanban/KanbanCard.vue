@@ -81,6 +81,10 @@ const emit = defineEmits<{
   // Context-menu "Move to column". Re-emitted verbatim from
   // <WorkspaceItemTaskCard> so <KanbanColumn> can resolve the position.
   moveTaskToColumn: [payload: { taskId: string; columnId: string }]
+  // Context-menu "Run agent". Re-emitted verbatim — the card adds no
+  // context of its own, and <KanbanView> is the first ancestor that
+  // holds the workspace/item ids the endpoint path needs.
+  runAgent: [payload: { taskId: string }]
 }>()
 
 const handleDragStart = (event: DragEvent) => {
@@ -124,6 +128,7 @@ const handleDragEnd = () => {
       @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
       @view-task-detail="(id) => emit('viewTaskDetail', id)"
       @move-task-to-column="(payload) => emit('moveTaskToColumn', payload)"
+      @run-agent="(payload) => emit('runAgent', payload)"
     />
   </div>
 </template>

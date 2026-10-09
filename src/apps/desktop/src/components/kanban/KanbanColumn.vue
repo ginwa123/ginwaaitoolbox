@@ -136,6 +136,10 @@ const emit = defineEmits<{
   // as the EXISTING `moveTask` shape, so <KanbanView> and AppLayout —
   // which already handle drag-and-drop moves — need no change at all.
   moveTaskToColumn: [payload: { taskId: string; columnId: string }]
+  // Context-menu "Run agent" requested by one of this column's cards.
+  // Pure pass-through: unlike a move there is no position to resolve,
+  // so the column adds nothing and <KanbanView> makes the API call.
+  runAgent: [payload: { taskId: string }]
 }>()
 
 // ─── Per-column sort state (kanban-sort-by, plan Task 3) ────────────────
@@ -925,6 +929,7 @@ const handleColumnDrop = (event: DragEvent) => {
               @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
               @view-task-detail="(id) => emit('viewTaskDetail', id)"
               @move-task-to-column="handleMoveToColumn"
+              @run-agent="(payload) => emit('runAgent', payload)"
             />
           </div>
         </template>

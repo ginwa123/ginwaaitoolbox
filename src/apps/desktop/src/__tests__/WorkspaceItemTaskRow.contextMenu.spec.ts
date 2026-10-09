@@ -53,4 +53,58 @@ describe('WorkspaceItemTaskRow — right-click context menu', () => {
     expect(wrapper.emitted('selectTask')).toBeUndefined()
     wrapper.unmount()
   })
+
+  // "Run agent" on the sidebar row calls the store directly rather than
+  // emitting — the sidebar chain is four components deep and three of
+  // them add no context. These tests pin that the call happens with the
+  // row's own ids and that the row is hidden while a worker runs.
+  it('Run agent calls startAgentOnTask with the row ids', async () => {
+    const { useWorkspacesStore } = await import('../stores/workspaces')
+    const store = useWorkspacesStore()
+    const spy = vi
+      .spyOn(store, 'startAgentOnTask')
+      .mockResolvedValue({ success: true, status: 'triggered' })
+
+    const wrapper = mount(WorkspaceItemTaskRow, {
+      attachTo: document.body,
+      props: {
+        task: { id: 'task_9', name: 'Fix login' },
+        workspaceId: 'ws_1',
+        itemId: 'item_7',
+      },
+      global: { provide: { processingState: ref<Record<string, boolean>>({}) } },
+    })
+    await nextTick()
+    await wrapper.find('[data-task-row]').trigger('contextmenu', { clientX: 50, clientY: 60 })
+    await nextTick()
+
+    const item = document.body.querySelector('[data-testid="run-agent-item"]') as HTMLButtonElement
+    expect(item).toBeTruthy()
+    item.click()
+    await nextTick()
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(spy).toHaveBeenCalledWith('ws_1', 'item_7', 'task_9')
+    wrapper.unmount()
+  })
+
+  it('Run agent is hidden while a worker runs on the task', async () => {
+    const wrapper = mount(WorkspaceItemTaskRow, {
+      attachTo: document.body,
+      props: {
+        task: { id: 'task_9', name: 'Fix login' },
+        workspaceId: 'ws_1',
+        itemId: 'item_7',
+      },
+      // The backend answers 409 to a second start, so the row must not
+      // offer the action while a worker is in flight.
+      global: { provide: { processingState: ref<Record<string, boolean>>({ task_9: true }) } },
+    })
+    await nextTick()
+    await wrapper.find('[data-task-row]').trigger('contextmenu', { clientX: 50, clientY: 60 })
+    await nextTick()
+
+    expect(document.body.querySelector('[data-testid="run-agent-item"]')).toBeNull()
+    wrapper.unmount()
+  })
 })
