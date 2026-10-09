@@ -105,6 +105,7 @@ import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 import GitBaseBranchSelect from './GitBaseBranchSelect.vue'
 import UiIcon from '../ui/UiIcon.vue'
+import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -1994,6 +1995,14 @@ const isMediaLoading = computed<boolean>(() => {
           >
             <span aria-hidden="true">▶</span>
             <span class="ml-1">Start agent</span>
+            <!-- Why the button is disabled, without needing a hover: the
+                 elapsed chip states how long the current run has been
+                 going, so "wait for it to finish" has a number attached. -->
+            <WorkerElapsedChip
+              v-if="isWorkerRunning && props.task"
+              :session-id="props.task.id"
+              test-id="kanban-task-detail-elapsed"
+            />
             <span class="block text-meta mt-0.5" style="color: var(--semantic-text-dim)">
               Resume the agent on this task's existing chat context.
             </span>

@@ -9,6 +9,7 @@ import WorkspaceItemTaskRow from './WorkspaceItemTaskRow.vue'
 import DesignPageRow from './DesignPageRow.vue'
 import type { DesignPage } from '../../api'
 import SessionSlider from '../SessionSlider.vue'
+import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 
 const workspacesStore = useWorkspacesStore()
@@ -677,6 +678,13 @@ const handlePinnedDrop = (event: DragEvent) => {
             v-if="firstProcessingTaskId"
             :session-id="firstProcessingTaskId"
             test-id="item-processing-spinner"
+          />
+          <!-- How long that task has been running. Beside the spinner, in
+               the same slot the active dot vacates. -->
+          <WorkerElapsedChip
+            v-if="firstProcessingTaskId"
+            :session-id="firstProcessingTaskId"
+            test-id="item-elapsed-chip"
           />
         </button>
         <!-- V2: always-visible actions (quiet until hover). + hidden

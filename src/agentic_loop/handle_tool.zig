@@ -682,6 +682,77 @@ fn parseAgentFromResult(result: []const u8) ?[]const u8 {
 // MAIN HANDLER - Clean dispatch using registry
 // ============================================================================
 
+/// Longest `last_activity_description` written by `touchWorkerActivity`.
+/// The column is a human-facing label rendered in the UI, so it is capped
+/// rather than allowed to grow with an arbitrarily large argument blob.
+const worker_activity_desc_max = 120;
+
+/// Stamp `worker.last_activity_nano` + a short "what is it doing" label for
+/// the worker running `session_id`, and emit the SSE `worker_updated` event.
+///
+/// The worker row is keyed by `id == session_id` (see `update_worker.zig`),
+/// which is why the session id is the handle here rather than a separate
+/// worker id.
+///
+/// The description is `Tool call: <name>` plus the leading argument fragment
+/// when one is present, so the UI can say "Tool call: bash" rather than just
+/// "running". Arguments are truncated at `worker_activity_desc_max` bytes on a
+/// char boundary — never mid-codepoint, which would write invalid UTF-8 into
+/// a TEXT column.
+fn touchWorkerActivity(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    tool_name: []const u8,
+    arguments: []const u8,
+) !void {
+    // A worker row only exists while a run is in flight. Absence is the
+    // normal case for a sub-agent's parent (whose row was already deleted)
+    // and for any call made outside a worker, so this is not an error.
+    var probe = try db.query(allocator, "SELECT 1 FROM worker WHERE id = ? LIMIT 1", &.{session_id});
+    defer probe.deinit();
+    const row = try probe.next();
+    defer if (row) |r| r.deinit(allocator);
+    if (row == null) return;
+
+    const desc = try buildWorkerActivityDescription(allocator, tool_name, arguments);
+    defer allocator.free(desc);
+
+    try llm_history.updateWorkerActivityWithDescription(allocator, db, session_id, desc);
+}
+
+/// `Tool call: <name>` + a truncated leading slice of `arguments`.
+/// Returns an allocated string the caller owns.
+fn buildWorkerActivityDescription(
+    allocator: std.mem.Allocator,
+    tool_name: []const u8,
+    arguments: []const u8,
+) ![]u8 {
+    const prefix = "Tool call: ";
+    const trimmed = std.mem.trim(u8, arguments, " \t\r\n");
+    if (trimmed.len == 0) {
+        return std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, tool_name });
+    }
+
+    // Leave room for the prefix, the tool name, the separating space and the
+    // ellipsis. The ellipsis is 3 bytes in UTF-8, so it has to be counted in
+    // bytes or the cap is overshot by two.
+    const ellipsis_bytes = 3;
+    const budget = worker_activity_desc_max - prefix.len - tool_name.len - 1 - ellipsis_bytes;
+    if (budget <= 0) {
+        return std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, tool_name });
+    }
+
+    const take = @min(trimmed.len, budget);
+    // Back off to a char boundary so the slice stays valid UTF-8. The guard
+    // matters: when `take` lands exactly on `trimmed.len` there is no byte at
+    // that index to inspect, and the whole slice is already valid.
+    var end = take;
+    while (end > 0 and end < trimmed.len and (trimmed[end] & 0xC0) == 0x80) end -= 1;
+    const ellipsis: []const u8 = if (end < trimmed.len) "…" else "";
+    return std.fmt.allocPrint(allocator, "{s}{s} {s}{s}", .{ prefix, tool_name, trimmed[0..end], ellipsis });
+}
+
 pub fn handle_tool(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -948,6 +1019,28 @@ pub fn handle_tool(
             var tool_result: []const u8 = undefined;
             var toolAgentTemp: f32 = agent_temperature.*;
             var toolIsThinking: bool = isThinking.*;
+
+            // Heartbeat the worker with what it is actually doing.
+            //
+            // `updateWorker` (the upsert behind `touchCheckpointWorkers`) only
+            // runs once before the loop and once per iteration, so a single
+            // long tool call left `last_activity_nano` frozen for its whole
+            // duration. The UI reads that column to decide whether a run is
+            // still alive, so a healthy worker mid-tool looked stalled — and
+            // the 600s stale-worker cron would reap a run that was working
+            // fine. Stamping per tool call is what makes "last activity" mean
+            // what the label promises.
+            //
+            // Best-effort by design: a failed heartbeat must never abort the
+            // tool call it is describing. The description is truncated because
+            // the column is a human-facing label, not a log.
+            touchWorkerActivity(
+                allocator,
+                db,
+                session_id,
+                tool_call.function.name,
+                tool_call.function.arguments,
+            ) catch {};
 
             // A name that reaches here is genuinely unknown: the deprecated
             // aliases (`bash` → `command`) were already accepted by
@@ -2651,4 +2744,126 @@ test "secrets: the resolver queries the store once per distinct name and remembe
     // key instead of saying only that something was missing.
     try std.testing.expect(resolver.resolve("ABSENT") == null);
     try std.testing.expectEqualStrings("ABSENT", resolver.missing_name.?);
+}
+
+// ============================================================================
+// Worker activity heartbeat tests
+// ============================================================================
+//
+// `touchWorkerActivity` is what makes the UI's "last activity" label mean
+// anything: without it the timestamp only moves once per loop iteration, so a
+// long tool call reads as a stalled worker. These tests drive the real DB
+// write through `updateWorkerActivityWithDescription` and read the row back.
+
+fn workerActivityDb(allocator: std.mem.Allocator) !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    errdefer threaded.deinit();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    try db.exec(allocator,
+        \\CREATE TABLE worker (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT,
+        \\    working_directory TEXT,
+        \\    last_activity_nano INTEGER,
+        \\    last_activity_description TEXT,
+        \\    cancelled INTEGER DEFAULT 0,
+        \\    user_id TEXT
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn workerActivityRow(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+) !struct { desc: []u8, activity: i64 } {
+    var rows = try db.query(allocator, "SELECT last_activity_description, last_activity_nano FROM worker WHERE id = ?", &.{id});
+    defer rows.deinit();
+    const row = (try rows.next()) orelse return error.NoRow;
+    defer row.deinit(allocator);
+    return .{
+        .desc = try allocator.dupe(u8, row.values[0]),
+        .activity = try std.fmt.parseInt(i64, row.values[1], 10),
+    };
+}
+
+test "touchWorkerActivity stamps the timestamp and a tool-call description" {
+    const allocator = std.testing.allocator;
+    var s = try workerActivityDb(allocator);
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    // Production keys the worker row by `id == session_id` (see
+    // `update_worker.zig`), which is why `touchWorkerActivity` takes the
+    // session id as its handle. Mirror that here or the probe finds nothing.
+    try s.db.exec(allocator, "INSERT INTO worker (id, session_id, last_activity_nano, last_activity_description) VALUES ('s1', 's1', 0, '')", &.{});
+
+    try touchWorkerActivity(allocator, &s.db, "s1", "bash", "{\"command\":\"ls -la\"}");
+
+    const got = try workerActivityRow(allocator, &s.db, "s1");
+    defer allocator.free(got.desc);
+
+    // The description names the tool and carries the leading argument
+    // fragment, so the UI can say what the worker is doing rather than
+    // just that it is alive.
+    try std.testing.expectEqualStrings("Tool call: bash {\"command\":\"ls -la\"}", got.desc);
+    // The heartbeat moved off the seeded 0.
+    try std.testing.expect(got.activity > 0);
+}
+
+test "touchWorkerActivity is a no-op when no worker row exists" {
+    const allocator = std.testing.allocator;
+    var s = try workerActivityDb(allocator);
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    // A sub-agent's parent row is deleted by the time the child dispatches,
+    // and tool calls also happen outside any worker. Neither is an error.
+    try touchWorkerActivity(allocator, &s.db, "no_such_session", "bash", "{}");
+}
+
+test "buildWorkerActivityDescription omits the argument fragment when there is none" {
+    const allocator = std.testing.allocator;
+
+    const empty = try buildWorkerActivityDescription(allocator, "read_file", "");
+    defer allocator.free(empty);
+    try std.testing.expectEqualStrings("Tool call: read_file", empty);
+
+    const blank = try buildWorkerActivityDescription(allocator, "read_file", "   \n\t ");
+    defer allocator.free(blank);
+    try std.testing.expectEqualStrings("Tool call: read_file", blank);
+}
+
+test "buildWorkerActivityDescription truncates a long argument blob on a char boundary" {
+    const allocator = std.testing.allocator;
+
+    // Far past the cap, and with a multi-byte codepoint straddling the cut so
+    // a naive byte slice would write invalid UTF-8 into the TEXT column.
+    const long = try allocator.alloc(u8, 4000);
+    defer allocator.free(long);
+    @memset(long, 'a');
+    // "é" is 2 bytes in UTF-8; place it so the cut lands inside it.
+    @memcpy(long[worker_activity_desc_max - 3 ..][0..2], "é");
+
+    const desc = try buildWorkerActivityDescription(allocator, "write_file", long);
+    defer allocator.free(desc);
+
+    try std.testing.expect(desc.len <= worker_activity_desc_max);
+    try std.testing.expect(std.mem.endsWith(u8, desc, "…"));
+    try std.testing.expect(std.mem.startsWith(u8, desc, "Tool call: write_file "));
+    // Valid UTF-8 end to end — the truncation backed off the continuation byte.
+    try std.testing.expect(std.unicode.utf8ValidateSlice(desc));
+}
+
+test "buildWorkerActivityDescription leaves a short argument untouched" {
+    const allocator = std.testing.allocator;
+
+    const desc = try buildWorkerActivityDescription(allocator, "search", "{\"q\":\"worker\"}");
+    defer allocator.free(desc);
+
+    try std.testing.expectEqualStrings("Tool call: search {\"q\":\"worker\"}", desc);
+    try std.testing.expect(!std.mem.endsWith(u8, desc, "…"));
 }

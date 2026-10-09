@@ -8,6 +8,7 @@ import WorkspaceItemComponent from './WorkspaceItem.vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
+import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import SidebarSkeleton from '../shell/SidebarSkeleton.vue'
 
 // The single SELECTED workspace (header dropdown + Projects section,
@@ -383,6 +384,12 @@ const handleItemDragEnd = () => {
           v-if="workspace && firstProcessingTaskIdInWorkspace(workspace)"
           :session-id="firstProcessingTaskIdInWorkspace(workspace)!"
           test-id="workspace-processing-spinner"
+        />
+        <!-- How long that task has been running. Beside the spinner. -->
+        <WorkerElapsedChip
+          v-if="workspace && firstProcessingTaskIdInWorkspace(workspace)"
+          :session-id="firstProcessingTaskIdInWorkspace(workspace)!"
+          test-id="workspace-elapsed-chip"
         />
         <button
           v-if="sidebarStore.projectsExpanded && workspace"
