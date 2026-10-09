@@ -106,6 +106,11 @@ test {
     // or surface the offending field + value + expected type when
     // coercion fails.
     _ = @import("tools_exec_bash_args.zig");
+    // Shared model-facing error explanations. Every `tools_exec_*.zig`
+    // adapter renders its failure envelope through this table, so a
+    // model that gets an error can repair its own next tool call
+    // instead of retrying the identical one.
+    _ = @import("tools_error_explain.zig");
     _ = @import("tools_exec_bash.zig");
     _ = @import("tools_exec_pwsh.zig");
     _ = @import("tools_exec_command.zig");

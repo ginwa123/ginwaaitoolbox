@@ -7,6 +7,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const write_file_mod = pabrikcore.write_file;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 const testing = std.testing;
 
 /// Escape a string for inclusion as a JSON string literal value (between
@@ -34,7 +35,8 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "write_file failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -42,7 +44,8 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 
     const write_result = write_file_mod.writeFile(ctx.allocator, ctx.io, parsed.value) catch |err| {
         const inner = try write_file_mod.toJSONError(ctx.allocator, err, parsed.value.path);
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "write_file failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, parsed.value.path);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
