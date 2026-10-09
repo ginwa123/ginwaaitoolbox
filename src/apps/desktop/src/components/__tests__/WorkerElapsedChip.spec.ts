@@ -95,9 +95,11 @@ describe('WorkerElapsedChip', () => {
     })
     expect(wrapper.text()).toBe('1m 00s')
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- reach the provided ref to simulate a tick.
-    const now = (wrapper.vm.$.provides as any).workerNow as Ref<number>
-    now.value += 12_000
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only reach into Vue internals.
+    const provides = (wrapper.vm as any).$.provides as Record<string, Ref<number> | undefined>
+    const now = provides.workerNow
+    expect(now).toBeDefined()
+    now!.value += 12_000
     await nextTick()
     expect(wrapper.text()).toBe('1m 12s')
   })

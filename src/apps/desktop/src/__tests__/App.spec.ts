@@ -380,8 +380,8 @@ describe('App workerActivity', () => {
     const row = activity.value['sess_a']
     expect(row).toBeDefined()
     // Seconds normalised to milliseconds.
-    expect(row.lastActivityAt).toBe(1_800_000_000_000)
-    expect(row.startedAt).toBe(Date.parse('2026-10-09T12:00:00Z'))
+    expect(row?.lastActivityAt).toBe(1_800_000_000_000)
+    expect(row?.startedAt).toBe(Date.parse('2026-10-09T12:00:00Z'))
   })
 
   it('a worker_updated event moves the heartbeat but NOT the start time', async () => {
@@ -400,7 +400,7 @@ describe('App workerActivity', () => {
       created_at: '2026-10-09 12:00:00',
     } as unknown as api.WorkerEvent)
     await nextTick()
-    const startedAt = activity.value['sess_b'].startedAt
+    const startedAt = activity.value['sess_b']?.startedAt
 
     // A heartbeat must not reset the elapsed clock to zero.
     __dispatchSseBus('worker', {
@@ -414,8 +414,8 @@ describe('App workerActivity', () => {
     } as unknown as api.WorkerEvent)
     await nextTick()
 
-    expect(activity.value['sess_b'].startedAt).toBe(startedAt)
-    expect(activity.value['sess_b'].lastActivityAt).toBe(1_800_000_060_000)
+    expect(activity.value['sess_b']?.startedAt).toBe(startedAt)
+    expect(activity.value['sess_b']?.lastActivityAt).toBe(1_800_000_060_000)
   })
 
   it('a worker_deleted event clears the activity entry', async () => {
@@ -534,8 +534,8 @@ describe('App workerActivity', () => {
     emitStubState(stub, 'open')
     await vi.waitFor(() => expect(activity.value['sess_rest']).toBeDefined())
 
-    expect(activity.value['sess_rest'].lastActivityAt).toBe(1_800_000_000_000)
-    expect(activity.value['sess_rest'].startedAt).toBe(Date.parse('2026-10-09T11:55:00Z'))
-    expect(activity.value['sess_rest'].description).toBe('Tool call: read_file')
+    expect(activity.value['sess_rest']?.lastActivityAt).toBe(1_800_000_000_000)
+    expect(activity.value['sess_rest']?.startedAt).toBe(Date.parse('2026-10-09T11:55:00Z'))
+    expect(activity.value['sess_rest']?.description).toBe('Tool call: read_file')
   })
 })
