@@ -3,7 +3,7 @@ import { ref, provide, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import * as api from './api'
 import TopLoadingBar from './components/shell/TopLoadingBar.vue'
-import { installSseBus, useSseBus, __getSseBusGlobalClient } from './helpers/sseBus'
+import { installSseBus, useSseBus } from './helpers/sseBus'
 import { useTabsStore } from './stores/tabs'
 import { useNavigationStore } from './stores/navigation'
 import { useDocumentTitle } from './composables/useDocumentTitle'
@@ -239,9 +239,16 @@ onMounted(() => {
   // where the SseClient is already `'open'` by the time this hook runs
   // (the SseClient defers its first `start()` via `setTimeout(0)`, so
   // there's a race between bus install and subscription).
+  // Subscribe on the BUS, not on the underlying client. With cross-tab
+  // sharing the client is created inside `onBecomeLeader`, so it does
+  // not exist yet here — `__getSseBusGlobalClient()?.onStateChange(...)`
+  // short-circuited on null and this callback was never registered, so
+  // the first `open` was missed and `processingState` stayed empty
+  // (the sidebar's Stop-agent row and spinners never appeared).
+  // Bus-level subscribers are replayed onto every client the bus opens.
   if (bus.state.value === 'open') void fetchInitialWorkers()
   offBusOpen =
-    __getSseBusGlobalClient()?.onStateChange((s) => {
+    bus.onStateChange?.((s) => {
       if (s === 'open') void fetchInitialWorkers()
     }) ?? null
 })
