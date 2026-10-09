@@ -23,7 +23,7 @@
 //! | `answered` | the answer endpoint | continue with the answer |
 //! | `skipped` | the answer endpoint (`skip:true`) | do not guess; say what is blocked |
 //! | `abandoned` | the `session_create` guard (the human sent a message instead) | do not guess; re-ask once if still needed |
-//! | `unavailable` | this tool, immediately (unattended run / sub-agent) | decide yourself and state the assumption |
+//! | `unavailable` | this tool, immediately (sub-agent only) | decide yourself and state the assumption |
 //!
 //! Only *malformed input* becomes `success=false` + `<error>`; the four
 //! statuses above are successful calls with a degraded outcome. That mirrors
@@ -135,7 +135,7 @@ pub const Status = enum {
     skipped,
     /// The human sent a different message instead of answering.
     abandoned,
-    /// No human can answer (unattended run / sub-agent). No row is written.
+    /// A sub-agent has no answer surface. No row is written.
     unavailable,
 
     pub fn to_str(self: Status) []const u8 {
@@ -293,8 +293,8 @@ pub const ask_user_tool_system_prompt =
     \\- After calling it, the turn ENDS. You will be resumed with `"status":"answered"`,
     \\  `"status":"skipped"` or `"status":"abandoned"`. On `skipped`/`abandoned`, do not
     \\  guess — say what you are blocked on.
-    \\- `"status":"unavailable"` means nobody could answer (unattended run). Pick the most
-    \\  reasonable option yourself, state the assumption, and continue.
+    \\- `"status":"unavailable"` means you are running as a sub-agent, which has no answer
+    \\  surface. Pick the most reasonable option yourself, state the assumption, and continue.
     \\
 ;
 
