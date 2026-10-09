@@ -47,15 +47,19 @@ const makeColumn = (overrides: Partial<KanbanColumnType> = {}): KanbanColumnType
 })
 
 const makeTasks = (count: number, columnId = COL_TODO): Task[] =>
-  Array.from({ length: count }, (_, i) => ({
-    id: `t${i + 1}`,
-    name: `Task ${i + 1}`,
-    kanban_column_id: columnId,
-    kanban_position: i,
-    workspace_item_id: 'item_1',
-    task_type: 'standard',
-    created_at: `2026-08-06T1${i % 9}:00:00.000Z`,
-  } as Task))
+  Array.from(
+    { length: count },
+    (_, i) =>
+      ({
+        id: `t${i + 1}`,
+        name: `Task ${i + 1}`,
+        kanban_column_id: columnId,
+        kanban_position: i,
+        workspace_item_id: 'item_1',
+        task_type: 'standard',
+        created_at: `2026-08-06T1${i % 9}:00:00.000Z`,
+      }) as Task,
+  )
 
 /**
  * Mount a KanbanColumn with a pre-populated workspaces store so
@@ -158,13 +162,10 @@ describe('KanbanColumn — VirtualScroller integration', () => {
     expect(scroller.props('loadMoreAtTop')).toBe(false)
   })
 
-  it('passes only this column\'s tasks to the scroller (filters by column id)', () => {
+  it("passes only this column's tasks to the scroller (filters by column id)", () => {
     // Mix tasks for two different columns. The scroller must only
     // see tasks for the column it belongs to.
-    const tasks = [
-      ...makeTasks(3, COL_TODO),
-      ...makeTasks(2, 'col_other'),
-    ]
+    const tasks = [...makeTasks(3, COL_TODO), ...makeTasks(2, 'col_other')]
     wrapper = mountColumnWithPagination(makeColumn(), tasks)
 
     const scroller = wrapper.findComponent({ name: 'VirtualScroller' })
@@ -266,9 +267,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
     scroller.vm.$emit('scrollabilityChange', true)
     await nextTick()
 
-    const loadMore = wrapper.find(
-      `[data-testid="kanban-column-${COL_TODO}-load-more"]`,
-    )
+    const loadMore = wrapper.find(`[data-testid="kanban-column-${COL_TODO}-load-more"]`)
     expect(loadMore.exists()).toBe(false)
   })
 
@@ -284,9 +283,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
     scroller.vm.$emit('scrollabilityChange', false)
     await nextTick()
 
-    const loadMore = wrapper.find(
-      `[data-testid="kanban-column-${COL_TODO}-load-more"]`,
-    )
+    const loadMore = wrapper.find(`[data-testid="kanban-column-${COL_TODO}-load-more"]`)
     expect(loadMore.exists()).toBe(true)
   })
 
@@ -305,9 +302,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
     const getTasksSpy = vi.mocked(api.getTasks)
     const callsBefore = getTasksSpy.mock.calls.length
 
-    await wrapper
-      .find(`[data-testid="kanban-column-${COL_TODO}-load-more"]`)
-      .trigger('click')
+    await wrapper.find(`[data-testid="kanban-column-${COL_TODO}-load-more"]`).trigger('click')
     await flushPromises()
 
     expect(getTasksSpy.mock.calls.length).toBeGreaterThan(callsBefore)
@@ -329,9 +324,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
     scroller.vm.$emit('scrollabilityChange', false)
     await nextTick()
 
-    const loadMore = wrapper.find(
-      `[data-testid="kanban-column-${COL_TODO}-load-more"]`,
-    )
+    const loadMore = wrapper.find(`[data-testid="kanban-column-${COL_TODO}-load-more"]`)
     expect(loadMore.exists()).toBe(false)
   })
 
@@ -377,9 +370,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
     const getTasksSpy = vi.mocked(api.getTasks)
     // Find the call that included our cursor — the auto-fetch should
     // have fired with cursor='cursor_p2'.
-    const callsWithOurCursor = getTasksSpy.mock.calls.filter(
-      (call) => call[3] === 'cursor_p2',
-    )
+    const callsWithOurCursor = getTasksSpy.mock.calls.filter((call) => call[3] === 'cursor_p2')
     expect(callsWithOurCursor.length).toBeGreaterThan(0)
     expect(callsWithOurCursor[0]![6]).toBe(COL_TODO) // columnId
   })
@@ -418,9 +409,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
     await nextTick()
 
     const getTasksSpy = vi.mocked(api.getTasks)
-    const callsWithOurCursor = getTasksSpy.mock.calls.filter(
-      (call) => call[3] === 'cursor_p2',
-    )
+    const callsWithOurCursor = getTasksSpy.mock.calls.filter((call) => call[3] === 'cursor_p2')
     expect(callsWithOurCursor.length).toBe(0)
   })
 
@@ -436,9 +425,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
     // hasMore=false — and the store action bails on null cursor
     // before calling api.getTasks. We check that no api.getTasks
     // call was made for this column at all.
-    const callsForCol = getTasksSpy.mock.calls.filter(
-      (call) => call[6] === COL_TODO,
-    )
+    const callsForCol = getTasksSpy.mock.calls.filter((call) => call[6] === COL_TODO)
     expect(callsForCol.length).toBe(0)
   })
 
@@ -469,5 +456,91 @@ describe('KanbanColumn — VirtualScroller integration', () => {
 
     expect(dragOver.defaultPrevented).toBe(true)
     expect(dragOver.dataTransfer?.dropEffect).toBe('move')
+  })
+})
+
+/**
+ * First-page skeleton.
+ *
+ * Before this, a column whose page-1 fetch was still in flight
+ * rendered its "No tasks yet" empty state — a false statement about
+ * the user's data, since the column may well have tasks. The store
+ * now exposes `isFirstPageLoading(itemId, columnId)` and the column
+ * gates a skeleton on it.
+ *
+ * Note the signal is deliberately NOT `columnPagination[colId]`:
+ * the ABSENCE of that entry is the sentinel KanbanView's mount path
+ * uses to decide which columns still need fetching, so it cannot be
+ * pre-created with `isLoading: true`.
+ */
+describe('KanbanColumn — first-page skeleton', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.spyOn(api, 'getTasks').mockResolvedValue({
+      tasks: [],
+      has_more: true,
+      next_cursor: 'cursor_p2',
+    })
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+  })
+
+  it('shows the skeleton (not the empty state) while the first page is in flight', async () => {
+    const store = useWorkspacesStore()
+    store.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'W',
+        icon: '📁',
+        expanded: false,
+        items: [
+          {
+            id: 'item_1',
+            name: 'Kanban',
+            item_type: 'kanban',
+            path: '/tmp',
+            kanban_columns: [makeColumn()],
+            tasks: [],
+            // No columnPagination entry — the column has not been
+            // fetched yet, which is exactly the state the skeleton
+            // covers.
+          },
+        ],
+      },
+    ]
+    // Pinia unwraps refs on setup stores, so this is the Set itself.
+    store.firstPageLoadingColumns.add('item_1:col_todo')
+
+    wrapper = mount(KanbanColumn, {
+      props: { column: makeColumn(), tasks: [], workspaceId: 'ws_1', itemId: 'item_1' },
+    })
+    await nextTick()
+
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_TODO}-skeleton"]`).exists()).toBe(true)
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_TODO}-empty"]`).exists()).toBe(false)
+  })
+
+  it('shows the empty state (not the skeleton) once the first page has landed', async () => {
+    wrapper = mountColumnWithPagination(makeColumn(), [], { hasMore: false, cursor: null })
+    await nextTick()
+
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_TODO}-skeleton"]`).exists()).toBe(false)
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_TODO}-empty"]`).exists()).toBe(true)
+  })
+
+  it('shows neither skeleton nor empty state when cards are present', async () => {
+    wrapper = mountColumnWithPagination(makeColumn(), makeTasks(3), {
+      hasMore: false,
+      cursor: null,
+    })
+    await nextTick()
+
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_TODO}-skeleton"]`).exists()).toBe(false)
+    expect(wrapper.find(`[data-testid="kanban-column-${COL_TODO}-empty"]`).exists()).toBe(false)
   })
 })

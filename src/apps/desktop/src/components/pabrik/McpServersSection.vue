@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import EmptyState from './EmptyState.vue'
+import SettingsSkeleton from './SettingsSkeleton.vue'
 import type { McpServer } from '../../api'
 
-defineProps<{ modelValue: McpServer[] }>()
+defineProps<{ modelValue: McpServer[]; loading?: boolean }>()
 const emit = defineEmits<{
   edit: [server: McpServer]
   delete: [name: string]
@@ -41,8 +42,10 @@ function maskValue(v: string): string {
       >+ Add server</button>
     </div>
 
+    <SettingsSkeleton v-if="loading" test-id="mcp-loading-skeleton" />
+
     <EmptyState
-      v-if="modelValue.length === 0"
+      v-else-if="modelValue.length === 0"
       data-testid="empty-state"
       glyph="◇"
       title="No MCP servers yet"

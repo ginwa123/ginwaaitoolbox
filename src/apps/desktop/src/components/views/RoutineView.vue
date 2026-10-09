@@ -161,10 +161,17 @@ const routineKnowledge = ref<api.AgentRoutineKnowledgeRow[]>([])
 const routineTools = ref<string[]>([])
 const routineSystemPrompts = ref<api.AgentRoutineSystemPromptRow[]>([])
 
+// True while `loadRoutineAgent` is in flight — AgentView's knowledge and
+// system-prompt panels gate their skeletons on this. Without it they
+// render "No knowledge files yet." during the fetch, which is a false
+// statement about the routine's data.
+const routineAgentLoading = ref(false)
+
 async function loadRoutineAgent() {
   const wsId = props.workspaceId
   const id = props.itemId
   if (!id || !wsId) return
+  routineAgentLoading.value = true
   try {
     const data = await api.getAgentRoutine(wsId, id)
     if (data) {
@@ -178,6 +185,9 @@ async function loadRoutineAgent() {
     }
   } catch (e) {
     console.error('[RoutineView] failed to load routine agent:', e)
+  } finally {
+    // Cleared on BOTH paths so a failed fetch cannot park the skeleton.
+    routineAgentLoading.value = false
   }
 }
 
@@ -611,6 +621,7 @@ onUpdated(() => {
         :knowledge="routineKnowledge"
         :tools="routineTools"
         :system-prompts="routineSystemPrompts"
+        :parent-loading="routineAgentLoading"
         @add-knowledge="handleRoutineAddKnowledge"
         @remove-knowledge="handleRoutineRemoveKnowledge"
         @edit-knowledge="handleRoutineEditKnowledge"

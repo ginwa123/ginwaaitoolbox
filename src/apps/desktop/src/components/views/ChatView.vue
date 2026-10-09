@@ -4727,23 +4727,31 @@ const compactSession = async () => {
         >
           ◫
         </button>
-        <!-- Loading More indicator (floats above the scroller during pagination) -->
-        <!-- temporary disable -->
-        <!-- <div -->
-        <!--   v-if="isLoadingMore" -->
-        <!--   class="absolute top-0 left-0 right-0 flex justify-center py-2 z-10 pointer-events-none" -->
-        <!-- > -->
-        <!--   <div -->
-        <!--     class="flex items-center gap-2 px-4 py-2 rounded-full shadow-sm" -->
-        <!--     style="background-color: var(--semantic-card-bg)" -->
-        <!--   > -->
-        <!--     <div -->
-        <!--       class="w-4 h-4 border-2 rounded-full animate-spin" -->
-        <!--       style="border-color: var(--color-violet); border-top-color: transparent" -->
-        <!--     ></div> -->
-        <!--     <span class="text-body" style="color: var(--semantic-text-dim)">Loading more...</span> -->
-        <!--   </div> -->
-        <!-- </div> -->
+        <!-- Loading More indicator (floats above the scroller during pagination).
+
+             Restored: while `maybeLoadOlder` / `commitOlderPage` run, the
+             "Load more messages" button below is hidden (`!isLoadingMore`
+             in its v-if), so with this block commented out the user got
+             NO affordance at all — the button vanished and nothing
+             replaced it until the page committed. -->
+        <div
+          v-if="isLoadingMore"
+          class="absolute top-0 left-0 right-0 flex justify-center py-2 z-10 pointer-events-none"
+          data-testid="chat-loading-more"
+          role="status"
+          aria-label="Loading older messages"
+        >
+          <div
+            class="flex items-center gap-2 px-4 py-2 rounded-full shadow-sm"
+            style="background-color: var(--semantic-card-bg)"
+          >
+            <div
+              class="w-4 h-4 border-2 rounded-full animate-spin"
+              style="border-color: var(--color-violet); border-top-color: transparent"
+            ></div>
+            <span class="text-body" style="color: var(--semantic-text-dim)">Loading more...</span>
+          </div>
+        </div>
 
         <!-- Initializing skeleton — shown while the first history fetch
              is outstanding (isInitializing): covers the mount gap where

@@ -9,6 +9,7 @@ import { fetchFolderDiff, folderDiffKey, primeFolderDiffs } from '../../../helpe
 import { useContextMenu } from '../../../composables/useContextMenu'
 import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
 import SpinnerIcon from '../../shell/SpinnerIcon.vue'
+import ListSkeleton from '../../shell/ListSkeleton.vue'
 import EmptyState from '../../pabrik/EmptyState.vue'
 import GitCommits from '../../git/GitCommits.vue'
 import ForgeIcon from '../../git/ForgeIcon.vue'
@@ -1243,7 +1244,15 @@ defineExpose({
     </div>
     <div v-else class="flex-1 overflow-y-auto min-h-0">
       <template v-if="showPr">
-        <div v-if="isLoadingPr" class="flex items-center justify-center py-8">
+        <!-- First-load skeleton holds the file list's height; a centered
+             spinner on a refresh, where the previous rows are on screen. -->
+        <ListSkeleton
+          v-if="isLoadingPr && prFiles.length === 0"
+          :rows="8"
+          row-height="h-7"
+          test-id="sidebar-pr-files-skeleton"
+        />
+        <div v-else-if="isLoadingPr" class="flex items-center justify-center py-8">
           <SpinnerIcon size-class="w-5 h-5" />
         </div>
         <!-- The error states stay bespoke rather than going through
@@ -1573,7 +1582,18 @@ defineExpose({
         </template>
       </template>
       <template v-else>
-        <div v-if="isLoadingGit" class="flex items-center justify-center py-8">
+        <!-- First-load skeleton — holds the file list's height instead of
+             collapsing the panel to one centered icon. On a REFRESH the
+             previous rows stay visible (the flag is only set on the
+             initial load), so a 30s PR-status poll no longer blanks the
+             whole list. -->
+        <ListSkeleton
+          v-if="isLoadingGit && changeCount === 0"
+          :rows="8"
+          row-height="h-7"
+          test-id="sidebar-diff-files-skeleton"
+        />
+        <div v-else-if="isLoadingGit" class="flex items-center justify-center py-8">
           <SpinnerIcon size-class="w-5 h-5" />
         </div>
 

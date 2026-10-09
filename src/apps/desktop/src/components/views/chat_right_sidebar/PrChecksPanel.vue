@@ -15,6 +15,7 @@ import { Effect } from 'effect'
 import { getPrChecks, type GitPrCheck, type GitPrChecks } from '../../../api'
 import { SyncRemoteError } from '../../../sync/SyncError'
 import { runSyncResult } from '../../../sync/runtime'
+import ListSkeleton from '../../shell/ListSkeleton.vue'
 
 const props = defineProps<{
   cwd: string
@@ -189,13 +190,7 @@ defineExpose({ reload: load })
       Could not load CI checks — {{ error }}
     </div>
 
-    <div
-      v-if="loading && !data"
-      class="px-3 py-2 text-dense"
-      style="color: var(--semantic-text-dim)"
-    >
-      Loading…
-    </div>
+    <ListSkeleton v-if="loading && !data" :rows="5" row-height="h-9" test-id="pr-checks-skeleton" />
 
     <div
       v-else-if="!error && data && data.checks.length === 0"
@@ -206,7 +201,16 @@ defineExpose({ reload: load })
       No CI checks reported for this {{ providerNoun }}.
     </div>
 
-    <div v-else-if="!error && !data" class="flex-1" />
+    <!-- No PR attached — say so rather than rendering a blank flex div,
+         which read as "the panel is broken". -->
+    <div
+      v-else-if="!error && !data"
+      class="px-3 py-6 text-dense text-center"
+      style="color: var(--semantic-text-dim)"
+      data-testid="checks-no-pr"
+    >
+      No pull request attached to this session.
+    </div>
 
     <div v-else class="flex-1 overflow-y-auto min-h-0" data-testid="checks-list">
       <div

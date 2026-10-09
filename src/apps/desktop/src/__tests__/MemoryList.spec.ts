@@ -41,11 +41,13 @@ describe('MemoryList', () => {
     wrapper = null
   })
 
-  it('renders the loading state on initial mount', () => {
+  it('renders the loading skeleton on initial mount', () => {
     mockGetMemories.mockResolvedValue({ memories: [] })
     mountList()
     // Loading state is set synchronously before the awaited call resolves.
-    expect(document.body.textContent).toContain('Loading memories')
+    // The skeleton replaces the old "Loading memories..." text — it holds
+    // the card list's height instead of collapsing the panel to one row.
+    expect(document.body.querySelector('[data-testid="memory-list-skeleton"]')).not.toBeNull()
   })
 
   it('renders the empty state when the list is empty', async () => {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import UiIcon from '../ui/UiIcon.vue'
+import ListSkeleton from '../shell/ListSkeleton.vue'
 import { getMemories, type Memory } from '../../api'
 
 const props = defineProps<{
@@ -53,16 +54,9 @@ defineExpose({
 
 <template>
   <div class="memory-list">
-    <!-- Loading State -->
-    <div v-if="isLoading" class="flex items-center justify-center py-8">
-      <div class="flex items-center gap-3">
-        <div
-          class="w-5 h-5 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-violet); border-top-color: transparent;"
-        ></div>
-        <span style="color: var(--semantic-text-muted);">Loading memories...</span>
-      </div>
-    </div>
+    <!-- Loading State — skeleton holds the card list's height instead of
+         collapsing the panel to one centered row. -->
+    <ListSkeleton v-if="isLoading" :rows="5" row-height="h-16" test-id="memory-list-skeleton" />
 
     <!-- Error State -->
     <div v-else-if="error" class="text-center py-8">

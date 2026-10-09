@@ -34,6 +34,11 @@ interface TermSession {
 const container = ref<HTMLElement | null>(null)
 const sessions = ref<TermSession[]>([])
 const activeId = ref<string | null>(null)
+// True while `restoreSessions` validates the stored ids against the
+// server. Without it the panel renders its "No terminal yet" empty
+// state during that window — a lie for a user who had three terminals
+// open before a reload.
+const isRestoring = ref(false)
 // Idle until the user explicitly starts a terminal — mounting the tab
 // (ChatRightSidebar keeps it mounted via v-show) must not spawn a PTY.
 const status = ref('No terminal — click + to start a new one')
@@ -398,6 +403,7 @@ const restoreSessions = async () => {
     // First visit: wait for the user to click + instead of spawning.
     return
   }
+  isRestoring.value = true
   // Validate each stored id (server restarts and LRU eviction drop the
   // in-memory registry). Survivors re-attach below with full scrollback.
   const alive: TermSession[] = []
@@ -412,6 +418,7 @@ const restoreSessions = async () => {
   }
   if (disposed) return
   sessions.value = alive
+  isRestoring.value = false
   // Continue numbering past the highest restored label (stored labels
   // may be non-sequential after closes — alive.length would collide).
   sessionCounter = Math.max(alive.length, maxLabelNum())
@@ -679,8 +686,24 @@ onUnmounted(() => {
     </div>
     <div class="relative flex-1 min-h-0 px-1" data-testid="terminal-xterm-wrap">
       <div ref="container" class="h-full min-h-0" data-testid="terminal-xterm" />
+      <!-- Restoring placeholder — shown while the stored session ids are
+           validated against the server. Without it the "No terminal yet"
+           empty state below fires during that window, which is a lie for
+           a user who had terminals open before a reload. -->
       <div
-        v-if="sessions.length === 0"
+        v-if="isRestoring"
+        class="absolute inset-0 flex items-center justify-center"
+        data-testid="terminal-restoring"
+        role="status"
+        aria-label="Restoring terminals"
+      >
+        <div
+          class="w-5 h-5 border-2 rounded-full animate-spin"
+          style="border-color: var(--color-aqua); border-top-color: transparent"
+        ></div>
+      </div>
+      <div
+        v-else-if="sessions.length === 0"
         class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-4"
         data-testid="terminal-empty"
       >

@@ -2,9 +2,10 @@
 import { ref } from 'vue'
 
 import EmptyState from './EmptyState.vue'
+import SettingsSkeleton from './SettingsSkeleton.vue'
 import type { SubAgent } from '../../api'
 
-defineProps<{ modelValue: SubAgent[] }>()
+defineProps<{ modelValue: SubAgent[]; loading?: boolean }>()
 const emit = defineEmits<{
   edit: [sa: SubAgent]
   delete: [name: string]
@@ -37,8 +38,10 @@ function toggle(name: string) {
       >+ Add sub-agent</button>
     </div>
 
+    <SettingsSkeleton v-if="loading" test-id="subagents-loading-skeleton" />
+
     <EmptyState
-      v-if="modelValue.length === 0"
+      v-else-if="modelValue.length === 0"
       data-testid="empty-state"
       glyph="◌"
       title="No sub-agents yet"

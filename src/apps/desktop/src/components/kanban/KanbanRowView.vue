@@ -124,6 +124,12 @@ const moreTasksAvailable = (columnId: string): boolean =>
 const loadingMoreTasks = (columnId: string): boolean =>
   parentItem.value?.columnPagination?.[columnId]?.isLoading ?? false
 
+// True while this column's FIRST page is in flight — see the note in
+// KanbanColumn.vue. Gates the skeleton so the group does not render a
+// false "No tasks yet" while the fetch is outstanding.
+const isFirstPageLoading = (columnId: string): boolean =>
+  workspacesStore.isFirstPageLoading(props.itemId, columnId)
+
 const handleLoadMore = (columnId: string) => {
   if (!moreTasksAvailable(columnId)) return
   if (loadingMoreTasks(columnId)) return
@@ -472,8 +478,25 @@ onUnmounted(() => {
             @view-task-detail="(id) => emit('viewTaskDetail', id)"
           />
 
+          <!-- First-page skeleton — holds the group's height while the
+               column's page-1 fetch is in flight, so the group does not
+               flash a false "No tasks yet". -->
           <div
-            v-if="group.rows.length === 0"
+            v-if="isFirstPageLoading(group.column.id)"
+            class="space-y-1 py-1"
+            :data-testid="`kanban-row-group-${group.column.id}-skeleton`"
+            role="status"
+            aria-label="Loading tasks"
+          >
+            <div
+              v-for="n in 3"
+              :key="n"
+              class="h-9 rounded animate-pulse"
+              style="background-color: var(--semantic-active-bg)"
+            />
+          </div>
+          <div
+            v-else-if="group.rows.length === 0"
             class="text-dense py-3"
             style="color: var(--semantic-text-dim)"
             :data-testid="`kanban-row-group-${group.column.id}-empty`"

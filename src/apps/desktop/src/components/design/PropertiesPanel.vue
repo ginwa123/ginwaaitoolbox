@@ -47,10 +47,21 @@
 import { computed, onBeforeUnmount, onUpdated, ref } from 'vue'
 import type { DesignElement } from '../../api'
 import { useWorkspacesStore } from '../../stores/workspaces'
+import ListSkeleton from '../shell/ListSkeleton.vue'
 import { useDesignHistory } from '../../composables/useDesignHistory'
 import { useDesignHistoryStore } from '../../stores/designHistory'
 
 const workspacesStore = useWorkspacesStore()
+
+// True while the active page's element fetch is in flight. Without it
+// the panel renders "Select an element to edit its properties" during
+// the fetch — a false statement about the page's data.
+const isElementsLoading = computed(() => {
+  const itemId = workspacesStore.activeWorkspaceItemId
+  const pageId = workspacesStore.activeDesignPageId
+  if (!itemId || !pageId) return false
+  return workspacesStore.isDesignElementsLoading(itemId, pageId)
+})
 
 // Undo/redo plan (Chunk 4): one history entry per field commit.
 // Pre-state is captured on input focus; post-state on @change.
@@ -376,6 +387,12 @@ const showTypeSpecificSection = computed(
     </div>
 
     <!-- ─── Empty state ────────────────────────────────────────────── -->
+    <ListSkeleton
+      v-if="isElementsLoading"
+      :rows="8"
+      row-height="h-8"
+      test-id="properties-panel-skeleton"
+    />
     <div
       v-else-if="elements.length === 0"
       class="flex-1 flex items-center justify-center p-6 text-body"

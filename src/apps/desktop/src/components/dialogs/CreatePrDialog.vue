@@ -153,12 +153,41 @@ const onClose = () => {
         </div>
       </div>
 
-      <div
-        v-if="isLoading"
-        class="px-4 py-8 text-center text-dense"
-        style="color: var(--semantic-text-dim)"
-      >
-        Loading worktree info...
+      <!-- Loading skeleton — holds the form's shape (base input, title
+           input, body textarea) instead of replacing the whole dialog
+           body with one line of text. `getGitWorktreeInfo` shells out to
+           git for the diff against base, so this window is real. -->
+      <div v-if="isLoading" class="px-4 py-4 space-y-3" data-testid="create-pr-skeleton">
+        <div>
+          <div
+            class="h-3 w-20 rounded animate-pulse mb-1"
+            style="background-color: var(--semantic-active-bg)"
+          />
+          <div
+            class="h-8 rounded animate-pulse"
+            style="background-color: var(--semantic-active-bg)"
+          />
+        </div>
+        <div>
+          <div
+            class="h-3 w-16 rounded animate-pulse mb-1"
+            style="background-color: var(--semantic-active-bg)"
+          />
+          <div
+            class="h-8 rounded animate-pulse"
+            style="background-color: var(--semantic-active-bg)"
+          />
+        </div>
+        <div>
+          <div
+            class="h-3 w-14 rounded animate-pulse mb-1"
+            style="background-color: var(--semantic-active-bg)"
+          />
+          <div
+            class="h-32 rounded animate-pulse"
+            style="background-color: var(--semantic-active-bg)"
+          />
+        </div>
       </div>
 
       <div v-else class="px-4 py-4 space-y-3">

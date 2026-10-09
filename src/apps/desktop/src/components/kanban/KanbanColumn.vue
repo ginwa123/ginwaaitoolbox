@@ -240,6 +240,20 @@ const loadingMoreTasks = computed(
   () => parentItem.value?.columnPagination?.[props.column.id]?.isLoading ?? false,
 )
 
+// True while this column's FIRST page is in flight. Without it the
+// column renders its "No tasks yet" empty state during the fetch —
+// a false statement about the user's data, since the column may well
+// have tasks. The skeleton below gates on this instead.
+//
+// Read from the store's dedicated signal rather than
+// `columnPagination[colId].isLoading`: the ABSENCE of a
+// `columnPagination` entry is the sentinel KanbanView's mount path
+// uses to decide which columns still need fetching, so the entry
+// cannot be pre-created with `isLoading: true`.
+const isFirstPageLoading = computed(() =>
+  workspacesStore.isFirstPageLoading(props.itemId, props.column.id),
+)
+
 // Drives the manual "Load more" button visibility. When the scroller
 // IS scrollable, the auto-trigger handles loading and the button
 // would be redundant. When NOT scrollable (short column), the auto-
@@ -915,10 +929,38 @@ const handleColumnDrop = (event: DragEvent) => {
           </div>
         </template>
       </VirtualScroller>
-      <!-- Empty placeholder — shown only when there are no cards. Gives
-           the drop zone a clear "drop here" affordance. -->
+      <!--
+        First-page skeleton — shown while this column's page-1 fetch is
+        in flight. Mirrors the card's shape (full-width bar at the
+        scroller's `defaultItemHeight` of 100px, same `pb-1` gap) so the
+        column holds its height instead of collapsing to the "No tasks
+        yet" line and snapping open when the page lands.
+
+        Gated on the store's `isFirstPageLoading` rather than the
+        absence of `columnPagination[colId]` — that absence is the
+        sentinel KanbanView's mount path uses to decide which columns
+        still need fetching, so it cannot double as a loading flag.
+      -->
       <div
-        v-if="cardsInColumn.length === 0"
+        v-if="isFirstPageLoading"
+        class="space-y-1"
+        :data-testid="`kanban-column-${column.id}-skeleton`"
+        role="status"
+        aria-label="Loading tasks"
+      >
+        <div v-for="n in 3" :key="n" class="pb-1">
+          <div
+            class="h-[100px] rounded-lg animate-pulse"
+            style="background-color: var(--semantic-active-bg)"
+          />
+        </div>
+      </div>
+      <!-- Empty placeholder — shown only when there are no cards. Gives
+           the drop zone a clear "drop here" affordance. Suppressed while
+           the first page is in flight so the skeleton is not immediately
+           replaced by a false "No tasks yet". -->
+      <div
+        v-else-if="cardsInColumn.length === 0"
         class="text-dense text-center py-6"
         style="color: var(--semantic-text-dim)"
         :data-testid="`kanban-column-${column.id}-empty`"

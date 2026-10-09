@@ -223,14 +223,24 @@ defineExpose({ startCreate })
       </button>
     </div>
 
-    <!-- Loading state -->
-    <div v-else-if="isLoading" class="flex-1 flex items-center justify-center">
-      <div class="flex items-center gap-3">
+    <!-- Loading state — skeleton holds the detail pane's height instead
+         of collapsing it to one centered row. -->
+    <div
+      v-else-if="isLoading"
+      class="flex-1 overflow-y-auto p-4"
+      data-testid="memory-detail-skeleton"
+    >
+      <div class="space-y-3">
         <div
-          class="w-5 h-5 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-violet); border-top-color: transparent"
-        ></div>
-        <span style="color: var(--semantic-text-muted)">Loading...</span>
+          class="h-6 w-1/2 rounded animate-pulse"
+          style="background-color: var(--semantic-active-bg)"
+        />
+        <div
+          v-for="w in ['100%', '96%', '88%', '92%', '70%']"
+          :key="w"
+          class="h-4 rounded animate-pulse"
+          :style="{ width: w, backgroundColor: 'var(--semantic-active-bg)' }"
+        />
       </div>
     </div>
 

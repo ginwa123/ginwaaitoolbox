@@ -292,6 +292,15 @@ const elements = computed<DesignElementApi[]>(() => {
   return stored.filter((e) => e.page_id === activePageId.value)
 })
 
+// True while the active page's element fetch is in flight. Without it
+// the canvas renders "Click + Element to add your first element" during
+// the fetch — a false statement about the page's data.
+const isElementsLoading = computed(() => {
+  const itemId = effectiveItemId.value
+  if (!itemId || !activePageId.value) return false
+  return workspacesStore.isDesignElementsLoading(itemId, activePageId.value)
+})
+
 // ─── Selection state ───────────────────────────────────────────────────
 //
 // Multi-select (Figma model). Empty Set = nothing selected. Plain
@@ -2211,8 +2220,27 @@ onUpdated(() => {
                 stroke-width="1"
               />
             </svg>
+            <!-- Element-fetch skeleton — holds the canvas's height while
+                 the page's elements load, so the "Click + Element" empty
+                 state does not flash first. -->
             <div
-              v-if="elements.length === 0"
+              v-if="isElementsLoading"
+              class="absolute inset-0 flex items-center justify-center pointer-events-none"
+              data-testid="design-canvas-skeleton"
+              role="status"
+              aria-label="Loading elements"
+            >
+              <div class="w-full max-w-md space-y-3 px-8">
+                <div
+                  v-for="w in ['100%', '72%', '88%', '60%']"
+                  :key="w"
+                  class="h-10 rounded animate-pulse"
+                  :style="{ width: w, backgroundColor: 'var(--semantic-active-bg)' }"
+                ></div>
+              </div>
+            </div>
+            <div
+              v-else-if="elements.length === 0"
               class="absolute inset-0 flex items-center justify-center text-body pointer-events-none"
               style="color: var(--semantic-text-dim)"
               data-testid="design-canvas-empty"

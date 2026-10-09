@@ -17,6 +17,7 @@
  * substitutes a generic failure of its own.
  */
 import EmptyState from './EmptyState.vue'
+import SettingsSkeleton from './SettingsSkeleton.vue'
 import type { WebSearchProviderRow } from './webSearchProviders'
 
 const props = withDefaults(
@@ -24,8 +25,10 @@ const props = withDefaults(
     modelValue: WebSearchProviderRow[]
     /** Per-row message keyed by `WebSearchProviderRow.id`. */
     errors?: Record<string, string>
+    /** True while the parent's config fetch is in flight. */
+    loading?: boolean
   }>(),
-  { errors: () => ({}) },
+  { errors: () => ({}), loading: false },
 )
 
 const emit = defineEmits<{
@@ -83,8 +86,10 @@ function removeRow(id: string) {
       </button>
     </div>
 
+    <SettingsSkeleton v-if="loading" test-id="web-search-loading-skeleton" />
+
     <EmptyState
-      v-if="modelValue.length === 0"
+      v-else-if="modelValue.length === 0"
       glyph="⌕"
       title="No web search providers yet"
       description="Add a provider to let the agent search the web — paste the host and the curl command from that provider's docs."
