@@ -168,12 +168,24 @@ def test_present_files_html_renders_inline_in_chatview(
             created_at=ts[2],
         )
 
-    # 4. Open chatview, expand the (collapsed-by-default) card.
+    # 4. Open chatview and make sure the card is expanded.
+    #
+    # The card is EXPANDED BY DEFAULT — "presented files are the payload,
+    # not metadata" (PresentFiles.vue, since #834). Clicking the header
+    # therefore COLLAPSES it, which is what this test used to do while it
+    # still assumed a collapsed default: the iframe it then waited for had
+    # been in the DOM before the click and was gone after it. Read
+    # `aria-expanded` and only click when it is actually closed, so the
+    # test survives either default.
     open_chatview(page, h, workspace_id, session_id)
     page.wait_for_selector('[data-testid="present-files-card"]', timeout=15000)
     card = page.locator('[data-testid="present-files-card"]').first
     card.scroll_into_view_if_needed()
-    card.locator('[role="button"]').first.click()
+    header = card.locator('[role="button"]').first
+    if header.get_attribute("aria-expanded") == "false":
+        header.click()
+    # The expanded body carries the file rows.
+    page.wait_for_selector('[data-testid="present-files-row-0"]', timeout=15000)
 
     # 5. The inline iframe appears — via srcdoc, never src navigation.
     frame_el = page.locator('[data-testid="present-files-inline-html-0"] iframe')
