@@ -29,6 +29,17 @@ withDefaults(
     showPin?: boolean
     /** Current pinned state — flips the pin row label. */
     isPinned?: boolean
+    /**
+     * Show "Add task" for a workspace-item row. The row's `+` is
+     * hover-reveal only, so the menu is the always-available path to the
+     * same action — hover is undiscoverable and does nothing on touch.
+     */
+    showAddTask?: boolean
+    /**
+     * Show "Delete project" for a workspace-item row. Same reason as
+     * `showAddTask`: the row's `×` is hover-reveal only.
+     */
+    showDeleteItem?: boolean
   }>(),
   { showChat: true },
 )
@@ -40,6 +51,8 @@ const emit = defineEmits<{
   openFile: []
   settings: []
   pin: []
+  addTask: []
+  deleteItem: []
 }>()
 </script>
 
@@ -124,6 +137,31 @@ const emit = defineEmits<{
         @click="emit('stop')"
       >
         <span aria-hidden="true" class="mr-2 opacity-70">&#9632;</span>Stop agent
+      </button>
+      <!-- Workspace-item row actions. The row's own `+` / `×` are
+           hover-reveal only (they live inside the padded button so the
+           row's trailing edge matches every other row), so these two
+           rows are the always-available path to the same actions. -->
+      <button
+        v-if="showAddTask"
+        type="button"
+        role="menuitem"
+        data-testid="add-task-menu-item"
+        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
+        @click="emit('addTask')"
+      >
+        <span aria-hidden="true" class="mr-2 opacity-70">&#43;</span>Add task
+      </button>
+      <button
+        v-if="showDeleteItem"
+        type="button"
+        role="menuitem"
+        data-testid="delete-item-menu-item"
+        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
+        style="color: var(--color-red)"
+        @click="emit('deleteItem')"
+      >
+        <span aria-hidden="true" class="mr-2 opacity-70">&#120;</span>Delete project
       </button>
       <button
         v-if="showSettings"
