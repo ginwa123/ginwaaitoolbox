@@ -226,22 +226,51 @@ def _assert_chat_layout_with_viewer(page) -> None:
 
 
 def _app_url(
-    h: FunctionalHarness, cwd: Path, *, line: int | None = None
+    h: FunctionalHarness,
+    cwd: Path,
+    *,
+    line: int | None = None,
+    session_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> str:
-    """The readable code-editor deep link: view + file + cwd.
+    """The readable code-editor deep link, in the shape the app writes.
 
-    ``cwd`` is the legacy-style explicit working directory; the readable
-    links written by ``useCodeEditorSession.syncUrl`` omit it and resolve
-    the cwd from the surrounding workspace/chat context instead.
+    ``useCodeEditorSession.syncUrl`` does ``router.replace({ path:
+    route.path, query })`` — it KEEPS the current path and only merges the
+    editor keys. So a file opened from inside a chat lands on
+    ``/app/{ws}/chat/{session}?view=code-editor&file=...``, and the ``cwd``
+    is deliberately NOT in the URL: it resolves from the surrounding
+    workspace/chat context on restore.
+
+    The older bare ``/app?view=code-editor&file=...&cwd=...`` shape is
+    dead — nothing writes it any more, and on a bare ``/app`` path there
+    is no chat/task context, so ``rightSidebarCwd`` resolves to ``''``
+    and ``restoreFromUrl`` takes its ``'No working directory'`` branch.
+    That is why this helper takes the chat coordinates and builds the
+    path form instead.
+
+    Pass ``session_id``/``workspace_id`` for the in-chat shape. Omit both
+    for the no-chat shape (bare ``/app``), which has no surrounding
+    context to resolve the cwd from — so THAT branch still needs the
+    explicit ``cwd`` query param, and renders through AppLayout's
+    full-surface overlay.
     """
     query: dict[str, str] = {
         "view": "code-editor",
         "file": FILE_NAME,
-        "cwd": str(cwd),
     }
     if line is not None:
         query["line"] = str(line)
-    return f"http://127.0.0.1:{h.port}/app?{urlencode(query)}"
+    if session_id and workspace_id:
+        # In-chat: the cwd resolves from the chat context, so it stays
+        # out of the URL exactly as `syncUrl` writes it.
+        base = f"/app/{workspace_id}/chat/{session_id}"
+    else:
+        # No chat on screen: nothing to resolve the cwd from, so it must
+        # travel explicitly.
+        base = "/app"
+        query["cwd"] = str(cwd)
+    return f"http://127.0.0.1:{h.port}{base}?{urlencode(query)}"
 
 
 def _collect_errors(page) -> list[str]:
@@ -399,12 +428,18 @@ def test_right_sidebar_survives_the_code_viewer(prod_harness: FunctionalHarness,
             timeout=15000, state="visible"
         )
 
-        # The user's gesture: open a file. The Explorer needs the chat cwd,
-        # which only exists after a message today (see the plan doc), so the
-        # file is opened through the same entry point the Explorer uses with
-        # an explicit cwd — the session, the viewer and the sidebar are all
-        # the same objects either way.
-        page.goto(_app_url(h, cwd), wait_until="load", timeout=30000)
+        # The user's gesture: open a file. This is the URL
+        # `useCodeEditorSession.syncUrl` actually writes from inside a
+        # chat — the chat path is KEPT and only the editor keys are
+        # merged, with no `cwd` (it resolves from the chat context).
+        # Navigating there directly is the same object graph the
+        # Explorer's own click produces: same session, same viewer,
+        # same sidebar.
+        page.goto(
+            _app_url(h, cwd, session_id=session_id, workspace_id=ws_id),
+            wait_until="load",
+            timeout=30000,
+        )
 
         _assert_chat_layout_with_viewer(page)
         _assert_no_module_resolution_error(errors)
