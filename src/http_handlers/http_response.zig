@@ -693,6 +693,20 @@ pub fn makeGitStageResponse(allocator: std.mem.Allocator, response: GitStageResp
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+// ─── Git commit-create types ─────────────────────────────────────────────
+// Wire shape for `POST /api/git/commit/create?path=<repo>&message=<msg>`.
+// Answers the new HEAD SHA so the caller can refresh history without
+// another round-trip.
+pub const GitCommitCreateResponse = struct {
+    success: bool,
+    message: []const u8,
+    commit_sha: []const u8 = "",
+};
+
+pub fn makeGitCommitCreateResponse(allocator: std.mem.Allocator, response: GitCommitCreateResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 // ─── Git worktree info types ───────────────────────────────────────────────
 // Wire shape for `GET /api/git/worktree/info?path=<worktree>[&base=<branch>]`
 // consumed by the desktop app's CreatePrDialog. Mirrors the response

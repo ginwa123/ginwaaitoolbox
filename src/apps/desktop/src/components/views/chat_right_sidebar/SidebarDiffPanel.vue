@@ -894,6 +894,40 @@ const unstageFile = async (file: api.GitFileChange) => {
   }
 }
 
+// Commit box state (Files tab). The message is transient text like the
+// file filter — it lives in a ref, not in the URL, because Back/Forward
+// must never step through keystrokes.
+const commitMessage = ref('')
+const isCommitting = ref(false)
+const commitError = ref('')
+// `git commit` commits the index, so the button needs staged files AND a
+// message. Untracked-only worktrees stay disabled with a hint instead of
+// failing server-side.
+const canCommit = computed(
+  () =>
+    commitMessage.value.trim().length > 0 &&
+    stagedFiles.value.length > 0 &&
+    !isCommitting.value &&
+    !isStaging.value,
+)
+
+const commitStaged = async () => {
+  if (!props.cwd || !canCommit.value) return
+  isCommitting.value = true
+  commitError.value = ''
+  try {
+    await api.commitGitChanges(props.cwd, commitMessage.value.trim())
+    commitMessage.value = ''
+    await loadGitStatus()
+    await loadDiff()
+  } catch (err) {
+    console.error('Failed to commit staged changes:', err)
+    commitError.value = serverErrorMessage(err, 'Failed to create commit')
+  } finally {
+    isCommitting.value = false
+  }
+}
+
 // PR-binding sync: tab/conflict state follows the [cwd, prUrl] binding.
 // Prev-value guard on update — same body the watcher ran (no immediate
 // run; mount is covered by the onMounted loadTab below).
@@ -1600,6 +1634,60 @@ defineExpose({
         </div>
 
         <template v-else>
+          <!-- Commit box: message input + Commit button for the staged
+               index. Sits above the file groups (VSCode order) so the
+               message is typed where the changes are listed. -->
+          <div class="px-2 pt-2">
+            <div
+              class="rounded-md p-2 flex flex-col gap-2"
+              style="background-color: var(--color-bg-m1); border: 1px solid var(--color-border)"
+            >
+              <textarea
+                :value="commitMessage"
+                rows="2"
+                placeholder="Commit message…"
+                class="w-full bg-transparent outline-none text-dense resize-y min-h-8"
+                style="color: var(--semantic-text)"
+                data-testid="sidebar-commit-message"
+                @input="commitMessage = ($event.target as HTMLTextAreaElement).value"
+                @keydown.ctrl.enter="commitStaged"
+                @keydown.meta.enter="commitStaged"
+              />
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  class="px-3 h-7 text-dense rounded-md font-medium transition-opacity disabled:opacity-40"
+                  style="background: var(--color-green); color: var(--color-bg)"
+                  data-testid="sidebar-commit-button"
+                  :disabled="!canCommit"
+                  :title="
+                    stagedFiles.length === 0
+                      ? 'Stage files first — commit only takes what is staged'
+                      : 'Commit staged changes (Ctrl+Enter)'
+                  "
+                  @click="commitStaged"
+                >
+                  {{ isCommitting ? 'Committing…' : 'Commit' }}
+                </button>
+                <span
+                  v-if="stagedFiles.length === 0"
+                  class="text-micro truncate"
+                  style="color: var(--semantic-text-dim)"
+                  data-testid="sidebar-commit-hint"
+                >
+                  Stage files to enable commit
+                </span>
+              </div>
+              <p
+                v-if="commitError"
+                class="text-dense break-words"
+                style="color: var(--semantic-error); white-space: pre-wrap"
+                data-testid="sidebar-commit-error"
+              >
+                {{ commitError }}
+              </p>
+            </div>
+          </div>
           <div v-if="showWorktreeFilter" class="px-2 pt-2">
             <label
               class="flex items-center gap-2 h-8 px-2 rounded-md"
