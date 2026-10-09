@@ -20,6 +20,7 @@ import ProjectsList from '../components/workspace/ProjectsList.vue'
 import DocumentsList from '../components/workspace/DocumentsList.vue'
 import { makeLocalStorageStub } from './helpers'
 import { useWorkspacesStore } from '../stores/workspaces'
+import type { Workspace } from '../stores/workspaces'
 import { useDocumentsStore } from '../stores/documents'
 
 const listDocuments = vi.hoisted(() => vi.fn())
@@ -80,7 +81,7 @@ describe('ProjectsList — loading skeleton', () => {
     })
   })
 
-  function mountProjects(workspace: unknown) {
+  function mountProjects(workspace: Workspace | null) {
     return mount(ProjectsList, {
       props: { workspace, activeWorkspaceItemId: null },
       global: {
@@ -88,6 +89,10 @@ describe('ProjectsList — loading skeleton', () => {
         stubs: { WorkspaceItem: true },
       },
     })
+  }
+
+  function makeWorkspace(items: Workspace['items'] = []): Workspace {
+    return { id: 'ws_1', name: 'agentic coding', icon: '📂', expanded: true, items }
   }
 
   it('shows skeleton while the workspace tree loads, hides empty states', async () => {
@@ -104,7 +109,7 @@ describe('ProjectsList — loading skeleton', () => {
   it('shows skeleton for an empty workspace while loading, empty after', async () => {
     const ws = useWorkspacesStore()
     ws.isLoading = true
-    const wrapper = mountProjects({ id: 'ws_1', items: [] })
+    const wrapper = mountProjects(makeWorkspace())
     await nextTick()
     expect(wrapper.find('[data-testid="projects-loading-skeleton"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="projects-empty"]').exists()).toBe(false)
@@ -119,10 +124,9 @@ describe('ProjectsList — loading skeleton', () => {
   it('hides skeleton once items arrive', async () => {
     const ws = useWorkspacesStore()
     ws.isLoading = false
-    const wrapper = mountProjects({
-      id: 'ws_1',
-      items: [{ id: 'item_a', name: 'pabrik' }],
-    })
+    const wrapper = mountProjects(
+      makeWorkspace([{ id: 'item_a', name: 'pabrik', item_type: 'agent' }]),
+    )
     await nextTick()
     expect(wrapper.find('[data-testid="projects-loading-skeleton"]').exists()).toBe(false)
     wrapper.unmount()
