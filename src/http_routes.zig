@@ -310,6 +310,11 @@ fn registerGitRoutes(authed: *Group) !void {
     try authed.get("/api/git/file/read", ai_mod.http_handlers.gitFileReadHandler);
     try authed.post("/api/git/stage", ai_mod.http_handlers.gitStageHandler);
     try authed.post("/api/git/unstage", ai_mod.http_handlers.gitUnstageHandler);
+    // Commit the staged index. Literal `/create` suffix (not a `:param`
+    // sibling of `/api/git/commit`) so matchRoute cannot confuse it with
+    // the read-only GET /api/git/commit detail route registered below —
+    // the router walks registration order.
+    try authed.post("/api/git/commit/create", ai_mod.http_handlers.gitCommitCreateHandler);
     try authed.get("/api/git/worktree/info", ai_mod.http_handlers.gitWorktreeInfoHandler);
     try authed.get("/api/git/branches", ai_mod.http_handlers.gitBranchesListHandler);
     try authed.get("/api/git/commits", ai_mod.http_handlers.gitCommitsListHandler);

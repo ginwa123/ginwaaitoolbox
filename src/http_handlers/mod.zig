@@ -315,6 +315,7 @@ pub const gitFileReadHandler = @import("git_file_diff.zig").gitFileReadHandler;
 pub const gitFileDiffsHandler = @import("git_file_diffs.zig").gitFileDiffsHandler;
 pub const gitStageHandler = @import("git_file_stage.zig").gitStageHandler;
 pub const gitUnstageHandler = @import("git_file_stage.zig").gitUnstageHandler;
+pub const gitCommitCreateHandler = @import("git_commit.zig").gitCommitHandler;
 pub const gitWorktreeInfoHandler = @import("git_worktree_info.zig").gitWorktreeInfoHandler;
 pub const gitBranchesListHandler = @import("git_branches_list.zig").gitBranchesListHandler;
 pub const gitCommitsListHandler = @import("git_commits.zig").gitCommitsListHandler;

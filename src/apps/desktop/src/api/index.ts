@@ -5265,6 +5265,25 @@ export async function unstageGitFiles(cwd: string, files: string[]): Promise<Git
   )
 }
 
+// Git commit API — commits the staged index with a message typed in the
+// Files tab's commit box (SidebarDiffPanel). Answers the new HEAD SHA so
+// the panel can refresh history without another round-trip.
+export interface GitCommitCreateResponse {
+  success: boolean
+  message: string
+  commit_sha: string
+}
+
+export async function commitGitChanges(
+  cwd: string,
+  message: string,
+): Promise<GitCommitCreateResponse> {
+  return await apiFetch<GitCommitCreateResponse>(
+    `/git/commit/create?path=${encodeURIComponent(cwd)}&message=${encodeURIComponent(message)}`,
+    { method: 'POST' },
+  )
+}
+
 // `uploadTaskAttachment` REMOVED 2026-08-06 (kanban-image-urls-column
 // plan). Task images now live inline on `workspace_item_tasks
 // .image_urls` as `||`-delimited base64 data URLs — no upload path,
