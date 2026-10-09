@@ -350,6 +350,19 @@ pub const App = struct {
             &.{ session_id, copy_session_name, copy_cwd, copy_profile, effective_auto_retry, copy_user_id },
         );
 
+        // `INSERT OR IGNORE` is a no-op when the row already exists — which
+        // is EVERY normal send into an existing chat. Read the change count
+        // immediately (per-connection state, and `exec` holds the mutex for
+        // the whole statement) so the `session_created` broadcast below only
+        // fires for a row that was actually inserted.
+        //
+        // Why it matters: the frontend's ChatsList treats `session_created`
+        // as "the list changed" and re-fetches page 1
+        // (`GET /llm/session?sort_by=updated_at&direction=desc`). Emitting it
+        // on every send made the sidebar refetch its whole list each time the
+        // user sent a message, for a row that was already there.
+        const session_row_inserted = self.db.changes() > 0;
+
         // Claim an ownerless row when the INSERT OR IGNORE above no-opped
         // on a pre-existing ownerless row (a handler that wrote the row
         // without `user_id` before this task ran). Only claims ownerless
@@ -363,7 +376,9 @@ pub const App = struct {
             ) catch {};
         }
 
-        // Broadcast session created event
+        // Broadcast session created event — only when the INSERT above
+        // actually created the row. See `session_row_inserted`.
+        if (!session_row_inserted) return;
         try agentic_loop_mod.on_event_sent.onEventSendSessions(allocator, .{
             .action = "created",
             .id = session_id,

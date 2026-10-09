@@ -112,6 +112,7 @@ const read_file_raw_content_test = @import("read_file_raw_content_test.zig");
 const responses_tool_output_sanitize_test = @import("responses_tool_output_sanitize_test.zig");
 const server_port_bind_test = @import("server_port_bind_test.zig");
 const session_auto_name_retry_test = @import("session_auto_name_retry_test.zig");
+const session_created_sse_test = @import("session_created_sse_test.zig");
 const session_detail_metadata_test = @import("session_detail_metadata_test.zig");
 const session_human_touched_at_test = @import("session_human_touched_at_test.zig");
 const session_list_workspace_test = @import("session_list_workspace_test.zig");
@@ -247,6 +248,7 @@ pub const suites = .{
     responses_tool_output_sanitize_test,
     server_port_bind_test,
     session_auto_name_retry_test,
+    session_created_sse_test,
     session_detail_metadata_test,
     session_human_touched_at_test,
     session_list_workspace_test,
