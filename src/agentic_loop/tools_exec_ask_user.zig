@@ -1,10 +1,20 @@
 //! `ask_user` exec adapter.
 //!
-//! Parses the arguments, applies the no-human gate, writes the pending row
+//! Parses the arguments, applies the sub-agent gate, writes the pending row
 //! and returns the `"status":"pending"` payload **immediately**. It
 //! never blocks, never sleeps, and never touches `llm_history` — Phase 3 of
 //! `handle_tool` writes this result into the tool row, and the workflow then
 //! breaks the turn (see `workflow.zig`).
+//!
+//! There is deliberately NO "is a human around?" gate. `ask_user` used to
+//! consult `sessions.is_auto_retry_until_stop` as a proxy for human
+//! availability, which silently disabled asking for every long-horizon
+//! kanban task — the exact workload that flag exists to support. The two
+//! concerns are orthogonal: that flag answers "should this run survive
+//! repeated API failures?", not "can anyone answer a question?". A pending
+//! question is safe to leave behind regardless, because the workflow breaks
+//! the turn and deletes the worker, and this module has no timeout by
+//! design — nothing is held open.
 //!
 //! The human's answer arrives much later and rewrites that same row via
 //! `POST /api/llm/session/:id/answer` → `ask_user_pending.rewriteToolResultRow`.
@@ -52,11 +62,10 @@ pub fn execAskUser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         return errorResult(ctx, tc, ask_user_mod.validationErrorMessage(err));
     };
 
-    // ─── Gate: nobody can answer ─────────────────────────────────────────
+    // ─── Gate: a sub-agent has no answer surface ────────────────────────
     //
-    // Both cases return `unavailable` WITHOUT writing a row, so the model
-    // decides in the same run and the run completes. A dangling question
-    // would be worse than a stated assumption.
+    // Returns `unavailable` WITHOUT writing a row, so the model decides in
+    // the same run and the run completes.
     if (ctx.is_sub_agent) {
         // Unreachable in practice — `spawn_sub_agent` rejects `ask_user` at
         // parse time and `tool_eligibility` strips it for sub-agent sessions.
@@ -66,9 +75,6 @@ pub fn execAskUser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
             "[ASK_USER] sub-agent session {s} called ask_user — returning unavailable (should have been stripped)",
             .{ctx.session_id},
         );
-        return unavailableResult(ctx, tc);
-    }
-    if (pending.isUnattended(ctx.allocator, ctx.db, ctx.session_id)) {
         return unavailableResult(ctx, tc);
     }
 
@@ -279,7 +285,12 @@ test "execAskUser: unparseable arguments produce a success=false envelope" {
     try testing.expect(!pending.hasPendingQuestion(a, &s.db, "sess_1"));
 }
 
-test "execAskUser: unattended session returns unavailable and writes NO row" {
+test "execAskUser: an unattended (long-horizon) session CAN still ask" {
+    // Regression guard for the decoupling. `is_auto_retry_until_stop` answers
+    // "should this run survive repeated API failures?" — it says nothing about
+    // whether a human can answer. Gating `ask_user` on it silently disabled
+    // asking for every long-horizon kanban task, which is the exact workload
+    // the flag exists to support.
     const a = testing.allocator;
     var s = try setupDb();
     defer s.db.deinit();
@@ -293,12 +304,11 @@ test "execAskUser: unattended session returns unavailable and writes NO row" {
     const res = try execAskUser(c, tc);
     defer res.deinit(a);
 
-    try testing.expect(std.mem.indexOf(u8, res.output, "\"status\":\"unavailable\"") != null);
-    // Successful call, degraded outcome — never `<error>`.
+    // The question is recorded and the card goes interactive.
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"status\":\"pending\"") != null);
     try testing.expect(std.mem.indexOf(u8, res.output, "\"success\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, res.output, "No human is available") != null);
-    // The crucial part: a scheduled run leaves nothing dangling.
-    try testing.expect(!pending.hasPendingQuestion(a, &s.db, "sess_1"));
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"question_id\":\"q_") != null);
+    try testing.expect(pending.hasPendingQuestion(a, &s.db, "sess_1"));
 }
 
 test "execAskUser: sub-agent returns unavailable and writes NO row" {

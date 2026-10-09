@@ -289,29 +289,6 @@ pub fn hasPendingQuestion(
     return false;
 }
 
-/// True when the session opted into unattended mode (Migration 063).
-///
-/// Unattended means "do not ask": the `ask_user` tool returns `unavailable`
-/// immediately so the model decides in the SAME run and the run completes.
-/// A scheduled/routine job must never leave a question nobody will answer.
-pub fn isUnattended(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) bool {
-    var rows = db.query(
-        allocator,
-        "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ? LIMIT 1",
-        &.{session_id},
-    ) catch return false;
-    defer rows.deinit();
-    if (rows.next() catch return false) |row| {
-        defer row.deinit(allocator);
-        return std.mem.eql(u8, row.values[0], "1");
-    }
-    return false;
-}
-
 /// Settle every pending question for a session as `abandoned`, rewriting each
 /// question's tool-result row so the model reads "the human moved on" instead
 /// of `<status>pending</status>`.
