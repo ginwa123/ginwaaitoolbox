@@ -82,7 +82,8 @@ describe('sseBus onStateChange — subscribers survive a late-created client', (
 
     off?.()
     fire(client, 'reconnecting')
-    expect(seen).toEqual(['open'], 'unsubscribe must stop delivery')
+    // toEqual takes one argument; the message belongs in its own assert.
+    expect(seen).toEqual(['open'])
   })
 
   it('keeps delivering across a client swap (leader handover)', () => {
