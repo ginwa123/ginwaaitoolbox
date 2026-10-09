@@ -104,6 +104,24 @@ export interface SseBus {
    * a window that holds its own connection never misses a delivery.
    */
   readonly onResync?: (cb: (reason: string) => void) => () => void
+  /**
+   * Subscribe to SSE connection-state transitions
+   * (`connecting | open | reconnecting | closed | failed`).
+   *
+   * Prefer this over reaching for `__getSseBusGlobalClient()`: with
+   * cross-tab sharing the underlying `SseClient` is created INSIDE the
+   * `onBecomeLeader` callback, so it does not exist yet when a
+   * component's `onMounted` runs. A subscriber registered on the client
+   * at that moment is silently dropped (`?.` short-circuits on null)
+   * and never sees the first `open` - which is exactly how `App.vue`'s
+   * `fetchInitialWorkers` stopped firing and the sidebar lost its
+   * processing spinners.
+   *
+   * Bus-level subscribers are held for the bus's lifetime and replayed
+   * onto every client the bus opens, so they survive leader handover
+   * and reconnects. Returns an unsubscribe function.
+   */
+  readonly onStateChange?: (cb: (s: SseState) => void) => () => void
 }
 
 export type TabSharingRole = 'off' | 'leader' | 'follower'
@@ -173,6 +191,28 @@ let _globalClient: SseClient | null = null
 // this handle, replacing the client would leak the old listener
 // (each `onStateChange` call adds to the array without bound).
 let _stateUnsub: (() => void) | null = null
+
+// Bus-level connection-state subscribers. Held for the bus's LIFETIME
+// (not per client) and replayed onto every client `openClient` creates,
+// so a component that subscribes in `onMounted` still sees the first
+// `open` even though the client does not exist yet when tab sharing
+// defers its creation to the `onBecomeLeader` callback.
+const _stateSubs = new Set<(s: SseState) => void>()
+
+// Fan a connection-state transition out to every bus-level subscriber.
+// Module-scoped (not inside `installSseBus`) because both the
+// `openClient` closure AND the module-level `__setSseBusGlobalClient`
+// wire client listeners — a closure-local helper would be invisible to
+// the latter, which is the leader-handover path.
+function notifyStateSubs(s: SseState): void {
+  for (const cb of _stateSubs) {
+    try {
+      cb(s)
+    } catch (err) {
+      console.error('[sseBus] onStateChange subscriber threw:', err)
+    }
+  }
+}
 
 // Module-level handle to the cross-tab coordinator when tab sharing is active
 // (null on the legacy solo path and in tests that do not opt in). `close()`
@@ -279,6 +319,7 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
       state.value = s
       // Followers show the leader's state (the shared connection is theirs too).
       _tabChannel?.broadcastState(s)
+      notifyStateSubs(s)
     })
     _globalClient = client
     createdClient = client
@@ -290,6 +331,10 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
       _stateUnsub()
       _stateUnsub = null
     }
+    // Bus-level subscribers die with the bus: a later `installSseBus`
+    // must not replay transitions into callbacks registered against
+    // the previous instance.
+    _stateSubs.clear()
     const c = _globalClient
     _globalClient = null
     if (c) {
@@ -372,6 +417,13 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
         ;(listeners[type] as Set<Listener<K>>).delete(cb)
       }
     },
+    onStateChange(cb: (s: SseState) => void): () => void {
+      _stateSubs.add(cb)
+      return () => {
+        _stateSubs.delete(cb)
+      }
+    },
+
     off<K extends keyof SseEventMap>(type: K, cb: Listener<K>): void {
       ;(listeners[type] as Set<Listener<K>>).delete(cb)
     },
@@ -527,6 +579,7 @@ export function __setSseBusGlobalClient(client: SseClient): void {
     if (_instance) {
       _instance.state.value = s
     }
+    notifyStateSubs(s)
   })
   // Update the public ShallowRef so observers see the new initial
   // state synchronously — they shouldn't have to wait for the new
