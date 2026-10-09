@@ -44,15 +44,16 @@ interface Props {
    * their empty states — "No knowledge files yet." for an agent that
    * has five. This prop lets them hold a skeleton instead.
    *
-   * Distinct from the local `loading` ref, which tracks AgentView's
-   * OWN tool-registry fetch.
+   * Named `parentLoading`, not `loading`: the component already owns
+   * a local `loading` ref for its OWN tool-registry fetch, and a
+   * same-named prop is a `vue/no-dupe-keys` collision.
    */
-  loading?: boolean
+  parentLoading?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   systemPrompts: () => [],
-  loading: false,
+  parentLoading: false,
 })
 
 const emit = defineEmits<{
@@ -483,7 +484,7 @@ function handleClearAllVisible() {
 
         <!-- Parent-fetch skeleton — same rationale as the knowledge panel. -->
         <div
-          v-if="props.loading"
+          v-if="props.parentLoading"
           class="space-y-1.5"
           data-testid="agent-system-prompt-skeleton"
           role="status"
@@ -596,7 +597,7 @@ function handleClearAllVisible() {
              instant `knowledge.length === 0`, which on a cold load is a
              false "No knowledge files yet." -->
         <div
-          v-if="props.loading"
+          v-if="props.parentLoading"
           class="space-y-1.5 mt-2"
           data-testid="agent-knowledge-skeleton"
           role="status"

@@ -872,7 +872,7 @@ function sortedColumns() {
           :knowledge="kanbanKnowledge"
           :tools="kanbanTools"
           :system-prompts="kanbanSystemPrompts"
-          :loading="kanbanAgentLoading"
+          :parent-loading="kanbanAgentLoading"
           @add-knowledge="handleKanbanAddKnowledge"
           @remove-knowledge="handleKanbanRemoveKnowledge"
           @edit-knowledge="handleKanbanEditKnowledge"

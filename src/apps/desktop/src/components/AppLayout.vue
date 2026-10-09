@@ -3378,7 +3378,7 @@ defineExpose({
         :knowledge="agentKnowledge"
         :tools="agentTools"
         :system-prompts="agentSystemPrompts"
-        :loading="agentDataLoading"
+        :parent-loading="agentDataLoading"
         @add-knowledge="handleAgentAddKnowledge"
         @remove-knowledge="handleAgentRemoveKnowledge"
         @edit-knowledge="handleAgentEditKnowledge"
