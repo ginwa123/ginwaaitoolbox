@@ -137,6 +137,12 @@ const emit = defineEmits<{
   // which this component can't see. <KanbanColumn> resolves it and
   // re-emits the existing `moveTask` shape its host already handles.
   moveTaskToColumn: [payload: { taskId: string; columnId: string }]
+  // Context-menu "Run agent". Starts a worker on this task's existing
+  // session without queueing a new user message — the same
+  // `startAgentOnTask` call the detail dialog's caret menu makes, just
+  // reachable without opening the dialog. The host (KanbanView) owns
+  // the API call and the error surface; the card only reports intent.
+  runAgent: [payload: { taskId: string }]
 }>()
 
 // Shared logic — event handlers, drop indicator.
@@ -312,6 +318,18 @@ const stopAgentFromMenu = async () => {
   } finally {
     isStoppingAgent.value = false
   }
+}
+
+// Context-menu "Run agent" — the inverse of the row above. Emits up
+// rather than calling the store itself: the card is also mounted by
+// hosts that have no workspace/item context to build the endpoint
+// path with, and the API call belongs wherever that context lives
+// (KanbanView). The menu row is hidden while a worker runs, so the
+// backend's 409 is a race guard rather than the primary UX.
+const runAgentFromMenu = () => {
+  closeTaskMenu()
+  if (isAgentRunning.value) return
+  emit('runAgent', { taskId: props.task.id })
 }
 
 // (card-ux-v3 — Jira-style priority-bar pattern). A thin 3px colored
@@ -932,6 +950,7 @@ onUpdated(() => {
       @open-chat="openTaskMenuInBackground"
       @open-details="openTaskDetailMenuInBackground"
       @stop="stopAgentFromMenu"
+      @run-agent="runAgentFromMenu"
       @move-to-column="moveTaskFromMenu"
     />
     <GitBranchMenu

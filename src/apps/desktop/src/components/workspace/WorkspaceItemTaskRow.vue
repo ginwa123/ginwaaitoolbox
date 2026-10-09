@@ -54,6 +54,8 @@ import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 // stays in sync with the chat card across session switches.
 import { useAgentErrorStore } from '../../stores/agentError'
 import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
+import { useWorkspacesStore } from '../../stores/workspaces'
+import { useNotificationStore } from '../../stores/notifications'
 
 // Re-inject processingState from App.vue (same key WorkspaceItem and
 // ChatsList consume). Keyed by task.id == session_id. Reading it
@@ -66,6 +68,11 @@ const processingState = inject<Ref<Record<string, boolean>>>(
 )
 
 const props = defineProps<TaskComponentProps>()
+
+// A worker is running on this task. Same key the card's spinner and
+// the detail dialog's Start-agent button read; gates the "Run agent"
+// menu row (the backend answers 409 while a worker is in flight).
+const isBusy = computed(() => processingState.value[props.task.id] === true)
 
 // URL-driven "what is the main content area showing?". Active styling
 // for this task row derives from the URL
@@ -149,6 +156,51 @@ const pinTaskFromMenu = () => {
   emit('pinTask', props.workspaceId, props.itemId, props.task.id, !props.task.is_pinned)
 }
 
+// Right-click "Run agent" — starts a worker on this task's existing
+// session without queueing a new user message (the same
+// `startAgentOnTask` the kanban card and the detail dialog use).
+//
+// Unlike the kanban card this row calls the store directly instead of
+// emitting: the sidebar chain is WorkspaceItemTaskRow → WorkspaceItem
+// → ProjectsList → Sidebar, and threading a fourth pass-through event
+// through three components that add no context of their own is more
+// indirection than the call is worth. The row already holds the
+// workspaceId / itemId props the endpoint path needs.
+const workspacesStore = useWorkspacesStore()
+const isRunningAgent = ref(false)
+
+const runAgentFromMenu = async () => {
+  closeTaskMenu()
+  if (isBusy.value || isRunningAgent.value) return
+  isRunningAgent.value = true
+  try {
+    const result = await workspacesStore.startAgentOnTask(
+      props.workspaceId,
+      props.itemId,
+      props.task.id,
+    )
+    if (result && result.success && result.status === 'triggered') return
+    if (result && result.success === false) {
+      useNotificationStore().notifyError(
+        "Agent didn't start — server reported failure.",
+        'Run agent',
+      )
+    } else if (result === undefined) {
+      useNotificationStore().notifyError("Agent didn't start — network error.", 'Run agent')
+    } else {
+      useNotificationStore().notifyError("Agent didn't start — unexpected response.", 'Run agent')
+    }
+  } catch (err) {
+    console.error('Failed to run agent from sidebar row:', err)
+    useNotificationStore().notifyError(
+      err instanceof Error ? err.message : String(err),
+      'Run agent',
+    )
+  } finally {
+    isRunningAgent.value = false
+  }
+}
+
 // 2026-08-29 agent-error-row — reactive read of the latest agent
 // error keyed by task.id == session_id (migration 052 invariant).
 // Same store + helper as the kanban card and ChatView's
@@ -220,7 +272,9 @@ const errorRetryLabel = computed(() =>
         style="background: rgba(196, 116, 110, 0.18); border: 1px solid var(--color-red)"
         aria-label="Agent error"
       >
-        <span style="color: var(--color-red); font-size: var(--text-micro); line-height: 1" aria-hidden="true"
+        <span
+          style="color: var(--color-red); font-size: var(--text-micro); line-height: 1"
+          aria-hidden="true"
           >⚠</span
         >
       </span>
@@ -242,7 +296,9 @@ const errorRetryLabel = computed(() =>
         data-testid="task-agent-error-row-tooltip"
       >
         <div class="flex items-center gap-2 mb-1.5">
-          <span style="color: var(--color-red); font-size: var(--text-meta)" aria-hidden="true">⚠</span>
+          <span style="color: var(--color-red); font-size: var(--text-meta)" aria-hidden="true"
+            >⚠</span
+          >
           <span class="text-meta font-medium" style="color: var(--color-red)">Agent error</span>
           <span
             v-if="errorRetryLabel"
@@ -345,8 +401,11 @@ const errorRetryLabel = computed(() =>
       :y="menuPos.y"
       show-pin
       :is-pinned="task.is_pinned"
+      show-run-agent
+      :is-agent-running="isBusy"
       @open="openTaskMenuInBackground"
       @pin="pinTaskFromMenu"
+      @run-agent="runAgentFromMenu"
     />
   </div>
 </template>
