@@ -30,6 +30,19 @@ withDefaults(
     /** Current pinned state — flips the pin row label. */
     isPinned?: boolean
     /**
+     * Show the "Run agent" row for task-row hosts. Starts a worker on
+     * the task's existing session without queueing a new user message.
+     * Opt-in like `showPin` — the file / workspace-item hosts that
+     * share this menu have no agent to run.
+     */
+    showRunAgent?: boolean
+    /**
+     * A worker is already running on this task. Hides the "Run agent"
+     * row (the backend answers 409 in that state) and reveals
+     * "Stop agent" instead — the two are inverses and never coexist.
+     */
+    isAgentRunning?: boolean
+    /**
      * Show "Add task" for a workspace-item row. The row's `+` is
      * hover-reveal only, so the menu is the always-available path to the
      * same action — hover is undiscoverable and does nothing on touch.
@@ -41,7 +54,7 @@ withDefaults(
      */
     showDeleteItem?: boolean
   }>(),
-  { showChat: true },
+  { showChat: true, showRunAgent: false, isAgentRunning: false },
 )
 
 const emit = defineEmits<{
@@ -51,6 +64,7 @@ const emit = defineEmits<{
   openFile: []
   settings: []
   pin: []
+  runAgent: []
   addTask: []
   deleteItem: []
 }>()
@@ -126,6 +140,28 @@ const emit = defineEmits<{
         @click="emit('openDetails')"
       >
         <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open details in new tab
+      </button>
+      <!-- Run agent — the inverse of Stop agent below. Same
+           startAgentOnTask call the kanban card's context menu and the
+           detail dialog's caret menu make; the row-mode menu is the
+           third entry point so a task can be started from the list
+           without opening anything. -->
+      <button
+        v-if="showRunAgent && !isAgentRunning"
+        type="button"
+        role="menuitem"
+        data-testid="run-agent-item"
+        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
+        @click="emit('runAgent')"
+      >
+        <svg
+          class="mr-2 opacity-70 inline w-3.5 h-3.5"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path d="M8 5v14l11-7z" /></svg
+        >Run agent
       </button>
       <button
         v-if="showStop"

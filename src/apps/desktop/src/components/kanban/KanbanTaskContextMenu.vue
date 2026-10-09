@@ -15,6 +15,10 @@
   irreversible action to the bottom, is the risk reduction that lets the
   button strip go away.
 
+  "Run agent" sits with the open-in-new-tab group, directly above its
+  inverse "Stop agent" — the two never render at once, so the slot
+  always reads as "the agent action for this task's current state".
+
   The host (WorkspaceItemTaskCard) owns the handlers; this component
   only reports intent. Every emit is a zero-arg event except
   `moveToColumn`, which carries the destination column id — the host
@@ -64,6 +68,11 @@ const emit = defineEmits<{
   openChat: []
   openDetails: []
   stop: []
+  // Start an agent on this task's existing session (no new user
+  // message queued). Hidden while a worker is already running —
+  // the backend's 409 is the source of truth, but offering a row
+  // that can only fail is worse than not offering it.
+  runAgent: []
   moveToColumn: [columnId: string]
 }>()
 
@@ -193,7 +202,9 @@ const focusRow = (event: MouseEvent) => {
   ;(event.currentTarget as HTMLElement | null)?.focus()
 }
 
-const onPick = (act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'stop' | 'delete') => {
+const onPick = (
+  act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'run' | 'stop' | 'delete',
+) => {
   switch (act) {
     case 'pin':
       emit('pin')
@@ -209,6 +220,9 @@ const onPick = (act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'stop' |
       break
     case 'details':
       emit('openDetails')
+      break
+    case 'run':
+      emit('runAgent')
       break
     case 'stop':
       emit('stop')
@@ -366,6 +380,30 @@ const onPick = (act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'stop' |
       >
         <span class="menu-ic" aria-hidden="true">&#8599;</span>
         <span class="menu-lb">Open details in new tab</span>
+      </button>
+
+      <!-- Run agent — starts a worker on this task's existing session
+           without queueing a new user message (the same
+           POST .../tasks/:task_id/start_agent the detail dialog's
+           caret menu uses). Hidden while a worker is already running:
+           the backend answers 409 in that state, so the row would be
+           a dead end. "Stop agent" below is its inverse and takes
+           over the slot. -->
+      <button
+        v-if="!isAgentRunning"
+        type="button"
+        role="menuitem"
+        data-testid="kanban-task-context-menu-run-agent"
+        class="menu-row"
+        @click="onPick('run')"
+        @mouseenter="focusRow"
+      >
+        <span class="menu-ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </span>
+        <span class="menu-lb">Run agent</span>
       </button>
 
       <button

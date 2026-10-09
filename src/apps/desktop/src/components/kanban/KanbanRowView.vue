@@ -85,6 +85,9 @@ const emit = defineEmits<{
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   viewTaskDetail: [taskId: string]
+  // Right-click "Run agent" from a row. Pass-through — the row emits
+  // the task id and KanbanView makes the startAgentOnTask call.
+  runAgent: [payload: { taskId: string }]
   toggleCollapse: [columnId: string]
 }>()
 
@@ -476,6 +479,7 @@ onUnmounted(() => {
             @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
             @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
             @view-task-detail="(id) => emit('viewTaskDetail', id)"
+            @run-agent="(payload) => emit('runAgent', payload)"
           />
 
           <!-- First-page skeleton — holds the group's height while the

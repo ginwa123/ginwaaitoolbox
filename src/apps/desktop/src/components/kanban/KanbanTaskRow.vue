@@ -82,6 +82,10 @@ const emit = defineEmits<{
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   viewTaskDetail: [taskId: string]
+  // Right-click "Run agent" — starts a worker on this task's existing
+  // session. The host (KanbanView) owns the API call; the row only
+  // reports intent, same contract as the card's context menu.
+  runAgent: [payload: { taskId: string }]
 }>()
 
 // Re-injected from App.vue rather than threaded down — same key and same
@@ -238,6 +242,15 @@ const openTaskMenuInBackground = () => {
     itemId: props.itemId,
     taskId: props.task.id,
   })
+}
+
+// Right-click "Run agent". Emits up rather than calling the store —
+// the row has no workspace/item context of its own beyond the props it
+// already forwards, and the endpoint path is built by KanbanView.
+const runAgentFromMenu = () => {
+  closeTaskMenu()
+  if (isBusy.value) return
+  emit('runAgent', { taskId: props.task.id })
 }
 </script>
 
@@ -450,7 +463,10 @@ const openTaskMenuInBackground = () => {
       v-if="menuPos"
       :x="menuPos.x"
       :y="menuPos.y"
+      show-run-agent
+      :is-agent-running="isBusy"
       @open="openTaskMenuInBackground"
+      @run-agent="runAgentFromMenu"
     />
   </div>
 </template>

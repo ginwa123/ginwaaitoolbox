@@ -64,6 +64,7 @@ import KanbanTaskDetail from './KanbanTaskDetail.vue'
 import { buildTaskCreateMessage } from './buildTaskCreateMessage'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
+import { useNotificationStore } from '../../stores/notifications'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
 import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { buildAppUrl } from '../../helpers/appUrl'
@@ -1125,6 +1126,57 @@ const handleRunAllAgents = async (columnId: string) => {
   }
 }
 
+// Card / row context-menu "Run agent". Wired to KanbanColumn's (and
+// KanbanRowView's) `@run-agent` emit, which the card's right-click
+// menu fires. Same store action the detail dialog's caret menu uses
+// (`startAgentOnTask` → POST .../tasks/:task_id/start_agent), so the
+// agent resumes the task's existing chat history without a new user
+// message being queued.
+//
+// Unlike `handleStartAgent` there is no dialog to hold an inline
+// banner, so failures go to the notification store — the same
+// surface `addKanbanTask` uses for its partial-success path. The
+// per-task busy guard mirrors `startAgentBusy`: the menu row is
+// already hidden while a worker runs, this only closes the
+// double-click window before the SSE state lands.
+const runAgentBusyByTask = ref<Record<string, boolean>>({})
+
+const handleRunAgentFromMenu = async (payload: { taskId: string }) => {
+  const taskId = payload?.taskId
+  if (!taskId || runAgentBusyByTask.value[taskId]) return
+  runAgentBusyByTask.value[taskId] = true
+  try {
+    const result = await workspacesStore.startAgentOnTask(
+      props.workspaceId,
+      props.itemId || props.item.id,
+      taskId,
+    )
+    if (result && result.success && result.status === 'triggered') {
+      // Nothing else to do — the SSE worker events drive the card's
+      // spinner and the elapsed chip from here.
+      return
+    }
+    if (result && result.success === false) {
+      useNotificationStore().notifyError(
+        "Agent didn't start — server reported failure.",
+        'Run agent',
+      )
+    } else if (result === undefined) {
+      useNotificationStore().notifyError("Agent didn't start — network error.", 'Run agent')
+    } else {
+      useNotificationStore().notifyError("Agent didn't start — unexpected response.", 'Run agent')
+    }
+  } catch (err) {
+    console.error('Failed to run agent from menu:', err)
+    useNotificationStore().notifyError(
+      err instanceof Error ? err.message : String(err),
+      'Run agent',
+    )
+  } finally {
+    runAgentBusyByTask.value[taskId] = false
+  }
+}
+
 // Unattended-mode toggle handler (edit mode only). Persists
 // immediately via PUT /api/llm/session/<id> — the flag lives on
 // the sessions table (task.id == session.id for routine tasks per
@@ -1669,6 +1721,7 @@ const handleCreateTaskSave = async (payload: {
             @request-rename-column="(columnId) => emit('requestRenameColumn', columnId)"
             @request-delete-column="(columnId) => emit('requestDeleteColumn', columnId)"
             @request-run-all-agents="handleRunAllAgents"
+            @run-agent="(payload) => handleRunAgentFromMenu(payload)"
             :run-all-busy="!!runAllBusyByColumn[column.id]"
             @select-task="(id) => emit('selectTask', id)"
             @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
@@ -1712,6 +1765,7 @@ const handleCreateTaskSave = async (payload: {
           @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
           @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
           @view-task-detail="handleViewTaskDetail"
+          @run-agent="(payload) => handleRunAgentFromMenu(payload)"
           @sort-change="(payload) => handleColumnSortChange(payload.columnId, payload)"
         />
       </div>

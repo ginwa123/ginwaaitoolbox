@@ -170,6 +170,52 @@ describe('WorkspaceItemTaskCard — context menu', () => {
     wrapper.unmount()
   })
 
+  // "Run agent" is the inverse of "Stop agent": the two rows share one
+  // slot and never render together, so the menu always offers exactly
+  // the agent action that matches the task's current state.
+  it('Run agent emits runAgent with the task id', async () => {
+    const wrapper = mountCard({ id: 't1', name: 'Alpha' })
+    await openMenu(wrapper)
+    expect(q('kanban-task-context-menu-run-agent')?.textContent).toContain('Run agent')
+
+    await clickItem('kanban-task-context-menu-run-agent')
+    expect(wrapper.emitted('runAgent')?.[0]).toEqual([{ taskId: 't1' }])
+
+    wrapper.unmount()
+  })
+
+  it('Run agent and Stop agent are mutually exclusive', async () => {
+    const idle = mountCard({ id: 't1', name: 'Alpha' })
+    await openMenu(idle)
+    expect(q('kanban-task-context-menu-run-agent')).toBeTruthy()
+    expect(q('kanban-task-context-menu-stop')).toBeNull()
+    idle.unmount()
+    document.body.innerHTML = ''
+
+    // While a worker runs the row flips to Stop — the backend answers
+    // 409 to a second start, so offering Run would be a dead end.
+    const running = mountCard({ id: 't2', name: 'Beta' }, { processingState: ref({ t2: true }) })
+    await openMenu(running)
+    expect(q('kanban-task-context-menu-run-agent')).toBeNull()
+    expect(q('kanban-task-context-menu-stop')).toBeTruthy()
+
+    running.unmount()
+  })
+
+  it('Run agent does NOT also open the chat', async () => {
+    // Same propagation contract as View details: the teleported menu
+    // can't bubble to the card root, so picking a row must never also
+    // fire the card's own @click.
+    const wrapper = mountCard({ id: 't1', name: 'Alpha' })
+    await openMenu(wrapper)
+    await clickItem('kanban-task-context-menu-run-agent')
+
+    expect(wrapper.emitted('runAgent')).toHaveLength(1)
+    expect(wrapper.emitted('selectTask')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
   it('Stop agent shows only while a worker runs on the task', async () => {
     const idle = mountCard({ id: 't1', name: 'Alpha' })
     await openMenu(idle)
