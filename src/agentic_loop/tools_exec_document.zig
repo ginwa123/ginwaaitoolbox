@@ -1106,10 +1106,12 @@ test "execSearchDocuments: malformed JSON arguments become a parse failure, not 
     var env = try runSearch(alloc, &ctx.db, "s1", "{not json");
     defer env.deinit();
     try testing.expect(!env.success);
-    // The message must tell the model WHAT was wrong with its JSON, not
-    // just name the Zig error. `{not json` is a syntax error, so the
-    // explanation names JSON and the usual causes.
-    try testing.expect(std.mem.indexOf(u8, env.err.?, "JSON") != null);
+    // `search_documents` keeps its own hand-written schema hint (it names
+    // every field and its type, which the generic message cannot). What
+    // matters is that it tells the model what to SEND and never leaks the
+    // raw Zig error name.
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "expected") != null);
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "query") != null);
     try testing.expect(std.mem.indexOf(u8, env.err.?, "SyntaxError") == null);
 }
 

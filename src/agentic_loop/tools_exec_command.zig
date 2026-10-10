@@ -132,8 +132,25 @@ pub fn execCommand(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         const output = try wrapToolOutput(ctx.allocator, "command", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
+    // `runWithContext` returns an ALREADY-WRAPPED envelope on its
+    // parse-failure path (it has no other way to report a structured
+    // field error), and a bare payload on the success path. Re-wrapping
+    // the former would double-encode it, so pass it through untouched and
+    // free the payload only on the success path.
+    if (looksWrapped(inner)) {
+        return ToolExecResult{ .output = inner, .output_allocated = true };
+    }
+    defer ctx.allocator.free(inner);
     const output = try wrapToolOutput(ctx.allocator, "command", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+/// True when `s` is already a tool envelope rather than a bare payload.
+/// `runWithContext` is the only producer here and it always emits the
+/// `{"tool":…,"v":1}` shape, so a prefix check is unambiguous — a shell
+/// payload is a `ShellOutput` object, which has neither key.
+fn looksWrapped(s: []const u8) bool {
+    return std.mem.startsWith(u8, std.mem.trimStart(u8, s, " \t\r\n"), "{\"tool\":");
 }
 
 // ============================================================================
