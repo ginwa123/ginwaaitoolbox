@@ -34,7 +34,12 @@ pub fn runWithContext(
     const input = switch (bash_args.parseShellArgs(allocator, tool_call.function.arguments)) {
         .success => |in| in,
         .failure => |info| {
+            // Both the rendered message and the `got` slice it interpolates
+            // are allocated by the parser; free them once the envelope has
+            // copied the text. The testing allocator catches this path.
             const err_msg = try bash_args.formatInvalidField(allocator, info);
+            defer allocator.free(err_msg);
+            defer allocator.free(info.got);
             const output = try wrapToolOutput(allocator, "command", tool_call.function.arguments, false, err_msg, "");
             return output;
         },

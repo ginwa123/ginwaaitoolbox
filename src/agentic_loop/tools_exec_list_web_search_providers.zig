@@ -20,6 +20,7 @@ const config_mod = pabrikcore.config;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 fn render(
     ctx: ToolExecContext,
@@ -27,11 +28,8 @@ fn render(
     providers: *const config_mod.LlmConfig.WebSearchProvidersMap,
 ) !ToolExecResult {
     const inner = web_search_mod.renderProviderList(ctx.allocator, providers) catch |err| {
-        const msg = try std.fmt.allocPrint(
-            ctx.allocator,
-            "list_web_search_providers failed: {s}",
-            .{@errorName(err)},
-        );
+        const msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(msg);
         const output = try wrapToolOutput(ctx.allocator, "list_web_search_providers", tc.function.arguments, false, msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -65,11 +63,8 @@ pub fn execListWebSearchProviders(ctx: ToolExecContext, tc: agent.ToolCall) !Too
     if (ctx.config.web_search) |*singleton| return render(ctx, tc, singleton);
 
     const inner = web_search_mod.notConfiguredEnvelope(ctx.allocator) catch |err| {
-        const msg = try std.fmt.allocPrint(
-            ctx.allocator,
-            "list_web_search_providers failed: {s}",
-            .{@errorName(err)},
-        );
+        const msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(msg);
         const output = try wrapToolOutput(ctx.allocator, "list_web_search_providers", tc.function.arguments, false, msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };

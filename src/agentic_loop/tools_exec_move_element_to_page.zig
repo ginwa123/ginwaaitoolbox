@@ -14,6 +14,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const move_element_to_page_mod = pabrikcore.move_element_to_page;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execMoveElementToPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
@@ -22,11 +23,8 @@ pub fn execMoveElementToPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExec
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(
-            ctx.allocator,
-            "move_element_to_page failed to parse input: {s}",
-            .{@errorName(err)},
-        );
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(
             ctx.allocator,
             "move_element_to_page",
@@ -58,11 +56,8 @@ pub fn execMoveElementToPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExec
         active_page_id,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(
-            ctx.allocator,
-            "move_element_to_page failed: {s}",
-            .{@errorName(err)},
-        );
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(
             ctx.allocator,
             "move_element_to_page",

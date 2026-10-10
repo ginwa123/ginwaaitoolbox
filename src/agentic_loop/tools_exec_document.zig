@@ -617,7 +617,11 @@ test "execAddDocument: malformed JSON arguments become a parse failure, not a cr
     var env = try parseEnvelope(alloc, result.output);
     defer env.deinit();
     try testing.expect(!env.success);
-    try testing.expect(std.mem.indexOf(u8, env.err.?, "parse input") != null);
+    // The message must tell the model WHAT was wrong with its JSON, not
+    // just name the Zig error. `{not json` is a syntax error, so the
+    // explanation names JSON and the usual causes.
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "SyntaxError") == null);
 }
 
 test "execAddDocument: a hallucinated workspace_id is ignored, not honoured" {
@@ -734,7 +738,11 @@ test "execDeleteDocument: malformed JSON arguments become a parse failure, not a
     var env = try parseEnvelope(alloc, del.output);
     defer env.deinit();
     try testing.expect(!env.success);
-    try testing.expect(std.mem.indexOf(u8, env.err.?, "parse input") != null);
+    // The message must tell the model WHAT was wrong with its JSON, not
+    // just name the Zig error. `{not json` is a syntax error, so the
+    // explanation names JSON and the usual causes.
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "SyntaxError") == null);
 }
 
 test "execDeleteDocument: a hallucinated workspace_id is ignored, so the owner still deletes" {
@@ -1098,7 +1106,11 @@ test "execSearchDocuments: malformed JSON arguments become a parse failure, not 
     var env = try runSearch(alloc, &ctx.db, "s1", "{not json");
     defer env.deinit();
     try testing.expect(!env.success);
-    try testing.expect(std.mem.indexOf(u8, env.err.?, "parse input") != null);
+    // The message must tell the model WHAT was wrong with its JSON, not
+    // just name the Zig error. `{not json` is a syntax error, so the
+    // explanation names JSON and the usual causes.
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "SyntaxError") == null);
 }
 
 test "execSearchDocuments: a workspace never sees another workspace's documents" {
