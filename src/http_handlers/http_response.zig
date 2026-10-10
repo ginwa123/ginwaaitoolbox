@@ -1448,3 +1448,29 @@ pub fn makeFrontendLogListResponse(allocator: std.mem.Allocator, logs: []const F
         .{},
     );
 }
+
+/// One skill as it goes on the wire: the body plus the companion count.
+///
+/// `asset_count` rather than the asset list — the detail pane shows
+/// "11 companion files", and shipping every companion body to render that
+/// number would put the whole bundle in the response payload. Shared by
+/// `skill_detail.zig`, `skill_create.zig` and `skill_update.zig` so the
+/// three cannot drift into three shapes for the same row.
+pub const SkillDetailResponse = struct {
+    name: []const u8,
+    description: []const u8,
+    content: []const u8,
+    asset_count: usize,
+};
+
+/// Map a `skills_store.SkillRow` (or any struct with the same fields) into
+/// the wire shape. `anytype` for the same reason as `makeSecretResponse`:
+/// the data layer and the wire shape must be able to move independently.
+pub fn makeSkillDetailResponse(skill: anytype) SkillDetailResponse {
+    return .{
+        .name = skill.name,
+        .description = skill.description,
+        .content = skill.content,
+        .asset_count = skill.asset_count,
+    };
+}

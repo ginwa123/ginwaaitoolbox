@@ -3189,6 +3189,56 @@ export async function deleteSkill(
   )
 }
 
+export interface SkillCreateResponse {
+  skill: SkillDetail
+}
+
+/**
+ * POST /api/workspaces/:workspaceId/skills
+ *
+ * 201 with the stored row, so the caller can render what it just wrote
+ * without a second GET. A duplicate name in the SAME workspace is a 409 —
+ * the store's `upsertSkill` is create-or-replace by design (the importer
+ * runs on every start-up), so the refusal has to live on this route, where
+ * the caller is a human who pressed a button.
+ */
+export async function createSkill(
+  workspaceId: string,
+  input: { name: string; description?: string; content?: string },
+): Promise<SkillCreateResponse> {
+  return await apiFetch<SkillCreateResponse>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/skills`,
+    { method: 'POST', body: input },
+  )
+}
+
+export interface SkillUpdateResponse {
+  skill: SkillDetail
+}
+
+/**
+ * PATCH /api/workspaces/:workspaceId/skills/:skillName
+ *
+ * The name is a path param and is IMMUTABLE: a rename would break every
+ * `use_skill({ name })` call and every cached `skill_eval` verdict. A
+ * `name` in the body is therefore a claim about which row is being
+ * addressed, and a claim that does not match answers 404 — the same
+ * answer a foreign workspace gets.
+ *
+ * An omitted field keeps its value; an explicit `''` clears it. That
+ * distinction is why the body fields are optional rather than defaulted.
+ */
+export async function updateSkill(
+  workspaceId: string,
+  skillName: string,
+  input: { description?: string; content?: string },
+): Promise<SkillUpdateResponse> {
+  return await apiFetch<SkillUpdateResponse>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/skills/${encodeURIComponent(skillName)}`,
+    { method: 'PATCH', body: input },
+  )
+}
+
 // Memories API
 export interface Memory {
   name: string

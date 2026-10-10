@@ -11,12 +11,19 @@
   Load and delete keep both outcomes: `runSyncResult` hands back either the
   payload or the reason, and the reason is rendered (or emitted), so a
   failed read cannot present as an empty detail pane.
+
+  Edit mode is a form over the same two fields the row stores. The name is
+  NOT one of them: it is the URL path segment, the `use_skill({ name })`
+  argument and the `skill_eval` identity, so renaming here would break
+  every one of those silently. The form therefore edits description and
+  content only, and says so rather than showing a disabled name input
+  that invites the attempt.
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUpdated, ref } from 'vue'
 import { Effect } from 'effect'
 import UiIcon from '../ui/UiIcon.vue'
-import { getSkillDetail, deleteSkill, type SkillDetail } from '../../api'
+import { getSkillDetail, deleteSkill, updateSkill, type SkillDetail } from '../../api'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { SyncRemoteError } from '../../sync/SyncError'
 import { runSyncResult } from '../../sync/runtime'
@@ -33,6 +40,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   skillDeleted: [skillName: string]
+  /** A save that changed the row, so the list can re-read its description. */
+  skillSaved: [skillName: string]
   error: [message: string]
 }>()
 
@@ -45,8 +54,17 @@ const workspaceId = computed(() => props.workspaceId ?? workspacesStore.activeWo
 const skillDetail = ref<SkillDetail | null>(null)
 const isLoading = ref(false)
 const isDeleting = ref(false)
+const isSaving = ref(false)
 const error = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
+
+// Edit mode. `draft*` are the form's own state, seeded from the loaded row
+// when the form opens — never bound straight to `skillDetail`, or a
+// half-typed description would render in the read-only header above it.
+const isEditing = ref(false)
+const draftDescription = ref('')
+const draftContent = ref('')
+const saveError = ref<string | null>(null)
 
 /** A load needs both halves of the identity; either one missing means
  *  "nothing to show", which is not the same as "nothing there". */
@@ -129,6 +147,65 @@ const confirmDelete = () => {
 
 const cancelDelete = () => {
   showDeleteConfirm.value = false
+}
+
+/** Open the form seeded from the row on screen. */
+const startEdit = () => {
+  const detail = skillDetail.value
+  if (!detail) return
+  draftDescription.value = detail.description
+  draftContent.value = detail.content
+  saveError.value = null
+  isEditing.value = true
+}
+
+const cancelEdit = () => {
+  isEditing.value = false
+  saveError.value = null
+}
+
+/**
+ * A save with nothing changed is refused by the server (409), so the
+ * button is disabled rather than letting the user discover that from a
+ * toast. Both fields are compared, because either one alone is a change.
+ */
+const canSave = computed(() => {
+  const detail = skillDetail.value
+  if (!detail) return false
+  return draftDescription.value !== detail.description || draftContent.value !== detail.content
+})
+
+const handleSave = async () => {
+  const detail = skillDetail.value
+  const ws = workspaceId.value
+  if (!detail || !ws) return
+
+  isSaving.value = true
+  saveError.value = null
+  const result = await runSyncResult(
+    Effect.tryPromise({
+      try: () =>
+        updateSkill(ws, detail.name, {
+          description: draftDescription.value,
+          content: draftContent.value,
+        }),
+      catch: (e) => new SyncRemoteError({ op: 'skills.update', reason: fail(e) }),
+    }),
+    'skills.update',
+  )
+  isSaving.value = false
+
+  if (!result.ok) {
+    // Kept in the form, not emitted: the user is mid-edit and the reason
+    // belongs next to the fields that caused it.
+    saveError.value = result.reason
+    return
+  }
+  // The stored row replaces the draft, so the read-only header above
+  // shows what was actually written rather than what was typed.
+  skillDetail.value = result.value.skill
+  isEditing.value = false
+  emit('skillSaved', detail.name)
 }
 
 const handleDelete = async () => {
@@ -218,30 +295,92 @@ const handleDelete = async () => {
               {{ skillDetail.name }}
             </h3>
           </div>
-          <button
-            @click="confirmDelete"
-            class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors duration-200"
-            style="background-color: rgba(239, 68, 68, 0.1); color: var(--color-red)"
-            title="Delete skill"
-          >
-            <svg
-              class="w-4 h-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              stroke-width="2"
+          <div class="flex items-center gap-2">
+            <button
+              v-if="!isEditing"
+              @click="startEdit"
+              class="px-3 h-8 rounded-lg flex items-center gap-2 text-body font-medium transition-colors duration-200"
+              style="
+                background-color: var(--semantic-content-bg);
+                color: var(--semantic-text-muted);
+                border: 1px solid var(--color-border);
+              "
+              data-testid="skill-edit-btn"
+              title="Edit skill"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-              />
-            </svg>
-          </button>
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                />
+              </svg>
+              Edit
+            </button>
+            <button
+              @click="confirmDelete"
+              class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors duration-200"
+              style="background-color: rgba(239, 68, 68, 0.1); color: var(--color-red)"
+              title="Delete skill"
+            >
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                />
+              </svg>
+            </button>
+          </div>
         </div>
-        <p class="text-body" style="color: var(--semantic-text-muted)">
+        <p v-if="!isEditing" class="text-body" style="color: var(--semantic-text-muted)">
           {{ skillDetail.description }}
         </p>
+        <!-- Edit mode: the description is an input, and the name is
+             deliberately absent. It is the `use_skill` argument and the
+             `skill_eval` identity, so a rename here would break both
+             silently — the form says so instead of offering a disabled
+             field that invites the attempt. -->
+        <div v-else class="space-y-2">
+          <label
+            class="text-dense block"
+            style="color: var(--semantic-text-muted)"
+            for="skill-description"
+          >
+            Description
+          </label>
+          <input
+            id="skill-description"
+            v-model="draftDescription"
+            data-testid="skill-edit-description"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="One line on when to reach for this skill"
+            class="w-full px-3 h-8 rounded-md text-dense"
+            style="
+              background-color: var(--semantic-bg);
+              color: var(--semantic-text);
+              border: 1px solid var(--color-border);
+            "
+          />
+          <p class="text-dense" style="color: var(--semantic-text-dim)">
+            The name is fixed — it is what <code>use_skill</code> and every saved evaluation refer
+            to.
+          </p>
+        </div>
         <!-- Only a bundle has companions. Showing "0 files" on every
              single-file skill would be noise, so the row is conditional. -->
         <p
@@ -260,10 +399,68 @@ const handleDelete = async () => {
         <h4 class="text-body font-medium mb-2 shrink-0" style="color: var(--semantic-text)">
           Content
         </h4>
+        <textarea
+          v-if="isEditing"
+          v-model="draftContent"
+          data-testid="skill-edit-content"
+          spellcheck="false"
+          class="w-full h-full min-h-[16rem] p-4 rounded text-dense font-mono resize-y"
+          style="
+            background-color: var(--semantic-content-bg);
+            color: var(--semantic-text-muted);
+            border: 1px solid var(--color-border);
+          "
+        ></textarea>
         <pre
+          v-else
           class="text-dense p-4 rounded whitespace-pre-wrap"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text-muted)"
           >{{ skillDetail.content }}</pre>
+      </div>
+
+      <!-- Save bar. Only in edit mode, and only once something actually
+           changed — the server answers 409 to a no-op patch, so a
+           permanently-enabled Save would be a button that fails. -->
+      <div
+        v-if="isEditing"
+        class="p-4 shrink-0 flex items-center justify-between gap-4"
+        style="border-top: 1px solid var(--color-border)"
+      >
+        <p
+          v-if="saveError"
+          class="text-dense"
+          style="color: var(--color-red)"
+          data-testid="skill-save-error"
+        >
+          {{ saveError }}
+        </p>
+        <p v-else class="text-dense" style="color: var(--semantic-text-dim)">
+          The body is stored verbatim, frontmatter included.
+        </p>
+        <div class="flex gap-2 shrink-0">
+          <button
+            @click="cancelEdit"
+            class="px-4 h-8 rounded-lg text-body font-medium transition-colors duration-200"
+            style="
+              background-color: var(--semantic-content-bg);
+              color: var(--semantic-text-muted);
+              border: 1px solid var(--color-border);
+            "
+            :disabled="isSaving"
+            data-testid="skill-edit-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            @click="handleSave"
+            class="px-4 h-8 rounded-lg text-body font-medium transition-colors duration-200 disabled:opacity-50"
+            style="background-color: var(--color-violet); color: white"
+            :disabled="!canSave || isSaving"
+            data-testid="skill-edit-save"
+          >
+            {{ isSaving ? 'Saving...' : 'Save' }}
+          </button>
+        </div>
       </div>
 
       <!-- Delete Confirmation Modal -->

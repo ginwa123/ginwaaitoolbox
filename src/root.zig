@@ -308,6 +308,13 @@ test {
     _ = @import("http_handlers/secrets_create.zig");
     _ = @import("http_handlers/secrets_update.zig");
     _ = @import("http_handlers/secrets_delete.zig");
+    // The skills write surface: one file per verb, each carrying its own
+    // `useCase` tests. Same discovery workaround as the secrets files
+    // above — the `http_handlers` re-exports alone do not pull these
+    // files' tests in, so a handler whose tests never ran would still
+    // compile and still ship.
+    _ = @import("http_handlers/skill_create.zig");
+    _ = @import("http_handlers/skill_update.zig");
     // `databases` package tests run in the ruangsql repo's own CI
     // (github.com/ginwa123/ruangsql) — see the package's build.zig.
     // The main test step doesn't import them here because the package

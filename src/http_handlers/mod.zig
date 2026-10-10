@@ -278,7 +278,9 @@ pub const unifiedEventsStreamHandler = @import("unified_events_sse.zig").unified
 // rather than in a check each handler has to remember. Wired at
 // `/api/workspaces/:workspace_id/skills[/:skill_name]`.
 pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;
+pub const skillCreateHandler = @import("skill_create.zig").skillCreateHandler;
 pub const skillDetailHandler = @import("skill_detail.zig").skillDetailHandler;
+pub const skillUpdateHandler = @import("skill_update.zig").skillUpdateHandler;
 pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 // Skill Evals — the read surface (see docs/plans/2026-09-27-skill-evals.md §4.10).
 // A SIBLING prefix under /api/skill-evals/, deliberately outside the skills
