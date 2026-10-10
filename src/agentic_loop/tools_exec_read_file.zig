@@ -10,6 +10,7 @@ const ReadFileOptions = pabrikcore.read_file.ReadFileOptions;
 const readFile = pabrikcore.read_file.readFile;
 const toJSONSuccess = pabrikcore.read_file.toJSONSuccess;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = ctx.db;
@@ -22,7 +23,8 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         tc.function.arguments,
         .{ .allocate = .alloc_always },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "read_file failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -34,7 +36,10 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
 
     const read_result = readFile(ctx.allocator, ctx.io, parsed.value.path, read_opts) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "read_file failed: {s}", .{@errorName(err)});
+        // The path is the one thing the model can act on here, so it is
+        // passed as the explanation's context.
+        const err_msg = try error_explain.explain(ctx.allocator, err, parsed.value.path);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };

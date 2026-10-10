@@ -20,13 +20,14 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const list_sub_agent_mod = pabrikcore.list_sub_agent;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execListSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // No input to parse — the schema declares zero required params.
     // Use `tc.function.arguments` for the envelope's `parameters`
     // field verbatim (the LLM is expected to send `{}`).
     const inner = list_sub_agent_mod.executeListSubAgent(ctx.allocator, ctx.config, ctx.selected_profile_model) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_sub_agent failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "list_sub_agent", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };

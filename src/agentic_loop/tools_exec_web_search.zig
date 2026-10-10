@@ -28,6 +28,7 @@ const config_mod = pabrikcore.config;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 const testing = std.testing;
 
@@ -58,7 +59,7 @@ fn dispatch(
     };
 
     const inner = web_search_mod.executeWebSearch(ctx.allocator, resolved, curl) catch |err| {
-        const msg = try std.fmt.allocPrint(ctx.allocator, "web_search failed: {s}", .{@errorName(err)});
+        const msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(msg);
         return fail(ctx, tc, msg);
     };
@@ -107,7 +108,7 @@ pub fn execWebSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const msg = try std.fmt.allocPrint(ctx.allocator, "web_search failed to parse input: {s}", .{@errorName(err)});
+        const msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(msg);
         return fail(ctx, tc, msg);
     };
@@ -135,7 +136,7 @@ pub fn execWebSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     }
 
     const inner = web_search_mod.notConfiguredEnvelope(ctx.allocator) catch |err| {
-        const msg = try std.fmt.allocPrint(ctx.allocator, "web_search failed: {s}", .{@errorName(err)});
+        const msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(msg);
         return fail(ctx, tc, msg);
     };

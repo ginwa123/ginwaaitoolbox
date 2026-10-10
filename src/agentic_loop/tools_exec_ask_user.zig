@@ -29,6 +29,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const ask_user_mod = pabrikcore.ask_user;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 const TOOL_NAME = ask_user_mod.ASK_USER_TOOL_NAME;
 
@@ -46,11 +47,7 @@ pub fn execAskUser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     ) catch |err| {
         // Formatted into a temp so the message can be freed after the
         // envelope has copied it — an inline `try allocPrint` here leaks.
-        const message = try std.fmt.allocPrint(
-            ctx.allocator,
-            "ask_user failed to parse input: {s}",
-            .{@errorName(err)},
-        );
+        const message = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(message);
         return errorResult(ctx, tc, message);
     };
@@ -89,11 +86,7 @@ pub fn execAskUser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         .question = input.question,
         .multi_select = input.multi_select orelse false,
     }) catch |err| {
-        const message = try std.fmt.allocPrint(
-            ctx.allocator,
-            "ask_user could not record the question: {s}",
-            .{@errorName(err)},
-        );
+        const message = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(message);
         return errorResult(ctx, tc, message);
     };

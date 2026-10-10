@@ -30,6 +30,7 @@ const agent = pabrikcore.agent;
 const used_tools_mod = pabrikcore.used_tools;
 const ask_user_mod = pabrikcore.ask_user;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 /// Resolve the session's effective tool list (mirror of
 /// `workflow.filterAndMergeTools`, minus the MCP-null branch which is
@@ -104,13 +105,15 @@ pub fn execUsedTools(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // Use `tc.function.arguments` for the envelope's `parameters`
     // field verbatim (the LLM is expected to send `{}`).
     const equipped = resolveEquipped(ctx) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "used_tools failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "used_tools", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
     const inner = used_tools_mod.executeUsedTools(ctx.allocator, equipped) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "used_tools failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "used_tools", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };

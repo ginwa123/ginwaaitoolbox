@@ -37,6 +37,7 @@ const config_mod = pabrikcore.config;
 const add_mcp_server_mod = pabrikcore.add_mcp_server;
 const AddMcpServerInput = add_mcp_server_mod.AddMcpServerInput;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execAddMcpServer(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // ── 1. Parse the LLM JSON args ──────────────────────────────────────
@@ -51,11 +52,7 @@ pub fn execAddMcpServer(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(
-            ctx.allocator,
-            "add_mcp_server failed to parse input: {s}",
-            .{@errorName(err)},
-        );
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "add_mcp_server", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -76,11 +73,7 @@ pub fn execAddMcpServer(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
         config_mut,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(
-            ctx.allocator,
-            "add_mcp_server failed: {s}",
-            .{@errorName(err)},
-        );
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "add_mcp_server", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -749,7 +742,12 @@ test "execAddMcpServer: malformed JSON args → wrapped error envelope" {
     const env2 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
     defer env2.deinit();
     try testing.expect(!env2.value.object.get("success").?.bool);
-    try testing.expect(std.mem.indexOf(u8, env2.value.object.get("error").?.string, "failed to parse input") != null);
+    // The message must tell the model WHAT was wrong with its JSON, not
+    // just name the Zig error. `{not json at all` is a syntax error, so
+    // the explanation names JSON and the usual causes.
+    const mcp_err = env2.value.object.get("error").?.string;
+    try testing.expect(std.mem.indexOf(u8, mcp_err, "JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_err, "SyntaxError") == null);
 
     // No server added.
     try testing.expectEqual(@as(usize, 0), cfg.mcp_servers.count());

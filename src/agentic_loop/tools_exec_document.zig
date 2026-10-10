@@ -42,6 +42,7 @@ const document_mod = pabrikcore.document_tool;
 const documents_store = pabrikcore.documents_store;
 const workspace_scope = pabrikcore.workspace_scope;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 /// Probe an inner JSON payload for a top-level `"error"` key. The returned
 /// slice borrows from `parsed` — keep it alive through the
@@ -58,7 +59,7 @@ pub fn execAddDocument(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_document failed to parse input: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "add_document", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -73,7 +74,7 @@ pub fn execAddDocument(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         ctx.session_id,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_document failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "add_document", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -103,7 +104,7 @@ pub fn execEditDocument(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "edit_document failed to parse input: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "edit_document", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -116,7 +117,7 @@ pub fn execEditDocument(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
         ctx.session_id,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "edit_document failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "edit_document", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -146,7 +147,7 @@ pub fn execDeleteDocument(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "delete_document failed to parse input: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "delete_document", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -159,7 +160,7 @@ pub fn execDeleteDocument(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
         ctx.session_id,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "delete_document failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "delete_document", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -275,7 +276,7 @@ pub fn execSearchDocuments(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRe
         workspace_id.?,
         documents_search.literalPrefilter(query, literal),
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "search_documents failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "search_documents", tc.function.arguments, false, err_msg, "");
         return .{ .output = output, .output_allocated = true };
@@ -616,7 +617,11 @@ test "execAddDocument: malformed JSON arguments become a parse failure, not a cr
     var env = try parseEnvelope(alloc, result.output);
     defer env.deinit();
     try testing.expect(!env.success);
-    try testing.expect(std.mem.indexOf(u8, env.err.?, "parse input") != null);
+    // The message must tell the model WHAT was wrong with its JSON, not
+    // just name the Zig error. `{not json` is a syntax error, so the
+    // explanation names JSON and the usual causes.
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "SyntaxError") == null);
 }
 
 test "execAddDocument: a hallucinated workspace_id is ignored, not honoured" {
@@ -733,7 +738,11 @@ test "execDeleteDocument: malformed JSON arguments become a parse failure, not a
     var env = try parseEnvelope(alloc, del.output);
     defer env.deinit();
     try testing.expect(!env.success);
-    try testing.expect(std.mem.indexOf(u8, env.err.?, "parse input") != null);
+    // The message must tell the model WHAT was wrong with its JSON, not
+    // just name the Zig error. `{not json` is a syntax error, so the
+    // explanation names JSON and the usual causes.
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "SyntaxError") == null);
 }
 
 test "execDeleteDocument: a hallucinated workspace_id is ignored, so the owner still deletes" {
@@ -1097,7 +1106,13 @@ test "execSearchDocuments: malformed JSON arguments become a parse failure, not 
     var env = try runSearch(alloc, &ctx.db, "s1", "{not json");
     defer env.deinit();
     try testing.expect(!env.success);
-    try testing.expect(std.mem.indexOf(u8, env.err.?, "parse input") != null);
+    // `search_documents` keeps its own hand-written schema hint (it names
+    // every field and its type, which the generic message cannot). What
+    // matters is that it tells the model what to SEND and never leaks the
+    // raw Zig error name.
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "expected") != null);
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "query") != null);
+    try testing.expect(std.mem.indexOf(u8, env.err.?, "SyntaxError") == null);
 }
 
 test "execSearchDocuments: a workspace never sees another workspace's documents" {

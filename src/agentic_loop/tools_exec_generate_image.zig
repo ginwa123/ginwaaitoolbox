@@ -22,6 +22,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const generate_image_mod = pabrikcore.generate_image;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execGenerateImage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // 1. Parse the LLM-provided JSON arguments.
@@ -31,11 +32,8 @@ pub fn execGenerateImage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(
-            ctx.allocator,
-            "generate_image failed to parse input: {s}",
-            .{@errorName(err)},
-        );
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(
             ctx.allocator,
             "generate_image",
@@ -60,11 +58,8 @@ pub fn execGenerateImage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         ctx.api_key,
         ctx.cwd,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(
-            ctx.allocator,
-            "generate_image failed: {s}",
-            .{@errorName(err)},
-        );
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(
             ctx.allocator,
             "generate_image",
