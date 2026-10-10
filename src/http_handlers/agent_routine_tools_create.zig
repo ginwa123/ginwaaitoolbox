@@ -19,6 +19,7 @@ const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 const helpers = @import("helpers");
+const agent_routine_db = @import("../models/agent_routine.db.zig");
 
 /// HTTP request body for tool-create.
 const CreateToolBody = struct {
@@ -26,12 +27,7 @@ const CreateToolBody = struct {
 };
 
 /// Subset of the agent_routine_tools row returned by the use-case.
-pub const ToolRow = struct {
-    id: []const u8,
-    routine_id: []const u8,
-    tool_name: []const u8,
-    enabled: u8,
-};
+pub const ToolRow = agent_routine_db.ToolRow;
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches.
@@ -100,14 +96,12 @@ fn useCase(
     if (input.tool_name.len == 0) return error.ToolNameRequired;
     if (!isKnownTool(input.tool_name)) return error.UnknownTool;
 
-    // Validate the workspace_item is a routine + auto-seed the
-    // agent_routines row if missing (opt-in config → enabled-tool
-    // implies configured). The INSERT is idempotent because of the
-    // UNIQUE(workspace_item_id) constraint — we catch the conflict
-    // and treat it as success.
+    const handle: agent_routine_db.DbOrTx = .{ .db = db };
+
+    // Validate the workspace_item is a kanban.
     {
         var q = db.query(allocator,
-            \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'routine'
+            \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban'
         , &[_][]const u8{input.routine_id}) catch return error.InsertFailed;
         defer q.deinit();
         const row = q.next() catch null;
@@ -117,50 +111,15 @@ fn useCase(
 
     // Auto-seed the agent_routines row. INSERT OR IGNORE so re-enabling
     // the same tool doesn't trip the UNIQUE(workspace_item_id) constraint.
-    db.exec(allocator,
-        "INSERT OR IGNORE INTO agent_routines (id, workspace_item_id) VALUES (?, ?)",
-        &[_][]const u8{ input.routine_id, input.routine_id },
-    ) catch {};
+    agent_routine_db.insertIgnoreDuplicate(allocator, handle, input.routine_id, input.routine_id) catch {};
 
-    // Generate id + INSERT.
-    const ts = helpers.unixTimestampNanos();
-    const id = try std.fmt.allocPrint(allocator, "art_{d}", .{ts});
-    errdefer allocator.free(id);
+    // INSERT. A null return means the UNIQUE(routine_id, tool_name)
+    // constraint fired — the kanban already has this tool, so the
+    // caller answers 409 rather than 500.
+    const tool = (agent_routine_db.insertTool(allocator, handle, input.routine_id, input.tool_name) catch
+        return error.InsertFailed) orelse return error.DuplicateTool;
 
-    // Map SQLite UNIQUE violations to `DuplicateTool`. Other failures
-    // surface as `InsertFailed` so the handler can distinguish 409 vs 500.
-    db.exec(allocator,
-        "INSERT INTO agent_routine_tools (id, routine_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
-        &[_][]const u8{ id, input.routine_id, input.tool_name },
-    ) catch return error.DuplicateTool;
-
-    // Read back.
-    var q = db.query(allocator,
-        "SELECT id, routine_id, tool_name, enabled FROM agent_routine_tools WHERE id = ?",
-        &.{id},
-    ) catch return error.RefetchFailed;
-    defer q.deinit();
-    const r = (q.next() catch null) orelse return error.RowVanished;
-    defer r.deinit(allocator); // safe — we copy into ToolRow slices below
-
-    const out_id = try allocator.dupe(u8, r.values[0]);
-    errdefer allocator.free(out_id);
-    const out_routine_id = try allocator.dupe(u8, r.values[1]);
-    errdefer allocator.free(out_routine_id);
-    const out_tool_name = try allocator.dupe(u8, r.values[2]);
-    errdefer allocator.free(out_tool_name);
-
-    // The original `id` is no longer needed — out_id takes its place.
-    allocator.free(id);
-
-    return .{
-        .tool = .{
-            .id = out_id,
-            .routine_id = out_routine_id,
-            .tool_name = out_tool_name,
-            .enabled = 1,
-        },
-    };
+    return .{ .tool = tool };
 }
 
 // =====================================================================

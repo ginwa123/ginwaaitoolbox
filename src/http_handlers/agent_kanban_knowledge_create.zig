@@ -24,6 +24,7 @@ const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
+const agent_kanban_db = @import("../models/agent_kanban.db.zig");
 
 /// HTTP request body for knowledge-create.
 const CreateKnowledgeBody = struct {
@@ -34,15 +35,7 @@ const CreateKnowledgeBody = struct {
 };
 
 /// Subset of the knowledge row returned by the use-case.
-pub const Knowledge = struct {
-    id: []const u8,
-    kanban_id: []const u8,
-    file_path: []const u8,
-    label: []const u8,
-    /// Inline manual text ('' = file-backed row).
-    content: []const u8,
-    position: i64,
-};
+pub const Knowledge = agent_kanban_db.KnowledgeRow;
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches.
@@ -105,6 +98,8 @@ fn useCase(
     if (has_file and has_content) return error.BothSourcesSet;
     if (has_file and !std.fs.path.isAbsolute(input.file_path)) return error.NotAbsolutePath;
 
+    const handle: agent_kanban_db.DbOrTx = .{ .db = db };
+
     // Validate kanban exists + is a kanban + has an agent_kanbans row.
     // (spec D3: agent_kanbans.id == workspace_item_id, so kanban_id IS
     // the workspace_item_id.)
@@ -117,38 +112,11 @@ fn useCase(
     if (row == null) return error.KanbanNotFound;
     if (row) |r| r.deinit(allocator);
 
-    // Generate id + compute position.
-    const ts = helpers.unixTimestampNanos();
-    const id = try std.fmt.allocPrint(allocator, "akn_{d}", .{ts});
+    // INSERT at MAX(position) + 1 and read the row back.
+    const knowledge = (agent_kanban_db.insertKnowledge(allocator, handle, input.kanban_id, input.file_path, input.label, input.content) catch
+        return error.InsertFailed) orelse return error.RowVanished;
 
-    // INSERT with COALESCE guards: SqliteBackend.exec binds empty slices
-    // as SQL NULL (project memory sqlite-backend-empty-slice-binds-as-null),
-    // which would trip NOT NULL DEFAULT '' columns.
-    db.exec(allocator,
-        "INSERT INTO agent_kanban_knowledges (id, kanban_id, file_path, label, content, position, created_at, updated_at) VALUES (?, ?, COALESCE(?, ''), COALESCE(?, ''), COALESCE(?, ''), COALESCE((SELECT MAX(position) FROM agent_kanban_knowledges WHERE kanban_id = ?), -1) + 1, datetime('now'), datetime('now'))",
-        &.{ id, input.kanban_id, input.file_path, input.label, input.content, input.kanban_id },
-    ) catch return error.InsertFailed;
-
-    // Read back position.
-    var q2 = db.query(allocator,
-        "SELECT position FROM agent_kanban_knowledges WHERE id = ?",
-        &.{id},
-    ) catch return error.RefetchFailed;
-    defer q2.deinit();
-    const r = (q2.next() catch null) orelse return error.RowVanished;
-    defer r.deinit(allocator);
-    const position = std.fmt.parseInt(i64, r.values[0], 10) catch 0;
-
-    return .{
-        .knowledge = .{
-            .id = id,
-            .kanban_id = input.kanban_id,
-            .file_path = input.file_path,
-            .label = input.label,
-            .content = input.content,
-            .position = position,
-        },
-    };
+    return .{ .knowledge = knowledge };
 }
 
 // =====================================================================

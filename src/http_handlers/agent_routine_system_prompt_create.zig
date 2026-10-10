@@ -18,6 +18,7 @@ const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
+const agent_routine_db = @import("../models/agent_routine.db.zig");
 
 /// HTTP request body for system-prompt-create.
 const CreateSystemPromptBody = struct {
@@ -26,13 +27,7 @@ const CreateSystemPromptBody = struct {
 };
 
 /// Subset of the system-prompt row returned by the use-case.
-pub const SystemPrompt = struct {
-    id: []const u8,
-    routine_id: []const u8,
-    title: []const u8,
-    content: []const u8,
-    position: i64,
-};
+pub const SystemPrompt = agent_routine_db.SystemPromptRow;
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches.
@@ -86,9 +81,11 @@ fn useCase(
     const trimmed = std.mem.trim(u8, input.content, " \t\r\n");
     if (trimmed.len == 0) return error.ContentRequired;
 
-    // Validate routine exists + is a routine + has an agent_routines row.
+    const handle: agent_routine_db.DbOrTx = .{ .db = db };
+
+    // Validate kanban exists + is a kanban + has an agent_routines row.
     var q = db.query(allocator,
-        \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'routine'
+        \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban'
         \\AND EXISTS (SELECT 1 FROM agent_routines WHERE id = ?)
     , &[_][]const u8{ input.routine_id, input.routine_id }) catch return error.LookupFailed;
     defer q.deinit();
@@ -96,35 +93,11 @@ fn useCase(
     if (row == null) return error.RoutineNotFound;
     if (row) |r| r.deinit(allocator);
 
-    // Generate id + compute position.
-    const ts = helpers.unixTimestampNanos();
-    const id = try std.fmt.allocPrint(allocator, "arsp_{d}", .{ts});
+    // INSERT at MAX(position) + 1 and read the row back.
+    const system_prompt = (agent_routine_db.insertSystemPrompt(allocator, handle, input.routine_id, input.title, input.content) catch
+        return error.InsertFailed) orelse return error.RowVanished;
 
-    // COALESCE guards: empty-slice binds land as '' not NULL.
-    db.exec(allocator,
-        "INSERT INTO agent_routine_system_prompt (id, routine_id, title, content, position, created_at, updated_at) VALUES (?, ?, COALESCE(?, ''), COALESCE(?, ''), COALESCE((SELECT MAX(position) FROM agent_routine_system_prompt WHERE routine_id = ?), -1) + 1, datetime('now'), datetime('now'))",
-        &.{ id, input.routine_id, input.title, input.content, input.routine_id },
-    ) catch return error.InsertFailed;
-
-    // Read back position.
-    var q2 = db.query(allocator,
-        "SELECT position FROM agent_routine_system_prompt WHERE id = ?",
-        &.{id},
-    ) catch return error.RefetchFailed;
-    defer q2.deinit();
-    const r = (q2.next() catch null) orelse return error.RowVanished;
-    defer r.deinit(allocator);
-    const position = std.fmt.parseInt(i64, r.values[0], 10) catch 0;
-
-    return .{
-        .system_prompt = .{
-            .id = id,
-            .routine_id = input.routine_id,
-            .title = input.title,
-            .content = input.content,
-            .position = position,
-        },
-    };
+    return .{ .system_prompt = system_prompt };
 }
 
 // =====================================================================

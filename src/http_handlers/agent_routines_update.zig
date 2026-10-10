@@ -17,6 +17,7 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_routine_db = @import("../models/agent_routine.db.zig");
 
 /// HTTP request body for agent-routine update.
 const UpdateAgentRoutineBody = struct {
@@ -25,13 +26,7 @@ const UpdateAgentRoutineBody = struct {
 
 /// Subset of the agent_routines row returned by the use-case. Field
 /// strings are owned by the caller (lifetime = request arena).
-pub const AgentRoutine = struct {
-    id: []const u8,
-    workspace_item_id: []const u8,
-    description: []const u8,
-    created_at: []const u8,
-    updated_at: []const u8,
-};
+pub const AgentRoutine = agent_routine_db.AgentRoutineRow;
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches.
@@ -94,42 +89,14 @@ fn useCase(
     defer row.deinit(allocator);
     if (!std.mem.eql(u8, row.values[0], "routine")) return error.NotARoutine;
 
+    const handle: agent_routine_db.DbOrTx = .{ .db = db };
+
     // Require an existing config row (spec D3: id == workspace_item_id).
     // Empty-slice-as-NULL guard: COALESCE keeps '' descriptions intact.
-    db.exec(allocator,
-        "UPDATE agent_routines SET description = COALESCE(?, ''), updated_at = datetime('now') WHERE workspace_item_id = ?",
-        &[_][]const u8{ input.description, input.item_id },
-    ) catch return error.UpdateFailed;
+    const agent_routine = (agent_routine_db.updateDescription(allocator, handle, input.item_id, input.description) catch
+        return error.UpdateFailed) orelse return error.NotConfigured;
 
-    // Read back the updated row.
-    var q2 = db.query(allocator,
-        "SELECT id, workspace_item_id, description, IFNULL(created_at, ''), IFNULL(updated_at, '') FROM agent_routines WHERE workspace_item_id = ?",
-        &[_][]const u8{input.item_id},
-    ) catch return error.RefetchFailed;
-    defer q2.deinit();
-    const updated_row = (q2.next() catch null) orelse return error.NotConfigured;
-    defer updated_row.deinit(allocator); // safe — we dupe into the struct below
-
-    const id = try allocator.dupe(u8, updated_row.values[0]);
-    errdefer allocator.free(id);
-    const ws_item_id = try allocator.dupe(u8, updated_row.values[1]);
-    errdefer allocator.free(ws_item_id);
-    const description = try allocator.dupe(u8, updated_row.values[2]);
-    errdefer allocator.free(description);
-    const created_at = try allocator.dupe(u8, updated_row.values[3]);
-    errdefer allocator.free(created_at);
-    const updated_at = try allocator.dupe(u8, updated_row.values[4]);
-    errdefer allocator.free(updated_at);
-
-    return .{
-        .agent_routine = .{
-            .id = id,
-            .workspace_item_id = ws_item_id,
-            .description = description,
-            .created_at = created_at,
-            .updated_at = updated_at,
-        },
-    };
+    return .{ .agent_routine = agent_routine };
 }
 
 // =====================================================================

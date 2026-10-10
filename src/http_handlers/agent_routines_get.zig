@@ -30,39 +30,16 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_routine_db = @import("../models/agent_routine.db.zig");
 
 /// Wire shape for a knowledge row in the GET response.
-pub const AgentRoutineKnowledgeRow = struct {
-    id: []const u8,
-    routine_id: []const u8,
-    file_path: []const u8,
-    label: []const u8,
-    /// Inline manual text ('' = file-backed row).
-    content: []const u8,
-    position: i64,
-    created_at: []const u8,
-    updated_at: []const u8,
-};
+pub const AgentRoutineKnowledgeRow = agent_routine_db.KnowledgeRow;
 
 /// Wire shape for a system-prompt row in the GET response.
-pub const AgentRoutineSystemPromptRow = struct {
-    id: []const u8,
-    routine_id: []const u8,
-    title: []const u8,
-    content: []const u8,
-    position: i64,
-    created_at: []const u8,
-    updated_at: []const u8,
-};
+pub const AgentRoutineSystemPromptRow = agent_routine_db.SystemPromptRow;
 
 /// Wire shape for the agent-routines config row in the GET response.
-pub const AgentRoutineRow = struct {
-    id: []const u8,
-    workspace_item_id: []const u8,
-    description: []const u8,
-    created_at: []const u8,
-    updated_at: []const u8,
-};
+pub const AgentRoutineRow = agent_routine_db.AgentRoutineRow;
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches
@@ -125,106 +102,29 @@ fn useCase(
     defer row.deinit(allocator);
     if (!std.mem.eql(u8, row.values[0], "routine")) return error.ItemNotRoutine;
 
+    const handle: agent_routine_db.DbOrTx = .{ .db = db };
+
     // Load config row (spec D3: agent_routines.id == workspace_item_id).
-    var qc = db.query(allocator,
-        "SELECT id, workspace_item_id, description, IFNULL(created_at, ''), IFNULL(updated_at, '') FROM agent_routines WHERE workspace_item_id = ?",
-        &[_][]const u8{input.item_id},
-    ) catch return error.DatabaseError;
-    defer qc.deinit();
-    const crow = (qc.next() catch null) orelse return error.NotConfigured;
-    defer crow.deinit(allocator);
-    const config = AgentRoutineRow{
-        .id = try allocator.dupe(u8, crow.values[0]),
-        .workspace_item_id = try allocator.dupe(u8, crow.values[1]),
-        .description = try allocator.dupe(u8, crow.values[2]),
-        .created_at = try allocator.dupe(u8, crow.values[3]),
-        .updated_at = try allocator.dupe(u8, crow.values[4]),
-    };
+    const config = (agent_routine_db.getByWorkspaceItemId(allocator, handle, input.item_id) catch
+        return error.DatabaseError) orelse return error.NotConfigured;
 
     // Load knowledge rows (position DESC).
-    var knowledges = std.ArrayList(AgentRoutineKnowledgeRow).empty;
-    errdefer {
-        for (knowledges.items) |k| freeKnowledgeRow(allocator, k);
-        knowledges.deinit(allocator);
-    }
-    {
-        var qk = db.query(allocator,
-            \\SELECT id, routine_id, file_path, label, content, position,
-            \\       IFNULL(created_at, ''), IFNULL(updated_at, '')
-            \\FROM agent_routine_knowledges WHERE routine_id = ?
-            \\ORDER BY position DESC
-        , &[_][]const u8{input.item_id}) catch return error.DatabaseError;
-        defer qk.deinit();
-        while ((qk.next() catch null)) |r| {
-            defer r.deinit(allocator);
-            const position = std.fmt.parseInt(i64, r.values[5], 10) catch 0;
-            try knowledges.append(allocator, .{
-                .id = try allocator.dupe(u8, r.values[0]),
-                .routine_id = try allocator.dupe(u8, r.values[1]),
-                .file_path = try allocator.dupe(u8, r.values[2]),
-                .label = try allocator.dupe(u8, r.values[3]),
-                .content = try allocator.dupe(u8, r.values[4]),
-                .position = position,
-                .created_at = try allocator.dupe(u8, r.values[6]),
-                .updated_at = try allocator.dupe(u8, r.values[7]),
-            });
-        }
-    }
-    const knowledges_owned = try knowledges.toOwnedSlice(allocator);
+    const knowledges = agent_routine_db.listKnowledge(allocator, handle, input.item_id) catch
+        return error.DatabaseError;
 
     // Load enabled tool names (tool_name ASC).
-    var tools = std.ArrayList([]u8).empty;
-    errdefer {
-        for (tools.items) |nm| allocator.free(nm);
-        tools.deinit(allocator);
-    }
-    {
-        var qt = db.query(allocator,
-            "SELECT tool_name FROM agent_routine_tools WHERE routine_id = ? AND enabled = 1 ORDER BY tool_name ASC",
-            &[_][]const u8{input.item_id}) catch return error.DatabaseError;
-        defer qt.deinit();
-        while ((qt.next() catch null)) |r| {
-            defer r.deinit(allocator);
-            try tools.append(allocator, try allocator.dupe(u8, r.values[0]));
-        }
-    }
-    const tools_owned = try tools.toOwnedSlice(allocator);
+    const tools = agent_routine_db.listEnabledToolNames(allocator, handle, input.item_id) catch
+        return error.DatabaseError;
 
     // Load system-prompt rows (position DESC).
-    var system_prompts = std.ArrayList(AgentRoutineSystemPromptRow).empty;
-    errdefer {
-        for (system_prompts.items) |p| freeSystemPromptRow(allocator, p);
-        system_prompts.deinit(allocator);
-    }
-    {
-        var qp = db.query(allocator,
-            \\SELECT id, routine_id, title, content, position,
-            \\       IFNULL(created_at, ''), IFNULL(updated_at, '')
-            \\FROM agent_routine_system_prompt WHERE routine_id = ?
-            \\ORDER BY position DESC
-        , &[_][]const u8{input.item_id}) catch return error.DatabaseError;
-        defer qp.deinit();
-        while ((qp.next() catch null)) |r| {
-            defer r.deinit(allocator);
-            const position = std.fmt.parseInt(i64, r.values[4], 10) catch 0;
-            try system_prompts.append(allocator, .{
-                .id = try allocator.dupe(u8, r.values[0]),
-                .routine_id = try allocator.dupe(u8, r.values[1]),
-                .title = try allocator.dupe(u8, r.values[2]),
-                .content = try allocator.dupe(u8, r.values[3]),
-                .position = position,
-                .created_at = try allocator.dupe(u8, r.values[5]),
-                .updated_at = try allocator.dupe(u8, r.values[6]),
-            });
-        }
-    }
-    const system_prompts_owned = try system_prompts.toOwnedSlice(allocator);
+    const system_prompts = agent_routine_db.listSystemPrompts(allocator, handle, input.item_id) catch
+        return error.DatabaseError;
 
     return .{
         .agent_routine = config,
-        .knowledges = knowledges_owned,
-        .tools = tools_owned,
-        .system_prompts = system_prompts_owned,
+        .knowledges = knowledges,
+        .tools = tools,
+        .system_prompts = system_prompts,
     };
 }
 

@@ -19,6 +19,7 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_routine_db = @import("../models/agent_routine.db.zig");
 
 /// HTTP request body.
 const UpdateKnowledgeBody = struct {
@@ -28,15 +29,7 @@ const UpdateKnowledgeBody = struct {
 };
 
 /// Subset of the knowledge row returned by the use-case.
-pub const Knowledge = struct {
-    id: []const u8,
-    routine_id: []const u8,
-    file_path: []const u8,
-    label: []const u8,
-    /// Inline manual text ('' = file-backed row).
-    content: []const u8,
-    position: i64,
-};
+pub const Knowledge = agent_routine_db.KnowledgeRow;
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches.
@@ -97,73 +90,20 @@ pub fn useCase(
         if (fp.len > 0 and !std.fs.path.isAbsolute(fp)) return error.NotAbsolutePath;
     }
 
-    // Build dynamic UPDATE SQL. file_path/content use COALESCE(?, '') so
-    // an empty-slice bind lands as '' not NULL (NOT NULL columns).
-    var sql_list: std.ArrayList(u8) = .empty;
-    defer sql_list.deinit(allocator);
-    try sql_list.appendSlice(allocator, "UPDATE agent_routine_knowledges SET updated_at = datetime('now')");
-    if (input.file_path != null) try sql_list.appendSlice(allocator, ", file_path = COALESCE(?, '')");
-    if (input.label != null) try sql_list.appendSlice(allocator, ", label = ?");
-    if (input.content != null) try sql_list.appendSlice(allocator, ", content = COALESCE(?, '')");
-    try sql_list.appendSlice(allocator, " WHERE id = ? AND routine_id = ?");
+    const handle: agent_routine_db.DbOrTx = .{ .db = db };
 
-    // Bind args. Max 5 slots: file_path, label, content, knowledge_id, routine_id.
-    var args_buf: [5][]const u8 = undefined;
-    var arg_idx: usize = 0;
-    if (input.file_path) |fp| {
-        args_buf[arg_idx] = fp;
-        arg_idx += 1;
-    }
-    if (input.label) |lb| {
-        args_buf[arg_idx] = lb;
-        arg_idx += 1;
-    }
-    if (input.content) |ct| {
-        args_buf[arg_idx] = ct;
-        arg_idx += 1;
-    }
-    args_buf[arg_idx] = input.knowledge_id;
-    arg_idx += 1;
-    args_buf[arg_idx] = input.routine_id;
-    arg_idx += 1;
+    // Patch the requested fields, then read the row back.
+    const knowledge = (agent_routine_db.updateKnowledge(
+        allocator,
+        handle,
+        input.knowledge_id,
+        input.routine_id,
+        input.file_path,
+        input.label,
+        input.content,
+    ) catch return error.UpdateFailed) orelse return error.RowNotFound;
 
-    var argv_list: std.ArrayList([]const u8) = .empty;
-    defer argv_list.deinit(allocator);
-    for (args_buf[0..arg_idx]) |a| try argv_list.append(allocator, a);
-
-    db.exec(allocator, sql_list.items, argv_list.items) catch return error.UpdateFailed;
-
-    // Read back.
-    var q = db.query(allocator,
-        "SELECT id, routine_id, file_path, label, content, position FROM agent_routine_knowledges WHERE id = ?",
-        &[_][]const u8{input.knowledge_id},
-    ) catch return error.RefetchFailed;
-    defer q.deinit();
-    const r = (q.next() catch null) orelse return error.RowNotFound;
-    defer r.deinit(allocator); // safe — we dupe the slices below
-    const position = std.fmt.parseInt(i64, r.values[5], 10) catch 0;
-
-    const id = try allocator.dupe(u8, r.values[0]);
-    errdefer allocator.free(id);
-    const routine_id = try allocator.dupe(u8, r.values[1]);
-    errdefer allocator.free(routine_id);
-    const file_path = try allocator.dupe(u8, r.values[2]);
-    errdefer allocator.free(file_path);
-    const label = try allocator.dupe(u8, r.values[3]);
-    errdefer allocator.free(label);
-    const content = try allocator.dupe(u8, r.values[4]);
-    errdefer allocator.free(content);
-
-    return .{
-        .knowledge = .{
-            .id = id,
-            .routine_id = routine_id,
-            .file_path = file_path,
-            .label = label,
-            .content = content,
-            .position = position,
-        },
-    };
+    return .{ .knowledge = knowledge };
 }
 
 // =====================================================================

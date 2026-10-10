@@ -16,6 +16,7 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_kanban_db = @import("../models/agent_kanban.db.zig");
 
 /// HTTP request body.
 const UpdateSystemPromptBody = struct {
@@ -24,13 +25,7 @@ const UpdateSystemPromptBody = struct {
 };
 
 /// Subset of the system-prompt row returned by the use-case.
-pub const SystemPrompt = struct {
-    id: []const u8,
-    kanban_id: []const u8,
-    title: []const u8,
-    content: []const u8,
-    position: i64,
-};
+pub const SystemPrompt = agent_kanban_db.SystemPromptRow;
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches.
@@ -81,65 +76,19 @@ fn useCase(
         return error.NothingToUpdate;
     }
 
-    // Build dynamic UPDATE SQL. COALESCE(?, '') so empty-slice binds
-    // land as '' not NULL (NOT NULL columns).
-    var sql_list: std.ArrayList(u8) = .empty;
-    defer sql_list.deinit(allocator);
-    try sql_list.appendSlice(allocator, "UPDATE agent_kanban_system_prompt SET updated_at = datetime('now')");
-    if (input.title != null) try sql_list.appendSlice(allocator, ", title = COALESCE(?, '')");
-    if (input.content != null) try sql_list.appendSlice(allocator, ", content = COALESCE(?, '')");
-    try sql_list.appendSlice(allocator, " WHERE id = ? AND kanban_id = ?");
+    const handle: agent_kanban_db.DbOrTx = .{ .db = db };
 
-    // Bind args. Max 4 slots: title, content, prompt_id, kanban_id.
-    var args_buf: [4][]const u8 = undefined;
-    var arg_idx: usize = 0;
-    if (input.title) |t| {
-        args_buf[arg_idx] = t;
-        arg_idx += 1;
-    }
-    if (input.content) |c| {
-        args_buf[arg_idx] = c;
-        arg_idx += 1;
-    }
-    args_buf[arg_idx] = input.prompt_id;
-    arg_idx += 1;
-    args_buf[arg_idx] = input.kanban_id;
-    arg_idx += 1;
+    // Patch the requested fields, then read the row back.
+    const system_prompt = (agent_kanban_db.updateSystemPrompt(
+        allocator,
+        handle,
+        input.prompt_id,
+        input.kanban_id,
+        input.title,
+        input.content,
+    ) catch return error.UpdateFailed) orelse return error.RowNotFound;
 
-    var argv_list: std.ArrayList([]const u8) = .empty;
-    defer argv_list.deinit(allocator);
-    for (args_buf[0..arg_idx]) |a| try argv_list.append(allocator, a);
-
-    db.exec(allocator, sql_list.items, argv_list.items) catch return error.UpdateFailed;
-
-    // Read back.
-    var q = db.query(allocator,
-        "SELECT id, kanban_id, title, content, position FROM agent_kanban_system_prompt WHERE id = ?",
-        &[_][]const u8{input.prompt_id},
-    ) catch return error.RefetchFailed;
-    defer q.deinit();
-    const r = (q.next() catch null) orelse return error.RowNotFound;
-    defer r.deinit(allocator); // safe — we dupe the slices below
-    const position = std.fmt.parseInt(i64, r.values[4], 10) catch 0;
-
-    const id = try allocator.dupe(u8, r.values[0]);
-    errdefer allocator.free(id);
-    const kanban_id = try allocator.dupe(u8, r.values[1]);
-    errdefer allocator.free(kanban_id);
-    const title = try allocator.dupe(u8, r.values[2]);
-    errdefer allocator.free(title);
-    const content = try allocator.dupe(u8, r.values[3]);
-    errdefer allocator.free(content);
-
-    return .{
-        .system_prompt = .{
-            .id = id,
-            .kanban_id = kanban_id,
-            .title = title,
-            .content = content,
-            .position = position,
-        },
-    };
+    return .{ .system_prompt = system_prompt };
 }
 
 // =====================================================================

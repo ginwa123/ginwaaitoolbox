@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const sqlite = @import("pabrikcore").sqlite;
+const agent_kanban_db = @import("../models/agent_kanban.db.zig");
 
 /// 100 MiB per-file OOM safety. NOT a content budget — purely to prevent
 /// the server from OOM-ing on a misconfigured path like `/dev/zero`.
@@ -116,11 +117,12 @@ pub fn makeAgentKanbanKnowledge(
     }
 
     // Fetch the knowledge rows (spec D3: kanban_id == workspace_item_id).
-    var q = db.query(allocator,
-        \\SELECT file_path, label, content FROM agent_kanban_knowledges
-        \\WHERE kanban_id = ? ORDER BY position DESC
-    , &[_][]const u8{workspace_item_id}) catch return try allocator.dupe(u8, "");
-    defer q.deinit();
+    const knowledge = agent_kanban_db.listKnowledge(allocator, .{ .db = db }, workspace_item_id) catch
+        return try allocator.dupe(u8, "");
+    defer {
+        for (knowledge) |k| agent_kanban_db.freeKnowledgeRow(allocator, k);
+        allocator.free(knowledge);
+    }
 
     // Collect rows first so the query is closed before we read files.
     var rows: std.ArrayList(struct {
@@ -130,15 +132,13 @@ pub fn makeAgentKanbanKnowledge(
     }) = .empty;
     defer rows.deinit(allocator);
 
-    while ((q.next() catch null)) |r| {
-        defer r.deinit(allocator);
+    for (knowledge) |k| {
         try rows.append(allocator, .{
-            .file_path = try allocator.dupe(u8, r.values[0]),
-            .label = try allocator.dupe(u8, r.values[1]),
-            .content = try allocator.dupe(u8, r.values[2]),
+            .file_path = k.file_path,
+            .label = k.label,
+            .content = k.content,
         });
     }
-
     if (rows.items.len == 0) return try allocator.dupe(u8, "");
 
     // Build the section.

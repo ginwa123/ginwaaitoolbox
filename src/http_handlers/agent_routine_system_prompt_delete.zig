@@ -14,6 +14,7 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_routine_db = @import("../models/agent_routine.db.zig");
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches.
@@ -46,10 +47,8 @@ fn useCase(
         return error.IdsRequired;
     }
 
-    db.exec(allocator,
-        "DELETE FROM agent_routine_system_prompt WHERE id = ? AND routine_id = ?",
-        &[_][]const u8{ input.prompt_id, input.routine_id },
-    ) catch return error.DeleteFailed;
+    agent_routine_db.deleteSystemPrompt(allocator, .{ .db = db }, input.prompt_id, input.routine_id) catch
+        return error.DeleteFailed;
 }
 
 // =====================================================================

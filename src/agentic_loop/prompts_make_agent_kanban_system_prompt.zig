@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const sqlite = @import("pabrikcore").sqlite;
+const agent_kanban_db = @import("../models/agent_kanban.db.zig");
 
 /// Resolve the workspace_item_id for a session. Returns "" when the
 /// session doesn't exist (no workspace_item_tasks row).
@@ -75,11 +76,12 @@ pub fn makeAgentKanbanSystemPrompt(
 
     // Fetch the prompt rows (position DESC — same ordering convention as
     // agent_kanban_knowledges).
-    var q = db.query(allocator,
-        \\SELECT title, content FROM agent_kanban_system_prompt
-        \\WHERE kanban_id = ? ORDER BY position DESC
-    , &[_][]const u8{workspace_item_id}) catch return try allocator.dupe(u8, "");
-    defer q.deinit();
+    const prompts = agent_kanban_db.listSystemPrompts(allocator, .{ .db = db }, workspace_item_id) catch
+        return try allocator.dupe(u8, "");
+    defer {
+        for (prompts) |pr| agent_kanban_db.freeSystemPromptRow(allocator, pr);
+        allocator.free(prompts);
+    }
 
     // Collect rows first so the query is closed before we build output.
     var rows: std.ArrayList(struct {
@@ -88,14 +90,12 @@ pub fn makeAgentKanbanSystemPrompt(
     }) = .empty;
     defer rows.deinit(allocator);
 
-    while ((q.next() catch null)) |r| {
-        defer r.deinit(allocator);
+    for (prompts) |pr| {
         try rows.append(allocator, .{
-            .title = try allocator.dupe(u8, r.values[0]),
-            .content = try allocator.dupe(u8, r.values[1]),
+            .title = pr.title,
+            .content = pr.content,
         });
     }
-
     if (rows.items.len == 0) return try allocator.dupe(u8, "");
 
     // Build the section.
