@@ -113,9 +113,6 @@ pub fn makeAgentKanbanSystemPrompt(
     );
 
     for (rows.items) |row| {
-        defer allocator.free(row.title);
-        defer allocator.free(row.content);
-
         // Skip whitespace-only rows — nothing meaningful to inject.
         const trimmed = std.mem.trim(u8, row.content, " \t\r\n");
         if (trimmed.len == 0) continue;

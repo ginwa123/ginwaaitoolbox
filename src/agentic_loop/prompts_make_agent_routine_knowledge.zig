@@ -170,10 +170,6 @@ pub fn makeAgentRoutineKnowledge(
     );
 
     for (rows.items) |row| {
-        defer allocator.free(row.file_path);
-        defer allocator.free(row.label);
-        defer allocator.free(row.content);
-
         // Inline text entry — no <file: ...> marker.
         if (row.content.len > 0) {
             try out.appendSlice(allocator, "\n### ");

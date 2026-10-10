@@ -155,10 +155,6 @@ pub fn makeAgentKnowledge(
     );
 
     for (rows.items) |row| {
-        defer allocator.free(row.file_path);
-        defer allocator.free(row.label);
-        defer allocator.free(row.content);
-
         // Inline text entry — no <file: ...> marker (the path is empty
         // and the marker would be meaningless to the model).
         if (row.content.len > 0) {
