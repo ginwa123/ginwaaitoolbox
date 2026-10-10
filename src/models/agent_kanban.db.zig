@@ -157,7 +157,13 @@ fn readSystemPromptRow(allocator: std.mem.Allocator, r: anytype) !SystemPromptRo
 pub fn exists(allocator: std.mem.Allocator, db: DbOrTx, workspace_item_id: []const u8) bool {
     var q = db.query(allocator, "SELECT 1 FROM agent_kanbans WHERE workspace_item_id = ?", &.{workspace_item_id}) catch return false;
     defer q.deinit();
-    return if (q.next() catch null) |_| true else false;
+    // The row owns its values[] buffer — release it, or the caller's
+    // allocator leaks one allocation per exists() call.
+    if (q.next() catch null) |row| {
+        row.deinit(allocator);
+        return true;
+    }
+    return false;
 }
 
 /// Fetch the config row by workspace_item_id. Returns null when absent.

@@ -156,7 +156,13 @@ fn readSystemPromptRow(allocator: std.mem.Allocator, r: anytype) !SystemPromptRo
 pub fn exists(allocator: std.mem.Allocator, db: DbOrTx, agent_id: []const u8) bool {
     var q = db.query(allocator, "SELECT 1 FROM agents WHERE id = ?", &.{agent_id}) catch return false;
     defer q.deinit();
-    return if (q.next() catch null) |_| true else false;
+    // The row owns its values[] buffer — release it, or the caller's
+    // allocator leaks one allocation per exists() call.
+    if (q.next() catch null) |row| {
+        row.deinit(allocator);
+        return true;
+    }
+    return false;
 }
 
 /// Fetch one `agents` row by id. Returns null when absent.
