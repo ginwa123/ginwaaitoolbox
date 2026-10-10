@@ -887,7 +887,26 @@ const handleNavigate = (
       router.push({ path: '/app', query: sub })
     }
   } else if (view === 'settings') {
-    router.push({ path: '/app/settings' })
+    // Land directly on the last-open settings tab so the URL already
+    // carries `?section=` (the mount normalization in PabrikSettings
+    // would repair a clean push via replace, but pushing the stored tab
+    // avoids the clean-URL flash). Default tab stays clean.
+    let stored: string | null = null
+    try {
+      stored = localStorage.getItem('pabrik-settings-active-tab')
+    } catch (e) {
+      // Storage unreadable (private mode): fall back to the clean URL.
+      // PabrikSettings mounts on General with a clean URL in that case,
+      // so the fallback cannot render a wrong tab, only the default.
+      console.warn('[settings] stored tab unreadable, using default', e)
+      stored = null
+    }
+    const known = ['general', 'profiles', 'mcp', 'tools', 'evals']
+    if (stored && known.includes(stored) && stored !== 'general') {
+      router.push({ path: '/app/settings', query: { section: stored } })
+    } else {
+      router.push({ path: '/app/settings' })
+    }
   }
 }
 

@@ -631,6 +631,44 @@ describe('PabrikSettings (orchestrator)', () => {
     expect(wrapper.find('[data-testid="defaults-note"]').exists()).toBe(true)
   })
 
+  it('mount with clean URL + stored tools → URL gains ?section=tools (mount normalization)', async () => {
+    // The reported bug: Tools active at /app/settings with no
+    // ?section=tools. The getter falls back to localStorage without
+    // touching the URL, and TabStrip skips its emit when
+    // saved==prop — so no router.replace ever runs. Mount must
+    // normalize the URL to the tab actually shown.
+    localStorage.setItem('pabrik-settings-active-tab', 'tools')
+    const router = await makeSettingsRouter()
+    mockGet.mockResolvedValueOnce({})
+    const wrapper = mount(PabrikSettings, {
+      global: { plugins: [router], stubs: { Teleport: true } },
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-tab-id="tools"][data-active="true"]').exists()).toBe(true)
+    expect(router.currentRoute.value.query.section).toBe('tools')
+  })
+
+  it('mount with ?section=tools persists to storage so the next clean load restores it', async () => {
+    const router = await makeSettingsRouter({ section: 'tools' })
+    mockGet.mockResolvedValueOnce({})
+    mount(PabrikSettings, {
+      global: { plugins: [router], stubs: { Teleport: true } },
+    })
+    await flushPromises()
+    expect(localStorage.getItem('pabrik-settings-active-tab')).toBe('tools')
+  })
+
+  it('mount with ?section=general strips the default from the URL', async () => {
+    const router = await makeSettingsRouter({ section: 'general' })
+    mockGet.mockResolvedValueOnce({})
+    const wrapper = mount(PabrikSettings, {
+      global: { plugins: [router], stubs: { Teleport: true } },
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-tab-id="general"][data-active="true"]').exists()).toBe(true)
+    expect(router.currentRoute.value.query.section).toBeUndefined()
+  })
+
   it('hydrates an explicit tools list from config (no defaults note, checkboxes reflect it)', async () => {
     mockGet.mockResolvedValueOnce({ tools: ['command'] })
     const wrapper = mount(PabrikSettings, { global: { stubs: { Teleport: true } } })

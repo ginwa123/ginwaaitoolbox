@@ -143,6 +143,43 @@ function onToggleBrowserTabs(value: boolean) {
 }
 
 onMounted(async () => {
+  // Every view switch lands in the URL (?section=) so refresh /
+  // Back-Forward / shared links keep the open tab. The computed getter
+  // above falls back to localStorage when the URL has no `?section=`,
+  // which renders the stored tab with a clean URL (the reported bug:
+  // Tools active at /app/settings with no ?section=tools). Normalize
+  // on mount: the URL is rewritten to reflect the tab actually shown,
+  // and a deep link is persisted to storage so the next clean load
+  // restores it. Replace, not push — mount is not a navigation.
+  // Guarded: unit tests mount without a router.
+  try {
+    if (router && route) {
+      const actual = activeTab.value
+      activeTabLocal.value = actual
+      try {
+        localStorage.setItem(TAB_STORAGE_KEY, actual)
+      } catch {
+        /* private mode */
+      }
+      const raw = route.query.section
+      const urlSection = Array.isArray(raw) ? raw[0] : raw
+      const urlValid =
+        typeof urlSection === 'string' && TAB_IDS.includes(urlSection)
+          ? (urlSection as Tab)
+          : undefined
+      if (actual === 'general') {
+        if (urlValid !== undefined || raw !== undefined) {
+          const rest = { ...route.query }
+          delete rest.section
+          void router.replace({ query: rest }).catch(() => {})
+        }
+      } else if (urlValid !== actual) {
+        void router.replace({ query: { ...route.query, section: actual } }).catch(() => {})
+      }
+    }
+  } catch {
+    /* router absent in tests */
+  }
   // Plan 2026-08-24-config-simplify-remove-defaults: the legacy
   // localStorage fallback (which existed solely to seed the removed
   // Defaults form) is gone. The API response is the only source.

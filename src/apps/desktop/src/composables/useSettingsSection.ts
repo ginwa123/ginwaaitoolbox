@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 export interface SettingsSectionDef {
@@ -94,6 +94,38 @@ export function useSettingsSection(options: UseSettingsSectionOptions) {
   function select(next: string): void {
     section.value = next
   }
+
+  // Mount normalization: the getter falls back to localStorage when the
+  // URL has no `?section=`, which would render the stored section with a
+  // clean URL. Rewrite the URL to reflect the section actually shown,
+  // and persist a deep link to storage so the next clean load restores
+  // it. Replace, not push — mount is not a navigation.
+  onMounted(() => {
+    if (!router || !route) return
+    try {
+      const actual = section.value
+      local.value = actual
+      try {
+        localStorage.setItem(storageKey, actual)
+      } catch {
+        /* private mode — URL below is the source of truth */
+      }
+      const raw = route.query.section
+      const value = Array.isArray(raw) ? raw[0] : raw
+      const urlValid = isKnown(value) ? (value as string) : undefined
+      if (actual === defaultSection) {
+        if (urlValid !== undefined || raw !== undefined) {
+          const rest = { ...route.query }
+          delete rest.section
+          void router.replace({ query: rest }).catch(() => {})
+        }
+      } else if (urlValid !== actual) {
+        void router.replace({ query: { ...route.query, section: actual } }).catch(() => {})
+      }
+    } catch {
+      /* router absent in tests */
+    }
+  })
 
   return { section, select }
 }
