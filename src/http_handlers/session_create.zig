@@ -186,7 +186,25 @@ fn activeProfileForOwner(
     return cfg.active_profile;
 }
 
-fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.App, parsed: RequestSession, owner: []const u8) !ResponseSession {
+/// The session-create funnel, callable without an HTTP request.
+///
+/// `pub` so `pabrik headless run` can drive the SAME code path the
+/// POST /api/llm/session handler drives. Everything the handler does
+/// around this function is transport (parse the body, resolve the owner
+/// from a cookie, stamp the row); everything that decides what the turn
+/// actually does lives HERE — cwd resolution, the profile snapshot, the
+/// pending-ask_user abandonment, slash-skill expansion, and the
+/// `emit_run_agent` that starts the worker.
+///
+/// A headless mode that re-implemented any of that would drift from the
+/// browser on the next change to this function, and the drift would be
+/// invisible until a turn behaved differently in the two clients. So
+/// headless calls this instead.
+///
+/// `owner` is the session's owning user id. Empty means "no identity" —
+/// which is what headless passes, matching the server's behaviour with
+/// `--auth` off.
+pub fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *pabrikcore.App, parsed: RequestSession, owner: []const u8) !ResponseSession {
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
 
     // --- Resolve all values locally using arena ---

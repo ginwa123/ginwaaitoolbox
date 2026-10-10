@@ -21,6 +21,7 @@ const cleanup_stale_background_process = pabrikcore.cleanup_stale_background_pro
 // pabrikcore.* for the same dual-module reason as above.
 const shutdown = pabrikcore.boot_shutdown;
 const cli_dispatch = pabrikcore.boot_cli_dispatch;
+const headless_dispatch = pabrikcore.boot_headless_dispatch;
 const server_boot = pabrikcore.boot_server_boot;
 const static_serve = pabrikcore.http_static_serve;
 
@@ -31,6 +32,12 @@ pub fn main(init: std.process.Init) !void {
 
     if (try cli_dispatch.dispatchServiceSubcommand(allocator, io, environment, init)) return;
     if (try cli_dispatch.dispatchCreateAdmin(allocator, io, environment, init)) return;
+    // Headless mode boots the whole backend and runs a turn WITHOUT binding
+    // a port. Ordered after the two utility subcommands and before the
+    // server boot: it is a complete alternative to serving, not a flag on
+    // it, so it must be able to return before `parseCliArgs` sees an argv
+    // it would reject (a `headless run` argv has no `--port`).
+    if (try headless_dispatch.dispatchHeadless(allocator, io, environment, init)) return;
 
     server_boot.ignoreSigpipe();
 
