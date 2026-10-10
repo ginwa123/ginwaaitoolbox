@@ -9,12 +9,17 @@ import { onBeforeUnmount, ref } from 'vue'
  * Dismissal triggers:
  *   - Escape
  *   - mousedown outside the menu
- *   - wheel / scroll  ← the card's menu lives inside the card's subtree,
- *     and the kanban columns render through a VirtualScroller. Scrolling a
- *     card out of the viewport unmounts the card, and with it the menu,
- *     killing it mid-interaction. Closing on scroll removes that whole
- *     class of bug. Both are capture-phase so a menu that stops propagation
- *     can't survive a scroll either.
+ *   - a scroll that actually moves the row the menu was opened from
+ *
+ * Why the scroll dismiss is scoped rather than global: every menu is
+ * Teleported to `body` and positioned `fixed`, so it does not move with
+ * its row. When the row scrolls away — or the VirtualScroller unmounts
+ * it — the menu is orphaned over unrelated content and must close. But
+ * a scroll anywhere ELSE in the app (the chat transcript, the file
+ * tree, the right sidebar) leaves the menu exactly where the user put
+ * it, and closing on that is the "menu suddenly closed" report. So the
+ * listener only fires when the scroll target actually contains the
+ * anchor, or the anchor has been torn out of the DOM.
  *
  * Edge clamping: menus are placed at the raw clientX/clientY. A card in a
  * 280px-wide column can be right-clicked near the viewport's right edge,
@@ -31,9 +36,36 @@ export function useContextMenu(options: { width?: number; height?: number } = {}
 
   const menuPos = ref<{ x: number; y: number } | null>(null)
 
+  /**
+   * The element the menu was opened from, captured at open time.
+   *
+   * Read from `event.currentTarget` (the row the `@contextmenu` handler is
+   * bound to) or passed explicitly by the keyboard path. It lives here
+   * rather than in the host because the host would have to thread it
+   * through every call site, and because the anchor is only meaningful
+   * to the dismiss logic that consumes it.
+   */
+  let anchorEl: HTMLElement | null = null
+
   const openAt = (event: MouseEvent) => {
     event.preventDefault()
-    menuPos.value = clampToViewport(event.clientX, event.clientY)
+    // `currentTarget` is only valid during dispatch, so it must be read
+    // synchronously here rather than in an async callback.
+    openAtPoint(event.clientX, event.clientY, event.currentTarget as HTMLElement | null)
+  }
+
+  /**
+   * Open at an explicit point with an explicit anchor.
+   *
+   * Split out of `openAt` so the keyboard path (ContextMenu / Shift+F10)
+   * can open the menu from a bounding-rect centre and still get the same
+   * dismiss wiring. Before this, that path assigned `menuPos` directly
+   * and never attached a single listener — no Escape, no outside-click,
+   * no scroll dismiss.
+   */
+  const openAtPoint = (x: number, y: number, anchor: HTMLElement | null) => {
+    anchorEl = anchor
+    menuPos.value = clampToViewport(x, y)
     attachDismissListeners()
   }
 
@@ -54,6 +86,7 @@ export function useContextMenu(options: { width?: number; height?: number } = {}
 
   const close = () => {
     menuPos.value = null
+    anchorEl = null
     detachDismissListeners()
   }
 
@@ -72,7 +105,37 @@ export function useContextMenu(options: { width?: number; height?: number } = {}
     close()
   }
 
-  const onScroll = () => close()
+  /**
+   * Close only when the scroll actually invalidates the menu's anchor.
+   *
+   * Three cases, in the order they are checked:
+   *
+   *  1. The anchor is gone from the DOM. A VirtualScroller unmounts rows
+   *     outside its window, which is the case the original global
+   *     listener was written for. Close.
+   *  2. The scroll target is the anchor itself or a descendant of it.
+   *     The row moved under a `fixed` menu, so the menu now points at
+   *     nothing. Close.
+   *  3. Anything else — a scroll in the chat transcript, the file tree,
+   *     the right sidebar, or the menu's own submenu. The menu is still
+   *     exactly where the user put it, so it stays open.
+   *
+   * `wheel` is deliberately not dismissed at all: a wheel gesture over an
+   * unrelated pane is the same as case 3, and a wheel over the menu's own
+   * scrollable submenu ("Move to column") must scroll the submenu, not
+   * close it.
+   */
+  const onScroll = (event: Event) => {
+    if (!menuPos.value) return
+    if (!anchorEl || !anchorEl.isConnected) {
+      close()
+      return
+    }
+    const target = event.target as Node | null
+    if (target && (target === anchorEl || anchorEl.contains(target))) {
+      close()
+    }
+  }
 
   // Dismiss listeners follow the menu state directly: attached on open,
   // removed on close (re-adding an identical listener is a browser no-op,
@@ -80,14 +143,12 @@ export function useContextMenu(options: { width?: number; height?: number } = {}
   function attachDismissListeners() {
     window.addEventListener('keydown', onKeydown)
     window.addEventListener('mousedown', onPointerDown)
-    window.addEventListener('wheel', onScroll, { capture: true, passive: true })
     window.addEventListener('scroll', onScroll, true)
   }
 
   function detachDismissListeners() {
     window.removeEventListener('keydown', onKeydown)
     window.removeEventListener('mousedown', onPointerDown)
-    window.removeEventListener('wheel', onScroll, true)
     window.removeEventListener('scroll', onScroll, true)
   }
 
@@ -95,5 +156,5 @@ export function useContextMenu(options: { width?: number; height?: number } = {}
     detachDismissListeners()
   })
 
-  return { menuPos, openAt, close, clampToViewport }
+  return { menuPos, openAt, openAtPoint, close, clampToViewport }
 }

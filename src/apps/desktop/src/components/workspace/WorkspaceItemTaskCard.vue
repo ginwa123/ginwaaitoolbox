@@ -160,7 +160,7 @@ const { dropIndicatorBoxShadow, handleSelectTask } = useTaskActions(props, emit)
 // `clampToViewport` is destructured too so the ContextMenu-key path
 // (which builds its own position from the card's rect) applies the same
 // edge clamp as a real right-click.
-const { menuPos, openAt, close: closeTaskMenu, clampToViewport } = useContextMenu()
+const { menuPos, openAt, openAtPoint, close: closeTaskMenu, clampToViewport } = useContextMenu()
 
 const onTaskContextMenu = (event: MouseEvent) => {
   openAt(event)
@@ -189,9 +189,10 @@ const handleCardKeydown = (event: KeyboardEvent) => {
     // right-click so a card near the bottom-right corner doesn't push
     // the menu off-screen.
     const rect = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect()
-    menuPos.value = clampToViewport(
+    openAtPoint(
       rect ? rect.left + rect.width / 2 : 0,
       rect ? rect.top + rect.height / 2 : 0,
+      event.currentTarget as HTMLElement | null,
     )
   }
 }
