@@ -98,10 +98,10 @@ fn useCase(
 
     const handle: agent_routine_db.DbOrTx = .{ .db = db };
 
-    // Validate the workspace_item is a kanban.
+    // Validate the workspace_item is a routine.
     {
         var q = db.query(allocator,
-            \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban'
+            \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'routine'
         , &[_][]const u8{input.routine_id}) catch return error.InsertFailed;
         defer q.deinit();
         const row = q.next() catch null;
@@ -303,9 +303,7 @@ test "useCase: happy path inserts row with enabled=1" {
 
     const output = try useCase(alloc, &ctx.db, .{ .routine_id = "ws_item_1", .tool_name = "command" });
     defer {
-        alloc.free(output.tool.id);
-        alloc.free(output.tool.routine_id);
-        alloc.free(output.tool.tool_name);
+        agent_routine_db.freeToolRow(alloc, output.tool);
     }
     try testing.expectEqualStrings("ws_item_1", output.tool.routine_id);
     try testing.expectEqualStrings("command", output.tool.tool_name);

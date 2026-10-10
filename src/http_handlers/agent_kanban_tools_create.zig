@@ -303,9 +303,7 @@ test "useCase: happy path inserts row with enabled=1" {
 
     const output = try useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "command" });
     defer {
-        alloc.free(output.tool.id);
-        alloc.free(output.tool.kanban_id);
-        alloc.free(output.tool.tool_name);
+        agent_kanban_db.freeToolRow(alloc, output.tool);
     }
     try testing.expectEqualStrings("ws_item_1", output.tool.kanban_id);
     try testing.expectEqualStrings("command", output.tool.tool_name);

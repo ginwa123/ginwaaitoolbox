@@ -328,7 +328,7 @@ test "useCase: happy path inserts with position 0 (COALESCE handles empty table)
         .file_path = "/tmp/a.md",
         .label = "First",
     });
-    defer alloc.free(output.knowledge.id);
+    defer agent_kanban_db.freeKnowledgeRow(alloc, output.knowledge);
     // First row: COALESCE(NULL, -1) + 1 = 0. Critical: NOT 1 (off-by-one trap).
     try testing.expectEqual(@as(i64, 0), output.knowledge.position);
     try testing.expectEqualStrings("/tmp/a.md", output.knowledge.file_path);
@@ -341,7 +341,7 @@ test "useCase: happy path inserts with position 0 (COALESCE handles empty table)
         .content = "inline notes",
         .label = "Second",
     });
-    defer alloc.free(out2.knowledge.id);
+    defer agent_kanban_db.freeKnowledgeRow(alloc, out2.knowledge);
     try testing.expectEqual(@as(i64, 1), out2.knowledge.position);
     try testing.expectEqualStrings("inline notes", out2.knowledge.content);
 }

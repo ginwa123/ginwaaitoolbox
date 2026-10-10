@@ -279,7 +279,7 @@ test "useCase: happy path inserts with position 0 then 1 (COALESCE handles empty
         .title = "Persona",
         .content = "You are X",
     });
-    defer alloc.free(out1.system_prompt.id);
+    defer agent_kanban_db.freeSystemPromptRow(alloc, out1.system_prompt);
     // First row: COALESCE(NULL, -1) + 1 = 0. Critical: NOT 1 (off-by-one trap).
     try testing.expectEqual(@as(i64, 0), out1.system_prompt.position);
     try testing.expectEqualStrings("Persona", out1.system_prompt.title);
@@ -290,7 +290,7 @@ test "useCase: happy path inserts with position 0 then 1 (COALESCE handles empty
         .title = "Style",
         .content = "Be terse",
     });
-    defer alloc.free(out2.system_prompt.id);
+    defer agent_kanban_db.freeSystemPromptRow(alloc, out2.system_prompt);
     try testing.expectEqual(@as(i64, 1), out2.system_prompt.position);
 }
 
@@ -305,7 +305,7 @@ test "useCase: empty title tolerated (COALESCE binds '')" {
         .title = "",
         .content = "Untitled prompt body",
     });
-    defer alloc.free(out.system_prompt.id);
+    defer agent_kanban_db.freeSystemPromptRow(alloc, out.system_prompt);
     try testing.expectEqualStrings("", out.system_prompt.title);
     try testing.expectEqualStrings("Untitled prompt body", out.system_prompt.content);
 }

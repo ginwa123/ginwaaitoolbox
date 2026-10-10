@@ -263,13 +263,7 @@ test "useCase: happy path updates both file_path AND label" {
         .file_path = "/tmp/new.md",
         .label = "New label",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.kanban_id);
-        alloc.free(output.knowledge.file_path);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_kanban_db.freeKnowledgeRow(alloc, output.knowledge);
     try testing.expectEqualStrings("kn_1", output.knowledge.id);
     try testing.expectEqualStrings("/tmp/new.md", output.knowledge.file_path);
     try testing.expectEqualStrings("New label", output.knowledge.label);
@@ -288,13 +282,7 @@ test "useCase: file_path='' clears path and sets content (file→text switch)" {
         .label = "Switched",
         .content = "inline body after switch",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.kanban_id);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.file_path.len > 0) alloc.free(output.knowledge.file_path);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_kanban_db.freeKnowledgeRow(alloc, output.knowledge);
     try testing.expectEqualStrings("", output.knowledge.file_path);
     try testing.expectEqualStrings("inline body after switch", output.knowledge.content);
     try testing.expectEqualStrings("Switched", output.knowledge.label);
@@ -313,13 +301,7 @@ test "useCase: content='' clears text and sets path (text→file switch)" {
         .label = "Switched to file",
         .content = "",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.kanban_id);
-        alloc.free(output.knowledge.label);
-        alloc.free(output.knowledge.file_path);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_kanban_db.freeKnowledgeRow(alloc, output.knowledge);
     try testing.expectEqualStrings("", output.knowledge.content);
     try testing.expectEqualStrings("/tmp/switched.md", output.knowledge.file_path);
 }

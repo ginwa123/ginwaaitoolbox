@@ -100,11 +100,11 @@ fn useCase(
 
     const handle: agent_routine_db.DbOrTx = .{ .db = db };
 
-    // Validate kanban exists + is a kanban + has an agent_routines row.
+    // Validate routine exists + is a routine + has an agent_routines row.
     // (spec D3: agent_routines.id == workspace_item_id, so routine_id IS
     // the workspace_item_id.)
     var q = db.query(allocator,
-        \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban'
+        \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'routine'
         \\AND EXISTS (SELECT 1 FROM agent_routines WHERE id = ?)
     , &[_][]const u8{ input.routine_id, input.routine_id }) catch return error.LookupFailed;
     defer q.deinit();
@@ -328,7 +328,7 @@ test "useCase: happy path inserts with position 0 (COALESCE handles empty table)
         .file_path = "/tmp/a.md",
         .label = "First",
     });
-    defer alloc.free(output.knowledge.id);
+    defer agent_routine_db.freeKnowledgeRow(alloc, output.knowledge);
     // First row: COALESCE(NULL, -1) + 1 = 0. Critical: NOT 1 (off-by-one trap).
     try testing.expectEqual(@as(i64, 0), output.knowledge.position);
     try testing.expectEqualStrings("/tmp/a.md", output.knowledge.file_path);
@@ -341,7 +341,7 @@ test "useCase: happy path inserts with position 0 (COALESCE handles empty table)
         .content = "inline notes",
         .label = "Second",
     });
-    defer alloc.free(out2.knowledge.id);
+    defer agent_routine_db.freeKnowledgeRow(alloc, out2.knowledge);
     try testing.expectEqual(@as(i64, 1), out2.knowledge.position);
     try testing.expectEqualStrings("inline notes", out2.knowledge.content);
 }
