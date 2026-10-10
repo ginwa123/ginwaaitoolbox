@@ -307,11 +307,7 @@ test "useCase: happy path updates description and returns Agent" {
         .description = "freshly updated",
     });
     defer {
-        alloc.free(output.agent.id);
-        alloc.free(output.agent.workspace_item_id);
-        alloc.free(output.agent.description);
-        alloc.free(output.agent.created_at);
-        alloc.free(output.agent.updated_at);
+        agent_db.freeAgentRow(alloc, output.agent);
     }
     try testing.expectEqualStrings("ws_item_1", output.agent.id);
     try testing.expectEqualStrings("ws_item_1", output.agent.workspace_item_id);

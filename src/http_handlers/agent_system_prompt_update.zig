@@ -288,10 +288,7 @@ test "useCase: happy path updates both title AND content" {
         .content = "New body",
     });
     defer {
-        alloc.free(output.system_prompt.id);
-        alloc.free(output.system_prompt.agent_id);
-        alloc.free(output.system_prompt.title);
-        alloc.free(output.system_prompt.content);
+        agent_db.freeSystemPromptRow(alloc, output.system_prompt);
     }
     try testing.expectEqualStrings("asp_1", output.system_prompt.id);
     try testing.expectEqualStrings("New Title", output.system_prompt.title);
@@ -311,10 +308,7 @@ test "useCase: title-only update keeps content" {
         .content = null,
     });
     defer {
-        alloc.free(output.system_prompt.id);
-        alloc.free(output.system_prompt.agent_id);
-        alloc.free(output.system_prompt.title);
-        alloc.free(output.system_prompt.content);
+        agent_db.freeSystemPromptRow(alloc, output.system_prompt);
     }
     try testing.expectEqualStrings("Renamed only", output.system_prompt.title);
     try testing.expectEqualStrings("Original body", output.system_prompt.content);
@@ -336,10 +330,7 @@ test "useCase: PATCH with empty-string content is legal (COALESCE binds '' not N
         .content = "",
     });
     defer {
-        alloc.free(output.system_prompt.id);
-        alloc.free(output.system_prompt.agent_id);
-        alloc.free(output.system_prompt.title);
-        alloc.free(output.system_prompt.content);
+        agent_db.freeSystemPromptRow(alloc, output.system_prompt);
     }
     try testing.expectEqualStrings("", output.system_prompt.content);
     try testing.expectEqualStrings("Original Title", output.system_prompt.title);

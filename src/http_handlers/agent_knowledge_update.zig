@@ -326,13 +326,7 @@ test "useCase: happy path updates both file_path AND label" {
         .file_path = "/tmp/new.md",
         .label = "New label",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.file_path);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     try testing.expectEqualStrings("know_1", output.knowledge.id);
     try testing.expectEqualStrings("/tmp/new.md", output.knowledge.file_path);
     try testing.expectEqualStrings("New label", output.knowledge.label);
@@ -350,13 +344,7 @@ test "useCase: label-only update keeps file_path" {
         .file_path = null,
         .label = "Updated label only",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.file_path);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     try testing.expectEqualStrings("/tmp/orig.md", output.knowledge.file_path);
     try testing.expectEqualStrings("Updated label only", output.knowledge.label);
 }
@@ -376,13 +364,7 @@ test "useCase: PATCH can set content on an existing row" {
         .label = null,
         .content = "new inline text",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.file_path);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     // Content is set; file_path unchanged (row keeps its old path).
     try testing.expectEqualStrings("new inline text", output.knowledge.content);
     try testing.expectEqualStrings("/tmp/orig.md", output.knowledge.file_path);
@@ -408,13 +390,7 @@ test "useCase: file_path='' clears path and sets content (file→text switch)" {
         .label = "Switched",
         .content = "inline body after switch",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-        if (output.knowledge.file_path.len > 0) alloc.free(output.knowledge.file_path);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     // Regression: this used to 400 with "file_path must be absolute"
     // because isAbsolute("") is false.
     try testing.expectEqualStrings("", output.knowledge.file_path);
@@ -436,13 +412,7 @@ test "useCase: content='' clears text and sets path (text→file switch)" {
         .label = "Switched to file",
         .content = "",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.label);
-        alloc.free(output.knowledge.file_path);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     // Regression: content="" used to 500 because SqliteBackend.exec
     // binds empty slices as SQL NULL → NOT NULL constraint fail.
     try testing.expectEqualStrings("", output.knowledge.content);
@@ -543,11 +513,7 @@ fn setupDb_merged() !TestCtx_merged {
 }
 
 fn freeKnowledge(alloc: std.mem.Allocator, k: update_mod.Knowledge) void {
-    alloc.free(k.id);
-    alloc.free(k.agent_id);
-    alloc.free(k.file_path);
-    alloc.free(k.label);
-    if (k.content.len > 0) alloc.free(k.content);
+    agent_db.freeKnowledgeRow(alloc, k);
 }
 
 // ─── A. file→text switch (regression: used to 400 NotAbsolutePath) ──────
