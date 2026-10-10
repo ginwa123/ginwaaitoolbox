@@ -414,21 +414,30 @@ pub fn kanbanTasksCreateHandler(
         // name from standard_result.name (the bound task name) to
         // match task.id == session.id + session.name = task.name
         // per the 2026-08-13-kanban-task-session-name-match plan.
-        const on_event_sent = pabrikcore.ai_mod.on_event_sent;
-        on_event_sent.onEventSendSessions(allocator, .{
-            .action = "created",
-            .id = standard_result.task_id,
-            .name = standard_result.name,
-            .status = "active",
-            .cwd = standard_result.cwd,
-            .created_at = "",
-            .updated_at = "",
-            .selected_profile_model = profile,
-            .is_auto_retry_until_stop = normalized,
-            .last_finish_reason = "",
-        }) catch |err| {
-            std.log.warn("kanban_tasks_create: session_created SSE emit failed (non-fatal): {s}", .{@errorName(err)});
-        };
+        //
+        // Gated on the INSERT actually having created the row: the
+        // `INSERT OR IGNORE` above no-ops when the task already has a
+        // sessions row (a re-create, or a task whose session was
+        // written by an earlier path), and a `session_created` for a
+        // row that already existed makes every connected sidebar
+        // re-fetch its whole list for nothing.
+        if (sqlite_db.changes() > 0) {
+            const on_event_sent = pabrikcore.ai_mod.on_event_sent;
+            on_event_sent.onEventSendSessions(allocator, .{
+                .action = "created",
+                .id = standard_result.task_id,
+                .name = standard_result.name,
+                .status = "active",
+                .cwd = standard_result.cwd,
+                .created_at = "",
+                .updated_at = "",
+                .selected_profile_model = profile,
+                .is_auto_retry_until_stop = normalized,
+                .last_finish_reason = "",
+            }) catch |err| {
+                std.log.warn("kanban_tasks_create: session_created SSE emit failed (non-fatal): {s}", .{@errorName(err)});
+            };
+        }
     }
 
     // 6. Build the success response. Use std.json.Stringify.valueAlloc

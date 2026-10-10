@@ -763,7 +763,13 @@ pub fn executeKanbanTaskToJSON(
     //     refetch (mirrors `kanban_tasks_create.zig:362-376`), then
     //     the existing `kanban_task created` event for kanban
     //     multi-tab sync. Both fire-and-forget.
-    {
+    //
+    //     The session event is gated on the step-11 INSERT having
+    //     actually created the row: `INSERT OR IGNORE` no-ops when the
+    //     task already has a sessions row, and a `session_created` for
+    //     an existing row makes every connected sidebar re-fetch its
+    //     whole list for nothing.
+    if (db.changes() > 0) {
         const normalized: []const u8 = blk: {
             if (input.is_auto_retry_until_stop) |flag| {
                 if (std.mem.eql(u8, flag, "1")) break :blk "1";
