@@ -25,6 +25,7 @@ const logger_mod = pabrikcore.loggermod;
 const agent = pabrikcore.agent;
 const prompt = pabrikcore.agent.prompt;
 const helpers = @import("helpers");
+const agent_db = @import("../models/agent.db.zig");
 
 const json = std.json;
 
@@ -2640,31 +2641,13 @@ fn maybeOverrideAllowedToolsForAgent(
     const workspace_item_id = row1.values[0];
 
     // Only filter when the workspace_item is an agent.
-    var q2 = db.query(
-        allocator,
-        "SELECT id FROM agents WHERE id = ?",
-        &[_][]const u8{workspace_item_id},
-    ) catch return false;
-    defer q2.deinit();
-    const row2 = (q2.next() catch null) orelse return false;
-    defer row2.deinit(allocator);
+    if (!agent_db.exists(allocator, .{ .db = db }, workspace_item_id)) return false;
 
     // Fetch the enabled tool_names.
-    var q3 = db.query(allocator,
-        \\SELECT tool_name FROM agent_tools
-        \\WHERE agent_id = ? AND enabled = 1
-        \\ORDER BY tool_name ASC
-    , &[_][]const u8{workspace_item_id}) catch return false;
-    defer q3.deinit();
-
-    var names: std.ArrayList([]const u8) = .empty;
+    const names = agent_db.listEnabledToolNames(allocator, .{ .db = db }, workspace_item_id) catch return false;
     defer {
-        for (names.items) |n| allocator.free(n);
-        names.deinit(allocator);
-    }
-    while ((q3.next() catch null)) |r| {
-        defer r.deinit(allocator);
-        try names.append(allocator, try allocator.dupe(u8, r.values[0]));
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
     }
 
     // Zero enabled rows → secure-by-default zero tools. Emit the exact
@@ -2672,13 +2655,13 @@ fn maybeOverrideAllowedToolsForAgent(
     // tools" in allowlistFilter, which would silently grant everything
     // the user just disabled (the pre-D3 contradiction of
     // docs/superpowers/specs/2026-08-15-agent-mode-design.md:22).
-    if (names.items.len == 0) {
+    if (names.len == 0) {
         out_allowed_tools.* = "none";
         return true;
     }
 
     // Non-empty: join with ','.
-    out_allowed_tools.* = try std.mem.join(allocator, ",", names.items);
+    out_allowed_tools.* = try std.mem.join(allocator, ",", names);
     return true;
 }
 

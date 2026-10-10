@@ -14,6 +14,7 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_kanban_db = @import("../models/agent_kanban.db.zig");
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches.
@@ -50,18 +51,9 @@ fn useCase(
 ) ToolListError!ToolListOutput {
     if (input.kanban_id.len == 0) return error.KanbanIdRequired;
 
-    var q = db.query(allocator,
-        "SELECT tool_name FROM agent_kanban_tools WHERE kanban_id = ? AND enabled = 1 ORDER BY tool_name ASC",
-        &[_][]const u8{input.kanban_id},
-    ) catch return error.QueryFailed;
-    defer q.deinit();
-
-    var list: std.ArrayList([]u8) = .empty;
-    while ((q.next() catch null)) |r| {
-        defer r.deinit(allocator);
-        try list.append(allocator, try allocator.dupe(u8, r.values[0]));
-    }
-    return .{ .tool_names = try list.toOwnedSlice(allocator) };
+    const tool_names = agent_kanban_db.listEnabledToolNames(allocator, .{ .db = db }, input.kanban_id) catch
+        return error.QueryFailed;
+    return .{ .tool_names = tool_names };
 }
 
 // =====================================================================

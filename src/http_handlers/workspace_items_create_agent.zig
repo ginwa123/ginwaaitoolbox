@@ -37,6 +37,7 @@ const auth_common = @import("auth_common.zig");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
+const agent_db = @import("../models/agent.db.zig");
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 
 /// Request body for the agent-item create endpoint. Both fields are
@@ -141,11 +142,7 @@ fn useCase(
     // 2. INSERT INTO agents with the SAME id (spec D3 — agents.id
     //    shares the workspace_item_id space; UNIQUE(workspace_item_id)
     //    enforces 1-1 at the DB layer).
-    tx.exec(
-        allocator,
-        "INSERT INTO agents (id, workspace_item_id) VALUES (?, ?)",
-        &.{ item_id, item_id },
-    ) catch return error.DatabaseError;
+    agent_db.insert(allocator, .{ .tx = &tx }, item_id, item_id) catch return error.DatabaseError;
 
     // 3. Seed the tool allowlist so a fresh agent is immediately usable:
     //    config.json's `tools` checklist when set, otherwise the

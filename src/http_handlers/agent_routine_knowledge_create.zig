@@ -24,6 +24,7 @@ const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
+const agent_routine_db = @import("../models/agent_routine.db.zig");
 
 /// HTTP request body for knowledge-create.
 const CreateKnowledgeBody = struct {
@@ -34,15 +35,7 @@ const CreateKnowledgeBody = struct {
 };
 
 /// Subset of the knowledge row returned by the use-case.
-pub const Knowledge = struct {
-    id: []const u8,
-    routine_id: []const u8,
-    file_path: []const u8,
-    label: []const u8,
-    /// Inline manual text ('' = file-backed row).
-    content: []const u8,
-    position: i64,
-};
+pub const Knowledge = agent_routine_db.KnowledgeRow;
 
 /// Domain-level error set for `useCase`. The handler maps each variant
 /// to an HTTP status code + message via two exhaustive switches.
@@ -105,6 +98,8 @@ fn useCase(
     if (has_file and has_content) return error.BothSourcesSet;
     if (has_file and !std.fs.path.isAbsolute(input.file_path)) return error.NotAbsolutePath;
 
+    const handle: agent_routine_db.DbOrTx = .{ .db = db };
+
     // Validate routine exists + is a routine + has an agent_routines row.
     // (spec D3: agent_routines.id == workspace_item_id, so routine_id IS
     // the workspace_item_id.)
@@ -117,38 +112,11 @@ fn useCase(
     if (row == null) return error.RoutineNotFound;
     if (row) |r| r.deinit(allocator);
 
-    // Generate id + compute position.
-    const ts = helpers.unixTimestampNanos();
-    const id = try std.fmt.allocPrint(allocator, "arn_{d}", .{ts});
+    // INSERT at MAX(position) + 1 and read the row back.
+    const knowledge = (agent_routine_db.insertKnowledge(allocator, handle, input.routine_id, input.file_path, input.label, input.content) catch
+        return error.InsertFailed) orelse return error.RowVanished;
 
-    // INSERT with COALESCE guards: SqliteBackend.exec binds empty slices
-    // as SQL NULL (project memory sqlite-backend-empty-slice-binds-as-null),
-    // which would trip NOT NULL DEFAULT '' columns.
-    db.exec(allocator,
-        "INSERT INTO agent_routine_knowledges (id, routine_id, file_path, label, content, position, created_at, updated_at) VALUES (?, ?, COALESCE(?, ''), COALESCE(?, ''), COALESCE(?, ''), COALESCE((SELECT MAX(position) FROM agent_routine_knowledges WHERE routine_id = ?), -1) + 1, datetime('now'), datetime('now'))",
-        &.{ id, input.routine_id, input.file_path, input.label, input.content, input.routine_id },
-    ) catch return error.InsertFailed;
-
-    // Read back position.
-    var q2 = db.query(allocator,
-        "SELECT position FROM agent_routine_knowledges WHERE id = ?",
-        &.{id},
-    ) catch return error.RefetchFailed;
-    defer q2.deinit();
-    const r = (q2.next() catch null) orelse return error.RowVanished;
-    defer r.deinit(allocator);
-    const position = std.fmt.parseInt(i64, r.values[0], 10) catch 0;
-
-    return .{
-        .knowledge = .{
-            .id = id,
-            .routine_id = input.routine_id,
-            .file_path = input.file_path,
-            .label = input.label,
-            .content = input.content,
-            .position = position,
-        },
-    };
+    return .{ .knowledge = knowledge };
 }
 
 // =====================================================================
@@ -360,7 +328,7 @@ test "useCase: happy path inserts with position 0 (COALESCE handles empty table)
         .file_path = "/tmp/a.md",
         .label = "First",
     });
-    defer alloc.free(output.knowledge.id);
+    defer agent_routine_db.freeKnowledgeRow(alloc, output.knowledge);
     // First row: COALESCE(NULL, -1) + 1 = 0. Critical: NOT 1 (off-by-one trap).
     try testing.expectEqual(@as(i64, 0), output.knowledge.position);
     try testing.expectEqualStrings("/tmp/a.md", output.knowledge.file_path);
@@ -373,7 +341,7 @@ test "useCase: happy path inserts with position 0 (COALESCE handles empty table)
         .content = "inline notes",
         .label = "Second",
     });
-    defer alloc.free(out2.knowledge.id);
+    defer agent_routine_db.freeKnowledgeRow(alloc, out2.knowledge);
     try testing.expectEqual(@as(i64, 1), out2.knowledge.position);
     try testing.expectEqualStrings("inline notes", out2.knowledge.content);
 }

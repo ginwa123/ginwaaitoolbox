@@ -22,6 +22,7 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_db = @import("../models/agent.db.zig");
 
 /// HTTP request body for system-prompt-reorder. Decoupled from the
 /// `SystemPromptReorderInput` domain struct so the wire format can
@@ -69,21 +70,11 @@ fn useCase(
     if (input.agent_id.len == 0) return error.AgentIdRequired;
     if (input.ordered_ids.len == 0) return error.OrderedIdsRequired;
 
-    var tx = db.begin() catch return error.TransactionFailed;
-    defer tx.commitOrRollback() catch {};
-    errdefer tx.rollback() catch {};
-
-    for (input.ordered_ids, 0..) |id, i| {
-        const position: i64 = @intCast(input.ordered_ids.len - 1 - @as(usize, @intCast(i)));
-        var pos_buf: [32]u8 = undefined;
-        const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{position}) catch "0";
-        tx.exec(allocator,
-            "UPDATE agent_system_prompt SET position = ?, updated_at = datetime('now') WHERE id = ? AND agent_id = ?",
-            &[_][]const u8{ pos_str, id, input.agent_id },
-        ) catch return error.UpdateFailed;
-    }
-
-    tx.commit() catch return error.TransactionFailed;
+    agent_db.reorderSystemPrompts(allocator, db, input.agent_id, input.ordered_ids) catch |err| switch (err) {
+        error.TransactionFailed => return error.TransactionFailed,
+        error.UpdateFailed => return error.UpdateFailed,
+        else => return error.TransactionFailed,
+    };
 }
 
 // =====================================================================

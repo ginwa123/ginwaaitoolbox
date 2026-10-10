@@ -21,6 +21,7 @@ const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
+const agent_db = @import("../models/agent.db.zig");
 
 /// HTTP request body for system-prompt-create. Decoupled from the
 /// `SystemPromptCreateInput` domain struct so the wire format can
@@ -31,13 +32,7 @@ const CreateSystemPromptBody = struct {
 };
 
 /// Subset of the system-prompt row returned by the use-case.
-pub const SystemPrompt = struct {
-    id: []const u8,
-    agent_id: []const u8,
-    title: []const u8,
-    content: []const u8,
-    position: i64,
-};
+pub const SystemPrompt = agent_db.SystemPromptRow;
 
 /// Domain-level error set for `useCase`. The handler maps each
 /// variant to an HTTP status code + message via two exhaustive
@@ -100,6 +95,8 @@ fn useCase(
     const trimmed = std.mem.trim(u8, input.content, " \t\r\n");
     if (trimmed.len == 0) return error.ContentRequired;
 
+    const handle: agent_db.DbOrTx = .{ .db = db };
+
     // Validate agent exists + is an agent.
     var q = db.query(allocator,
         "SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'agent'",
@@ -108,45 +105,13 @@ fn useCase(
     defer q.deinit();
     const row = q.next() catch null;
     if (row == null) return error.AgentNotFound;
-    // Drop the row's values[] — we only care that a row was found.
-    // In production the arena reaps it; in tests this leaks by
-    // design (per user's "no need to clear one by one" rule).
     if (row) |r| r.deinit(allocator);
 
-    // Generate id + compute position.
-    const ts = helpers.unixTimestampNanos();
-    const id = try std.fmt.allocPrint(allocator, "asp_{d}", .{ts});
+    // INSERT at MAX(position) + 1 and read the row back.
+    const system_prompt = (agent_db.insertSystemPrompt(allocator, handle, input.agent_id, input.title, input.content) catch
+        return error.InsertFailed) orelse return error.RowVanished;
 
-    // INSERT with COALESCE for position (mirrors kanban_column_create).
-    // COALESCE(?, '') on title/content: SqliteBackend.exec binds an
-    // empty slice as SQL NULL (project memory
-    // `sqlite-backend-empty-slice-binds-as-null`), which would trip the
-    // columns' NOT NULL DEFAULT '' constraint. Same pattern as
-    // agent_knowledge_create.zig.
-    db.exec(allocator,
-        "INSERT INTO agent_system_prompt (id, agent_id, title, content, position, created_at, updated_at) VALUES (?, ?, COALESCE(?, ''), COALESCE(?, ''), COALESCE((SELECT MAX(position) FROM agent_system_prompt WHERE agent_id = ?), -1) + 1, datetime('now'), datetime('now'))",
-        &.{ id, input.agent_id, input.title, input.content, input.agent_id },
-    ) catch return error.InsertFailed;
-
-    // Read back position.
-    var q2 = db.query(allocator,
-        "SELECT position FROM agent_system_prompt WHERE id = ?",
-        &.{id},
-    ) catch return error.RefetchFailed;
-    defer q2.deinit();
-    const r = (q2.next() catch null) orelse return error.RowVanished;
-    defer r.deinit(allocator);
-    const position = std.fmt.parseInt(i64, r.values[0], 10) catch 0;
-
-    return .{
-        .system_prompt = .{
-            .id = id,
-            .agent_id = input.agent_id,
-            .title = input.title,
-            .content = input.content,
-            .position = position,
-        },
-    };
+    return .{ .system_prompt = system_prompt };
 }
 
 // =====================================================================
@@ -347,7 +312,7 @@ test "useCase: happy path inserts with position 0 then 1 (COALESCE handles empty
         .title = "Persona",
         .content = "You are X",
     });
-    defer alloc.free(out1.system_prompt.id);
+    defer agent_db.freeSystemPromptRow(alloc, out1.system_prompt);
     // First row: COALESCE(NULL, -1) + 1 = 0. Critical: NOT 1 (off-by-one trap).
     try testing.expectEqual(@as(i64, 0), out1.system_prompt.position);
     try testing.expectEqualStrings("Persona", out1.system_prompt.title);
@@ -358,7 +323,7 @@ test "useCase: happy path inserts with position 0 then 1 (COALESCE handles empty
         .title = "Style",
         .content = "Be terse",
     });
-    defer alloc.free(out2.system_prompt.id);
+    defer agent_db.freeSystemPromptRow(alloc, out2.system_prompt);
     try testing.expectEqual(@as(i64, 1), out2.system_prompt.position);
 }
 
@@ -373,7 +338,7 @@ test "useCase: empty title tolerated (COALESCE binds '')" {
         .title = "",
         .content = "Untitled prompt body",
     });
-    defer alloc.free(out.system_prompt.id);
+    defer agent_db.freeSystemPromptRow(alloc, out.system_prompt);
     try testing.expectEqualStrings("", out.system_prompt.title);
     try testing.expectEqualStrings("Untitled prompt body", out.system_prompt.content);
 }

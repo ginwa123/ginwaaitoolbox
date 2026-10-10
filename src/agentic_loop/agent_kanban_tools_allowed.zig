@@ -21,6 +21,7 @@
 
 const std = @import("std");
 const sqlite = @import("pabrikcore").sqlite;
+const agent_kanban_db = @import("../models/agent_kanban.db.zig");
 
 /// Resolve the enabled tool names for the agent-kanbans config bound to
 /// `workspace_item_id`. Returns an owned slice of `[]const u8`; caller
@@ -36,34 +37,10 @@ pub fn agentKanbanToolsAllowed(
     workspace_item_id: []const u8,
 ) ![]const []const u8 {
     // 1. Require an agent_kanbans row (spec D3: id == workspace_item_id).
-    var q1 = db.query(allocator,
-        "SELECT id FROM agent_kanbans WHERE workspace_item_id = ?",
-        &[_][]const u8{workspace_item_id},
-    ) catch return &.{};
-    defer q1.deinit();
-    const row = (q1.next() catch null) orelse return &.{};
-    row.deinit(allocator);
+    if (!agent_kanban_db.exists(allocator, .{ .db = db }, workspace_item_id)) return &.{};
 
     // 2. Fetch the enabled tool names ordered by tool_name ASC.
-    var q2 = db.query(allocator,
-        \\SELECT tool_name FROM agent_kanban_tools
-        \\WHERE kanban_id = ? AND enabled = 1
-        \\ORDER BY tool_name ASC
-    , &[_][]const u8{workspace_item_id}) catch return &.{};
-    defer q2.deinit();
-
-    var out: std.ArrayList([]const u8) = .empty;
-    errdefer {
-        for (out.items) |name| allocator.free(name);
-        out.deinit(allocator);
-    }
-
-    while ((q2.next() catch null)) |r| {
-        defer r.deinit(allocator);
-        try out.append(allocator, try allocator.dupe(u8, r.values[0]));
-    }
-
-    return try out.toOwnedSlice(allocator);
+    return agent_kanban_db.listEnabledToolNames(allocator, .{ .db = db }, workspace_item_id) catch &.{};
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────

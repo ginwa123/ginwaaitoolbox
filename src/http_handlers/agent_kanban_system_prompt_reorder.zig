@@ -17,6 +17,7 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_kanban_db = @import("../models/agent_kanban.db.zig");
 
 /// HTTP request body for system-prompt-reorder.
 const ReorderBody = struct {
@@ -58,21 +59,11 @@ fn useCase(
     if (input.kanban_id.len == 0) return error.KanbanIdRequired;
     if (input.ordered_ids.len == 0) return error.OrderedIdsRequired;
 
-    var tx = db.begin() catch return error.TransactionFailed;
-    defer tx.commitOrRollback() catch {};
-    errdefer tx.rollback() catch {};
-
-    for (input.ordered_ids, 0..) |id, i| {
-        const position: i64 = @intCast(input.ordered_ids.len - 1 - @as(usize, @intCast(i)));
-        var pos_buf: [32]u8 = undefined;
-        const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{position}) catch "0";
-        tx.exec(allocator,
-            "UPDATE agent_kanban_system_prompt SET position = ?, updated_at = datetime('now') WHERE id = ? AND kanban_id = ?",
-            &[_][]const u8{ pos_str, id, input.kanban_id },
-        ) catch return error.UpdateFailed;
-    }
-
-    tx.commit() catch return error.TransactionFailed;
+    agent_kanban_db.reorderSystemPrompts(allocator, db, input.kanban_id, input.ordered_ids) catch |err| switch (err) {
+        error.TransactionFailed => return error.TransactionFailed,
+        error.UpdateFailed => return error.UpdateFailed,
+        else => return error.TransactionFailed,
+    };
 }
 
 // =====================================================================

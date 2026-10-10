@@ -3,6 +3,7 @@ const pabrikcore = @import("pabrikcore");
 const tools = @import("tools.zig");
 
 const helpers = @import("helpers");
+const agent_db = @import("../models/agent.db.zig");
 const agent = pabrikcore.agent;
 const AgentTool = pabrikcore.agent.AgentTool;
 
@@ -592,11 +593,7 @@ pub fn seedDefaultAgentTools(
     for (list, 0..) |tool_name, i| {
         const id = try std.fmt.allocPrint(allocator, "at_{d}_{d}", .{ ts, i });
         defer allocator.free(id);
-        try db.exec(
-            allocator,
-            "INSERT OR IGNORE INTO agent_tools (id, agent_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
-            &.{ id, agent_id, tool_name },
-        );
+        try agent_db.insertToolIgnoreDuplicate(allocator, db, id, agent_id, tool_name);
     }
 }
 

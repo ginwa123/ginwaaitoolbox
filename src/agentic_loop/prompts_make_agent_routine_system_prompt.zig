@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const sqlite = @import("pabrikcore").sqlite;
+const agent_routine_db = @import("../models/agent_routine.db.zig");
 
 /// Resolve the workspace_item_id for a session. Two paths (in order):
 ///   1. Normal chats: the session is a workspace_item_tasks row (covers
@@ -89,11 +90,12 @@ pub fn makeAgentRoutineSystemPrompt(
 
     // Fetch the prompt rows (position DESC — same ordering convention as
     // agent_routine_knowledges).
-    var q = db.query(allocator,
-        \\SELECT title, content FROM agent_routine_system_prompt
-        \\WHERE routine_id = ? ORDER BY position DESC
-    , &[_][]const u8{workspace_item_id}) catch return try allocator.dupe(u8, "");
-    defer q.deinit();
+    const prompts = agent_routine_db.listSystemPrompts(allocator, .{ .db = db }, workspace_item_id) catch
+        return try allocator.dupe(u8, "");
+    defer {
+        for (prompts) |pr| agent_routine_db.freeSystemPromptRow(allocator, pr);
+        allocator.free(prompts);
+    }
 
     // Collect rows first so the query is closed before we build output.
     var rows: std.ArrayList(struct {
@@ -102,14 +104,12 @@ pub fn makeAgentRoutineSystemPrompt(
     }) = .empty;
     defer rows.deinit(allocator);
 
-    while ((q.next() catch null)) |r| {
-        defer r.deinit(allocator);
+    for (prompts) |pr| {
         try rows.append(allocator, .{
-            .title = try allocator.dupe(u8, r.values[0]),
-            .content = try allocator.dupe(u8, r.values[1]),
+            .title = pr.title,
+            .content = pr.content,
         });
     }
-
     if (rows.items.len == 0) return try allocator.dupe(u8, "");
 
     // Build the section.
@@ -127,9 +127,6 @@ pub fn makeAgentRoutineSystemPrompt(
     );
 
     for (rows.items) |row| {
-        defer allocator.free(row.title);
-        defer allocator.free(row.content);
-
         // Skip whitespace-only rows — nothing meaningful to inject.
         const trimmed = std.mem.trim(u8, row.content, " \t\r\n");
         if (trimmed.len == 0) continue;

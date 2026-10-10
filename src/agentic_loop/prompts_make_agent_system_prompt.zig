@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const sqlite = @import("pabrikcore").sqlite;
+const agent_db = @import("../models/agent.db.zig");
 
 /// Resolve the workspace_item_id for a session. Returns "" when the
 /// session doesn't exist (no workspace_item_tasks row).
@@ -75,11 +76,12 @@ pub fn makeAgentSystemPrompt(
 
     // Fetch the prompt rows (position DESC — same ordering convention as
     // agent_knowledge).
-    var q = db.query(allocator,
-        \\SELECT title, content FROM agent_system_prompt
-        \\WHERE agent_id = ? ORDER BY position DESC
-    , &[_][]const u8{workspace_item_id}) catch return try allocator.dupe(u8, "");
-    defer q.deinit();
+    const prompts = agent_db.listSystemPrompts(allocator, .{ .db = db }, workspace_item_id) catch
+        return try allocator.dupe(u8, "");
+    defer {
+        for (prompts) |pr| agent_db.freeSystemPromptRow(allocator, pr);
+        allocator.free(prompts);
+    }
 
     // Collect rows first so the query is closed before we build output.
     var rows: std.ArrayList(struct {
@@ -88,11 +90,10 @@ pub fn makeAgentSystemPrompt(
     }) = .empty;
     defer rows.deinit(allocator);
 
-    while ((q.next() catch null)) |r| {
-        defer r.deinit(allocator);
+    for (prompts) |pr| {
         try rows.append(allocator, .{
-            .title = try allocator.dupe(u8, r.values[0]),
-            .content = try allocator.dupe(u8, r.values[1]),
+            .title = pr.title,
+            .content = pr.content,
         });
     }
 
@@ -113,9 +114,6 @@ pub fn makeAgentSystemPrompt(
     );
 
     for (rows.items) |row| {
-        defer allocator.free(row.title);
-        defer allocator.free(row.content);
-
         // Skip whitespace-only rows — nothing meaningful to inject.
         const trimmed = std.mem.trim(u8, row.content, " \t\r\n");
         if (trimmed.len == 0) continue;

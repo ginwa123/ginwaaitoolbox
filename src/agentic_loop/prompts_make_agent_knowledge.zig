@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const sqlite = @import("pabrikcore").sqlite;
+const agent_db = @import("../models/agent.db.zig");
 
 /// 100 MiB per-file OOM safety. NOT a content budget — the user
 /// explicitly removed the content cap. This is purely to prevent the
@@ -113,12 +114,13 @@ pub fn makeAgentKnowledge(
         return try allocator.dupe(u8, "");
     }
 
-    // Fetch the knowledge rows.
-    var q = db.query(allocator,
-        \\SELECT file_path, label, content FROM agent_knowledge
-        \\WHERE agent_id = ? ORDER BY position DESC
-    , &[_][]const u8{workspace_item_id}) catch return try allocator.dupe(u8, "");
-    defer q.deinit();
+    // Fetch the knowledge rows (position DESC).
+    const knowledge = agent_db.listKnowledge(allocator, .{ .db = db }, workspace_item_id) catch
+        return try allocator.dupe(u8, "");
+    defer {
+        for (knowledge) |k| agent_db.freeKnowledgeRow(allocator, k);
+        allocator.free(knowledge);
+    }
 
     // Collect rows first so the query is closed before we read files.
     var rows: std.ArrayList(struct {
@@ -128,12 +130,11 @@ pub fn makeAgentKnowledge(
     }) = .empty;
     defer rows.deinit(allocator);
 
-    while ((q.next() catch null)) |r| {
-        defer r.deinit(allocator);
+    for (knowledge) |k| {
         try rows.append(allocator, .{
-            .file_path = try allocator.dupe(u8, r.values[0]),
-            .label = try allocator.dupe(u8, r.values[1]),
-            .content = try allocator.dupe(u8, r.values[2]),
+            .file_path = k.file_path,
+            .label = k.label,
+            .content = k.content,
         });
     }
 
@@ -154,10 +155,6 @@ pub fn makeAgentKnowledge(
     );
 
     for (rows.items) |row| {
-        defer allocator.free(row.file_path);
-        defer allocator.free(row.label);
-        defer allocator.free(row.content);
-
         // Inline text entry — no <file: ...> marker (the path is empty
         // and the marker would be meaningless to the model).
         if (row.content.len > 0) {

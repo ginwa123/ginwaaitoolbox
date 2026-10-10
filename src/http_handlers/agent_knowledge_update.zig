@@ -19,6 +19,7 @@ const std = @import("std");
 const pabrikcore = @import("pabrikcore");
 const gserverz = pabrikcore.gserverz;
 const http_response = @import("http_response.zig");
+const agent_db = @import("../models/agent.db.zig");
 
 /// HTTP request body. Decoupled from the domain `KnowledgeUpdateInput`
 /// so the wire format can evolve independently (e.g. adding `?`
@@ -30,15 +31,7 @@ const UpdateKnowledgeBody = struct {
 };
 
 /// Subset of the knowledge row returned by the use-case.
-pub const Knowledge = struct {
-    id: []const u8,
-    agent_id: []const u8,
-    file_path: []const u8,
-    label: []const u8,
-    /// Inline manual text ('' = file-backed row).
-    content: []const u8,
-    position: i64,
-};
+pub const Knowledge = agent_db.KnowledgeRow;
 
 /// Domain-level error set for `useCase`. The handler maps each
 /// variant to an HTTP status code + message via two exhaustive
@@ -118,79 +111,20 @@ pub fn useCase(
         if (fp.len > 0 and !std.fs.path.isAbsolute(fp)) return error.NotAbsolutePath;
     }
 
-    // Build dynamic UPDATE SQL. Zig 0.16 dropped
-    // std.io.fixedBufferStream, so we use ArrayList.appendSlice for
-    // the static fragments. file_path/content use COALESCE(?, '') so
-    // an empty-slice bind lands as '' not NULL (NOT NULL columns).
-    var sql_list: std.ArrayList(u8) = .empty;
-    defer sql_list.deinit(allocator);
-    try sql_list.appendSlice(allocator, "UPDATE agent_knowledge SET updated_at = datetime('now')");
-    if (input.file_path != null) try sql_list.appendSlice(allocator, ", file_path = COALESCE(?, '')");
-    if (input.label != null) try sql_list.appendSlice(allocator, ", label = ?");
-    if (input.content != null) try sql_list.appendSlice(allocator, ", content = COALESCE(?, '')");
-    try sql_list.appendSlice(allocator, " WHERE id = ? AND agent_id = ?");
+    const handle: agent_db.DbOrTx = .{ .db = db };
 
-    // Bind args. Max 5 slots: file_path, label, content, knowledge_id, agent_id.
-    var args_buf: [5][]const u8 = undefined;
-    var arg_idx: usize = 0;
-    if (input.file_path) |fp| {
-        args_buf[arg_idx] = fp;
-        arg_idx += 1;
-    }
-    if (input.label) |lb| {
-        args_buf[arg_idx] = lb;
-        arg_idx += 1;
-    }
-    if (input.content) |ct| {
-        args_buf[arg_idx] = ct;
-        arg_idx += 1;
-    }
-    args_buf[arg_idx] = input.knowledge_id;
-    arg_idx += 1;
-    args_buf[arg_idx] = input.agent_id;
-    arg_idx += 1;
+    // Patch the requested fields, then read the row back.
+    const knowledge = (agent_db.updateKnowledge(
+        allocator,
+        handle,
+        input.knowledge_id,
+        input.agent_id,
+        input.file_path,
+        input.label,
+        input.content,
+    ) catch return error.UpdateFailed) orelse return error.RowNotFound;
 
-    // Build argv slice for db.exec — pass an owned slice.
-    var argv_list: std.ArrayList([]const u8) = .empty;
-    defer argv_list.deinit(allocator);
-    for (args_buf[0..arg_idx]) |a| try argv_list.append(allocator, a);
-
-    db.exec(allocator, sql_list.items, argv_list.items) catch return error.UpdateFailed;
-
-    // Read back.
-    var q = db.query(allocator,
-        "SELECT id, agent_id, file_path, label, content, position FROM agent_knowledge WHERE id = ?",
-        &[_][]const u8{input.knowledge_id},
-    ) catch return error.RefetchFailed;
-    defer q.deinit();
-    const r = (q.next() catch null) orelse return error.RowNotFound;
-    defer r.deinit(allocator); // safe — we dupe the slices below
-    const position = std.fmt.parseInt(i64, r.values[5], 10) catch 0;
-
-    // Dupe the slices out of row.values[] so the Knowledge struct
-    // owns them. Production: arena allocator reaps these at request
-    // end. Tests: caller frees explicitly.
-    const id = try allocator.dupe(u8, r.values[0]);
-    errdefer allocator.free(id);
-    const agent_id = try allocator.dupe(u8, r.values[1]);
-    errdefer allocator.free(agent_id);
-    const file_path = try allocator.dupe(u8, r.values[2]);
-    errdefer allocator.free(file_path);
-    const label = try allocator.dupe(u8, r.values[3]);
-    errdefer allocator.free(label);
-    const content = try allocator.dupe(u8, r.values[4]);
-    errdefer allocator.free(content);
-
-    return .{
-        .knowledge = .{
-            .id = id,
-            .agent_id = agent_id,
-            .file_path = file_path,
-            .label = label,
-            .content = content,
-            .position = position,
-        },
-    };
+    return .{ .knowledge = knowledge };
 }
 
 // =====================================================================
@@ -392,13 +326,7 @@ test "useCase: happy path updates both file_path AND label" {
         .file_path = "/tmp/new.md",
         .label = "New label",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.file_path);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     try testing.expectEqualStrings("know_1", output.knowledge.id);
     try testing.expectEqualStrings("/tmp/new.md", output.knowledge.file_path);
     try testing.expectEqualStrings("New label", output.knowledge.label);
@@ -416,13 +344,7 @@ test "useCase: label-only update keeps file_path" {
         .file_path = null,
         .label = "Updated label only",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.file_path);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     try testing.expectEqualStrings("/tmp/orig.md", output.knowledge.file_path);
     try testing.expectEqualStrings("Updated label only", output.knowledge.label);
 }
@@ -442,13 +364,7 @@ test "useCase: PATCH can set content on an existing row" {
         .label = null,
         .content = "new inline text",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.file_path);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     // Content is set; file_path unchanged (row keeps its old path).
     try testing.expectEqualStrings("new inline text", output.knowledge.content);
     try testing.expectEqualStrings("/tmp/orig.md", output.knowledge.file_path);
@@ -474,13 +390,7 @@ test "useCase: file_path='' clears path and sets content (file→text switch)" {
         .label = "Switched",
         .content = "inline body after switch",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.label);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-        if (output.knowledge.file_path.len > 0) alloc.free(output.knowledge.file_path);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     // Regression: this used to 400 with "file_path must be absolute"
     // because isAbsolute("") is false.
     try testing.expectEqualStrings("", output.knowledge.file_path);
@@ -502,13 +412,7 @@ test "useCase: content='' clears text and sets path (text→file switch)" {
         .label = "Switched to file",
         .content = "",
     });
-    defer {
-        alloc.free(output.knowledge.id);
-        alloc.free(output.knowledge.agent_id);
-        alloc.free(output.knowledge.label);
-        alloc.free(output.knowledge.file_path);
-        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
-    }
+    defer agent_db.freeKnowledgeRow(alloc, output.knowledge);
     // Regression: content="" used to 500 because SqliteBackend.exec
     // binds empty slices as SQL NULL → NOT NULL constraint fail.
     try testing.expectEqualStrings("", output.knowledge.content);
@@ -609,11 +513,7 @@ fn setupDb_merged() !TestCtx_merged {
 }
 
 fn freeKnowledge(alloc: std.mem.Allocator, k: update_mod.Knowledge) void {
-    alloc.free(k.id);
-    alloc.free(k.agent_id);
-    alloc.free(k.file_path);
-    alloc.free(k.label);
-    if (k.content.len > 0) alloc.free(k.content);
+    agent_db.freeKnowledgeRow(alloc, k);
 }
 
 // ─── A. file→text switch (regression: used to 400 NotAbsolutePath) ──────
