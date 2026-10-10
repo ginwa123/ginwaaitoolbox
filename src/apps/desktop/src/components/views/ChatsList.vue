@@ -1207,7 +1207,7 @@ defineExpose({
               : 'color: var(--semantic-text-muted);'
           "
         >
-          <span class="flex-1 text-left truncate">
+          <span class="flex-1 text-left truncate min-w-0" :title="item.name">
             <!-- Same branch badge as RECENT rows: icon-only git branch with
                  PR status color + conflict hint. Tooltip carries branch and
                  worktree path. -->
@@ -1352,7 +1352,7 @@ defineExpose({
                 : 'color: var(--semantic-text-muted);'
             "
           >
-            <span class="flex-1 text-left truncate">
+            <span class="flex-1 text-left truncate min-w-0" :title="item.name">
               <!-- Icon-only branch badge for chats with a pull request.
                    Tooltip carries the branch and worktree path. -->
               <span
