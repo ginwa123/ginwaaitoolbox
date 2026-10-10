@@ -20,6 +20,11 @@ pub const http_response = pabrikcore.http_response;
 // Re-export all handlers
 pub const corsPreflightHandler = @import("cors.zig").corsPreflightHandler;
 pub const sessionCreateHandler = @import("session_create.zig").sessionCreateHandler;
+/// The session-create funnel without the transport. `pabrik headless run`
+/// calls this so a CLI turn and a browser turn execute the same code —
+/// see the doc comment on `useCase` for why that matters.
+pub const sessionCreateUseCase = @import("session_create.zig").useCase;
+pub const RequestSession = @import("session_create.zig").RequestSession;
 pub const sessionUpdateHandler = @import("session_update.zig").sessionUpdateHandler;
 pub const sessionPinHandler = @import("session_pin.zig").sessionPinHandler;
 pub const sessionReorderPinnedHandler = @import("session_reorder_pinned.zig").sessionReorderPinnedHandler;

@@ -77,6 +77,7 @@ const graceful_shutdown_test = @import("graceful_shutdown_test.zig");
 const harness_orphan_reap_test = @import("harness_orphan_reap_test.zig");
 const harness_port_random_test = @import("harness_port_random_test.zig");
 const harness_safety_test = @import("harness_safety_test.zig");
+const headless_run_test = @import("headless_run_test.zig");
 const hook_zig_fmt_test = @import("hook_zig_fmt_test.zig");
 const hooks_lua_test = @import("hooks_lua_test.zig");
 const http2_test = @import("http2_test.zig");
@@ -214,6 +215,7 @@ pub const suites = .{
     harness_orphan_reap_test,
     harness_port_random_test,
     harness_safety_test,
+    headless_run_test,
     hook_zig_fmt_test,
     hooks_lua_test,
     http2_test,

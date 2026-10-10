@@ -263,6 +263,15 @@ pub const static_files = @import("modules/static_files.zig");
 pub const boot_shutdown = @import("boot/shutdown.zig");
 pub const boot_cli_dispatch = @import("boot/cli_dispatch.zig");
 pub const boot_server_boot = @import("boot/server_boot.zig");
+// `pabrik headless ...` — the no-server, no-port backend runner. Re-exported
+// so the exe module reaches it via `pabrikcore.boot_headless_dispatch`
+// without @import'ing the file directly (dual-module error — see the
+// cleanup_stale_worker precedent in main.zig).
+pub const boot_headless_dispatch = @import("boot/headless_dispatch.zig");
+// The headless backend itself: boot phases, argv parsing, the turn runner
+// and the read-only session views. `src/headless/README.md` is the
+// user-facing contract.
+pub const headless = @import("headless/mod.zig");
 pub const http_static_serve = @import("http_static/static_serve.zig");
 
 pub const startup = @import("startup.zig");
@@ -375,6 +384,15 @@ test {
     _ = @import("boot/shutdown.zig");
     _ = @import("boot/cli_dispatch.zig");
     _ = @import("boot/server_boot.zig");
+    // Headless mode: argv parsing is pure and unit-tested without booting
+    // anything; the boot/run/sessions phases carry their own inline tests.
+    // Same discovery workaround as the boot files above — a `pub const`
+    // re-export does not pull an imported file's `test` blocks in.
+    _ = @import("boot/headless_dispatch.zig");
+    _ = @import("headless/args.zig");
+    _ = @import("headless/boot.zig");
+    _ = @import("headless/run.zig");
+    _ = @import("headless/sessions.zig");
     _ = @import("http_static/static_serve.zig");
     // Config struct + its `test { ... }` block at the bottom of
     // Config.zig (the config_test.zig + parse_thinking_test.zig
