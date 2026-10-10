@@ -10,8 +10,14 @@
  *   - A `getSkills` rejection renders the error block, never an empty list.
  *   - With no workspace scope (or no pinia) `/skill-` does not open.
  *   - The trigger is the literal `/skill-` prefix at message start or
- *     after whitespace. A bare `/`, a partial `/sk`, a path like
- *     `/home/ginwa/pabrik`, `http://` and `a/b` never open it.
+ *     after whitespace. A bare `/`, a path like `/home/ginwa/pabrik`,
+ *     `http://` and `a/b` never open it.
+ *
+ * And the `/skill-` completion hint that precedes it:
+ *   - A proper prefix of the command (`/s`, `/sk`, `/ski`, `/skil`,
+ *     `/skill`) renders ONE suggestion row reading `/skill-`.
+ *   - Enter or Tab rewrites the token to `/skill-` and the picker opens.
+ *   - The hint never fetches skills and never renders the picker list.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
@@ -347,6 +353,222 @@ describe('FileInput — /skill picker', () => {
       await flushPromises()
       const element = textarea.element as HTMLTextAreaElement
       expect(element.value).toBe('')
+    })
+  })
+
+  // The discoverability step that precedes the picker: the user has typed
+  // enough to be heading for the skill command but not the dash yet, so
+  // the composer offers the one completion that exists. These specs pin
+  // the hint as its OWN surface (`skill-command-suggestion`) rather than
+  // reusing `skill-picker-list`, so the "a partial `/sk` does not open
+  // the picker" specs above keep meaning what they say.
+  describe('the /skill- completion hint', () => {
+    const HINT = '[data-testid="skill-command-suggestion"]'
+    const PICKER = '[data-testid="skill-picker-list"]'
+
+    it("typing '/sk' shows exactly one suggestion reading /skill-", async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/sk')
+
+      const hint = wrapper.find(HINT)
+      expect(hint.exists()).toBe(true)
+      expect(hint.text()).toContain('/skill-')
+      // One row, not a list of candidates.
+      expect(hint.findAll('button')).toHaveLength(1)
+    })
+
+    it('the hint does not fetch skills and does not open the picker', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/sk')
+
+      expect(getSkillsMock).not.toHaveBeenCalled()
+      expect(wrapper.find(PICKER).exists()).toBe(false)
+    })
+
+    it('every proper prefix of the command shows the hint', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+
+      const seen: Record<string, { hint: boolean; picker: boolean }> = {}
+      for (const prefix of ['/s', '/sk', '/ski', '/skil', '/skill']) {
+        await typeInTextarea(textarea, prefix)
+        seen[prefix] = {
+          hint: wrapper.find(HINT).exists(),
+          picker: wrapper.find(PICKER).exists(),
+        }
+      }
+      expect(seen).toEqual({
+        '/s': { hint: true, picker: false },
+        '/sk': { hint: true, picker: false },
+        '/ski': { hint: true, picker: false },
+        '/skil': { hint: true, picker: false },
+        '/skill': { hint: true, picker: false },
+      })
+    })
+
+    it('the hint is case-insensitive: /SK', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/SK')
+
+      expect(wrapper.find(HINT).exists()).toBe(true)
+    })
+
+    it('Enter completes the token to /skill- and opens the picker', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/sk')
+
+      await textarea.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+
+      const element = textarea.element as HTMLTextAreaElement
+      expect(element.value).toBe('/skill-')
+      expect(wrapper.find(HINT).exists()).toBe(false)
+      expect(wrapper.find(PICKER).exists()).toBe(true)
+      expect(getSkillsMock).toHaveBeenCalledTimes(1)
+      expect(wrapper.find(PICKER).text()).toContain('review')
+    })
+
+    it('Tab also completes the token', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/sk')
+
+      await textarea.trigger('keydown', { key: 'Tab' })
+      await flushPromises()
+
+      const element = textarea.element as HTMLTextAreaElement
+      expect(element.value).toBe('/skill-')
+      expect(wrapper.find(PICKER).exists()).toBe(true)
+    })
+
+    it('clicking the suggestion row completes the token', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/sk')
+
+      await wrapper.find('[data-testid="skill-command-suggestion-row"]').trigger('click')
+      await flushPromises()
+
+      const element = textarea.element as HTMLTextAreaElement
+      expect(element.value).toBe('/skill-')
+      expect(wrapper.find(PICKER).exists()).toBe(true)
+    })
+
+    it('Esc dismisses the hint without touching the text', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/sk')
+      expect(wrapper.find(HINT).exists()).toBe(true)
+
+      await textarea.trigger('keydown', { key: 'Escape' })
+      await flushPromises()
+
+      expect(wrapper.find(HINT).exists()).toBe(false)
+      const element = textarea.element as HTMLTextAreaElement
+      expect(element.value).toBe('/sk')
+      expect(getSkillsMock).not.toHaveBeenCalled()
+    })
+
+    it('Enter on the hint does not send the message', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/sk')
+
+      await textarea.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+
+      expect(wrapper.emitted('submit')).toBeUndefined()
+    })
+
+    it('the hint keeps the prose before the token', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, 'please run /sk')
+
+      await textarea.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+
+      const element = textarea.element as HTMLTextAreaElement
+      expect(element.value).toBe('please run /skill-')
+    })
+
+    it('after completing, typing the skill name filters the list', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/sk')
+      await textarea.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+
+      await typeInTextarea(textarea, '/skill-dep')
+      const list = wrapper.find(PICKER)
+      expect(list.exists()).toBe(true)
+      expect(list.text()).toContain('deploy')
+      expect(list.text()).not.toContain('review')
+      // Still one fetch — the completion did not restart the load.
+      expect(getSkillsMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('a bare `/` shows no hint', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/')
+
+      expect(wrapper.find(HINT).exists()).toBe(false)
+      expect(getSkillsMock).not.toHaveBeenCalled()
+    })
+
+    it('a path or URL shows no hint', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+
+      await typeInTextarea(textarea, 'see http://example.com/x')
+      expect(wrapper.find(HINT).exists()).toBe(false)
+
+      await typeInTextarea(textarea, 'check /home/ginwa/pabrik')
+      expect(wrapper.find(HINT).exists()).toBe(false)
+      expect(getSkillsMock).not.toHaveBeenCalled()
+    })
+
+    it('a prefix mid-word shows no hint', async () => {
+      seedWorkspace()
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, 'a/sk')
+
+      expect(wrapper.find(HINT).exists()).toBe(false)
+    })
+
+    it('the hint works with no workspace scope (it is a static string)', async () => {
+      const wrapper = await mountInput()
+      const textarea = wrapper.find('textarea')
+      await typeInTextarea(textarea, '/sk')
+
+      expect(wrapper.find(HINT).exists()).toBe(true)
+      expect(getSkillsMock).not.toHaveBeenCalled()
+
+      // Completing still rewrites the text; only the picker stays shut.
+      await textarea.trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+      const element = textarea.element as HTMLTextAreaElement
+      expect(element.value).toBe('/skill-')
+      expect(wrapper.find(PICKER).exists()).toBe(false)
     })
   })
 })
