@@ -7,6 +7,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const set_design_page_mod = pabrikcore.set_design_page;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execSetDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
@@ -15,7 +16,8 @@ pub fn execSetDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_page failed to parse input: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -29,7 +31,8 @@ pub fn execSetDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         ctx.db,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "set_design_page failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };

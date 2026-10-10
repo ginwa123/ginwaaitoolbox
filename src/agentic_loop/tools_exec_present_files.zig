@@ -8,6 +8,7 @@ const agent = pabrikcore.agent;
 const present_files_mod = pabrikcore.ai_mod.present_files;
 const file_sandbox = pabrikcore.ai_mod.file_sandbox;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execPresentFiles(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
@@ -16,7 +17,8 @@ pub fn execPresentFiles(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "present_files failed to parse input: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "present_files", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -54,7 +56,8 @@ pub fn execPresentFiles(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
         parsed.value,
         root,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "present_files failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "present_files", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };

@@ -26,6 +26,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const memory_mod = pabrikcore.memory;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 /// Probe an inner JSON payload for a top-level `"error"` key. The
 /// returned slice borrows from `parsed` — keep it alive through the
@@ -57,7 +58,8 @@ pub fn execSaveMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "save_memory failed to parse input: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -73,7 +75,8 @@ pub fn execSaveMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         parsed.value,
         workspace_id,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "save_memory failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -103,7 +106,8 @@ pub fn execLoadMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "load_memory failed to parse input: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -119,7 +123,8 @@ pub fn execLoadMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         parsed.value,
         workspace_id,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "load_memory failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };

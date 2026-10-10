@@ -9,6 +9,7 @@ const llm_history = pabrikcore.llm_history;
 const status_pull_request_mod = pabrikcore.status_pull_request;
 const pr_provider = pabrikcore.pr_provider;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 fn payloadString(inner_parsed: ?std.json.Parsed(std.json.Value), field: []const u8) ?[]const u8 {
     const p = inner_parsed orelse return null;
@@ -47,7 +48,8 @@ pub fn execStatusPullRequest(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExec
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "status_pull_request failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "status_pull_request", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -128,7 +130,8 @@ pub fn execStatusPullRequest(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExec
         provider,
         null,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "status_pull_request failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "status_pull_request", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };

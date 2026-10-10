@@ -7,6 +7,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const add_design_element_mod = pabrikcore.add_design_element;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execAddElement(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
@@ -15,7 +16,8 @@ pub fn execAddElement(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_element failed to parse input: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "add_element", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -29,7 +31,8 @@ pub fn execAddElement(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         ctx.io,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_element failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "add_element", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };

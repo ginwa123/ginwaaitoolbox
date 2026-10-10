@@ -749,7 +749,12 @@ test "execAddMcpServer: malformed JSON args → wrapped error envelope" {
     const env2 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
     defer env2.deinit();
     try testing.expect(!env2.value.object.get("success").?.bool);
-    try testing.expect(std.mem.indexOf(u8, env2.value.object.get("error").?.string, "failed to parse input") != null);
+    // The message must tell the model WHAT was wrong with its JSON, not
+    // just name the Zig error. `{not json at all` is a syntax error, so
+    // the explanation names JSON and the usual causes.
+    const mcp_err = env2.value.object.get("error").?.string;
+    try testing.expect(std.mem.indexOf(u8, mcp_err, "JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_err, "SyntaxError") == null);
 
     // No server added.
     try testing.expectEqual(@as(usize, 0), cfg.mcp_servers.count());

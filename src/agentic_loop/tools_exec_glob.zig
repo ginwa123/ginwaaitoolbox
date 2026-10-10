@@ -7,6 +7,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const glob_tool_mod = pabrikcore.glob_tool;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const args = tc.function.arguments;
@@ -18,7 +19,8 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         args_to_parse,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "glob failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
@@ -39,9 +41,9 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
                 error.InvalidBraceExpansion => break :blk "glob pattern has unmatched braces ('{' without '}') — fix the brace expansion syntax",
                 else => {},
             }
-            // Fall-through for unrecognised errors: build the allocPrint
-            // result and break with that.
-            const msg = std.fmt.allocPrint(ctx.allocator, "glob failed: {s}", .{@errorName(err)}) catch "glob failed with an unknown error";
+            // Fall-through for unrecognised errors: the shared table keeps
+            // the raw error name and adds generic repair advice.
+            const msg = error_explain.explain(ctx.allocator, err, null) catch "glob failed with an unknown error";
             break :blk msg;
         };
         const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, false, err_msg, "");

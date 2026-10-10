@@ -53,6 +53,7 @@ const agent = pabrikcore.agent;
 const skill_tools_mod = pabrikcore.skill_tools;
 const skills_store = pabrikcore.skills_store;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 /// Probe an inner JSON payload for a top-level `"error"` key. The returned
 /// slice borrows from `parsed` — keep it alive through the
@@ -154,7 +155,7 @@ pub fn execSearchSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
     defer ctx.allocator.free(workspace_id);
 
     const rows = skills_store.listSkills(ctx.allocator, ctx.db, workspace_id) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "search_skills failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "search_skills", tc.function.arguments, false, err_msg, "");
         return .{ .output = output, .output_allocated = true };
@@ -203,7 +204,7 @@ pub fn execUseSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         ctx.session_id,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "use_skill failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "use_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -276,7 +277,7 @@ pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         ctx.session_id,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_skill failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -324,7 +325,7 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         ctx.session_id,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "add_skill failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -374,7 +375,7 @@ pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         ctx.session_id,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "edit_skill failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };

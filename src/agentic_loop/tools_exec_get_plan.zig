@@ -21,13 +21,14 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const get_plan_mod = pabrikcore.get_plan;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execGetPlan(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // No input to parse — the schema declares zero required params.
     // Use `tc.function.arguments` for the envelope's `<parameters>`
     // block verbatim (the LLM is expected to send `{}`).
     const inner = get_plan_mod.executeGetPlan(ctx.allocator, ctx.db, ctx.session_id) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "get_plan failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "get_plan", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };

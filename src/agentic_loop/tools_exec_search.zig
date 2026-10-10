@@ -7,6 +7,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const search_tool_mod = pabrikcore.search_tool;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 /// Parse the model-provided JSON and normalize zero-valued optional head/tail
 /// placeholders. Some providers emit every optional numeric field and use 0
@@ -43,7 +44,7 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const args_to_parse: []const u8 = if (args.len == 0) "{}" else args;
 
     const parsed = parseSearchInput(ctx.allocator, args_to_parse) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "search failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -74,7 +75,7 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
                 error.RgNotFound => break :blk "ripgrep (rg) is not installed or not on PATH — install it first, then retry the search",
                 else => {},
             }
-            const msg = std.fmt.allocPrint(ctx.allocator, "search failed: {s}", .{@errorName(err)}) catch {
+            const msg = error_explain.explain(ctx.allocator, err, null) catch {
                 break :blk "search failed with an unknown error";
             };
             owned_err_msg = msg;

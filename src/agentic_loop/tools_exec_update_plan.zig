@@ -27,6 +27,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = pabrikcore.agent;
 const update_plan_mod = pabrikcore.update_plan;
 const wrapToolOutput = tools.wrapToolOutput;
+const error_explain = @import("tools_error_explain.zig");
 
 pub fn execUpdatePlan(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
@@ -35,7 +36,7 @@ pub fn execUpdatePlan(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "update_plan failed to parse input: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "update_plan", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -48,7 +49,7 @@ pub fn execUpdatePlan(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
         ctx.session_id,
         parsed.value,
     ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "update_plan failed: {s}", .{@errorName(err)});
+        const err_msg = try error_explain.explain(ctx.allocator, err, null);
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "update_plan", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -224,7 +225,12 @@ test "execUpdatePlan: malformed JSON returns wrapped parse error" {
     const env3 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
     defer env3.deinit();
     try testing.expect(!env3.value.object.get("success").?.bool);
-    try testing.expect(std.mem.indexOf(u8, env3.value.object.get("error").?.string, "failed to parse input") != null);
+    // The message must tell the model WHAT was wrong with its JSON, not
+    // just name the Zig error. `{not json at all` is a syntax error, so
+    // the explanation names JSON and the usual causes.
+    const plan_err = env3.value.object.get("error").?.string;
+    try testing.expect(std.mem.indexOf(u8, plan_err, "JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, plan_err, "SyntaxError") == null);
 
     // No DB write happened.
     const stored = try session_plan.getPlan(alloc, &ctx.db, "sess_exec");
