@@ -26,6 +26,7 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick, ref, type Ref } from 'vue'
 
 import WorkspaceItem from '../components/workspace/WorkspaceItem.vue'
+import type { WorkerActivity } from '../components/WorkerElapsedChip.vue'
 import type { WorkspaceItem as WorkspaceItemType, Task } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
@@ -200,20 +201,25 @@ describe('WorkspaceItem row — one padded box owns both edges', () => {
     wrapper = null
   })
 
-  it('keeps the chevron ahead of the row spinner in DOM order', async () => {
+  it('keeps the chevron ahead of the elapsed chip in DOM order', async () => {
     // Pre-existing contract (workspaceItemProcessingSpinner.spec.ts): the
-    // spinner sits after the chevron + content, not before. Moving the
-    // actions inside the button must not disturb it.
+    // activity marker sits after the chevron + content, not before. Moving
+    // the actions inside the button must not disturb it.
     const processingState: Ref<Record<string, boolean>> = ref({})
+    const now = Date.now()
+    const workerActivity = ref<Record<string, WorkerActivity>>({
+      task_1: { startedAt: now - 127_000, lastActivityAt: now - 2_000, description: '' },
+    })
+    const workerNow = ref(now)
     wrapper = mount(WorkspaceItem, {
       props: { item: makeItem(), isActive: false, workspaceId: WS_ID },
-      global: { provide: { processingState } },
+      global: { provide: { processingState, workerActivity, workerNow } },
     })
     processingState.value = { task_1: true }
     await nextTick()
 
     const html = wrapper.find('button.flex-1').html()
     expect(html.indexOf('item-row-chevron')).toBeGreaterThan(-1)
-    expect(html.indexOf('item-processing-spinner')).toBeGreaterThan(html.indexOf('item-row-chevron'))
+    expect(html.indexOf('item-elapsed-chip')).toBeGreaterThan(html.indexOf('item-row-chevron'))
   })
 })

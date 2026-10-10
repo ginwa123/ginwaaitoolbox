@@ -19,7 +19,6 @@ import {
 import { sessionEngineDb, toSessionRow } from '../../sync/SessionEngineDb'
 import { runSyncEffect, runSyncEffectOr, runSyncVoid } from '../../sync/runtime'
 import * as api from '../../api'
-import SessionSlider from '../SessionSlider.vue'
 import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import SidebarSkeleton from '../shell/SidebarSkeleton.vue'
 import ChatRowContextMenu from '../shell/ChatRowContextMenu.vue'
@@ -1271,9 +1270,14 @@ defineExpose({
           </span>
           <!-- Elapsed time for a running worker. Takes the slot the
                relative-time pill vacates above, so the row never grows a
-               second trailing element. -->
-          <WorkerElapsedChip v-else :session-id="item.id" test-id="chat-elapsed-chip" />
-          <SessionSlider :session-id="item.id" />
+               second trailing element. Time pill is the only activity
+               marker — the circle spinner was removed as redundant. -->
+          <WorkerElapsedChip
+            v-else
+            :session-id="item.id"
+            test-id="chat-elapsed-chip"
+            class="ml-2"
+          />
         </button>
       </div>
     </div>
@@ -1396,7 +1400,7 @@ defineExpose({
                  (never touched by you yet)" so the source of the
                  timestamp is discoverable without a comment.
                  Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md (Task 8) -->
-            <!-- Keep the spinner as the only right-side activity marker while processing. -->
+            <!-- Keep the elapsed time pill as the only right-side activity marker while processing. -->
             <span
               v-if="!isProcessing(item.id)"
               class="text-micro opacity-60 shrink-0 ml-2 flex items-center gap-1"
@@ -1419,14 +1423,14 @@ defineExpose({
             </span>
             <!-- Elapsed time for a running worker. Takes the slot the
                  relative-time pill vacates above, so the row never grows a
-                 second trailing element. -->
-            <WorkerElapsedChip v-else :session-id="item.id" test-id="chat-nav-elapsed-chip" />
-            <!-- Per-session LLM circle spinner at the end of this row.
-                 Hidden when this session is idle; spins while
-                 processingState[item.id] is true. Reads
-                 processingState via Vue inject from App.vue — no
-                 prop drilling needed. -->
-            <SessionSlider :session-id="item.id" />
+                 second trailing element. Time pill is the only activity
+                 marker — the circle spinner was removed as redundant. -->
+            <WorkerElapsedChip
+              v-else
+              :session-id="item.id"
+              test-id="chat-nav-elapsed-chip"
+              class="ml-2"
+            />
           </button>
         </template>
       </VirtualScroller>

@@ -7,7 +7,6 @@ import type { Workspace, WorkspaceItem } from '../../stores/workspaces'
 import WorkspaceItemComponent from './WorkspaceItem.vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import * as api from '../../api'
-import SessionSlider from '../SessionSlider.vue'
 import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import SidebarSkeleton from '../shell/SidebarSkeleton.vue'
 
@@ -380,12 +379,8 @@ const handleItemDragEnd = () => {
           data-testid="projects-count"
           >{{ workspace.items.length }}</span
         >
-        <SessionSlider
-          v-if="workspace && firstProcessingTaskIdInWorkspace(workspace)"
-          :session-id="firstProcessingTaskIdInWorkspace(workspace)!"
-          test-id="workspace-processing-spinner"
-        />
-        <!-- How long that task has been running. Beside the spinner. -->
+        <!-- How long that task has been running. Time pill is the only
+             activity marker — the circle spinner was removed as redundant. -->
         <WorkerElapsedChip
           v-if="workspace && firstProcessingTaskIdInWorkspace(workspace)"
           :session-id="firstProcessingTaskIdInWorkspace(workspace)!"

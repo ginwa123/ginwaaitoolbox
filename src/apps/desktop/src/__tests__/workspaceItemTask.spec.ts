@@ -26,6 +26,7 @@ import { nextTick, ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
 import WorkspaceItemTaskRow from '../components/workspace/WorkspaceItemTaskRow.vue'
+import type { WorkerActivity } from '../components/WorkerElapsedChip.vue'
 import { makeLocalStorageStub } from './helpers'
 
 // Stub vue-router — WorkspaceItemTaskRow reads useRoute() via
@@ -58,6 +59,8 @@ function mountTask(
   } = {},
 ) {
   const processingState: Ref<Record<string, boolean>> = ref({})
+  const workerActivity = ref<Record<string, WorkerActivity>>({})
+  const workerNow = ref(Date.now())
   const task = overrides.task ?? baseTask
   const wrapper = mount(WorkspaceItemTaskRow, {
     props: {
@@ -66,13 +69,17 @@ function mountTask(
       itemId: overrides.itemId ?? 'item_1',
     },
     global: {
-      provide: { processingState },
+      provide: { processingState, workerActivity, workerNow },
     },
   })
   if (overrides.processing) {
     processingState.value = { [task.id]: true }
+    const now = Date.now()
+    workerActivity.value = {
+      [task.id]: { startedAt: now - 127_000, lastActivityAt: now - 2_000, description: '' },
+    }
   }
-  return { wrapper, processingState }
+  return { wrapper, processingState, workerActivity }
 }
 
 describe('WorkspaceItemTaskRow per-task row', () => {
@@ -92,11 +99,10 @@ describe('WorkspaceItemTaskRow per-task row', () => {
   it('renders the task name and a bullet by default (no spinner, no active styling)', async () => {
     const { wrapper } = mountTask()
     expect(wrapper.text()).toContain('Alpha task')
-    // Updated 2026-08-29: the per-task yellow spinner was replaced by
-    // a SessionSlider that always renders the DOM element but is
-    // hidden (opacity 0, aria-busy="false") when no worker is
-    // running. Count VISIBLE sliders only.
-    expect(wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')).toHaveLength(0)
+    // The circle spinner was removed — the time pill is the only activity
+    // marker. Idle rows render neither.
+    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="task-elapsed-chip"]').exists()).toBe(false)
     // Lock in the row-variant contract (post-2026-07-02 split):
     // the Row component always carries data-task-row and never
     // data-task-card. A future refactor that re-introduces a
@@ -109,25 +115,28 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     expect(wrapper.findAll('span.w-1.h-1.rounded-full')).toHaveLength(1)
   })
 
-  it('renders the slider and hides the bullet when processingState[task.id] is true', async () => {
+  it('renders the elapsed time pill and hides the bullet when the worker is running', async () => {
     const { wrapper } = mountTask({ processing: true })
     await nextTick()
-    // Count VISIBLE sliders only (aria-busy="true").
-    expect(wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')).toHaveLength(1)
-    // Bullet must NOT render while the slider is visible (single
+    // The circle spinner was removed — the time pill is the only marker.
+    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="task-elapsed-chip"]').exists()).toBe(true)
+    // Bullet must NOT render while the worker runs (single
     // visual marker per row). The bullet selector is w-1.5.h-1.5; the
     // slider track sits below the row, so the w-1.5 selector catches
     // only the bullet.
     expect(wrapper.findAll('span.w-1.h-1.rounded-full')).toHaveLength(0)
   })
 
-  it('hides the slider and restores the bullet when processingState[task.id] flips back to false', async () => {
-    const { wrapper, processingState } = mountTask({ processing: true })
+  it('hides the time pill and restores the bullet when the worker finishes', async () => {
+    const { wrapper, processingState, workerActivity } = mountTask({ processing: true })
     await nextTick()
-    expect(wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="task-elapsed-chip"]').exists()).toBe(true)
     processingState.value = {}
+    workerActivity.value = {}
     await nextTick()
-    expect(wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="task-elapsed-chip"]').exists()).toBe(false)
     expect(wrapper.findAll('span.w-1.h-1.rounded-full')).toHaveLength(1)
   })
 
