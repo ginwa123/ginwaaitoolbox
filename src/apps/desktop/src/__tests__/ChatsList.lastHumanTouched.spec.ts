@@ -29,6 +29,7 @@ import { createApp, type App as VueApp, nextTick, ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
 import ChatsList from '../components/views/ChatsList.vue'
+import type { WorkerActivity } from '../components/WorkerElapsedChip.vue'
 import type { Chat } from '../api'
 import { makeLocalStorageStub } from './helpers'
 import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
@@ -142,16 +143,19 @@ describe('ChatsList - Migration 082 time pill + stale-dot display', () => {
   })
 
   function mountChatsListWithProcessing(processingState: Ref<Record<string, boolean>>) {
-    return mount(ChatsList, {
+    const workerActivity = ref<Record<string, WorkerActivity>>({})
+    const workerNow = ref(Date.now())
+    const wrapper = mount(ChatsList, {
       global: {
         mocks: { $router: { replace: vi.fn() } },
-        provide: { processingState },
+        provide: { processingState, workerActivity, workerNow },
       },
     })
+    return { wrapper, workerActivity, workerNow }
   }
 
   function mountChatsList() {
-    return mountChatsListWithProcessing(ref<Record<string, boolean>>({}))
+    return mountChatsListWithProcessing(ref<Record<string, boolean>>({})).wrapper
   }
 
   it('renders the populated last_human_touched_at value (case 1)', async () => {
@@ -398,20 +402,35 @@ describe('ChatsList - Migration 082 time pill + stale-dot display', () => {
       total: 1,
     })
     const processingState = ref<Record<string, boolean>>({})
-    const wrapper = mountChatsListWithProcessing(processingState)
+    const { wrapper, workerActivity } = mountChatsListWithProcessing(processingState)
     await flushLoadChats()
 
     expect(wrapper.find('[data-testid="chat-time-pill"]').text()).toBe('1h')
     expect(wrapper.find('[data-testid="session-slider"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="chat-elapsed-chip"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="chat-nav-elapsed-chip"]').exists()).toBe(false)
 
     processingState.value = { sess_processing: true }
+    const now = Date.now()
+    workerActivity.value = {
+      sess_processing: { startedAt: now - 127_000, lastActivityAt: now - 2_000, description: '' },
+    }
     await nextTick()
     expect(wrapper.find('[data-testid="chat-time-pill"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="session-slider"]').exists()).toBe(true)
+    // No circle spinner anymore — the elapsed time pill is the marker.
+    // Recent rows use the nav test-id; pinned rows use the plain one.
+    expect(wrapper.find('[data-testid="session-slider"]').exists()).toBe(false)
+    expect(
+      wrapper.find('[data-testid="chat-nav-elapsed-chip"]').exists() ||
+        wrapper.find('[data-testid="chat-elapsed-chip"]').exists(),
+    ).toBe(true)
 
     processingState.value = {}
+    workerActivity.value = {}
     await nextTick()
     expect(wrapper.find('[data-testid="chat-time-pill"]').text()).toBe('1h')
     expect(wrapper.find('[data-testid="session-slider"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="chat-elapsed-chip"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="chat-nav-elapsed-chip"]').exists()).toBe(false)
   })
 })

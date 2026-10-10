@@ -1,14 +1,9 @@
 /**
- * Regression tests for the "task row shows no slider while worker is
- * processing" gap. WorkspaceItem must read from the same processingState
- * ref App.vue provides and show a visible SessionSlider on the matching
- * row.
- *
- * Updated 2026-08-29: the per-task yellow spinner circle was replaced
- * by a SessionSlider that only renders while the task is processing
- * (`aria-busy="true"` when present, no DOM element when idle). These
- * tests assert on the VISIBLE state — the hidden state renders
- * nothing, so tests count the visible ones.
+ * Regression tests for the per-task activity marker. WorkspaceItem must
+ * read from the same processingState ref App.vue provides. The circle
+ * spinner was removed — the elapsed time pill is now the only marker,
+ * so these tests assert the chip shows while the worker runs and no
+ * spinner element exists at all.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -16,6 +11,7 @@ import { nextTick, ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
 import WorkspaceItem from '../components/workspace/WorkspaceItem.vue'
+import type { WorkerActivity } from '../components/WorkerElapsedChip.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
@@ -31,6 +27,8 @@ const itemWithTasks = {
 
 function mountWorkspaceItem(tasks: Array<{ id: string; name: string }> = itemWithTasks.tasks) {
   const processingState: Ref<Record<string, boolean>> = ref({})
+  const workerActivity = ref<Record<string, WorkerActivity>>({})
+  const workerNow = ref(Date.now())
   const wrapper = mount(WorkspaceItem, {
     props: {
       item: { ...itemWithTasks, tasks },
@@ -38,10 +36,24 @@ function mountWorkspaceItem(tasks: Array<{ id: string; name: string }> = itemWit
       workspaceId: 'ws_1',
     },
     global: {
-      provide: { processingState },
+      provide: { processingState, workerActivity, workerNow },
     },
   })
-  return { wrapper, processingState }
+  const setBusy = (ids: string[]) => {
+    const now = Date.now()
+    processingState.value = Object.fromEntries(ids.map((id) => [id, true]))
+    workerActivity.value = Object.fromEntries(
+      ids.map((id) => [
+        id,
+        { startedAt: now - 127_000, lastActivityAt: now - 2_000, description: '' },
+      ]),
+    )
+  }
+  const clearBusy = () => {
+    processingState.value = {}
+    workerActivity.value = {}
+  }
+  return { wrapper, processingState, workerActivity, setBusy, clearBusy }
 }
 
 function expandItem(): void {
@@ -54,13 +66,13 @@ function expandItem(): void {
   ws.expandedItemIds = { ...ws.expandedItemIds }
 }
 
-// Filter helper: only count VISIBLE sliders (those with
-// `aria-busy="true"`). The SessionSlider component renders the DOM
-// element always but toggles aria-busy + opacity to show/hide.
+// No spinner element exists anymore; the elapsed chip is the marker.
 const visibleSpinners = (wrapper: ReturnType<typeof mount>) =>
-  wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')
+  wrapper.findAll('[data-testid="task-spinner"]')
+const visibleChips = (wrapper: ReturnType<typeof mount>) =>
+  wrapper.findAll('[data-testid="task-elapsed-chip"]')
 
-describe('WorkspaceItem task slider', () => {
+describe('WorkspaceItem task elapsed chip', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -74,55 +86,55 @@ describe('WorkspaceItem task slider', () => {
     // Pinia is torn down by the next beforeEach's setActivePinia.
   })
 
-  it('shows no slider when no task is in processingState', async () => {
+  it('shows no chip when no task is busy', async () => {
     const { wrapper } = mountWorkspaceItem()
     expandItem()
     await nextTick()
     expect(visibleSpinners(wrapper)).toHaveLength(0)
+    expect(visibleChips(wrapper)).toHaveLength(0)
   })
 
-  it('shows a slider on the matching task when processingState[task.id] is true', async () => {
-    const { wrapper, processingState } = mountWorkspaceItem()
+  it('shows a chip on the matching task when the worker runs', async () => {
+    const { wrapper, setBusy } = mountWorkspaceItem()
     expandItem()
-    processingState.value = { task_alpha: true }
+    setBusy(['task_alpha'])
     await nextTick()
-    expect(visibleSpinners(wrapper)).toHaveLength(1)
-    // The alpha row is the one with the slider; the alpha name is
-    // still rendered in the row (slider sits at the bottom of the
-    // row, not in place of the name).
+    expect(visibleSpinners(wrapper)).toHaveLength(0)
+    expect(visibleChips(wrapper)).toHaveLength(1)
+    // The alpha row is the one with the chip; the alpha name is
+    // still rendered in the row.
     expect(wrapper.text()).toContain('Alpha task')
   })
 
-  it('shows sliders on multiple tasks when several are processing', async () => {
-    const { wrapper, processingState } = mountWorkspaceItem()
+  it('shows chips on multiple tasks when several are running', async () => {
+    const { wrapper, setBusy } = mountWorkspaceItem()
     expandItem()
-    processingState.value = { task_alpha: true, task_beta: true }
-    await nextTick()
-    expect(visibleSpinners(wrapper)).toHaveLength(2)
-  })
-
-  it('hides the slider when the task is removed from processingState', async () => {
-    const { wrapper, processingState } = mountWorkspaceItem()
-    expandItem()
-    processingState.value = { task_alpha: true }
-    await nextTick()
-    expect(visibleSpinners(wrapper)).toHaveLength(1)
-    // Worker SSE emits a 'deleted' event → App.vue clears
-    // processingState[task_alpha]. The slider should become
-    // invisible (aria-busy flips back to false).
-    processingState.value = {}
+    setBusy(['task_alpha', 'task_beta'])
     await nextTick()
     expect(visibleSpinners(wrapper)).toHaveLength(0)
+    expect(visibleChips(wrapper)).toHaveLength(2)
   })
 
-  it('shows no slider for tasks that are not in processingState', async () => {
-    const { wrapper, processingState } = mountWorkspaceItem()
+  it('hides the chip when the worker finishes', async () => {
+    const { wrapper, setBusy, clearBusy } = mountWorkspaceItem()
     expandItem()
-    processingState.value = { task_beta: true }
+    setBusy(['task_alpha'])
     await nextTick()
-    // Alpha is not in processingState → no visible slider for it,
-    // even though it sits in the list and would normally be visible.
-    expect(visibleSpinners(wrapper)).toHaveLength(1)
+    expect(visibleChips(wrapper)).toHaveLength(1)
+    // Worker SSE emits a 'deleted' event → App.vue clears the entries.
+    clearBusy()
+    await nextTick()
+    expect(visibleSpinners(wrapper)).toHaveLength(0)
+    expect(visibleChips(wrapper)).toHaveLength(0)
+  })
+
+  it('shows no chip for tasks that are not running', async () => {
+    const { wrapper, setBusy } = mountWorkspaceItem()
+    expandItem()
+    setBusy(['task_beta'])
+    await nextTick()
+    // Only beta's chip shows; alpha's row has no chip.
+    expect(visibleChips(wrapper)).toHaveLength(1)
     expect(wrapper.text()).toContain('Alpha task')
     expect(wrapper.text()).toContain('Beta task')
   })

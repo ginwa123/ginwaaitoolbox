@@ -299,11 +299,11 @@ const openGitPrInBackground = () => {
 
 // Right-click "Stop agent" — visible only while a worker runs on
 // this task (processingState[task.id] === true, same key the
-// SessionSlider + detail Start-agent button use). Calls the same
+// elapsed chip + detail Start-agent button use). Calls the same
 // POST /api/llm/session/:id/stop the chat's Stop button uses
 // (task.id == session_id per Migration 052). Idempotent server-side;
 // the SSE `worker deleted` event clears processingState so the menu
-// item + slider disappear without further action.
+// item + chip disappear without further action.
 const isAgentRunning = computed(() => processingState.value[props.task.id] === true)
 const isStoppingAgent = ref(false)
 
@@ -591,26 +591,15 @@ onUpdated(() => {
     <div class="flex items-center gap-2 min-w-0">
       <!-- single branch — per-task routines deleted (Migration 084). -->
       <!-- (standard content unwrapped) -->
-      <span
-        v-if="processingState[task.id]"
-        class="w-4 h-4 flex items-center justify-center shrink-0"
-        data-testid="task-spinner"
-      >
-        <div
-          class="w-3 h-3 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-yellow); border-top-color: transparent"
-        ></div>
-      </span>
       <!-- Kanban notification icon (Chunk 6 of
              docs/plans/2026-07-26-kanban-task-notification-icon.md).
              8px orange-400 dot with a 4-pulse glow when the AI has
              finished a turn (finish_reason=stop) and the user
-             hasn't engaged with the task since. Rendered AFTER
-             the spinner slot (so v-if precedence: spinner wins
-             when the worker is active, even mid-repaint during a
-             state transition) and BEFORE the pin indicator (so
-             the reading order is "current activity → awaiting
-             review → pinned state → name"). Tooltip explains the
+             hasn't engaged with the task since. Rendered BEFORE the pin
+             indicator (so the reading order is "awaiting
+             review → pinned state → name"). The elapsed time pill below
+             is the activity marker while the worker runs — the circle
+             spinner was removed as redundant. Tooltip explains the
              state for screen-reader / hover users.
 
              The pulse keyframe lives in the scoped <style> block
@@ -620,7 +609,7 @@ onUpdated(() => {
              final 0% state (steady, no glow) so the user has a
              consistent "always visible" affordance. -->
       <span
-        v-else-if="task.needs_human_review && task.last_finish_reason === 'stop'"
+        v-if="task.needs_human_review && task.last_finish_reason === 'stop'"
         class="w-2 h-2 rounded-full shrink-0"
         style="
           background-color: rgb(251, 146, 60);
@@ -659,7 +648,7 @@ onUpdated(() => {
         </svg>
       </span>
       <!-- 2026-08-29 agent-error-indicator (task_1787985074550_0):
-             additive to spinner / pulse / checkmark because retry chains
+             additive to pulse / checkmark because retry chains
              fire WHILE the worker is still active. Tooltip shows the
              same headline + retry chip the ChatView's AgentErrorCard
              parses, so users see the same information regardless of
@@ -719,8 +708,7 @@ onUpdated(() => {
       </span>
       <!-- Card variant: bullet is HIDDEN (the card itself signals
              a task — the dot is visual noise in the modern-
-             minimalist design). The v-else-if is mutually exclusive
-             with the spinner above (never both at once). -->
+             minimalist design). -->
       <!-- (intentionally no bullet span here in card variant) -->
       <!-- Pin indicator (always visible when pinned). -->
       <span
@@ -735,9 +723,9 @@ onUpdated(() => {
           />
         </svg>
       </span>
-      <!-- How long this task has been running. Placed AFTER the indicator
-           chain (spinner → review → reviewed → error) so it does not break
-           the v-if/v-else-if adjacency those spans depend on. -->
+      <!-- How long this task has been running. Time pill is the activity
+           marker while the worker runs — the circle spinner was removed
+           as redundant. -->
       <WorkerElapsedChip :session-id="task.id" test-id="task-card-elapsed-chip" />
       <span class="flex-1 min-w-0 text-body font-medium leading-snug truncate">{{
         task.name

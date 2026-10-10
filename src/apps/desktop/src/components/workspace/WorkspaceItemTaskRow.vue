@@ -45,7 +45,6 @@ import { inject, ref, computed, type Ref } from 'vue'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { useContextMenu } from '../../composables/useContextMenu'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
-import SessionSlider from '../SessionSlider.vue'
 import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 // 2026-08-29 agent-error-row (task_1787985074550_0) — sidebar
@@ -69,7 +68,7 @@ const processingState = inject<Ref<Record<string, boolean>>>(
 
 const props = defineProps<TaskComponentProps>()
 
-// A worker is running on this task. Same key the card's spinner and
+// A worker is running on this task. Same key the card's elapsed chip and
 // the detail dialog's Start-agent button read; gates the "Run agent"
 // menu row (the backend answers 409 while a worker is in flight).
 const isBusy = computed(() => processingState.value[props.task.id] === true)
@@ -237,12 +236,10 @@ const errorRetryLabel = computed(() =>
      plan 2026-09-10-workspace-items-routines). All tasks render
      the standard row. -->
     <!-- (standard content unwrapped) -->
-    <!-- (Processing spinner removed — replaced by SessionSlider at
-           the bottom of the button.) -->
     <!-- Row variant: bullet renders as before for the sidebar's
-           compact list. Hidden while the LLM spinner is visible so
+           compact list. Hidden while the worker is running so
            the row shows a SINGLE visual marker (either the bullet
-           when idle, or the circle spinner when processing). -->
+           when idle, or the elapsed time pill when processing). -->
     <span
       v-if="!processingState[task.id]"
       class="w-1 h-1 rounded-full shrink-0"
@@ -261,7 +258,7 @@ const errorRetryLabel = computed(() =>
            ~28px vs the card's ~80px. Additive v-if (sibling to the
            bullet above, NOT a v-else-if) because retry attempts
            fire WHILE the worker is still active and the indicator
-           must coexist with the spinner. -->
+           must coexist with the time pill. -->
     <span
       v-if="agentError"
       class="relative shrink-0 error-icon-wrap"
@@ -386,14 +383,8 @@ const errorRetryLabel = computed(() =>
       </svg>
     </button>
 
-    <!-- Per-session LLM circle spinner for this row.
-         Visible iff processingState[task.id] === true; hidden
-         otherwise. Same signal as the workspace-item
-         level spinner in <WorkspaceItem> — the workspace-item
-         level covers "any task on this item is busy"; this covers
-         "this specific task is busy". Both can render at once. -->
-    <SessionSlider :session-id="task.id" test-id="task-spinner" />
-    <!-- How long this task has been running. Beside the spinner. -->
+    <!-- How long this task has been running. Time pill is the only
+         activity marker — the circle spinner was removed as redundant. -->
     <WorkerElapsedChip :session-id="task.id" test-id="task-elapsed-chip" />
     <OpenInNewTabMenu
       v-if="menuPos"

@@ -7,7 +7,7 @@
  *
  * Card states (single branch — per-task routine branches were
  * deleted in Migration 084, so all task types share these):
- *   1. AI running → yellow spinner (existing, higher priority).
+ *   1. AI running → elapsed time pill (the circle spinner was removed).
  *   2. needs_human_review=true, not running → ORANGE PULSING DOT.
  *   3. needs_human_review=false AND last_finish_reason='stop',
  *      not running → GREEN CHECKMARK.
@@ -22,21 +22,24 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { ref, type Ref } from 'vue'
 
 import WorkspaceItemTaskCard from '../components/workspace/WorkspaceItemTaskCard.vue'
+import type { WorkerActivity } from '../components/WorkerElapsedChip.vue'
 import type { Task } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
 function mountCard(
   task: Task,
-  options: { processing?: Record<string, boolean> } = {},
+  options: { processing?: Record<string, boolean>; activity?: Record<string, WorkerActivity> } = {},
 ) {
   const processingState: Ref<Record<string, boolean>> = ref(options.processing ?? {})
+  const workerActivity = ref<Record<string, WorkerActivity>>(options.activity ?? {})
+  const workerNow = ref(Date.now())
   const wrapper = mount(WorkspaceItemTaskCard, {
     props: {
       task,
       workspaceId: 'ws_1',
       itemId: 'item_1',
     },
-    global: { provide: { processingState } },
+    global: { provide: { processingState, workerActivity, workerNow } },
   })
   return wrapper
 }
@@ -76,10 +79,11 @@ describe('WorkspaceItemTaskCard — kanban task notification icon (Chunk 6)', ()
     expect(dot.attributes('title')).toContain('awaiting')
   })
 
-  it('hides the orange dot in favor of the spinner when the worker is active', () => {
-    // AI is mid-turn (processingState says so) → spinner wins,
-    // even though last_finish_reason='stop' from a previous turn
-    // would otherwise paint the dot.
+  it('shows the orange dot alongside the time pill when the worker is active', () => {
+    // AI is mid-turn AND a previous turn finished with stop awaiting review.
+    // The spinner is gone, so both markers show: the dot (review state)
+    // and the elapsed pill (activity state).
+    const now = Date.now()
     wrapper = mountCard(
       {
         id: 't1',
@@ -87,12 +91,17 @@ describe('WorkspaceItemTaskCard — kanban task notification icon (Chunk 6)', ()
         last_finish_reason: 'stop',
         needs_human_review: true,
       },
-      { processing: { t1: true } },
+      {
+        processing: { t1: true },
+        activity: {
+          t1: { startedAt: now - 127_000, lastActivityAt: now - 2_000, description: '' },
+        },
+      },
     )
-    expect(wrapper.find('[data-testid="task-needs-review"]').exists()).toBe(false)
-    // Spinner is the dominant signal — its data-testid is the
-    // existing one from the standard branch.
-    expect(wrapper.find('[data-testid="task-spinner"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="task-needs-review"]').exists()).toBe(true)
+    // No spinner element exists anymore; the time pill is the marker.
+    expect(wrapper.find('[data-testid="task-spinner"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="task-card-elapsed-chip"]').exists()).toBe(true)
   })
 
   // ─────────────────────────────────────────────────────────────────

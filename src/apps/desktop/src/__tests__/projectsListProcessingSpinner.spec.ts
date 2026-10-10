@@ -5,9 +5,9 @@
  * docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
  *
  * ProjectsList must read the same `processingState` ref App.vue
- * provides and render a SessionSlider in the section header when ANY
- * task in ANY item of the selected workspace is processing. Count
- * VISIBLE sliders only (aria-busy="true").
+ * provides and render the elapsed time pill in the section header when
+ * ANY task in ANY item of the selected workspace is running. The circle
+ * spinner was removed — the time pill is the only marker.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -16,6 +16,7 @@ import { mount } from '@vue/test-utils'
 
 import ProjectsList from '../components/workspace/ProjectsList.vue'
 import WorkspaceItem from '../components/workspace/WorkspaceItem.vue'
+import type { WorkerActivity } from '../components/WorkerElapsedChip.vue'
 import { type Workspace, type WorkspaceItem as WsItem } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
@@ -35,25 +36,43 @@ function makeWorkspace(
 
 function mountProjectsList(workspace: Workspace | null) {
   const processingState: Ref<Record<string, boolean>> = ref({})
+  const workerActivity = ref<Record<string, WorkerActivity>>({})
+  const workerNow = ref(Date.now())
   const wrapper = mount(ProjectsList, {
     props: {
       workspace,
       activeWorkspaceItemId: null,
     },
     global: {
-      provide: { processingState },
+      provide: { processingState, workerActivity, workerNow },
       // Render the real WorkspaceItem so its (stubbed-key) presence
-      // matches production; the slider under test is in the header.
+      // matches production; the chip under test is in the header.
       stubs: { WorkspaceItem: WorkspaceItem },
     },
   })
-  return { wrapper, processingState }
+  const setBusy = (ids: string[]) => {
+    const now = Date.now()
+    processingState.value = Object.fromEntries(ids.map((id) => [id, true]))
+    workerActivity.value = Object.fromEntries(
+      ids.map((id) => [
+        id,
+        { startedAt: now - 127_000, lastActivityAt: now - 2_000, description: '' },
+      ]),
+    )
+  }
+  const clearBusy = () => {
+    processingState.value = {}
+    workerActivity.value = {}
+  }
+  return { wrapper, processingState, workerActivity, setBusy, clearBusy }
 }
 
 const visibleHeaderSpinners = (wrapper: ReturnType<typeof mount>) =>
-  wrapper.findAll('[data-testid="workspace-processing-spinner"][aria-busy="true"]')
+  wrapper.findAll('[data-testid="workspace-processing-spinner"]')
+const visibleHeaderChips = (wrapper: ReturnType<typeof mount>) =>
+  wrapper.findAll('[data-testid="workspace-elapsed-chip"]')
 
-describe('ProjectsList section-header processing slider', () => {
+describe('ProjectsList section-header elapsed chip', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -67,7 +86,7 @@ describe('ProjectsList section-header processing slider', () => {
     // Pinia is torn down by the next beforeEach's setActivePinia.
   })
 
-  it('shows no slider when no task is in processingState', async () => {
+  it('shows no chip when no task is busy', async () => {
     const ws = makeWorkspace('ws_1', 'Coding', [
       {
         id: 'item_1',
@@ -76,15 +95,16 @@ describe('ProjectsList section-header processing slider', () => {
         tasks: [{ id: 'task_a', name: 'A' }],
       },
     ])
-    const { wrapper, processingState } = mountProjectsList(ws)
+    const { wrapper, setBusy } = mountProjectsList(ws)
     await nextTick()
-    processingState.value = { task_x: true } // unrelated task
+    setBusy(['task_x']) // unrelated task
     await nextTick()
     expect(visibleHeaderSpinners(wrapper)).toHaveLength(0)
+    expect(visibleHeaderChips(wrapper)).toHaveLength(0)
     wrapper.unmount()
   })
 
-  it('shows the slider when one of the selected workspace tasks is processing', async () => {
+  it('shows the chip when one of the selected workspace tasks is running', async () => {
     const ws = makeWorkspace('ws_1', 'Coding', [
       {
         id: 'item_1',
@@ -93,15 +113,16 @@ describe('ProjectsList section-header processing slider', () => {
         tasks: [{ id: 'task_a', name: 'A' }],
       },
     ])
-    const { wrapper, processingState } = mountProjectsList(ws)
+    const { wrapper, setBusy } = mountProjectsList(ws)
     await nextTick()
-    processingState.value = { task_a: true }
+    setBusy(['task_a'])
     await nextTick()
-    expect(visibleHeaderSpinners(wrapper)).toHaveLength(1)
+    expect(visibleHeaderSpinners(wrapper)).toHaveLength(0)
+    expect(visibleHeaderChips(wrapper)).toHaveLength(1)
     wrapper.unmount()
   })
 
-  it('hides the slider when the last processing task is removed', async () => {
+  it('hides the chip when the last busy task finishes', async () => {
     const ws = makeWorkspace('ws_1', 'Coding', [
       {
         id: 'item_1',
@@ -110,19 +131,20 @@ describe('ProjectsList section-header processing slider', () => {
         tasks: [{ id: 'task_a', name: 'A' }],
       },
     ])
-    const { wrapper, processingState } = mountProjectsList(ws)
+    const { wrapper, setBusy, clearBusy } = mountProjectsList(ws)
     await nextTick()
-    processingState.value = { task_a: true }
+    setBusy(['task_a'])
     await nextTick()
-    expect(visibleHeaderSpinners(wrapper)).toHaveLength(1)
+    expect(visibleHeaderChips(wrapper)).toHaveLength(1)
     // Worker SSE emits 'deleted' → App.vue clears the entry.
-    processingState.value = {}
+    clearBusy()
     await nextTick()
     expect(visibleHeaderSpinners(wrapper)).toHaveLength(0)
+    expect(visibleHeaderChips(wrapper)).toHaveLength(0)
     wrapper.unmount()
   })
 
-  it('slider renders in the section header AFTER the chevron in DOM order', async () => {
+  it('chip renders in the section header AFTER the chevron in DOM order', async () => {
     const ws = makeWorkspace('ws_1', 'Coding', [
       {
         id: 'item_1',
@@ -131,28 +153,27 @@ describe('ProjectsList section-header processing slider', () => {
         tasks: [{ id: 'task_a', name: 'A' }],
       },
     ])
-    const { wrapper, processingState } = mountProjectsList(ws)
+    const { wrapper, setBusy } = mountProjectsList(ws)
     await nextTick()
-    processingState.value = { task_a: true }
+    setBusy(['task_a'])
     await nextTick()
-    const header = wrapper
-      .findAll('button')
-      .find((b) => b.text().includes('Projects'))!
+    const header = wrapper.findAll('button').find((b) => b.text().includes('Projects'))!
     const html = header.html()
     const chevronIdx = html.indexOf('▶')
-    const sliderIdx = html.indexOf('workspace-processing-spinner')
+    const chipIdx = html.indexOf('workspace-elapsed-chip')
     expect(chevronIdx).toBeGreaterThan(-1)
-    expect(sliderIdx).toBeGreaterThan(-1)
-    expect(sliderIdx).toBeGreaterThan(chevronIdx)
+    expect(chipIdx).toBeGreaterThan(-1)
+    expect(chipIdx).toBeGreaterThan(chevronIdx)
     wrapper.unmount()
   })
 
-  it('renders no slider (and the empty-state hint) when there is no selected workspace', async () => {
-    const { wrapper, processingState } = mountProjectsList(null)
+  it('renders no chip (and the empty-state hint) when there is no selected workspace', async () => {
+    const { wrapper, setBusy } = mountProjectsList(null)
     await nextTick()
-    processingState.value = { task_any: true }
+    setBusy(['task_any'])
     await nextTick()
     expect(visibleHeaderSpinners(wrapper)).toHaveLength(0)
+    expect(visibleHeaderChips(wrapper)).toHaveLength(0)
     expect(wrapper.find('[data-testid="projects-no-workspace"]').exists()).toBe(true)
     wrapper.unmount()
   })

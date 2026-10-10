@@ -8,7 +8,6 @@ import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 import WorkspaceItemTaskRow from './WorkspaceItemTaskRow.vue'
 import DesignPageRow from './DesignPageRow.vue'
 import type { DesignPage } from '../../api'
-import SessionSlider from '../SessionSlider.vue'
 import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 
@@ -128,12 +127,9 @@ const isCurrentMainView = computed(() => {
 
 // Computed: true if any of this item's tasks is currently being processed
 // First processing task's id (= session_id per Migration 052 convention,
-// so it's the same key `processingState` uses). The SessionSlider reads
-// this — when null, the slider is hidden (its computed `isVisible`
-// evaluates `!!processingState[sessionId]` and falls back to false for
-// the default inject). Used to mount ONE slider at the workspace-item
-// row level when ANY task is running, replacing the old yellow spinner
-// circle.
+// so it's the same key `processingState` uses). The elapsed chip reads
+// this — when null, the chip is hidden. Used to mount ONE time pill at
+// the workspace-item row level when ANY task is running.
 const firstProcessingTaskId = computed<string | null>(() => {
   const tasks = props.item.tasks
   if (!tasks || tasks.length === 0) return null
@@ -695,29 +691,21 @@ const handlePinnedDrop = (event: DragEvent) => {
             </svg>
           </span>
           <!-- Active Indicator (for FolderExplorer selection). Right-side
-               slot, hidden while the loading spinner is showing. The
-               processing spinner lives in a separate (left) slot and
-               does not conflict with this dot. -->
+               slot, hidden while the loading spinner is showing. -->
           <span
             v-else-if="isActive"
             class="ml-auto w-1.5 h-1.5 rounded-full"
             style="background-color: var(--color-aqua)"
             data-testid="item-active-dot"
           />
-          <!-- Per-session LLM circle spinner for this row.
-               Visible iff firstProcessingTaskId
-               is truthy AND processingState[that id] === true. -->
-          <SessionSlider
-            v-if="firstProcessingTaskId"
-            :session-id="firstProcessingTaskId"
-            test-id="item-processing-spinner"
-          />
-          <!-- How long that task has been running. Beside the spinner, in
-               the same slot the active dot vacates. -->
+          <!-- How long that task has been running. Time pill is the only
+               activity marker — the circle spinner was removed as redundant.
+               ml-auto keeps it right-aligned whether the count pill shows or not. -->
           <WorkerElapsedChip
             v-if="firstProcessingTaskId"
             :session-id="firstProcessingTaskId"
             test-id="item-elapsed-chip"
+            class="ml-auto"
           />
           <!-- Row actions — INSIDE the padded button, revealed on hover.
 
