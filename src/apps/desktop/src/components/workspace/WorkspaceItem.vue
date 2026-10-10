@@ -200,16 +200,6 @@ const handleChevronToggle = (event: Event) => {
   }
 }
 
-const handleDelete = (event: Event) => {
-  event.stopPropagation()
-  emit('delete', props.item)
-}
-
-const handleAddTask = (event: Event) => {
-  event.stopPropagation()
-  emit('addTask', props.item)
-}
-
 // Pass-through handlers: <WorkspaceItemTaskRow> emits these three events
 // with the full payload (workspaceId, itemId, taskId, currentName), and
 // we forward them up to <ProjectsList> verbatim. The signatures match
@@ -251,9 +241,10 @@ const openItemMenuSettings = () => {
   emit('goToSettings', itemMenuPayload())
 }
 
-// The row's `+` / `×` are hover-reveal only, so the right-click menu is the
-// always-available path to the same two actions. Same payloads the row
-// buttons emit — the menu is a second door, not a second behaviour.
+// The row carries no inline action buttons (removed: the hover-reveal
+// `+` / `×` rendered as oversized boxes on the agent site), so the
+// right-click menu is the only path to Add task / Delete. Same payloads
+// the old row buttons emitted — the menu is the door, not a second one.
 const openItemMenuAddTask = () => {
   closeItemMenu()
   emit('addTask', props.item)
@@ -264,8 +255,8 @@ const openItemMenuDelete = () => {
   emit('delete', props.item)
 }
 
-// `+` is hidden for kanban + routine on the row (board/scheduler own
-// creation) — the menu row follows the same rule so the two doors agree.
+// Add-task is hidden for kanban + routine (board/scheduler own
+// creation) — enforced on the menu row.
 const showItemAddTask = computed(
   () => props.item.item_type !== 'kanban' && props.item.item_type !== 'routine',
 )
@@ -720,34 +711,6 @@ const handlePinnedDrop = (event: DragEvent) => {
               data-testid="item-task-count"
             >
               {{ item.tasks?.length }}
-            </span>
-            <!-- Row actions live INSIDE the same right cluster (no second
-               ml-auto): two auto margins in one flex row split the free
-               space and center the name (regression seen on agent site).
-               `opacity-0` until hover/focus as before. -->
-            <span class="flex items-center shrink-0" data-testid="item-row-actions">
-              <button
-                v-if="item.item_type !== 'kanban' && item.item_type !== 'routine'"
-                @click="handleAddTask"
-                class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-60 hover:!opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-green-400"
-                style="color: var(--semantic-text-dim)"
-                title="Add Task"
-                aria-label="Add Task"
-                data-testid="add-task-button"
-              >
-                +
-              </button>
-              <!-- Delete Item Button. Unicode × glyph. -->
-              <button
-                @click="handleDelete"
-                class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-60 hover:!opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-red-400"
-                style="color: var(--semantic-text-dim)"
-                title="Delete Item"
-                aria-label="Delete Item"
-                data-testid="delete-item-button"
-              >
-                ×
-              </button>
             </span>
           </span>
         </button>

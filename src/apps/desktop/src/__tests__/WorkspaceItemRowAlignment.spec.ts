@@ -15,10 +15,12 @@
  * the structure buys.
  *
  * What is asserted:
- *   1. the row's actions are DESCENDANTS of the padded button, not siblings
+ *   1. the row carries NO inline action buttons (removed: the hover-reveal
+ *      `+` / `x` rendered as oversized boxes) — the right-click menu is
+ *      the only door to Add task / Delete
  *   2. the chevron carries no hit box, so it renders like a section header
  *   3. the row uses the same inter-element gap as every other row
- *   4. the right-click menu offers the same two actions the row does
+ *   4. the right-click menu offers Add task and Delete project
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -93,40 +95,19 @@ describe('WorkspaceItem row — one padded box owns both edges', () => {
     vi.restoreAllMocks()
   })
 
-  it('keeps the row actions INSIDE the padded button, not as siblings', () => {
-    // The regression this guards: the actions were siblings of the padded
-    // button in the `group/item` wrapper, which has no padding of its own,
-    // so they ran to the panel edge (279) while every other row stopped at
-    // the gutter (267).
+  it('carries no inline action buttons — the menu is the only door', () => {
+    // The hover-reveal `+` / `x` rendered as oversized boxes on the agent
+    // site, so they were deleted from the row. Add task / Delete live on
+    // the right-click menu (asserted below) — nothing inline remains.
     wrapper = mountItem(makeItem())
 
     const button = wrapper.find('button.flex-1')
     expect(button.exists()).toBe(true)
 
-    const addTask = wrapper.find('[data-testid="add-task-button"]')
-    const deleteItem = wrapper.find('[data-testid="delete-item-button"]')
-    expect(addTask.exists()).toBe(true)
-    expect(deleteItem.exists()).toBe(true)
-
-    // `contains` walks up the real DOM tree, so this is the structural
-    // claim — not a class-string guess.
-    expect(button.element.contains(addTask.element)).toBe(true)
-    expect(button.element.contains(deleteItem.element)).toBe(true)
-  })
-
-  it('hides the row actions until hover or keyboard focus', () => {
-    // An idle row is clean text. `focus-visible` is what keeps the actions
-    // reachable without a pointer — hover alone is undiscoverable and does
-    // nothing on touch, which is why the same two actions are also in the
-    // right-click menu.
-    wrapper = mountItem(makeItem())
-
-    for (const testid of ['add-task-button', 'delete-item-button']) {
-      const cls = wrapper.find(`[data-testid="${testid}"]`).classes().join(' ')
-      expect(cls).toContain('opacity-0')
-      expect(cls).toContain('group-hover/item:opacity-60')
-      expect(cls).toContain('focus-visible:opacity-100')
-    }
+    expect(wrapper.find('[data-testid="item-row-actions"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="delete-item-button"]').exists()).toBe(false)
+    expect(wrapper.findAll('.item-action')).toHaveLength(0)
   })
 
   it('renders the chevron as bare text, with no hit box', () => {
@@ -185,13 +166,11 @@ describe('WorkspaceItem row — one padded box owns both edges', () => {
     expect(wrapper.emitted('delete')).toEqual([[item]])
   })
 
-  it('hides Add task for kanban + routine on BOTH doors', async () => {
-    // The board/scheduler own creation for these types. The menu row follows
-    // the same rule as the row button so the two doors never disagree.
+  it('hides Add task for kanban + routine in the menu', async () => {
+    // The board/scheduler own creation for these types. The row has no
+    // inline buttons at all, so the menu row is where the rule is enforced.
     for (const item_type of ['kanban', 'routine'] as const) {
       wrapper = mountItem(makeItem({ item_type }))
-      expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(false)
-
       await openRowMenu(wrapper)
       expect(menuRowExists('add-task-menu-item')).toBe(false)
       // Delete is still offered — deleting a board is a legitimate action.
