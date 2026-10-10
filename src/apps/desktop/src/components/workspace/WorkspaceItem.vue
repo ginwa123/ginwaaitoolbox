@@ -200,16 +200,6 @@ const handleChevronToggle = (event: Event) => {
   }
 }
 
-const handleDelete = (event: Event) => {
-  event.stopPropagation()
-  emit('delete', props.item)
-}
-
-const handleAddTask = (event: Event) => {
-  event.stopPropagation()
-  emit('addTask', props.item)
-}
-
 // Pass-through handlers: <WorkspaceItemTaskRow> emits these three events
 // with the full payload (workspaceId, itemId, taskId, currentName), and
 // we forward them up to <ProjectsList> verbatim. The signatures match
@@ -251,9 +241,10 @@ const openItemMenuSettings = () => {
   emit('goToSettings', itemMenuPayload())
 }
 
-// The row's `+` / `×` are hover-reveal only, so the right-click menu is the
-// always-available path to the same two actions. Same payloads the row
-// buttons emit — the menu is a second door, not a second behaviour.
+// The row carries no inline action buttons (removed: the hover-reveal
+// `+` / `×` rendered as oversized boxes on the agent site), so the
+// right-click menu is the only path to Add task / Delete. Same payloads
+// the old row buttons emitted — the menu is the door, not a second one.
 const openItemMenuAddTask = () => {
   closeItemMenu()
   emit('addTask', props.item)
@@ -264,8 +255,8 @@ const openItemMenuDelete = () => {
   emit('delete', props.item)
 }
 
-// `+` is hidden for kanban + routine on the row (board/scheduler own
-// creation) — the menu row follows the same rule so the two doors agree.
+// Add-task is hidden for kanban + routine (board/scheduler own
+// creation) — enforced on the menu row.
 const showItemAddTask = computed(
   () => props.item.item_type !== 'kanban' && props.item.item_type !== 'routine',
 )
@@ -663,6 +654,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           <span
             class="flex-1 min-w-0 truncate"
             :title="item.name || 'Untitled project'"
+            data-testid="item-name"
             >{{ item.name || 'Untitled project' }}</span
           >
           <!-- Right-side meta slot: exactly ONE child renders. Running
@@ -720,44 +712,6 @@ const handlePinnedDrop = (event: DragEvent) => {
             >
               {{ item.tasks?.length }}
             </span>
-          </span>
-          <!-- Row actions — INSIDE the padded button, revealed on hover.
-
-               They used to be siblings of this button in the wrapper
-               below, with no padding of their own, so they reached the
-               panel edge 12px past every other row. Inside the button
-               they resolve against the same gutter as the name.
-
-               `opacity-0` until hover/focus: an idle row is clean text,
-               and the actions never occupy a permanent trailing slot.
-               `focus-visible` keeps them reachable by keyboard — a
-               hover-only affordance is undiscoverable and does nothing
-               on touch, which is why the same two actions are ALSO in
-               the right-click menu below. `+` is hidden for kanban +
-               routine (board/scheduler own creation). -->
-          <span class="ml-auto flex items-center shrink-0" data-testid="item-row-actions">
-            <button
-              v-if="item.item_type !== 'kanban' && item.item_type !== 'routine'"
-              @click="handleAddTask"
-              class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-60 hover:!opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-green-400"
-              style="color: var(--semantic-text-dim)"
-              title="Add Task"
-              aria-label="Add Task"
-              data-testid="add-task-button"
-            >
-              +
-            </button>
-            <!-- Delete Item Button. Unicode × glyph. -->
-            <button
-              @click="handleDelete"
-              class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-60 hover:!opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-red-400"
-              style="color: var(--semantic-text-dim)"
-              title="Delete Item"
-              aria-label="Delete Item"
-              data-testid="delete-item-button"
-            >
-              ×
-            </button>
           </span>
         </button>
       </div>

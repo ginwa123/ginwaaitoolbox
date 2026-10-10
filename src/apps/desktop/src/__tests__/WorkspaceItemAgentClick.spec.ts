@@ -163,22 +163,34 @@ describe('WorkspaceItem — agent click is expand-only (no settings redirect)', 
     ])
   })
 
-  it('routine items hide the + (Add Task) button', async () => {
+  it('routine items hide Add Task in the context menu', async () => {
+    // The row has no inline buttons; the menu is the only door.
     wrapper = mountItem(makeItem('routine'))
-    expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(false)
-    expect(wrapper.find('[aria-label="Add Task"]').exists()).toBe(false)
+    const button = wrapper.find('button.flex-1')
+    await button.trigger('contextmenu', { clientX: 100, clientY: 200 })
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="add-task-menu-item"]')).toBeNull()
   })
 
-  it('kanban items hide the + (Add Task) button', async () => {
+  it('kanban items hide Add Task in the context menu', async () => {
     wrapper = mountItem(makeItem('kanban'))
-    expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(false)
+    const button = wrapper.find('button.flex-1')
+    await button.trigger('contextmenu', { clientX: 100, clientY: 200 })
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="add-task-menu-item"]')).toBeNull()
   })
 
-  it('agent/folder items keep the + (Add Task) button', async () => {
+  it('agent/folder items keep Add Task in the context menu', async () => {
     wrapper = mountItem(makeItem('agent'))
-    expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(true)
+    let button = wrapper.find('button.flex-1')
+    await button.trigger('contextmenu', { clientX: 100, clientY: 200 })
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="add-task-menu-item"]')).toBeTruthy()
     wrapper?.unmount()
     wrapper = mountItem(makeItem('folder', { path: '/abs/path' }))
-    expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(true)
+    button = wrapper.find('button.flex-1')
+    await button.trigger('contextmenu', { clientX: 100, clientY: 200 })
+    await nextTick()
+    expect(document.body.querySelector('[data-testid="add-task-menu-item"]')).toBeTruthy()
   })
 })
