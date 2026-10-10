@@ -7,7 +7,6 @@ import type { Workspace, WorkspaceItem } from '../../stores/workspaces'
 import WorkspaceItemComponent from './WorkspaceItem.vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import * as api from '../../api'
-import WorkerElapsedChip from '../WorkerElapsedChip.vue'
 import SidebarSkeleton from '../shell/SidebarSkeleton.vue'
 
 // The single SELECTED workspace (header dropdown + Projects section,
@@ -136,22 +135,22 @@ const toggleAddMenu = (workspaceId: string) => {
   }
 }
 
-// First processing task's id across all items in this workspace
+// Count of running workers across all items in this workspace
 // (= session_id per Migration 052 convention, same key `processingState`
-// uses). Returns null when nothing is running. Used to mount ONE slider
-// at the workspace-row level when ANY task is busy — replaces the
-// old yellow spinner circle that used to float on the leftmost slot.
-// Mirrors `firstProcessingTaskId` in <WorkspaceItem>.
-const firstProcessingTaskIdInWorkspace = (workspace: Workspace): string | null => {
+// uses). The header shows a dot + "N running" text — never an elapsed
+// time pill. The elapsed pill lives ONLY on the row that owns the run
+// (ChatsList / WorkspaceItem), so one run renders one pill (wireframe R1).
+const runningTaskCountInWorkspace = (workspace: Workspace): number => {
   const state = processingState.value
+  let n = 0
   for (const item of workspace.items) {
     const tasks = item.tasks
     if (!tasks || tasks.length === 0) continue
     for (const task of tasks) {
-      if (state[task.id]) return task.id
+      if (state[task.id]) n += 1
     }
   }
-  return null
+  return n
 }
 
 const handleItemClick = (workspaceId: string, itemId: string) => {
@@ -379,13 +378,25 @@ const handleItemDragEnd = () => {
           data-testid="projects-count"
           >{{ workspace.items.length }}</span
         >
-        <!-- How long that task has been running. Time pill is the only
-             activity marker — the circle spinner was removed as redundant. -->
-        <WorkerElapsedChip
-          v-if="workspace && firstProcessingTaskIdInWorkspace(workspace)"
-          :session-id="firstProcessingTaskIdInWorkspace(workspace)!"
-          test-id="workspace-elapsed-chip"
-        />
+        <!-- Running indicator: dot + count text only, never an elapsed
+             pill. The elapsed pill lives on the owning row (ChatsList /
+             WorkspaceItem) so one run renders one pill (wireframe R1). -->
+        <span
+          v-if="workspace && runningTaskCountInWorkspace(workspace) > 0"
+          class="flex items-center gap-1.5 shrink-0"
+          data-testid="workspace-running-indicator"
+          :title="runningTaskCountInWorkspace(workspace) + ' worker(s) running in this workspace'"
+        >
+          <span
+            class="w-1.5 h-1.5 rounded-full shrink-0"
+            style="background-color: var(--color-yellow)"
+          />
+          <span
+            class="text-micro"
+            style="color: var(--semantic-text-dim); opacity: 0.7; font-variant-numeric: tabular-nums"
+            >{{ runningTaskCountInWorkspace(workspace) }} running</span
+          >
+        </span>
         <button
           v-if="sidebarStore.projectsExpanded && workspace"
           class="ml-auto w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"

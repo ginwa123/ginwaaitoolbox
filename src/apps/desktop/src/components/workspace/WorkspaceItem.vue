@@ -630,7 +630,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           class="relative flex-1 flex items-center gap-2 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-dense transition-colors duration-150"
           :style="
             isCurrentMainView
-              ? `background-color: #262522; color: var(--semantic-text);`
+              ? `background-color: #2e2d29; color: #fff; box-shadow: inset 2px 0 0 0 var(--color-violet);`
               : `color: var(--semantic-text-muted);`
           "
         >
@@ -656,24 +656,36 @@ const handlePinnedDrop = (event: DragEvent) => {
             >▶</span
           >
           <!-- Item Name. Fall back to "Untitled project" for legacy
-               empty-name rows (plan 2026-07-10). -->
-          <span class="truncate">{{ item.name || 'Untitled project' }}</span>
-          <!-- V2: count pill always stays — no layout shift when
-               actions appear (actions live in their own fixed slot). -->
+               empty-name rows (plan 2026-07-10). Title carries the full
+               name so truncated rows recover on hover (wireframe R4).
+               flex-1 min-w-0 keeps the trailing meta slot from being
+               pushed out at narrow widths. -->
           <span
-            v-if="!item.isLoading && (item.tasks?.length || 0) > 0"
-            class="ml-auto text-micro item-count shrink-0"
-            style="color: var(--semantic-text-dim); opacity: 0.7"
-            data-testid="item-task-count"
+            class="flex-1 min-w-0 truncate"
+            :title="item.name || 'Untitled project'"
+            >{{ item.name || 'Untitled project' }}</span
           >
-            {{ item.tasks?.length }}
-          </span>
-          <!-- Loading spinner (folder contents fetching — independent
-               of LLM worker state). Right-side slot. Priority 1 over
-               the active dot: takes the slot when the user just
+          <!-- Right-side meta slot: exactly ONE child renders. Running
+               elapsed takes the slot; otherwise loading spinner, active
+               dot, or count — never two at once. Previously each had its
+               own ml-auto and they overlapped into a floating pill
+               (wireframe R2). -->
+          <span class="ml-auto flex items-center gap-1.5 shrink-0">
+            <!-- How long that task has been running. Time pill is the only
+               activity marker — the circle spinner was removed as redundant. -->
+            <WorkerElapsedChip
+              v-if="firstProcessingTaskId"
+              :session-id="firstProcessingTaskId"
+              test-id="item-elapsed-chip"
+            />
+            <!-- Loading spinner (folder contents fetching — independent
+               of LLM worker state). Takes the slot when the user just
                clicked expand and we're still downloading the
                directory listing. -->
-          <span v-if="item.isLoading" class="ml-auto" data-testid="item-loading-spinner">
+            <span
+              v-else-if="item.isLoading"
+              data-testid="item-loading-spinner"
+            >
             <svg class="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
               <circle
                 class="opacity-25"
@@ -690,23 +702,25 @@ const handlePinnedDrop = (event: DragEvent) => {
               />
             </svg>
           </span>
-          <!-- Active Indicator (for FolderExplorer selection). Right-side
-               slot, hidden while the loading spinner is showing. -->
-          <span
-            v-else-if="isActive"
-            class="ml-auto w-1.5 h-1.5 rounded-full"
-            style="background-color: var(--color-aqua)"
-            data-testid="item-active-dot"
-          />
-          <!-- How long that task has been running. Time pill is the only
-               activity marker — the circle spinner was removed as redundant.
-               ml-auto keeps it right-aligned whether the count pill shows or not. -->
-          <WorkerElapsedChip
-            v-if="firstProcessingTaskId"
-            :session-id="firstProcessingTaskId"
-            test-id="item-elapsed-chip"
-            class="ml-auto"
-          />
+            <!-- Active Indicator (for FolderExplorer selection). -->
+            <span
+              v-else-if="isActive"
+              class="w-1.5 h-1.5 rounded-full"
+              style="background-color: var(--color-aqua)"
+              data-testid="item-active-dot"
+            />
+            <!-- Task count: muted text, never in the time slot alongside
+               a pill (wireframe R2). Hidden while running/loading/active-dot
+               owns the slot. -->
+            <span
+              v-else-if="!item.isLoading && (item.tasks?.length || 0) > 0"
+              class="text-micro item-count"
+              style="color: var(--semantic-text-dim); opacity: 0.7; font-variant-numeric: tabular-nums"
+              data-testid="item-task-count"
+            >
+              {{ item.tasks?.length }}
+            </span>
+          </span>
           <!-- Row actions — INSIDE the padded button, revealed on hover.
 
                They used to be siblings of this button in the wrapper

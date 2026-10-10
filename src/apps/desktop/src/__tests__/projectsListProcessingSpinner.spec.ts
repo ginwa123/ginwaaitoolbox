@@ -1,13 +1,14 @@
 /**
- * The busy indicator for the SELECTED workspace now lives in the
- * Projects section header — the workspace rows it used to sit on are
- * gone (revamp plan:
- * docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
+ * The busy indicator for the SELECTED workspace lives in the Projects
+ * section header as a dot + "N running" text — never an elapsed time
+ * pill. The elapsed pill lives ONLY on the owning row (ChatsList /
+ * WorkspaceItem) so one run renders one pill (wireframe R1,
+ * task i-see-bad-ui-ux: duplicate 6h 37m in row + header).
  *
- * ProjectsList must read the same `processingState` ref App.vue
- * provides and render the elapsed time pill in the section header when
- * ANY task in ANY item of the selected workspace is running. The circle
- * spinner was removed — the time pill is the only marker.
+ * ProjectsList reads the same `processingState` ref App.vue provides
+ * and renders the running indicator when ANY task in ANY item of the
+ * selected workspace is running. Asserts behaviour by mounting the
+ * real component and querying the rendered DOM.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -71,8 +72,10 @@ const visibleHeaderSpinners = (wrapper: ReturnType<typeof mount>) =>
   wrapper.findAll('[data-testid="workspace-processing-spinner"]')
 const visibleHeaderChips = (wrapper: ReturnType<typeof mount>) =>
   wrapper.findAll('[data-testid="workspace-elapsed-chip"]')
+const visibleRunningIndicator = (wrapper: ReturnType<typeof mount>) =>
+  wrapper.findAll('[data-testid="workspace-running-indicator"]')
 
-describe('ProjectsList section-header elapsed chip', () => {
+describe('ProjectsList section-header running indicator', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -86,7 +89,7 @@ describe('ProjectsList section-header elapsed chip', () => {
     // Pinia is torn down by the next beforeEach's setActivePinia.
   })
 
-  it('shows no chip when no task is busy', async () => {
+  it('shows no indicator and no elapsed chip when no task is busy', async () => {
     const ws = makeWorkspace('ws_1', 'Coding', [
       {
         id: 'item_1',
@@ -101,10 +104,11 @@ describe('ProjectsList section-header elapsed chip', () => {
     await nextTick()
     expect(visibleHeaderSpinners(wrapper)).toHaveLength(0)
     expect(visibleHeaderChips(wrapper)).toHaveLength(0)
+    expect(visibleRunningIndicator(wrapper)).toHaveLength(0)
     wrapper.unmount()
   })
 
-  it('shows the chip when one of the selected workspace tasks is running', async () => {
+  it('shows the running indicator (and never an elapsed chip) when a task is running', async () => {
     const ws = makeWorkspace('ws_1', 'Coding', [
       {
         id: 'item_1',
@@ -118,11 +122,15 @@ describe('ProjectsList section-header elapsed chip', () => {
     setBusy(['task_a'])
     await nextTick()
     expect(visibleHeaderSpinners(wrapper)).toHaveLength(0)
-    expect(visibleHeaderChips(wrapper)).toHaveLength(1)
+    // One run renders one pill: the pill lives on the owning row, so the
+    // header must never render an elapsed chip.
+    expect(visibleHeaderChips(wrapper)).toHaveLength(0)
+    expect(visibleRunningIndicator(wrapper)).toHaveLength(1)
+    expect(visibleRunningIndicator(wrapper)[0]!.text()).toContain('1 running')
     wrapper.unmount()
   })
 
-  it('hides the chip when the last busy task finishes', async () => {
+  it('hides the indicator when the last busy task finishes', async () => {
     const ws = makeWorkspace('ws_1', 'Coding', [
       {
         id: 'item_1',
@@ -135,16 +143,17 @@ describe('ProjectsList section-header elapsed chip', () => {
     await nextTick()
     setBusy(['task_a'])
     await nextTick()
-    expect(visibleHeaderChips(wrapper)).toHaveLength(1)
+    expect(visibleRunningIndicator(wrapper)).toHaveLength(1)
     // Worker SSE emits 'deleted' → App.vue clears the entry.
     clearBusy()
     await nextTick()
     expect(visibleHeaderSpinners(wrapper)).toHaveLength(0)
     expect(visibleHeaderChips(wrapper)).toHaveLength(0)
+    expect(visibleRunningIndicator(wrapper)).toHaveLength(0)
     wrapper.unmount()
   })
 
-  it('chip renders in the section header AFTER the chevron in DOM order', async () => {
+  it('indicator renders in the section header AFTER the chevron in DOM order', async () => {
     const ws = makeWorkspace('ws_1', 'Coding', [
       {
         id: 'item_1',
@@ -160,20 +169,24 @@ describe('ProjectsList section-header elapsed chip', () => {
     const header = wrapper.findAll('button').find((b) => b.text().includes('Projects'))!
     const html = header.html()
     const chevronIdx = html.indexOf('▶')
+    const indIdx = html.indexOf('workspace-running-indicator')
     const chipIdx = html.indexOf('workspace-elapsed-chip')
     expect(chevronIdx).toBeGreaterThan(-1)
-    expect(chipIdx).toBeGreaterThan(-1)
-    expect(chipIdx).toBeGreaterThan(chevronIdx)
+    expect(indIdx).toBeGreaterThan(-1)
+    expect(indIdx).toBeGreaterThan(chevronIdx)
+    // Header never renders an elapsed pill, even while busy.
+    expect(chipIdx).toBe(-1)
     wrapper.unmount()
   })
 
-  it('renders no chip (and the empty-state hint) when there is no selected workspace', async () => {
+  it('renders no indicator (and the empty-state hint) when there is no selected workspace', async () => {
     const { wrapper, setBusy } = mountProjectsList(null)
     await nextTick()
     setBusy(['task_any'])
     await nextTick()
     expect(visibleHeaderSpinners(wrapper)).toHaveLength(0)
     expect(visibleHeaderChips(wrapper)).toHaveLength(0)
+    expect(visibleRunningIndicator(wrapper)).toHaveLength(0)
     expect(wrapper.find('[data-testid="projects-no-workspace"]').exists()).toBe(true)
     wrapper.unmount()
   })
