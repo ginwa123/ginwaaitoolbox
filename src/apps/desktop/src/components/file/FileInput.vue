@@ -604,19 +604,35 @@ function scheduleDetectAtTrigger(): void {
 }
 
 // ── /skill picker (mirrors the @ picker above) ─────────────────────────
-// Trigger: the literal `/skill-` prefix at message start or after
-// whitespace, followed by the skill-name alphabet `[A-Za-z0-9._-]`.
-// Nothing else opens it — a bare `/`, a partial `/sk`, a path like
+// Two triggers, in order of how far the user has typed:
+//
+// 1. `SLASH_COMMAND_RE` — a NON-EMPTY PROPER PREFIX of `skill-` at
+//    message start or after whitespace (`/s`, `/sk`, `/ski`, `/skil`,
+//    `/skill`). This is the discoverability step: the user has typed
+//    enough to be heading for the skill command but not the dash yet,
+//    so the composer offers the one completion that exists. Enter/Tab
+//    rewrites the token to the canonical `/skill-` and the picker
+//    takes over from there.
+// 2. `SLASH_TOKEN_RE` — the literal `/skill-` prefix followed by the
+//    skill-name alphabet `[A-Za-z0-9._-]`. This is the picker itself.
+//
+// Nothing else opens either surface. A bare `/`, a path like
 // `/home/ginwa/pabrik`, or prose that merely contains a slash all leave
 // the composer alone. The dash is required on purpose: it is the one
 // character that separates "the user is invoking a skill" from "the user
 // typed a slash for some other reason", and without it the picker fired
 // on every filesystem path in the message.
-// The regex guarantees the position rule, so `http://` and `a/b` never
+// Both regexes guarantee the position rule, so `http://` and `a/b` never
 // match — the char before `/` must be start-of-line or whitespace.
 // Case-insensitive, so `/SKILL-DEPLOY` behaves like `/skill-deploy`.
+const SLASH_COMMAND_RE = /(^|\s)\/(s|sk|ski|skil|skill)$/i
 const SLASH_TOKEN_RE = /(^|\s)\/skill-([\w.-]*)$/i
 const showSkillPicker = ref(false)
+// True while the `/skill-` completion hint is showing (the user typed a
+// proper prefix of the command but not the dash yet). Kept separate from
+// `showSkillPicker` so the two surfaces never render at once and the
+// hint never triggers a skills fetch.
+const showSkillCommand = ref(false)
 // Lower-cased filter text after the `skill-` marker (empty = show all).
 const skillQuery = ref('')
 const skillList = ref<api.Skill[]>([])
@@ -637,6 +653,7 @@ const activeSkillWorkspaceId = (): string | null => {
 
 const closeSkillPicker = () => {
   showSkillPicker.value = false
+  showSkillCommand.value = false
   skillQuery.value = ''
   selectedSkillIndex.value = 0
   skillError.value = null
@@ -691,9 +708,45 @@ const detectSlashTrigger = () => {
     } else {
       selectedSkillIndex.value = 0
     }
-  } else {
-    closeSkillPicker()
+    return
   }
+  // Not the full token yet — is the user on the way there? A proper
+  // prefix of `skill-` (`/s`, `/sk`, `/ski`, `/skil`, `/skill`) offers
+  // the one completion that exists. No fetch happens here: the hint is
+  // a static string, so it costs nothing and works with no workspace.
+  if (textBeforeCursor.match(SLASH_COMMAND_RE)) {
+    showSkillCommand.value = true
+    closeFilePicker()
+    return
+  }
+  closeSkillPicker()
+}
+
+// Enter/Tab on the `/skill-` hint: rewrite the typed prefix to the
+// canonical token so the picker's own trigger fires on the next
+// keystroke. The whitespace the regex consumed is preserved, and the
+// cursor lands right after the dash — exactly where the skill name goes.
+const acceptSkillCommand = () => {
+  const text = inputText.value
+  const pos = cursorPos.value
+  const textBeforeCursor = text.slice(0, pos)
+  const textAfterCursor = text.slice(pos)
+  const match = textBeforeCursor.match(SLASH_COMMAND_RE)
+  if (!match || match.index === undefined) return
+  const slashPos = match.index + (match[1] ?? '').length
+  inputText.value = textBeforeCursor.slice(0, slashPos) + '/skill-' + textAfterCursor
+  showSkillCommand.value = false
+  nextTick(() => {
+    const el = chatTextareaRef.value
+    if (!el) return
+    const caret = slashPos + '/skill-'.length
+    el.setSelectionRange(caret, caret)
+    cursorPos.value = caret
+    // Run the picker's own detection now rather than waiting for the
+    // next keystroke, so the list is already up when the user types
+    // the first letter of the skill name.
+    detectSlashTrigger()
+  })
 }
 
 // Client-side substring filter over the cached workspace list. Matches
@@ -745,6 +798,20 @@ const selectFile = (file: FileEntry) => {
 }
 
 const handleKeydown = (e: KeyboardEvent) => {
+  // The `/skill-` completion hint takes precedence — only one surface is
+  // ever open, and this one has exactly one row, so arrows are no-ops.
+  if (showSkillCommand.value) {
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      e.stopPropagation()
+      acceptSkillCommand()
+    } else if (e.key === 'Escape') {
+      e.stopPropagation()
+      closeSkillPicker()
+    }
+    return
+  }
+
   // Handle skill picker navigation (takes precedence — only one is open)
   if (showSkillPicker.value) {
     const skills = filteredSkills.value
@@ -941,6 +1008,30 @@ const sendMessage = () => {
       >
         showing {{ visibleFiles.length }} of {{ serverTotal }} files
       </div>
+    </div>
+
+    <!-- `/skill-` completion hint — the user typed a proper prefix of the
+      command (`/s`, `/sk`, `/ski`, `/skil`, `/skill`) but not the dash
+      yet, so the composer offers the one completion that exists. Enter
+      or Tab rewrites the token to `/skill-` and the picker below takes
+      over. Rendered instead of the picker, never alongside it. -->
+    <div
+      v-if="showSkillCommand"
+      class="skill-command-suggestion mb-2 p-2 rounded-lg shadow-lg"
+      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
+      data-testid="skill-command-suggestion"
+    >
+      <button
+        type="button"
+        class="w-full text-left px-3 py-1.5 rounded text-body flex items-center gap-2 transition-colors file-item-selected"
+        style="background-color: var(--color-violet); color: var(--color-bg)"
+        data-testid="skill-command-suggestion-row"
+        @click="acceptSkillCommand"
+      >
+        <UiIcon name="brain" size-class="w-3.5 h-3.5" />
+        <span class="truncate font-mono text-dense">/skill-</span>
+        <span class="ml-auto text-dense" style="opacity: 0.75">Tab</span>
+      </button>
     </div>
 
     <!-- Skill picker dropdown — stays open while the `/skill-` trigger is
@@ -1255,6 +1346,12 @@ const sendMessage = () => {
 }
 
 .file-picker-list {
+  outline: none;
+}
+
+/* The `/skill-` completion hint is a single-row dropdown, so it needs no
+   scroll container — only the same outline suppression the picker gets. */
+.skill-command-suggestion {
   outline: none;
 }
 
