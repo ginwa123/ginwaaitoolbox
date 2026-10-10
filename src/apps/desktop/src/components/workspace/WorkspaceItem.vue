@@ -255,6 +255,25 @@ const openItemMenuSettings = () => {
   emit('goToSettings', itemMenuPayload())
 }
 
+// The row's `+` / `×` are hover-reveal only, so the right-click menu is the
+// always-available path to the same two actions. Same payloads the row
+// buttons emit — the menu is a second door, not a second behaviour.
+const openItemMenuAddTask = () => {
+  closeItemMenu()
+  emit('addTask', props.item)
+}
+
+const openItemMenuDelete = () => {
+  closeItemMenu()
+  emit('delete', props.item)
+}
+
+// `+` is hidden for kanban + routine on the row (board/scheduler own
+// creation) — the menu row follows the same rule so the two doors agree.
+const showItemAddTask = computed(
+  () => props.item.item_type !== 'kanban' && props.item.item_type !== 'routine',
+)
+
 // Only item types with a dedicated settings surface get the menu
 // entry: kanban boards (KanbanSettingsView: Columns + Agent tabs),
 // agent items (AgentView: Tools / System Prompt / Knowledge) and
@@ -596,15 +615,23 @@ const handlePinnedDrop = (event: DragEvent) => {
     :data-workspace-id="workspaceId"
   >
     <div class="flex flex-col">
-      <!-- Main Item Row — v3 minimal-flat: one surface, 32px row,
-           24px chevron hit-area, quiet count, hover-reveal actions,
-           active = flat #262522 fill (no violet bar, no shadow). -->
+      <!-- Main Item Row — one padded box owns BOTH edges.
+
+           The row used to be two boxes: this padded <button> plus two
+           unpadded action buttons as siblings in the wrapper below. The
+           button's padding only padded the button, so `+`/`×` ran to the
+           panel edge at 279 while every other row in the panel stopped at
+           267. The actions now live INSIDE this button, revealed on hover,
+           so one box resolves both edges against the same gutter.
+
+           `gap-2`, not `gap-0.5`: every other row in the panel uses 8px
+           between its leading glyph and its label. -->
       <div class="flex items-center group/item">
         <button
           @click="handleClick($event)"
           @auxclick="onItemRowAuxClick"
           @contextmenu.prevent="onItemRowContextMenu"
-          class="relative flex-1 flex items-center gap-0.5 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-dense transition-colors duration-150"
+          class="relative flex-1 flex items-center gap-2 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-dense transition-colors duration-150"
           :style="
             isCurrentMainView
               ? `background-color: #262522; color: var(--semantic-text);`
@@ -614,9 +641,15 @@ const handlePinnedDrop = (event: DragEvent) => {
           <!-- Processing slider (LLM worker is running on one of this
                item's tasks). Mounted at the bottom edge of the row,
                self-positioning (absolute bottom-0). -->
-          <!-- Chevron — 24px hit-area (v3), rotates when expanded. -->
+          <!-- Chevron — bare text, exactly like the section headers
+               (Pinned / Recent / Projects / Documents). It used to sit in
+               a 24px hit box, which centred the glyph at x=20 while every
+               section-header chevron rendered at x=12 — three chevrons at
+               three different left edges. Bare text puts this one at 12
+               too, and the project name at 28, matching the section
+               titles. Rotates when expanded. -->
           <span
-            class="w-[var(--sb-hit)] h-[var(--sb-hit)] shrink-0 flex items-center justify-center text-meta transition-transform duration-200 cursor-pointer rounded-md hover:bg-[#2e2d2a]"
+            class="shrink-0 text-meta transition-transform duration-200"
             data-testid="item-row-chevron"
             :style="{
               transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
@@ -686,32 +719,45 @@ const handlePinnedDrop = (event: DragEvent) => {
             :session-id="firstProcessingTaskId"
             test-id="item-elapsed-chip"
           />
+          <!-- Row actions — INSIDE the padded button, revealed on hover.
+
+               They used to be siblings of this button in the wrapper
+               below, with no padding of their own, so they reached the
+               panel edge 12px past every other row. Inside the button
+               they resolve against the same gutter as the name.
+
+               `opacity-0` until hover/focus: an idle row is clean text,
+               and the actions never occupy a permanent trailing slot.
+               `focus-visible` keeps them reachable by keyboard — a
+               hover-only affordance is undiscoverable and does nothing
+               on touch, which is why the same two actions are ALSO in
+               the right-click menu below. `+` is hidden for kanban +
+               routine (board/scheduler own creation). -->
+          <span class="ml-auto flex items-center shrink-0" data-testid="item-row-actions">
+            <button
+              v-if="item.item_type !== 'kanban' && item.item_type !== 'routine'"
+              @click="handleAddTask"
+              class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-60 hover:!opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-green-400"
+              style="color: var(--semantic-text-dim)"
+              title="Add Task"
+              aria-label="Add Task"
+              data-testid="add-task-button"
+            >
+              +
+            </button>
+            <!-- Delete Item Button. Unicode × glyph. -->
+            <button
+              @click="handleDelete"
+              class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-60 hover:!opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-red-400"
+              style="color: var(--semantic-text-dim)"
+              title="Delete Item"
+              aria-label="Delete Item"
+              data-testid="delete-item-button"
+            >
+              ×
+            </button>
+          </span>
         </button>
-        <!-- V2: always-visible actions (quiet until hover). + hidden
-             for kanban + routine (board/scheduler own creation). -->
-        <template v-if="true">
-          <button
-            v-if="item.item_type !== 'kanban' && item.item_type !== 'routine'"
-            @click="handleAddTask"
-            class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-green-400"
-            style="color: var(--semantic-text-dim)"
-            title="Add Task"
-            aria-label="Add Task"
-            data-testid="add-task-button"
-          >
-            +
-          </button>
-          <!-- Delete Item Button (always visible). Unicode × glyph. -->
-          <button
-            @click="handleDelete"
-            class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-red-400"
-            style="color: var(--semantic-text-dim)"
-            title="Delete Item"
-            aria-label="Delete Item"
-          >
-            ×
-          </button>
-        </template>
       </div>
 
       <!-- Tasks List (shown when expanded - allows multiple). Per-task
@@ -883,13 +929,19 @@ const handlePinnedDrop = (event: DragEvent) => {
       :x="menuPos.x"
       :y="menuPos.y"
       :show-settings="showItemSettings"
+      :show-add-task="showItemAddTask"
+      :show-delete-item="true"
       @open="openItemMenuInBackground"
       @settings="openItemMenuSettings"
+      @add-task="openItemMenuAddTask"
+      @delete-item="openItemMenuDelete"
     />
   </li>
 </template>
 
 <style scoped>
 /* V2 sidebar UX: count pill always stays visible (no hover swap,
-   no layout shift). Actions live in their own fixed slot. */
+   no layout shift). The row actions are hover-reveal and live inside
+   the padded button, so they never occupy a permanent trailing slot
+   and never push the row's trailing edge past the gutter. */
 </style>
